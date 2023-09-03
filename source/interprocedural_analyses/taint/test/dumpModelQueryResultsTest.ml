@@ -9,13 +9,21 @@ open OUnit2
 open Taint
 open TestHelper
 
+let assert_model_query_results ?model_path ~context ~models_source ~source ~expected () =
+  let { model_query_results; _ } = initialize ?model_path ~models_source ~context source in
+  let actual = ModelQueryExecution.DumpModelQueryResults.dump_to_string ~model_query_results in
+  let dumped_models_equal left right =
+    let left, right = Yojson.Safe.from_string left, Yojson.Safe.from_string right in
+    Yojson.Safe.equal left right
+  in
+  assert_equal ~cmp:dumped_models_equal ~printer:Core.Fn.id actual expected
+
+
 let test_dump_model_query_results context =
-  let configuration = TaintConfiguration.Heap.default in
-  (* Test functions *)
-  let _ =
-    initialize
-      ~models_source:
-        {|
+  assert_model_query_results
+    ~context
+    ~models_source:
+      {|
       ModelQuery(
         name = "get_foo",
         find = "functions",
@@ -35,53 +43,40 @@ let test_dump_model_query_results context =
         model = Returns(TaintSource[Test])
       )
     |}
-      ~context
-      ~taint_configuration:configuration
+    ~source:
       {|
       def foo1(): ...
       def foo2(): ...
       def bar(): ...
       def barfooo(): ...
       |}
-      ~expected_dump_string:
-        {|[
+    ~expected:
+      {|[
   {
     "get_bar": [
       {
         "callable": "test.bar",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.bar",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       },
       {
         "callable": "test.barfooo",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.barfooo",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   },
@@ -89,57 +84,39 @@ let test_dump_model_query_results context =
     "get_foo": [
       {
         "callable": "test.barfooo",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.barfooo",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       },
       {
         "callable": "test.foo1",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.foo1",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       },
       {
         "callable": "test.foo2",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.foo2",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   },
@@ -147,31 +124,25 @@ let test_dump_model_query_results context =
     "get_fooo": [
       {
         "callable": "test.barfooo",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.barfooo",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   }
 ]|}
-  in
+    ();
   (* Test methods *)
-  let _ =
-    initialize
-      ~models_source:
-        {|
+  assert_model_query_results
+    ~context
+    ~models_source:
+      {|
         ModelQuery(
           name = "get_Base_child_sources",
           find = "methods",
@@ -181,8 +152,7 @@ let test_dump_model_query_results context =
           ]
         )
       |}
-      ~context
-      ~taint_configuration:configuration
+    ~source:
       {|
       class Base:
           def foo(self, x):
@@ -190,53 +160,41 @@ let test_dump_model_query_results context =
           def baz(self, y):
               return 0
       |}
-      ~expected_dump_string:
-        {|[
+    ~expected:
+      {|[
   {
     "get_Base_child_sources": [
       {
         "callable": "test.Base.baz",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.Base.baz",
-            "sources": [
-              {
-                "port": "formal(self)",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
+        "sources": [
+          {
+            "port": "formal(self)",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
             ]
           }
-        }
+        ]
       },
       {
         "callable": "test.Base.foo",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.Base.foo",
-            "sources": [
-              {
-                "port": "formal(self)",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
+        "sources": [
+          {
+            "port": "formal(self)",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
             ]
           }
-        }
+        ]
       }
     ]
   }
 ]|}
-  in
+    ();
   (* Test correct ModelQuery<->sources for same callable *)
-  let _ =
-    initialize
-      ~models_source:
-        {|
+  assert_model_query_results
+    ~context
+    ~models_source:
+      {|
       ModelQuery(
         name = "ModelQueryA",
         find = "functions",
@@ -250,32 +208,24 @@ let test_dump_model_query_results context =
         model = Returns(TaintSource[UserControlled])
       )
     |}
-      ~context
-      ~taint_configuration:configuration
-      {|
+    ~source:{|
       def foo(x): ...
       |}
-      ~expected_dump_string:
-        {|[
+    ~expected:
+      {|[
   {
     "ModelQueryA": [
       {
         "callable": "test.foo",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.foo",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   },
@@ -283,35 +233,29 @@ let test_dump_model_query_results context =
     "ModelQueryB": [
       {
         "callable": "test.foo",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.foo",
-            "sources": [
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
               {
-                "port": "result",
-                "taint": [
-                  {
-                    "kinds": [ { "kind": "UserControlled" } ],
-                    "declaration": null
-                  }
-                ]
+                "kinds": [ { "kind": "UserControlled" } ],
+                "declaration": null
               }
-            ],
-            "modes": [ "Obscure" ]
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   }
 ]|}
-  in
+    ();
   (* TODO(T123305678) Add test for attributes *)
   (* Test correct ModelQuery<->sources for same callable *)
-  let _ =
-    initialize
-      ~models_source:
-        {|
+  assert_model_query_results
+    ~context
+    ~models_source:
+      {|
         ModelQuery(
           name = "get_parent_of_baz_class_sources",
           find = "methods",
@@ -330,8 +274,7 @@ let test_dump_model_query_results context =
           ]
         )
         |}
-      ~context
-      ~taint_configuration:configuration
+    ~source:
       {|
       class Foo:
         def __init__(self, a, b):
@@ -343,54 +286,42 @@ let test_dump_model_query_results context =
         def __init__(self, a, b):
           ...
       |}
-      ~expected_dump_string:
-        {|[
+    ~expected:
+      {|[
   {
     "get_parent_of_baz_class_sources": [
       {
         "callable": "test.Bar.__init__",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.Bar.__init__",
-            "sources": [
-              {
-                "port": "formal(b)",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "formal(b)",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       },
       {
         "callable": "test.Baz.__init__",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.Baz.__init__",
-            "sources": [
-              {
-                "port": "formal(b)",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "formal(b)",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   }
 ]|}
-  in
-  let _ =
-    initialize
-      ~models_source:
-        {|
+    ();
+  assert_model_query_results
+    ~context
+    ~models_source:
+      {|
         ModelQuery(
           name = "get_parent_of_baz_class_transitive_sources",
           find = "methods",
@@ -417,8 +348,7 @@ let test_dump_model_query_results context =
           ]
         )
         |}
-      ~context
-      ~taint_configuration:configuration
+    ~source:
       {|
       class Foo:
         def __init__(self, a, b):
@@ -430,73 +360,55 @@ let test_dump_model_query_results context =
         def __init__(self, a, b):
           ...
       |}
-      ~expected_dump_string:
-        {|[
+    ~expected:
+      {|[
   {
     "get_parent_of_baz_class_transitive_sources": [
       {
         "callable": "test.Bar.__init__",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.Bar.__init__",
-            "sources": [
-              {
-                "port": "formal(b)",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "formal(b)",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       },
       {
         "callable": "test.Baz.__init__",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.Baz.__init__",
-            "sources": [
-              {
-                "port": "formal(b)",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "formal(b)",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       },
       {
         "callable": "test.Foo.__init__",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.Foo.__init__",
-            "sources": [
-              {
-                "port": "formal(b)",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "formal(b)",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   }
 ]|}
-  in
+    ();
   (* Test functions *)
-  let _ =
-    initialize
-      ~models_source:
-        {|
+  assert_model_query_results
+    ~context
+    ~models_source:
+      {|
       ModelQuery(
         name = "get_foo",
         find = "functions",
@@ -516,54 +428,41 @@ let test_dump_model_query_results context =
         model = Returns(TaintSource[Test])
       )
     |}
-      ~context
-      ~taint_configuration:configuration
+    ~source:
       {|
       def foo1(): ...
       def foo2(): ...
       def bar(): ...
       def barfooo(): ...
       |}
-      ~model_path:(PyrePath.create_absolute "/a/b.pysa")
-      ~expected_dump_string:
-        {|[
+    ~model_path:(PyrePath.create_absolute "/a/b.pysa")
+    ~expected:
+      {|[
   {
     "/a/b.pysa/get_bar": [
       {
         "callable": "test.bar",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.bar",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       },
       {
         "callable": "test.barfooo",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.barfooo",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   },
@@ -571,57 +470,39 @@ let test_dump_model_query_results context =
     "/a/b.pysa/get_foo": [
       {
         "callable": "test.barfooo",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.barfooo",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       },
       {
         "callable": "test.foo1",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.foo1",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       },
       {
         "callable": "test.foo2",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.foo2",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   },
@@ -629,26 +510,20 @@ let test_dump_model_query_results context =
     "/a/b.pysa/get_fooo": [
       {
         "callable": "test.barfooo",
-        "model": {
-          "kind": "model",
-          "data": {
-            "callable": "test.barfooo",
-            "sources": [
-              {
-                "port": "result",
-                "taint": [
-                  { "kinds": [ { "kind": "Test" } ], "declaration": null }
-                ]
-              }
-            ],
-            "modes": [ "Obscure" ]
+        "sources": [
+          {
+            "port": "result",
+            "taint": [
+              { "kinds": [ { "kind": "Test" } ], "declaration": null }
+            ]
           }
-        }
+        ],
+        "modes": [ "Obscure" ]
       }
     ]
   }
 ]|}
-  in
+    ();
   ()
 
 

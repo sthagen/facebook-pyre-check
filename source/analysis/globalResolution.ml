@@ -83,16 +83,10 @@ let is_protocol ({ dependency; _ } as resolution) annotation =
     annotation
 
 
-let primitive_name annotation =
-  let primitive, _ = Type.split annotation in
-  Type.primitive_name primitive
-
-
-let class_summary ({ dependency; _ } as resolution) annotation =
-  primitive_name annotation
-  >>= UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
-        (unannotated_global_environment resolution)
-        ?dependency
+let class_summary ({ dependency; _ } as resolution) =
+  UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
+    (unannotated_global_environment resolution)
+    ?dependency
 
 
 let define_body ({ dependency; _ } as resolution) =
@@ -107,11 +101,10 @@ let function_definition ({ dependency; _ } as resolution) =
     (unannotated_global_environment resolution)
 
 
-let class_metadata ({ dependency; _ } as resolution) annotation =
-  primitive_name annotation
-  >>= ClassMetadataEnvironment.ReadOnly.get_class_metadata
-        ?dependency
-        (class_metadata_environment resolution)
+let class_metadata ({ dependency; _ } as resolution) =
+  ClassMetadataEnvironment.ReadOnly.get_class_metadata
+    ?dependency
+    (class_metadata_environment resolution)
 
 
 let is_suppressed_module ({ dependency; _ } as resolution) reference =
@@ -356,13 +349,17 @@ let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~ex
   comparator ~get_typed_dictionary_override:(fun _ -> None) ~left ~right
 
 
-let is_transitive_successor ?placeholder_subclass_extends_all resolution ~predecessor ~successor =
-  let class_hierarchy = class_hierarchy resolution in
-  ClassHierarchy.is_transitive_successor
-    ?placeholder_subclass_extends_all
-    class_hierarchy
-    ~source:predecessor
+let is_transitive_successor
+    ?(placeholder_subclass_extends_all = true)
+    resolution
+    ~predecessor
+    ~successor
+  =
+  ClassMetadataEnvironment.ReadOnly.is_transitive_successor
+    ~placeholder_subclass_extends_all
+    (class_metadata_environment resolution)
     ~target:successor
+    predecessor
 
 
 (* There isn't a great way of testing whether a file only contains tests in Python.

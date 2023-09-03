@@ -538,16 +538,16 @@ let test_connect_type_order context =
   in
   let global_environment = ScratchProject.global_environment project in
   let order = class_hierarchy global_environment in
-  let assert_successors annotation successors =
+  let assert_parents annotation successors =
     assert_equal
       ~printer:(List.to_string ~f:Type.Primitive.show)
       successors
-      (ClassHierarchy.successors order annotation)
+      (ClassHierarchy.immediate_parents order annotation)
   in
   (* Classes get connected to object via ClassHierarchyEnvironment.update. *)
-  assert_successors "test.C" ["object"];
-  assert_successors "test.D" ["test.C"; "object"];
-  assert_successors "test.CallMe" ["object"]
+  assert_parents "test.C" ["object"];
+  assert_parents "test.D" ["test.C"];
+  assert_parents "test.CallMe" ["object"]
 
 
 let test_populate context =
@@ -571,7 +571,7 @@ let test_populate context =
 
   (* Check custom class definitions. *)
   let global_resolution = GlobalResolution.create environment in
-  assert_is_some (GlobalResolution.class_summary global_resolution (Primitive "typing.Optional"));
+  assert_is_some (GlobalResolution.class_summary global_resolution "typing.Optional");
 
   (* Check type aliases. *)
   let environment =
@@ -589,7 +589,7 @@ let test_populate context =
   let assert_superclasses ?(superclass_parameters = fun _ -> []) ~environment base ~superclasses =
     let (module TypeOrderHandler) = class_hierarchy environment in
     let index annotation = IndexTracker.index annotation in
-    let targets = TypeOrderHandler.edges (index base) in
+    let targets = ClassHierarchy.parents_of (module TypeOrderHandler) (index base) in
     let to_target annotation =
       {
         ClassHierarchy.Target.target = index annotation;
@@ -745,14 +745,11 @@ let test_populate context =
   assert_global "test.Class.property" None;
 
   (* Loops. *)
-  (try
-     populate ~context ["test.py", {|
+  populate ~context ["test.py", {|
         def foo(cls):
           class cls(cls): pass
       |}]
-     |> ignore
-   with
-  | ClassHierarchy.Cyclic _ -> assert_unreached ());
+  |> ignore;
 
   (* Check meta variables are registered. *)
   let assert_global =
@@ -1012,31 +1009,15 @@ let test_meet_type_order context =
   assert_meet Type.integer Type.float Type.integer
 
 
-let test_supertypes_type_order context =
-  let environment =
-    populate ~context ["test.py", {|
-      class foo(): pass
-      class bar(foo): pass
-    |}]
-  in
-  let order = class_hierarchy environment in
-  assert_equal ["object"] (ClassHierarchy.successors order "test.foo");
-  assert_equal ["test.foo"; "object"] (ClassHierarchy.successors order "test.bar")
-
-
 let test_class_summary context =
   let is_defined environment annotation = class_summary environment annotation |> Option.is_some in
   let environment = populate ~context ["baz.py", {|
       class baz(): pass
     |}] in
-  assert_true (is_defined environment (Type.Primitive "baz.baz"));
-  assert_true (is_defined environment (Type.parametric "baz.baz" [Single Type.integer]));
-  assert_is_some (class_summary environment (Type.Primitive "baz.baz"));
-  assert_false (is_defined environment (Type.Primitive "bar.bar"));
-  assert_false (is_defined environment (Type.parametric "bar.bar" [Single Type.integer]));
-  assert_is_none (class_summary environment (Type.Primitive "bar.bar"));
-  let any = class_summary environment Type.object_primitive |> value |> Node.value in
-  assert_equal any.ClassSummary.name !&"object"
+  assert_true (is_defined environment "baz.baz");
+  assert_false (is_defined environment "bar.bar");
+  let object_class = class_summary environment "object" |> value |> Node.value in
+  assert_equal object_class.ClassSummary.name !&"object"
 
 
 let test_modules context =
@@ -1172,7 +1153,7 @@ let test_deduplicate context =
   in
   let module ForwardAsserter = TargetAsserter (ClassHierarchy.Target.List) in
   ForwardAsserter.assert_targets
-    Handler.edges
+    (ClassHierarchy.parents_of (module Handler))
     "test.Zero"
     "test.One"
     [Single Type.integer; Single Type.integer]
@@ -1205,11 +1186,16 @@ let test_remove_extra_edges_to_object context =
   let (module Handler) = class_hierarchy global_environment in
   let zero_index = IndexTracker.index "test.Zero" in
   let one_index = IndexTracker.index "test.One" in
-  let printer = List.to_string ~f:ClassHierarchy.Target.show in
+  let printer edges = [%sexp_of: ClassHierarchy.Edges.t] edges |> Sexp.to_string_hum in
   assert_equal
+    ~cmp:[%compare.equal: ClassHierarchy.Edges.t]
     ~printer
     (find_unsafe Handler.edges zero_index)
-    [{ ClassHierarchy.Target.target = one_index; parameters = [] }];
+    {
+      ClassHierarchy.Edges.parents = [{ ClassHierarchy.Target.target = one_index; parameters = [] }];
+      generic_base = None;
+      has_placeholder_stub_parent = false;
+    };
   ()
 
 
@@ -1326,7 +1312,6 @@ let () =
          "join_type_order" >:: test_join_type_order;
          "less_or_equal_type_order" >:: test_less_or_equal_type_order;
          "meet_type_order" >:: test_meet_type_order;
-         "supertypes_type_order" >:: test_supertypes_type_order;
          "class_summary" >:: test_class_summary;
          "modules" >:: test_modules;
          "populate" >:: test_populate;

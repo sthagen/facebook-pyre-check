@@ -81,7 +81,8 @@ let test_call_graph_of_define context =
         (CallGraph.call_graph_of_define
            ~static_analysis_configuration
            ~environment
-           ~override_graph:override_graph_shared_memory
+           ~override_graph:
+             (Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory)
            ~attribute_targets:(Target.HashSet.of_list object_targets)
            ~qualifier:(Reference.create "test")
            ~define)
@@ -5018,6 +5019,98 @@ let test_call_graph_of_define context =
                  IdentifierCallees.global_targets =
                    [CallTarget.create ~return_type:None (Target.Object "test.x")];
                }) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~object_targets:[Target.Object "test.A.B"]
+    ~source:
+      {|
+      from typing import Any, MutableMapping
+      from typing_extensions import Self
+      from pyre_extensions import ReadOnly
+
+      class A:
+        B: MutableMapping[str, Any] = {}
+
+        def __init__(self) -> None:
+          self.B: MutableMapping[str, Any] = {}
+
+        def self_readonly(self: ReadOnly[Self]) -> None:
+          self.B.get("")
+     |}
+    ~define_name:"test.A.self_readonly"
+    ~expected:
+      [
+        ( "13:4-13:10",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_attribute_access
+               {
+                 AttributeAccessCallees.property_targets = [];
+                 global_targets = [CallTarget.create ~return_type:None (Target.Object "test.A.B")];
+                 is_attribute = true;
+               }) );
+        ( "13:4-13:18",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:
+                          (Type.parametric
+                             "typing.MutableMapping"
+                             [Single Type.string; Single Type.Any])
+                        ~return_type:(Some ReturnType.none)
+                        (Target.Method
+                           { class_name = "typing.Mapping"; method_name = "get"; kind = Normal });
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~object_targets:[Target.Object "test.A.B"]
+    ~source:
+      {|
+      from typing import Any, MutableMapping
+      from typing_extensions import Self
+      from pyre_extensions import ReadOnly
+
+      class A:
+        def __init__(self) -> None:
+          self.B: MutableMapping[str, Any] = {}
+
+        def self_untyped(self) -> None:
+          self.B.get("")
+    |}
+    ~define_name:"test.A.self_untyped"
+    ~expected:
+      [
+        ( "11:4-11:10",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_attribute_access
+               {
+                 AttributeAccessCallees.property_targets = [];
+                 global_targets = [CallTarget.create ~return_type:None (Target.Object "test.A.B")];
+                 is_attribute = true;
+               }) );
+        ( "11:4-11:18",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:
+                          (Type.parametric
+                             "typing.MutableMapping"
+                             [Single Type.string; Single Type.Any])
+                        ~return_type:(Some ReturnType.none)
+                        (Target.Method
+                           { class_name = "typing.Mapping"; method_name = "get"; kind = Normal });
+                    ]
+                  ())) );
       ]
     ();
   ()

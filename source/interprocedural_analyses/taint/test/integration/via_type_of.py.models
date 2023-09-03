@@ -3,9 +3,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test1_alarm1",
-    "callable_line": 17,
+    "callable_line": 19,
     "code": 5002,
-    "line": 20,
+    "line": 22,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -27,15 +27,16 @@
               { "has": "first-field" },
               { "first-field": "x" },
               { "always-via-type": "int" },
-              { "always-via": "obscure:model" },
+              { "always-type": "integer" },
+              { "always-type": "scalar" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 19, "start": 16, "end": 30 } ],
+            "tito_positions": [ { "line": 21, "start": 16, "end": 32 } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 19,
-              "start": 16,
-              "end": 30
+              "line": 21,
+              "start": 18,
+              "end": 32
             }
           }
         ]
@@ -52,7 +53,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 20,
+              "line": 22,
               "start": 15,
               "end": 18
             }
@@ -64,7 +65,8 @@
       { "has": "first-field" },
       { "first-field": "x" },
       { "always-via-type": "int" },
-      { "always-via": "obscure:model" },
+      { "always-type": "integer" },
+      { "always-type": "scalar" },
       { "always-via": "tito" }
     ],
     "sink_handle": {
@@ -80,9 +82,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test1_alarm2",
-    "callable_line": 23,
+    "callable_line": 25,
     "code": 5002,
-    "line": 26,
+    "line": 28,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -104,15 +106,14 @@
               { "has": "first-field" },
               { "first-field": "y" },
               { "always-via-type": "str" },
-              { "always-via": "obscure:model" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 25, "start": 16, "end": 30 } ],
+            "tito_positions": [ { "line": 27, "start": 16, "end": 32 } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 25,
-              "start": 16,
-              "end": 30
+              "line": 27,
+              "start": 18,
+              "end": 32
             }
           }
         ]
@@ -129,7 +130,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 26,
+              "line": 28,
               "start": 15,
               "end": 18
             }
@@ -141,7 +142,6 @@
       { "has": "first-field" },
       { "first-field": "y" },
       { "always-via-type": "str" },
-      { "always-via": "obscure:model" },
       { "always-via": "tito" }
     ],
     "sink_handle": {
@@ -157,9 +157,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test1_alarm3",
-    "callable_line": 29,
+    "callable_line": 31,
     "code": 5002,
-    "line": 32,
+    "line": 34,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -181,15 +181,14 @@
               { "has": "first-field" },
               { "first-field": "z" },
               { "always-via-TheZ-type": "str" },
-              { "always-via": "obscure:model" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 31, "start": 16, "end": 30 } ],
+            "tito_positions": [ { "line": 33, "start": 16, "end": 32 } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 31,
-              "start": 16,
-              "end": 30
+              "line": 33,
+              "start": 18,
+              "end": 32
             }
           }
         ]
@@ -206,7 +205,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 32,
+              "line": 34,
               "start": 15,
               "end": 18
             }
@@ -218,7 +217,6 @@
       { "has": "first-field" },
       { "first-field": "z" },
       { "always-via-TheZ-type": "str" },
-      { "always-via": "obscure:model" },
       { "always-via": "tito" }
     ],
     "sink_handle": {
@@ -234,9 +232,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test1_alarm4",
-    "callable_line": 35,
+    "callable_line": 37,
     "code": 5002,
-    "line": 43,
+    "line": 45,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -262,17 +260,16 @@
               { "via-type": "str" },
               { "via-type": "int" },
               { "via-TheZ-type": "str" },
-              { "always-via": "obscure:model" },
-              { "type": "integer" },
-              { "type": "scalar" },
+              { "always-type": "integer" },
+              { "always-type": "scalar" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 37, "start": 16, "end": 30 } ],
+            "tito_positions": [ { "line": 39, "start": 16, "end": 32 } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 37,
-              "start": 16,
-              "end": 30
+              "line": 39,
+              "start": 18,
+              "end": 32
             }
           }
         ]
@@ -289,7 +286,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 43,
+              "line": 45,
               "start": 15,
               "end": 18
             }
@@ -305,9 +302,8 @@
       { "via-type": "str" },
       { "via-type": "int" },
       { "via-TheZ-type": "str" },
-      { "always-via": "obscure:model" },
-      { "type": "integer" },
-      { "type": "scalar" },
+      { "always-type": "integer" },
+      { "always-type": "scalar" },
       { "always-via": "tito" }
     ],
     "sink_handle": {
@@ -323,9 +319,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test2_alarm1",
-    "callable_line": 52,
+    "callable_line": 55,
     "code": 5002,
-    "line": 55,
+    "line": 58,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -346,16 +342,16 @@
             "local_features": [
               { "has": "first-field" },
               { "first-field": "x" },
+              { "always-via-type": "unknown" },
               { "always-via-type": "typing.Dict[str, int]" },
-              { "always-via": "obscure:model" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 54, "start": 16, "end": 30 } ],
+            "tito_positions": [ { "line": 57, "start": 16, "end": 32 } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 54,
-              "start": 16,
-              "end": 30
+              "line": 57,
+              "start": 18,
+              "end": 32
             }
           }
         ]
@@ -372,7 +368,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 55,
+              "line": 58,
               "start": 15,
               "end": 18
             }
@@ -383,8 +379,8 @@
     "features": [
       { "has": "first-field" },
       { "first-field": "x" },
+      { "always-via-type": "unknown" },
       { "always-via-type": "typing.Dict[str, int]" },
-      { "always-via": "obscure:model" },
       { "always-via": "tito" }
     ],
     "sink_handle": {
@@ -400,9 +396,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test2_alarm2",
-    "callable_line": 58,
+    "callable_line": 61,
     "code": 5002,
-    "line": 61,
+    "line": 64,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -423,16 +419,16 @@
             "local_features": [
               { "has": "first-field" },
               { "first-field": "y" },
+              { "always-via-type": "unknown" },
               { "always-via-type": "typing.List[str]" },
-              { "always-via": "obscure:model" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 60, "start": 16, "end": 30 } ],
+            "tito_positions": [ { "line": 63, "start": 16, "end": 32 } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 60,
-              "start": 16,
-              "end": 30
+              "line": 63,
+              "start": 18,
+              "end": 32
             }
           }
         ]
@@ -449,7 +445,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 61,
+              "line": 64,
               "start": 15,
               "end": 18
             }
@@ -460,8 +456,8 @@
     "features": [
       { "has": "first-field" },
       { "first-field": "y" },
+      { "always-via-type": "unknown" },
       { "always-via-type": "typing.List[str]" },
-      { "always-via": "obscure:model" },
       { "always-via": "tito" }
     ],
     "sink_handle": {
@@ -477,9 +473,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test2_alarm3",
-    "callable_line": 64,
+    "callable_line": 67,
     "code": 5002,
-    "line": 67,
+    "line": 70,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -501,15 +497,15 @@
               { "has": "first-field" },
               { "first-field": "z" },
               { "always-via-TheZ-type": "float" },
-              { "always-via": "obscure:model" },
+              { "always-via-TheZ-type": "unknown" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 66, "start": 16, "end": 30 } ],
+            "tito_positions": [ { "line": 69, "start": 16, "end": 32 } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 66,
-              "start": 16,
-              "end": 30
+              "line": 69,
+              "start": 18,
+              "end": 32
             }
           }
         ]
@@ -526,7 +522,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 67,
+              "line": 70,
               "start": 15,
               "end": 18
             }
@@ -538,7 +534,7 @@
       { "has": "first-field" },
       { "first-field": "z" },
       { "always-via-TheZ-type": "float" },
-      { "always-via": "obscure:model" },
+      { "always-via-TheZ-type": "unknown" },
       { "always-via": "tito" }
     ],
     "sink_handle": {
@@ -554,9 +550,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test2_alarm4",
-    "callable_line": 70,
+    "callable_line": 73,
     "code": 5002,
-    "line": 78,
+    "line": 81,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -579,18 +575,19 @@
               { "first-field": "x" },
               { "first-field": "z" },
               { "first-field": "y" },
+              { "via-type": "unknown" },
               { "via-TheZ-type": "float" },
               { "via-type": "typing.List[str]" },
               { "via-type": "typing.Dict[str, int]" },
-              { "always-via": "obscure:model" },
+              { "via-TheZ-type": "unknown" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 72, "start": 16, "end": 30 } ],
+            "tito_positions": [ { "line": 75, "start": 16, "end": 32 } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 72,
-              "start": 16,
-              "end": 30
+              "line": 75,
+              "start": 18,
+              "end": 32
             }
           }
         ]
@@ -607,7 +604,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 78,
+              "line": 81,
               "start": 15,
               "end": 18
             }
@@ -620,10 +617,11 @@
       { "first-field": "x" },
       { "first-field": "z" },
       { "first-field": "y" },
+      { "via-type": "unknown" },
       { "via-TheZ-type": "float" },
       { "via-type": "typing.List[str]" },
       { "via-type": "typing.Dict[str, int]" },
-      { "always-via": "obscure:model" },
+      { "via-TheZ-type": "unknown" },
       { "always-via": "tito" }
     ],
     "sink_handle": {
@@ -638,143 +636,82 @@
 {
   "kind": "issue",
   "data": {
+    "callable": "via_type_of.test2_alarm5_via_constructor",
+    "callable_line": 84,
+    "code": 5002,
+    "line": 86,
+    "start": 15,
+    "end": 43,
+    "filename": "via_type_of.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-via-TheZ-type": "str" },
+              { "always-via": "tito" },
+              { "always-via": "broadening" },
+              { "always-via": "issue-broadening" }
+            ],
+            "tito_positions": [ { "line": 86, "start": 37, "end": 42 } ],
+            "origin": {
+              "filename": "via_type_of.py",
+              "line": 85,
+              "start": 17,
+              "end": 31
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
+            "origin": {
+              "filename": "via_type_of.py",
+              "line": 86,
+              "start": 15,
+              "end": 43
+            }
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "always-via-TheZ-type": "str" },
+      { "always-via": "tito" },
+      { "always-via": "broadening" },
+      { "always-via": "issue-broadening" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle": "via_type_of.test2_alarm5_via_constructor:5002:0:Call|_test_sink|0|formal(arg):4e298d4412811c8854de6bb64f3cd3ee"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
     "callable": "via_type_of.test4_alarm1",
-    "callable_line": 124,
-    "code": 5002,
-    "line": 126,
-    "start": 4,
-    "end": 7,
-    "filename": "via_type_of.py",
-    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  { "port": "leaf:return", "name": "_test_source" }
-                ],
-                "kind": "Test"
-              }
-            ],
-            "origin": {
-              "filename": "via_type_of.py",
-              "line": 126,
-              "start": 10,
-              "end": 24
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  {
-                    "port": "leaf:return",
-                    "name": "Obj{via_type_of.Test4_C.x}"
-                  }
-                ],
-                "kind": "Test"
-              }
-            ],
-            "local_features": [ { "always-via-type": "unknown" } ],
-            "origin": {
-              "filename": "via_type_of.py",
-              "line": 126,
-              "start": 4,
-              "end": 7
-            }
-          }
-        ]
-      }
-    ],
-    "features": [ { "always-via-type": "unknown" } ],
-    "sink_handle": {
-      "kind": "Global",
-      "callee": "Obj{via_type_of.Test4_C.x}",
-      "index": 0
-    },
-    "master_handle": "via_type_of.test4_alarm1:5002:0:Global|Obj{via_type_of.Test4_C.x}|0:41ca3acd782afb59a1405c89c2e60829"
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "via_type_of.test4_alarm2",
-    "callable_line": 129,
-    "code": 5002,
-    "line": 131,
-    "start": 4,
-    "end": 7,
-    "filename": "via_type_of.py",
-    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  { "port": "leaf:return", "name": "_test_source" }
-                ],
-                "kind": "Test"
-              }
-            ],
-            "origin": {
-              "filename": "via_type_of.py",
-              "line": 131,
-              "start": 10,
-              "end": 24
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  {
-                    "port": "leaf:return",
-                    "name": "Obj{via_type_of.Test4_C.y}"
-                  }
-                ],
-                "kind": "Test"
-              }
-            ],
-            "local_features": [ { "always-via-type": "typing.Any" } ],
-            "origin": {
-              "filename": "via_type_of.py",
-              "line": 131,
-              "start": 4,
-              "end": 7
-            }
-          }
-        ]
-      }
-    ],
-    "features": [ { "always-via-type": "typing.Any" } ],
-    "sink_handle": {
-      "kind": "Global",
-      "callee": "Obj{via_type_of.Test4_C.y}",
-      "index": 0
-    },
-    "master_handle": "via_type_of.test4_alarm2:5002:0:Global|Obj{via_type_of.Test4_C.y}|0:ea81938c19d7eab78fdc87f18911cf40"
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "via_type_of.test4_alarm3",
     "callable_line": 134,
     "code": 5002,
     "line": 136,
@@ -813,6 +750,142 @@
                 "leaves": [
                   {
                     "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test4_C.x}"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [ { "always-via-type": "unknown" } ],
+            "origin": {
+              "filename": "via_type_of.py",
+              "line": 136,
+              "start": 4,
+              "end": 7
+            }
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via-type": "unknown" } ],
+    "sink_handle": {
+      "kind": "Global",
+      "callee": "Obj{via_type_of.Test4_C.x}",
+      "index": 0
+    },
+    "master_handle": "via_type_of.test4_alarm1:5002:0:Global|Obj{via_type_of.Test4_C.x}|0:41ca3acd782afb59a1405c89c2e60829"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "via_type_of.test4_alarm2",
+    "callable_line": 139,
+    "code": 5002,
+    "line": 141,
+    "start": 4,
+    "end": 7,
+    "filename": "via_type_of.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "origin": {
+              "filename": "via_type_of.py",
+              "line": 141,
+              "start": 10,
+              "end": 24
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test4_C.y}"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [ { "always-via-type": "typing.Any" } ],
+            "origin": {
+              "filename": "via_type_of.py",
+              "line": 141,
+              "start": 4,
+              "end": 7
+            }
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via-type": "typing.Any" } ],
+    "sink_handle": {
+      "kind": "Global",
+      "callee": "Obj{via_type_of.Test4_C.y}",
+      "index": 0
+    },
+    "master_handle": "via_type_of.test4_alarm2:5002:0:Global|Obj{via_type_of.Test4_C.y}|0:ea81938c19d7eab78fdc87f18911cf40"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "via_type_of.test4_alarm3",
+    "callable_line": 144,
+    "code": 5002,
+    "line": 146,
+    "start": 4,
+    "end": 7,
+    "filename": "via_type_of.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "origin": {
+              "filename": "via_type_of.py",
+              "line": 146,
+              "start": 10,
+              "end": 24
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "port": "leaf:return",
                     "name": "Obj{via_type_of.Test4_C.z}"
                   }
                 ],
@@ -822,7 +895,7 @@
             "local_features": [ { "always-via-TheZ-type": "object" } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 136,
+              "line": 146,
               "start": 4,
               "end": 7
             }
@@ -902,9 +975,9 @@
               {
                 "via_features": [
                   {
-                    "tag": "TheZ",
                     "kind": "ViaTypeOf",
-                    "parameter": "formal($global)"
+                    "parameter": "formal($global)",
+                    "tag": "TheZ"
                   }
                 ],
                 "return_paths": { "": 0 },
@@ -981,9 +1054,9 @@
               {
                 "via_features": [
                   {
-                    "tag": "TheZ",
                     "kind": "ViaTypeOf",
-                    "parameter": "formal($global)"
+                    "parameter": "formal($global)",
+                    "tag": "TheZ"
                   }
                 ],
                 "return_paths": { "": 0 },
@@ -1058,9 +1131,9 @@
               {
                 "via_features": [
                   {
-                    "tag": "TheZ",
                     "kind": "ViaTypeOf",
-                    "parameter": "formal($global)"
+                    "parameter": "formal($global)",
+                    "tag": "TheZ"
                   }
                 ],
                 "kind": "Test"
@@ -1134,9 +1207,9 @@
               {
                 "via_features": [
                   {
-                    "tag": "TheZ",
                     "kind": "ViaTypeOf",
-                    "parameter": "formal($global)"
+                    "parameter": "formal($global)",
+                    "tag": "TheZ"
                   }
                 ],
                 "kind": "Test"
@@ -1178,6 +1251,258 @@
 {
   "kind": "model",
   "data": {
+    "callable": "via_type_of.Test1_C.__init__",
+    "tito": [
+      {
+        "port": "formal(z)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": { "[z]": 3 }, "kind": "LocalReturn" }
+            ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(y)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": { "[y]": 3 }, "kind": "LocalReturn" }
+            ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": { "[x]": 3 }, "kind": "LocalReturn" }
+            ],
+            "local_features": [
+              { "always-type": "integer" }, { "always-type": "scalar" }
+            ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "kinds": [ { "return_paths": { "": 4 }, "kind": "LocalReturn" } ],
+            "tito": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "via_type_of.Test2_C.__init__",
+    "tito": [
+      {
+        "port": "formal(z)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "via_features": [
+                  {
+                    "kind": "ViaTypeOf",
+                    "parameter": "formal(z)",
+                    "tag": "TheZ"
+                  }
+                ],
+                "return_paths": { "[z]": 999999 },
+                "kind": "LocalReturn"
+              }
+            ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(y)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "via_features": [
+                  { "kind": "ViaTypeOf", "parameter": "formal(y)" }
+                ],
+                "return_paths": { "[y]": 999999 },
+                "kind": "LocalReturn"
+              }
+            ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "via_features": [
+                  { "kind": "ViaTypeOf", "parameter": "formal(x)" }
+                ],
+                "return_paths": { "[x]": 999999 },
+                "kind": "LocalReturn"
+              }
+            ],
+            "tito": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "via_type_of.Test3_C.__init__",
+    "tito": [
+      {
+        "port": "formal(z)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": { "[z]": 999999 }, "kind": "LocalReturn" }
+            ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(y)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": { "[y]": 999999 }, "kind": "LocalReturn" }
+            ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": { "[x]": 999999 }, "kind": "LocalReturn" }
+            ],
+            "tito": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "via_type_of.Test4_C.__init__",
+    "sinks": [
+      {
+        "port": "formal(z)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "via_features": [
+                  {
+                    "kind": "ViaTypeOf",
+                    "parameter": "formal(z)",
+                    "tag": "TheZ"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      },
+      {
+        "port": "formal(y)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "via_features": [
+                  { "kind": "ViaTypeOf", "parameter": "formal(y)" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      },
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "via_features": [
+                  { "kind": "ViaTypeOf", "parameter": "formal(x)" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      }
+    ],
+    "tito": [
+      {
+        "port": "formal(z)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": { "[z]": 999999 }, "kind": "LocalReturn" }
+            ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(y)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": { "[y]": 999999 }, "kind": "LocalReturn" }
+            ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": { "[x]": 999999 }, "kind": "LocalReturn" }
+            ],
+            "tito": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "via_type_of.meta",
     "sources": [
       {
@@ -1198,7 +1523,7 @@
             "local_features": [ { "always-via-type": "typing.Any" } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 156,
+              "line": 166,
               "start": 11,
               "end": 47
             }
@@ -1245,9 +1570,9 @@
               {
                 "via_features": [
                   {
-                    "tag": "TheY",
                     "kind": "ViaTypeOf",
-                    "parameter": "formal(y)"
+                    "parameter": "formal(y)",
+                    "tag": "TheY"
                   }
                 ],
                 "kind": "Test"
@@ -1277,7 +1602,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 93,
+              "line": 102,
               "start": 15,
               "end": 18
             }
@@ -1291,9 +1616,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test3_alarm1",
-    "callable_line": 91,
+    "callable_line": 100,
     "code": 5002,
-    "line": 93,
+    "line": 102,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -1319,7 +1644,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 93,
+              "line": 102,
               "start": 15,
               "end": 18
             }
@@ -1338,7 +1663,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 93,
+              "line": 102,
               "start": 15,
               "end": 18
             }
@@ -1375,7 +1700,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 98,
+              "line": 107,
               "start": 15,
               "end": 18
             }
@@ -1389,9 +1714,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test3_alarm2",
-    "callable_line": 96,
+    "callable_line": 105,
     "code": 5002,
-    "line": 98,
+    "line": 107,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -1417,7 +1742,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 98,
+              "line": 107,
               "start": 15,
               "end": 18
             }
@@ -1436,7 +1761,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 98,
+              "line": 107,
               "start": 15,
               "end": 18
             }
@@ -1471,7 +1796,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 103,
+              "line": 112,
               "start": 15,
               "end": 18
             }
@@ -1485,9 +1810,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test3_alarm3",
-    "callable_line": 101,
+    "callable_line": 110,
     "code": 5002,
-    "line": 103,
+    "line": 112,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -1513,7 +1838,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 103,
+              "line": 112,
               "start": 15,
               "end": 18
             }
@@ -1532,7 +1857,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 103,
+              "line": 112,
               "start": 15,
               "end": 18
             }
@@ -1569,7 +1894,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 115,
+              "line": 124,
               "start": 15,
               "end": 18
             }
@@ -1588,7 +1913,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 115,
+              "line": 124,
               "start": 15,
               "end": 18
             }
@@ -1607,7 +1932,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 115,
+              "line": 124,
               "start": 15,
               "end": 18
             }
@@ -1621,9 +1946,9 @@
   "kind": "issue",
   "data": {
     "callable": "via_type_of.test3_alarm4",
-    "callable_line": 106,
+    "callable_line": 115,
     "code": 5002,
-    "line": 115,
+    "line": 124,
     "start": 15,
     "end": 18,
     "filename": "via_type_of.py",
@@ -1649,7 +1974,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 110,
+              "line": 119,
               "start": 10,
               "end": 13
             }
@@ -1671,7 +1996,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 112,
+              "line": 121,
               "start": 14,
               "end": 17
             }
@@ -1693,7 +2018,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 114,
+              "line": 123,
               "start": 14,
               "end": 17
             }
@@ -1712,7 +2037,7 @@
             ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 115,
+              "line": 124,
               "start": 15,
               "end": 18
             }
@@ -1753,7 +2078,7 @@
             "local_features": [
               { "always-via-type": "str" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 181, "start": 16, "end": 25 } ],
+            "tito_positions": [ { "line": 191, "start": 16, "end": 25 } ],
             "tito": null
           }
         ]
@@ -1784,7 +2109,7 @@
             "local_features": [ { "always-via-type": "typing.List[str]" } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 152,
+              "line": 162,
               "start": 11,
               "end": 48
             }
@@ -1817,7 +2142,7 @@
             "local_features": [ { "always-via-type": "int" } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 148,
+              "line": 158,
               "start": 11,
               "end": 39
             }
@@ -1850,7 +2175,7 @@
             "local_features": [ { "always-via-TheY-type": "int" } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 177,
+              "line": 187,
               "start": 28,
               "end": 35
             }
@@ -1883,7 +2208,7 @@
             "local_features": [ { "always-via-type": "str" } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 144,
+              "line": 154,
               "start": 11,
               "end": 41
             }
@@ -1914,10 +2239,10 @@
               { "always-via-type": "typing.List[int]" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 168, "start": 13, "end": 27 } ],
+            "tito_positions": [ { "line": 178, "start": 13, "end": 27 } ],
             "origin": {
               "filename": "via_type_of.py",
-              "line": 168,
+              "line": 178,
               "start": 13,
               "end": 27
             }
@@ -1946,7 +2271,7 @@
             "call": {
               "position": {
                 "filename": "via_type_of.py",
-                "line": 160,
+                "line": 170,
                 "start": 11,
                 "end": 23
               },

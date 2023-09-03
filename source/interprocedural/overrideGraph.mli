@@ -29,7 +29,7 @@ module Heap : sig
     source:Source.t ->
     t
 
-  val skip_overrides : to_skip:Reference.Set.t -> t -> t
+  val skip_overrides : to_skip:Reference.SerializableSet.t -> t -> t
 
   type cap_overrides_result = {
     overrides: t;
@@ -46,24 +46,38 @@ module SharedMemory : sig
 
   val create : unit -> t
 
-  val get_overriding_types : t -> member:Target.t -> Reference.t list option
-
-  val overrides_exist : t -> Target.t -> bool
-
-  val expand_override_targets : t -> Target.t list -> Target.t list
-
   (** Record a heap override graph in shared memory and return the handle to the storage location. *)
   val from_heap : Heap.t -> t
+
+  val to_heap : t -> Heap.t
 
   (** Remove an override graph from shared memory. This must be called before storing another
       override graph. *)
   val cleanup : t -> unit
+
+  val save_to_cache : t -> unit
+
+  val load_from_cache : unit -> (t, SaveLoadSharedMemory.Usage.t) result
+
+  module ReadOnly : sig
+    type t
+
+    val get_overriding_types : t -> member:Target.t -> Reference.t list option
+
+    val overrides_exist : t -> Target.t -> bool
+
+    val expand_override_targets : t -> Target.t list -> Target.t list
+  end
+
+  val read_only : t -> ReadOnly.t
 end
+
+type skipped_overrides = Target.t list
 
 type whole_program_overrides = {
   override_graph_heap: Heap.t;
   override_graph_shared_memory: SharedMemory.t;
-  skipped_overrides: Target.t list;
+  skipped_overrides: skipped_overrides;
 }
 
 (** Compute the override graph, which maps overide_targets (parent methods which are overridden) to
@@ -73,7 +87,7 @@ val build_whole_program_overrides
   static_analysis_configuration:Configuration.StaticAnalysis.t ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
   include_unit_tests:bool ->
-  skip_overrides:Reference.Set.t ->
+  skip_overrides_targets:Reference.SerializableSet.t ->
   maximum_overrides:int option ->
   qualifiers:Reference.t list ->
   whole_program_overrides

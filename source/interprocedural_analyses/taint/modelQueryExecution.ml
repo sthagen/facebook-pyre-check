@@ -29,7 +29,7 @@ module ModelQueryRegistryMap = struct
     if not (Registry.is_empty registry) then
       String.Map.update model_query_map model_query_identifier ~f:(function
           | None -> registry
-          | Some existing -> Registry.merge_skewed ~join:Model.join_user_models existing registry)
+          | Some existing -> Registry.merge ~join:Model.join_user_models existing registry)
     else
       model_query_map
 
@@ -38,7 +38,7 @@ module ModelQueryRegistryMap = struct
 
   let merge ~model_join left right =
     String.Map.merge left right ~f:(fun ~key:_ -> function
-      | `Both (models1, models2) -> Some (Registry.merge_skewed ~join:model_join models1 models2)
+      | `Both (models1, models2) -> Some (Registry.merge ~join:model_join models1 models2)
       | `Left models
       | `Right models ->
           Some models)
@@ -148,7 +148,7 @@ module ModelQueryRegistryMap = struct
     expected_and_unexpected_model_errors
 
 
-  let check_errors ~model_query_results ~queries =
+  let errors_for_queries_without_output ~model_query_results ~queries =
     let module LoggingGroup = struct
       type t = {
         name: string;
@@ -240,18 +240,13 @@ end
 module DumpModelQueryResults = struct
   let dump_to_string ~model_query_results =
     let model_to_json (callable, model) =
-      `Assoc
-        [
-          "callable", `String (Target.external_name callable);
-          ( "model",
-            Model.to_json
-              ~expand_overrides:None
-              ~is_valid_callee:(fun ~port:_ ~path:_ ~callee:_ -> true)
-              ~filename_lookup:None
-              ~export_leaf_names:Domains.ExportLeafNames.Always
-              callable
-              model );
-        ]
+      Model.to_json
+        ~expand_overrides:None
+        ~is_valid_callee:(fun ~port:_ ~path:_ ~callee:_ -> true)
+        ~resolve_module_path:None
+        ~export_leaf_names:Domains.ExportLeafNames.Always
+        callable
+        model
     in
     let to_json ~key:model_query_identifier ~data:models =
       models
@@ -274,6 +269,40 @@ module DumpModelQueryResults = struct
     let content = dump_to_string ~model_query_results in
     path |> File.create ~content |> File.write;
     content
+end
+
+module ExecutionResult = struct
+  type t = {
+    models: ModelQueryRegistryMap.t;
+    errors: ModelVerificationError.t list;
+  }
+
+  let empty = { models = ModelQueryRegistryMap.empty; errors = [] }
+
+  let merge
+      ~model_join
+      { models = left_models; errors = left_errors }
+      { models = right_models; errors = right_errors }
+    =
+    {
+      models = ModelQueryRegistryMap.merge ~model_join left_models right_models;
+      errors = List.append left_errors right_errors;
+    }
+
+
+  let add_error { models; errors } error = { models; errors = error :: errors }
+
+  let add_errors { models; errors } new_errors = { models; errors = List.append errors new_errors }
+
+  let add_model { models; errors } ~model_query_identifier ~target ~model =
+    {
+      models =
+        ModelQueryRegistryMap.add
+          models
+          ~model_query_identifier
+          ~registry:(Registry.singleton ~target ~model);
+      errors;
+    }
 end
 
 let sanitized_location_insensitive_compare left right =
@@ -503,8 +532,11 @@ let rec normalized_parameter_matches_constraint
     ~class_hierarchy_graph
     ~name_captures
     ~parameter:
-      ((root, parameter_name, { Node.value = { Expression.Parameter.annotation; _ }; _ }) as
-      parameter)
+      ({
+         AccessPath.NormalizedParameter.root;
+         qualified_name;
+         original = { Node.value = { Expression.Parameter.annotation; _ }; _ };
+       } as parameter)
   = function
   | ModelQuery.ParameterConstraint.AnnotationConstraint annotation_constraint ->
       annotation
@@ -515,7 +547,7 @@ let rec normalized_parameter_matches_constraint
             ~annotation_constraint
       |> Option.value ~default:false
   | ModelQuery.ParameterConstraint.NameConstraint name_constraint ->
-      matches_name_constraint ~name_captures ~name_constraint (Identifier.sanitized parameter_name)
+      matches_name_constraint ~name_captures ~name_constraint (Identifier.sanitized qualified_name)
   | ModelQuery.ParameterConstraint.IndexConstraint index -> (
       match root with
       | AccessPath.Root.PositionalParameter { position; _ } when position = index -> true
@@ -549,7 +581,7 @@ let rec normalized_parameter_matches_constraint
 
 
 let class_matches_decorator_constraint ~name_captures ~resolution ~decorator_constraint class_name =
-  GlobalResolution.class_summary resolution (Type.Primitive class_name)
+  GlobalResolution.class_summary resolution class_name
   >>| Node.value
   >>| (fun { decorators; _ } ->
         List.exists decorators ~f:(fun decorator ->
@@ -563,7 +595,9 @@ let class_matches_decorator_constraint ~name_captures ~resolution ~decorator_con
 let find_parents ~resolution ~is_transitive ~includes_self class_name =
   let parents =
     if is_transitive then
-      Analysis.ClassHierarchy.successors (GlobalResolution.class_hierarchy resolution) class_name
+      match GlobalResolution.class_metadata resolution class_name with
+      | Some { Analysis.ClassMetadataEnvironment.successors = Some successors; _ } -> successors
+      | _ -> []
     else
       Analysis.ClassHierarchy.immediate_parents
         (GlobalResolution.class_hierarchy resolution)
@@ -675,7 +709,7 @@ let rec matches_constraint ~resolution ~class_hierarchy_graph ~name_captures val
       |> Option.value ~default:false
   | ModelQuery.Constraint.AnyParameterConstraint parameter_constraint ->
       Modelable.parameters value
-      |> AccessPath.Root.normalize_parameters
+      |> AccessPath.normalize_parameters
       |> List.exists ~f:(fun parameter ->
              normalized_parameter_matches_constraint
                ~resolution
@@ -999,7 +1033,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~targets
       query
     =
-    let fold registry target =
+    let fold (registry, errors) target =
       let modelable = QueryKind.make_modelable ~resolution target in
       match
         generate_model_from_query_on_target
@@ -1012,15 +1046,13 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           ~modelable
           query
       with
-      | Ok (Some model) -> Registry.add registry ~join:Model.join_user_models ~target ~model
-      | Ok None -> registry
-      | Error error ->
-          let () =
-            Log.error "Error while executing model query: %s" (ModelVerificationError.display error)
-          in
-          registry
+      | Ok (Some model) ->
+          let registry = Registry.add registry ~join:Model.join_user_models ~target ~model in
+          registry, errors
+      | Ok None -> registry, errors
+      | Error error -> registry, error :: errors
     in
-    List.fold targets ~init:Registry.empty ~f:fold
+    List.fold targets ~init:(Registry.empty, []) ~f:fold
 
 
   let generate_models_from_queries_on_target
@@ -1033,8 +1065,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       target
     =
     let modelable = QueryKind.make_modelable ~resolution target in
-    let fold model_query_results query =
-      let identifier = ModelQuery.unique_identifier query in
+    let fold results query =
       match
         generate_model_from_query_on_target
           ~verbose
@@ -1047,16 +1078,15 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           query
       with
       | Ok (Some model) ->
-          let registry = Registry.singleton ~target ~model in
-          ModelQueryRegistryMap.add model_query_results ~model_query_identifier:identifier ~registry
-      | Ok None -> model_query_results
-      | Error error ->
-          let () =
-            Log.error "Error while executing model query: %s" (ModelVerificationError.display error)
-          in
-          model_query_results
+          ExecutionResult.add_model
+            results
+            ~model_query_identifier:(ModelQuery.unique_identifier query)
+            ~target
+            ~model
+      | Ok None -> results
+      | Error error -> ExecutionResult.add_error results error
     in
-    List.fold queries ~init:ModelQueryRegistryMap.empty ~f:fold
+    List.fold queries ~init:ExecutionResult.empty ~f:fold
 
 
   let generate_models_from_queries_on_targets
@@ -1068,20 +1098,18 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~targets
       queries
     =
-    let fold model_query_results target =
-      let model_query =
-        generate_models_from_queries_on_target
-          ~verbose
-          ~resolution
-          ~class_hierarchy_graph
-          ~source_sink_filter
-          ~stubs
-          ~queries
-          target
-      in
-      ModelQueryRegistryMap.merge ~model_join:Model.join_user_models model_query_results model_query
+    let fold results target =
+      generate_models_from_queries_on_target
+        ~verbose
+        ~resolution
+        ~class_hierarchy_graph
+        ~source_sink_filter
+        ~stubs
+        ~queries
+        target
+      |> ExecutionResult.merge ~model_join:Model.join_user_models results
     in
-    List.fold targets ~init:ModelQueryRegistryMap.empty ~f:fold
+    List.fold targets ~init:ExecutionResult.empty ~f:fold
 
 
   let generate_cache_from_query_on_target
@@ -1185,7 +1213,10 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~cache
       read_from_cache_queries
     =
-    let fold model_query_results ({ ModelQuery.name = model_query_name; where; _ } as query) =
+    let fold
+        { ExecutionResult.models; errors }
+        ({ ModelQuery.name = model_query_name; where; _ } as query)
+      =
       match CandidateTargetsFromCache.from_constraint cache (AllOf where) with
       | Top ->
           (* This should never happen, since model verification prevents building invalid
@@ -1196,8 +1227,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
             model_query_name
           |> failwith
       | Set candidates ->
-          let identifier = ModelQuery.unique_identifier query in
-          let registry =
+          let registry, new_errors =
             generate_models_from_query_on_targets
               ~verbose
               ~resolution
@@ -1207,9 +1237,16 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
               ~targets:(Target.Set.elements candidates)
               query
           in
-          ModelQueryRegistryMap.add model_query_results ~model_query_identifier:identifier ~registry
+          {
+            ExecutionResult.models =
+              ModelQueryRegistryMap.add
+                models
+                ~model_query_identifier:(ModelQuery.unique_identifier query)
+                ~registry;
+            errors = List.rev_append new_errors errors;
+          }
     in
-    List.fold read_from_cache_queries ~init:ModelQueryRegistryMap.empty ~f:fold
+    List.fold read_from_cache_queries ~init:ExecutionResult.empty ~f:fold
 
 
   (* Generate models from non-cache queries. *)
@@ -1222,7 +1259,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~stubs
       ~targets
     = function
-    | [] -> ModelQueryRegistryMap.empty
+    | [] -> ExecutionResult.empty
     | regular_queries ->
         let map targets =
           generate_models_from_queries_on_targets
@@ -1234,7 +1271,6 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
             ~targets
             regular_queries
         in
-        let reduce = ModelQueryRegistryMap.merge ~model_join:Model.join_user_models in
         Scheduler.map_reduce
           scheduler
           ~policy:
@@ -1243,9 +1279,9 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
                ~minimum_chunk_size:1000
                ~preferred_chunks_per_worker:1
                ())
-          ~initial:ModelQueryRegistryMap.empty
+          ~initial:ExecutionResult.empty
           ~map
-          ~reduce
+          ~reduce:(ExecutionResult.merge ~model_join:Model.join_user_models)
           ~inputs:targets
           ()
 
@@ -1291,7 +1327,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           (List.length read_from_cache_queries)
           QueryKind.query_kind_name
       in
-      let results =
+      let ({ ExecutionResult.models; _ } as results) =
         generate_models_from_read_cache_queries_on_targets
           ~verbose
           ~resolution
@@ -1304,7 +1340,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       let () =
         Log.info
           "Generated %d models from cached %s model queries."
-          (List.length (ModelQueryRegistryMap.get_models results))
+          (List.length (ModelQueryRegistryMap.get_models models))
           QueryKind.query_kind_name
       in
       results
@@ -1317,7 +1353,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           (List.length regular_queries)
           QueryKind.query_kind_name
       in
-      let results =
+      let ({ ExecutionResult.models; _ } as results) =
         generate_models_from_regular_queries_on_targets_with_multiprocessing
           ~verbose
           ~resolution
@@ -1331,13 +1367,13 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       let () =
         Log.info
           "Generated %d models from regular %s model queries."
-          (List.length (ModelQueryRegistryMap.get_models results))
+          (List.length (ModelQueryRegistryMap.get_models models))
           QueryKind.query_kind_name
       in
       results
     in
 
-    ModelQueryRegistryMap.merge
+    ExecutionResult.merge
       ~model_join:Model.join_user_models
       model_query_results_regular_queries
       model_query_results_cache_queries
@@ -1493,9 +1529,13 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
             List.find_map
               normalized_parameters
               ~f:(fun
-                   (root, parameter_name, { Node.value = { Expression.Parameter.annotation; _ }; _ })
+                   {
+                     AccessPath.NormalizedParameter.root;
+                     qualified_name;
+                     original = { Node.value = { Expression.Parameter.annotation; _ }; _ };
+                   }
                  ->
-                if Identifier.equal_sanitized parameter_name name then
+                if Identifier.equal_sanitized qualified_name name then
                   Some (root, annotation)
                 else
                   None)
@@ -1511,7 +1551,13 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
           let parameter =
             List.find_map
               normalized_parameters
-              ~f:(fun (root, _, { Node.value = { Expression.Parameter.annotation; _ }; _ }) ->
+              ~f:(fun
+                   {
+                     AccessPath.NormalizedParameter.root;
+                     original = { Node.value = { Expression.Parameter.annotation; _ }; _ };
+                     _;
+                   }
+                 ->
                 match root with
                 | AccessPath.Root.PositionalParameter { position; _ } when position = index ->
                     Some (root, annotation)
@@ -1526,12 +1572,16 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
           | None -> [])
       | ModelQuery.Model.AllParameters { excludes; taint } ->
           let apply_parameter_production
-              ( (root, parameter_name, { Node.value = { Expression.Parameter.annotation; _ }; _ }),
+              ( {
+                  AccessPath.NormalizedParameter.root;
+                  qualified_name;
+                  original = { Node.value = { Expression.Parameter.annotation; _ }; _ };
+                },
                 production )
             =
             if
               (not (List.is_empty excludes))
-              && List.mem excludes ~equal:String.equal (Identifier.sanitized parameter_name)
+              && List.mem excludes ~equal:String.equal (Identifier.sanitized qualified_name)
             then
               None
             else
@@ -1542,7 +1592,11 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
           |> List.filter_map ~f:apply_parameter_production
       | ModelQuery.Model.Parameter { where; taint; _ } ->
           let apply_parameter_production
-              ( ((root, _, { Node.value = { Expression.Parameter.annotation; _ }; _ }) as parameter),
+              ( ({
+                   AccessPath.NormalizedParameter.root;
+                   original = { Node.value = { Expression.Parameter.annotation; _ }; _ };
+                   _;
+                 } as parameter),
                 production )
             =
             if
@@ -1555,8 +1609,7 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
                      ~name_captures:None
                      ~parameter)
             then
-              let parameter, _, _ = parameter in
-              production_to_taint annotation ~production ~parameter:(Some parameter)
+              production_to_taint annotation ~production ~parameter:(Some root)
               >>| fun taint -> ModelParseResult.ModelAnnotation.ParameterAnnotation (root, taint)
             else
               None
@@ -1573,7 +1626,7 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
       | Modelable.Callable { signature; _ } -> Lazy.force signature
       | _ -> failwith "unreachable"
     in
-    let normalized_parameters = AccessPath.Root.normalize_parameters parameters in
+    let normalized_parameters = AccessPath.normalize_parameters parameters in
     List.concat_map models ~f:(apply_model ~normalized_parameters ~return_annotation)
 
 
@@ -1597,9 +1650,7 @@ module AttributeQueryExecutor = struct
   let get_attributes ~resolution =
     let () = Log.info "Fetching all attributes..." in
     let get_class_attributes class_name =
-      let class_summary =
-        GlobalResolution.class_summary resolution (Type.Primitive class_name) >>| Node.value
-      in
+      let class_summary = GlobalResolution.class_summary resolution class_name >>| Node.value in
       match class_summary with
       | None -> []
       | Some ({ name = class_name_reference; _ } as class_summary) ->
@@ -1633,7 +1684,7 @@ module AttributeQueryExecutor = struct
           annotation
       | _ -> None
     in
-    GlobalResolution.class_summary resolution (Type.Primitive class_name)
+    GlobalResolution.class_summary resolution class_name
     >>| Node.value
     >>= fun class_summary ->
     match
@@ -1784,6 +1835,8 @@ let generate_models_from_queries
     ~class_hierarchy_graph
     ~source_sink_filter
     ~verbose
+    ~error_on_unexpected_models
+    ~error_on_empty_result
     ~definitions_and_stubs
     ~stubs
     queries
@@ -1802,7 +1855,7 @@ let generate_models_from_queries
   in
 
   (* Generate models for functions and methods. *)
-  let model_query_results =
+  let execution_result =
     if not (List.is_empty callable_queries) then
       CallableQueryExecutor.generate_models_from_queries_on_targets_with_multiprocessing
         ~verbose
@@ -1814,11 +1867,11 @@ let generate_models_from_queries
         ~targets:definitions_and_stubs
         callable_queries
     else
-      ModelQueryRegistryMap.empty
+      ExecutionResult.empty
   in
 
   (* Generate models for attributes. *)
-  let model_query_results =
+  let execution_result =
     if not (List.is_empty attribute_queries) then
       let attributes = AttributeQueryExecutor.get_attributes ~resolution in
       AttributeQueryExecutor.generate_models_from_queries_on_targets_with_multiprocessing
@@ -1830,13 +1883,13 @@ let generate_models_from_queries
         ~stubs
         ~targets:attributes
         attribute_queries
-      |> ModelQueryRegistryMap.merge ~model_join:Model.join_user_models model_query_results
+      |> ExecutionResult.merge ~model_join:Model.join_user_models execution_result
     else
-      model_query_results
+      execution_result
   in
 
   (* Generate models for globals. *)
-  let model_query_results =
+  let execution_result =
     if not (List.is_empty global_queries) then
       let globals = GlobalVariableQueryExecutor.get_globals ~resolution in
       GlobalVariableQueryExecutor.generate_models_from_queries_on_targets_with_multiprocessing
@@ -1848,17 +1901,26 @@ let generate_models_from_queries
         ~stubs
         ~targets:globals
         global_queries
-      |> ModelQueryRegistryMap.merge ~model_join:Model.join_user_models model_query_results
+      |> ExecutionResult.merge ~model_join:Model.join_user_models execution_result
     else
-      model_query_results
+      execution_result
   in
 
-  let errors =
-    List.rev_append
-      (ModelQueryRegistryMap.check_expected_and_unexpected_model_errors
-         ~model_query_results
-         ~queries)
-      (ModelQueryRegistryMap.check_errors ~model_query_results ~queries)
+  let { ExecutionResult.models; _ } = execution_result in
+  let execution_result =
+    if error_on_unexpected_models then
+      ModelQueryRegistryMap.check_expected_and_unexpected_model_errors
+        ~model_query_results:models
+        ~queries
+      |> ExecutionResult.add_errors execution_result
+    else
+      execution_result
   in
-
-  model_query_results, errors
+  let execution_result =
+    if error_on_empty_result then
+      ModelQueryRegistryMap.errors_for_queries_without_output ~model_query_results:models ~queries
+      |> ExecutionResult.add_errors execution_result
+    else
+      execution_result
+  in
+  execution_result

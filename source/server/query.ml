@@ -430,8 +430,8 @@ let parse_request query =
   | InvalidQuery reason -> Result.Error reason
 
 
-let rec process_request ~type_environment ~build_system request =
-  let process_request () =
+let rec process_request_exn ~type_environment ~build_system request =
+  let process_request_exn () =
     let configuration =
       TypeEnvironment.ReadOnly.controls type_environment |> EnvironmentControls.configuration
     in
@@ -533,6 +533,8 @@ let rec process_request ~type_environment ~build_system request =
           ~class_hierarchy_graph
           ~source_sink_filter:None
           ~verbose:false
+          ~error_on_unexpected_models:true
+          ~error_on_empty_result:true
           ~definitions_and_stubs:
             (Interprocedural.FetchCallables.get initial_callables ~definitions:true ~stubs:true)
           ~stubs:
@@ -606,7 +608,7 @@ let rec process_request ~type_environment ~build_system request =
                (Error
                   (Format.sprintf "No class definition found for %s" (Reference.show annotation)))
     | Batch requests ->
-        Batch (List.map ~f:(process_request ~type_environment ~build_system) requests)
+        Batch (List.map ~f:(process_request_exn ~type_environment ~build_system) requests)
     | Callees caller ->
         (* We don't yet support a syntax for fetching property setters. *)
         Single
@@ -828,7 +830,13 @@ let rec process_request ~type_environment ~build_system request =
                          query_name
                          (PyrePath.show path))
                   else
-                    let models_and_names, errors = setup_and_execute_model_queries rules in
+                    let {
+                      Taint.ModelQueryExecution.ExecutionResult.models = models_and_names;
+                      errors;
+                    }
+                      =
+                      setup_and_execute_model_queries rules
+                    in
                     let to_taint_model (callable, model) =
                       {
                         Base.callable = Interprocedural.Target.external_name callable;
@@ -836,7 +844,7 @@ let rec process_request ~type_environment ~build_system request =
                           Taint.Model.to_json
                             ~expand_overrides:None
                             ~is_valid_callee:(fun ~port:_ ~path:_ ~callee:_ -> true)
-                            ~filename_lookup:None
+                            ~resolve_module_path:None
                             ~export_leaf_names:Taint.Domains.ExportLeafNames.Always
                             callable
                             model;
@@ -1026,7 +1034,8 @@ let rec process_request ~type_environment ~build_system request =
         in
         let model_query_errors =
           if verify_dsl then
-            setup_and_execute_model_queries model_queries |> snd
+            setup_and_execute_model_queries model_queries
+            |> fun { Taint.ModelQueryExecution.ExecutionResult.errors; _ } -> errors
           else
             []
         in
@@ -1040,7 +1049,7 @@ let rec process_request ~type_environment ~build_system request =
         else
           Single (Base.ModelVerificationErrors errors)
   in
-  try process_request () with
+  try process_request_exn () with
   | ClassHierarchy.Untracked untracked ->
       let untracked_response =
         Format.asprintf "Type `%s` was not found in the type order." untracked
@@ -1051,11 +1060,6 @@ let rec process_request ~type_environment ~build_system request =
         Format.asprintf "Type `%a` has the wrong number of parameters." Type.pp untracked
       in
       Error untracked_response
-  | ClassHierarchy.Cyclic trace ->
-      Error
-        (Format.asprintf
-           "Cyclic class hierarchy: {%s}"
-           (Hash_set.to_list trace |> String.concat ~sep:", "))
   | Taint.TaintConfiguration.TaintConfigurationError errors ->
       errors
       |> List.map ~f:Taint.TaintConfiguration.Error.show
@@ -1068,6 +1072,14 @@ let rec process_request ~type_environment ~build_system request =
       |> String.concat ~sep:"\n"
       |> Format.sprintf "Found %d model verification errors:\n%s" (List.length errors)
       |> fun message -> Response.Error message
+
+
+let process_request ~type_environment ~build_system request =
+  match process_request_exn ~type_environment ~build_system request with
+  | exception e ->
+      Log.error "Fatal exception in no-daemon query: %s" (Exn.to_string e);
+      Response.Error (Exn.to_string e)
+  | result -> result
 
 
 let parse_and_process_request ~overlaid_environment ~build_system request overlay_id =

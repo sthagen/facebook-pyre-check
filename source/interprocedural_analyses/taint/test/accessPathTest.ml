@@ -105,8 +105,8 @@ let test_match_actuals_to_formals _ =
     let formals =
       Test.parse_single_define signature
       |> (fun { Define.signature = { Define.Signature.parameters; _ }; _ } -> parameters)
-      |> AccessPath.Root.normalize_parameters
-      |> List.map ~f:(fun (normalized, _, _) -> normalized)
+      |> AccessPath.normalize_parameters
+      |> List.map ~f:(fun { AccessPath.NormalizedParameter.root; _ } -> root)
     in
     let sort =
       let compare (left_expression, left_matches) (right_expression, right_matches) =

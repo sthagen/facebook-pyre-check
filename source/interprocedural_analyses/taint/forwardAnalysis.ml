@@ -60,7 +60,7 @@ module type FUNCTION_CONTEXT = sig
 
   val class_interval_graph : Interprocedural.ClassIntervalSetGraph.SharedMemory.t
 
-  val global_constants : Interprocedural.GlobalConstants.SharedMemory.t
+  val global_constants : Interprocedural.GlobalConstants.SharedMemory.ReadOnly.t
 
   val call_graph_of_define : CallGraph.DefineCallGraph.t
 
@@ -2510,7 +2510,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           let global_taint, state =
             let as_reference = identifier |> Reference.create |> Reference.delocalize in
             let global_string =
-              Interprocedural.GlobalConstants.SharedMemory.get
+              Interprocedural.GlobalConstants.SharedMemory.ReadOnly.get
                 FunctionContext.global_constants
                 as_reference
             in
@@ -2839,7 +2839,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     in
     let prime_parameter
         state
-        (parameter_root, name, { Node.location; value = { Parameter.value; _ } })
+        {
+          AccessPath.NormalizedParameter.root = parameter_root;
+          qualified_name;
+          original = { Node.location; value = { Parameter.value; _ } };
+        }
       =
       let prime =
         let location = Location.with_module ~module_reference:FunctionContext.qualifier location in
@@ -2859,7 +2863,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         | None -> ForwardState.Tree.bottom, state
         | Some expression -> analyze_expression ~resolution ~state ~is_result_used:true ~expression
       in
-      let root = AccessPath.Root.Variable name in
+      let root = AccessPath.Root.Variable qualified_name in
       let taint =
         ForwardState.assign
           ~root
@@ -2913,6 +2917,7 @@ let extract_source_model
       }
     ~breadcrumbs_to_attach
     ~via_features_to_attach
+    ~apply_broadening
     exit_taint
   =
   let { Statement.Define.signature = { return_annotation; name; parameters; _ }; _ } = define in
@@ -2929,14 +2934,16 @@ let extract_source_model
           ForwardState.Tree.prune_maximum_length maximum_trace_length tree
       | _ -> tree
     in
-    tree
-    |> ForwardState.Tree.shape
-         ~mold_with_return_access_paths:false
-         ~breadcrumbs:(Features.model_source_broadening_set ())
-    |> ForwardState.Tree.add_local_breadcrumbs return_type_breadcrumbs
-    |> ForwardState.Tree.limit_to
-         ~breadcrumbs:(Features.model_source_broadening_set ())
-         ~width:maximum_model_source_tree_width
+    if apply_broadening then
+      tree
+      |> ForwardState.Tree.shape
+           ~mold_with_return_access_paths:false
+           ~breadcrumbs:(Features.model_source_shaping_set ())
+      |> ForwardState.Tree.limit_to
+           ~breadcrumbs:(Features.model_source_broadening_set ())
+           ~width:maximum_model_source_tree_width
+    else
+      tree
   in
   let return_taint =
     let return_variable =
@@ -2962,6 +2969,7 @@ let extract_source_model
 
   ForwardState.assign ~root:AccessPath.Root.LocalResult ~path:[] return_taint ForwardState.bottom
   |> ForwardState.add_local_breadcrumbs breadcrumbs_to_attach
+  |> ForwardState.add_local_breadcrumbs return_type_breadcrumbs
   |> ForwardState.add_via_features via_features_to_attach
 
 
@@ -3029,7 +3037,7 @@ let run
   let timer = Timer.start () in
   let initial =
     TaintProfiler.track_duration ~profiler ~name:"Forward analysis - initial state" ~f:(fun () ->
-        let normalized_parameters = AccessPath.Root.normalize_parameters parameters in
+        let normalized_parameters = AccessPath.normalize_parameters parameters in
         State.create ~existing_model normalized_parameters)
   in
   let () = State.log "Processing CFG:@.%a" Cfg.pp cfg in
@@ -3055,6 +3063,9 @@ let run
         ~attach_to_kind:Sources.Attach
         existing_model.forward.source_taint
     in
+    let apply_broadening =
+      not (Model.ModeSet.contains Model.Mode.SkipModelBroadening existing_model.modes)
+    in
     let source_taint =
       TaintProfiler.track_duration ~profiler ~name:"Forward analysis - extract model" ~f:(fun () ->
           extract_source_model
@@ -3063,6 +3074,7 @@ let run
             ~taint_configuration:FunctionContext.taint_configuration
             ~breadcrumbs_to_attach
             ~via_features_to_attach
+            ~apply_broadening
             taint)
     in
     let model = Model.Forward.{ source_taint } in

@@ -22,6 +22,8 @@ module Map : sig
       include Comparator.Make (T)
     end)
   end
+
+  val pp : (Formatter.t -> 'a -> unit) -> Formatter.t -> 'a t -> unit
 end
 
 val local_qualifier_pattern : Str.regexp
@@ -31,6 +33,8 @@ val create : ?prefix:t -> string -> t
 module SerializableMap : Data_structures.SerializableMap.S with type key = t
 
 module Set : Set.S with type Elt.t = t
+
+module SerializableSet : Data_structures.SerializableSet.S with type elt = t
 
 include Hashable with type t := t
 

@@ -132,8 +132,13 @@ let assert_model
   begin
     match expected_skipped_overrides with
     | Some expected ->
-        let expected_set = List.map expected ~f:Ast.Reference.create |> Ast.Reference.Set.of_list in
-        assert_equal ~cmp:Ast.Reference.Set.equal expected_set (Registry.skip_overrides models)
+        let expected_set =
+          List.map expected ~f:Ast.Reference.create |> Ast.Reference.SerializableSet.of_list
+        in
+        assert_equal
+          ~cmp:Ast.Reference.SerializableSet.equal
+          expected_set
+          (Registry.skip_overrides models)
     | None -> ()
   end;
   let get_model = Registry.get models in
@@ -585,7 +590,7 @@ let test_source_models context =
     ~model_source:{|def test.f(x) -> TaintSource[Test, ViaValueOf[WithTag["tag"]]]: ...|}
     ~expect:
       "`TaintSource[(Test, ViaValueOf[WithTag[\"tag\"]])]` is an invalid taint annotation: Missing \
-       parameter name for ViaValueOf or ViaTypeOf"
+       parameter name for `ViaValueOf`"
     ();
   assert_model
     ~source:"def f(x: int): ..."
@@ -702,6 +707,11 @@ let test_source_models context =
           ~source_parameters:[{ name = "y"; sources = [Sources.NamedSource "Test"] }]
           "test.foo";
       ]
+    ();
+  assert_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[Test, ReturnPath[_.all_static_fields()]]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
     ();
   ()
 
@@ -2166,6 +2176,26 @@ let test_class_models context =
           "test.SkipMe.method_with_multiple_parameters";
       ]
     ();
+  assert_model
+    ~source:
+      {|
+        class SkipMe:
+          def method(parameter): ...
+          def method_with_multiple_parameters(first, second): ...
+      |}
+    ~model_source:"class test.SkipMe(SkipModelBroadening): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Method
+          ~analysis_modes:(Model.ModeSet.singleton SkipModelBroadening)
+          "test.SkipMe.method";
+        outcome
+          ~kind:`Method
+          ~analysis_modes:(Model.ModeSet.singleton SkipModelBroadening)
+          "test.SkipMe.method_with_multiple_parameters";
+      ]
+    ();
   (* Skip overrides do not generate methods. *)
   assert_model
     ~source:
@@ -2339,7 +2369,7 @@ let test_taint_in_taint_out_transform context =
     ()
 
 
-let test_skip_analysis context =
+let test_modes context =
   assert_model
     ~context
     ~model_source:{|
@@ -2348,7 +2378,22 @@ let test_skip_analysis context =
     |}
     ~expect:
       [outcome ~kind:`Function ~analysis_modes:(Model.ModeSet.singleton SkipAnalysis) "test.taint"]
-    ()
+    ();
+  assert_model
+    ~context
+    ~model_source:{|
+      @SkipModelBroadening
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_modes:(Model.ModeSet.singleton SkipModelBroadening)
+          "test.taint";
+      ]
+    ();
+  ()
 
 
 let test_skip_inlining_decorator context =
@@ -2638,6 +2683,20 @@ let test_invalid_models context =
     ();
   assert_invalid_model
     ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[Collapse]: ..."
+    ~expect:
+      "`TaintSource[Collapse]` is an invalid taint annotation: `Collapse` can only be used within \
+       `TaintInTaintOut[]`"
+    ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[NoCollapse]: ..."
+    ~expect:
+      "`TaintSource[NoCollapse]` is an invalid taint annotation: `NoCollapse` can only be used \
+       within `TaintInTaintOut[]`"
+    ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
     ~model_source:"def test.f(x) -> TaintSource[WithSubkind[A][B]]: ..."
     ~expect:
       "`TaintSource[WithSubkind[A][B]]` is an invalid taint annotation: Invalid expression for \
@@ -2651,14 +2710,42 @@ let test_invalid_models context =
        kind: Test.attribute"
     ();
   assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[ViaAttributeName]: ..."
+    ~expect:
+      "`TaintSource[ViaAttributeName]` is an invalid taint annotation: `ViaAttributeName` can only \
+       be used in attribute or global models."
+    ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:{|def test.f(x) -> TaintSource[ViaAttributeName[WithTag["tag"]]]: ...|}
+    ~expect:
+      "`TaintSource[ViaAttributeName[WithTag[\"tag\"]]]` is an invalid taint annotation: \
+       `ViaAttributeName` can only be used in attribute or global models."
+    ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSink[ViaAttributeName]: ..."
+    ~expect:
+      "`TaintSink[ViaAttributeName]` is an invalid taint annotation: `ViaAttributeName` can only \
+       be used in attribute or global models."
+    ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:{|def test.f(x) -> TaintSink[ViaAttributeName[WithTag["tag"]]]: ...|}
+    ~expect:
+      "`TaintSink[ViaAttributeName[WithTag[\"tag\"]]]` is an invalid taint annotation: \
+       `ViaAttributeName` can only be used in attribute or global models."
+    ();
+  assert_invalid_model
     ~source:{|
       class C:
         x: int = 0
       |}
     ~model_source:"test.C.x: ViaTypeOf[a.b] = ..."
     ~expect:
-      "`ViaTypeOf[a.b]` is an invalid taint annotation: Invalid expression in ViaValueOf or \
-       ViaTypeOf declaration: a.b"
+      "`ViaTypeOf[a.b]` is an invalid taint annotation: Invalid expression in `ViaTypeOf` \
+       declaration: a.b"
     ();
   ();
 
@@ -3626,7 +3713,9 @@ let test_invalid_models context =
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: TaintSink[Updates[self]]): ..."
-    ~expect:"`TaintSink[Updates[self]]` is an invalid taint annotation: No such parameter `self`"
+    ~expect:
+      "`TaintSink[Updates[self]]` is an invalid taint annotation: `Updates` can only be used \
+       within `TaintInTaintOut[]`"
     ();
   assert_valid_model ~model_source:"test.unannotated_global: TaintSink[Test]" ();
   assert_invalid_model
@@ -3740,68 +3829,92 @@ let test_invalid_models context =
     ~model_source:"def test.sink(parameter: TaintSink[Test, ParameterPath[_.unknown()]]): ..."
     ~expect:
       "`_.unknown()` is an invalid access path: unexpected method call `unknown` (allowed: `keys`, \
-       `all`, `all_static_fields`)"
+       `all`, `all_static_fields`, `parameter_name`)"
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: TaintSink[Test, ReturnPath[_[0]]]): ..."
-    ~expect:"Invalid model for `test.sink`: Invalid ReturnPath annotation for sink"
+    ~expect:
+      "`TaintSink[(Test, ReturnPath[_[0]])]` is an invalid taint annotation: `ReturnPath[]` can \
+       only be used as a return annotation or within `TaintInTaintOut[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: TaintSink[Test, UpdatePath[_[0]]]): ..."
-    ~expect:"Invalid model for `test.sink`: Invalid UpdatePath annotation for sink"
+    ~expect:
+      "`TaintSink[(Test, UpdatePath[_[0]])]` is an invalid taint annotation: `UpdatePath` can only \
+       be used within `TaintInTaintOut[]`"
     ();
   assert_invalid_model
     ~model_source:
       "def test.sink(parameter: AppliesTo[0, TaintSink[Test, ParameterPath[_[1]]]]): ..."
     ~expect:
-      "Invalid model for `test.sink`: Invalid mix of AppliesTo and ParameterPath annotation for \
-       sink"
+      "`AppliesTo[(0, TaintSink[(Test, ParameterPath[_[1]])])]` is an invalid taint annotation: \
+       `AppliesTo[]` cannot be used with `ParameterPath[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: AppliesTo[1, TaintSink[Test, UpdatePath[_[0]]]]): ..."
-    ~expect:"Invalid model for `test.sink`: Invalid UpdatePath annotation for sink"
+    ~expect:
+      "`AppliesTo[(1, TaintSink[(Test, UpdatePath[_[0]])])]` is an invalid taint annotation: \
+       `UpdatePath` can only be used within `TaintInTaintOut[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.taint(y: TaintSource[Test, ReturnPath[_[0]]]): ..."
-    ~expect:"Invalid model for `test.taint`: Invalid ReturnPath annotation for parameter source"
+    ~expect:
+      "`TaintSource[(Test, ReturnPath[_[0]])]` is an invalid taint annotation: `ReturnPath[]` can \
+       only be used as a return annotation or within `TaintInTaintOut[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.taint(y: TaintSource[Test, UpdatePath[_[0]]]): ..."
-    ~expect:"Invalid model for `test.taint`: Invalid UpdatePath annotation for parameter source"
+    ~expect:
+      "`TaintSource[(Test, UpdatePath[_[0]])]` is an invalid taint annotation: `UpdatePath` can \
+       only be used within `TaintInTaintOut[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.taint(y: AppliesTo[0, TaintSource[Test, ParameterPath[_[1]]]]): ..."
     ~expect:
-      "Invalid model for `test.taint`: Invalid mix of AppliesTo and ParameterPath annotation for \
-       parameter source"
+      "`AppliesTo[(0, TaintSource[(Test, ParameterPath[_[1]])])]` is an invalid taint annotation: \
+       `AppliesTo[]` cannot be used with `ParameterPath[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.taint(y: AppliesTo[1, TaintSource[Test, UpdatePath[_[0]]]]): ..."
-    ~expect:"Invalid model for `test.taint`: Invalid UpdatePath annotation for parameter source"
+    ~expect:
+      "`AppliesTo[(1, TaintSource[(Test, UpdatePath[_[0]])])]` is an invalid taint annotation: \
+       `UpdatePath` can only be used within `TaintInTaintOut[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.sink() -> TaintSink[Test, ParameterPath[_[0]]]: ..."
-    ~expect:"Invalid model for `test.sink`: Invalid ParameterPath annotation for return sink"
+    ~expect:
+      "`TaintSink[(Test, ParameterPath[_[0]])]` is an invalid taint annotation: `ParameterPath` \
+       can only be used on parameters"
     ();
   assert_invalid_model
     ~model_source:"def test.sink() -> TaintSink[Test, UpdatePath[_[0]]]: ..."
-    ~expect:"Invalid model for `test.sink`: Invalid UpdatePath annotation for return sink"
+    ~expect:
+      "`TaintSink[(Test, UpdatePath[_[0]])]` is an invalid taint annotation: `UpdatePath` can only \
+       be used within `TaintInTaintOut[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.sink() -> AppliesTo[1, TaintSink[Test, ReturnPath[_[0]]]]: ..."
-    ~expect:"Invalid model for `test.sink`: Invalid mix of AppliesTo and ReturnPath for return sink"
+    ~expect:
+      "`AppliesTo[(1, TaintSink[(Test, ReturnPath[_[0]])])]` is an invalid taint annotation: \
+       `AppliesTo[]` cannot be used with `ReturnPath[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.taint() -> TaintSource[Test, ParameterPath[_[0]]]: ..."
-    ~expect:"Invalid model for `test.taint`: Invalid ParameterPath annotation for source"
+    ~expect:
+      "`TaintSource[(Test, ParameterPath[_[0]])]` is an invalid taint annotation: `ParameterPath` \
+       can only be used on parameters"
     ();
   assert_invalid_model
     ~model_source:"def test.taint() -> TaintSource[Test, UpdatePath[_[0]]]: ..."
-    ~expect:"Invalid model for `test.taint`: Invalid UpdatePath annotation for source"
+    ~expect:
+      "`TaintSource[(Test, UpdatePath[_[0]])]` is an invalid taint annotation: `UpdatePath` can \
+       only be used within `TaintInTaintOut[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.taint() -> AppliesTo[1, TaintSource[Test, ReturnPath[_[0]]]]: ..."
-    ~expect:"Invalid model for `test.taint`: Invalid mix of AppliesTo and ReturnPath for source"
+    ~expect:
+      "`AppliesTo[(1, TaintSource[(Test, ReturnPath[_[0]])])]` is an invalid taint annotation: \
+       `AppliesTo[]` cannot be used with `ReturnPath[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.taint(x: TaintInTaintOut[UpdatePath[_[0]]]): ..."
@@ -3811,30 +3924,30 @@ let test_invalid_models context =
   assert_invalid_model
     ~model_source:"def test.taint(x: AppliesTo[0, TaintInTaintOut[ParameterPath[_[0]]]]): ..."
     ~expect:
-      "Invalid model for `test.taint`: Invalid mix of AppliesTo and ParameterPath for LocalReturn \
-       annotation"
+      "`AppliesTo[(0, TaintInTaintOut[ParameterPath[_[0]]])]` is an invalid taint annotation: \
+       `AppliesTo[]` cannot be used with `ParameterPath[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.taint(x, y: TaintInTaintOut[Updates[x], ReturnPath[_[0]]]): ..."
     ~expect:"Invalid model for `test.taint`: Invalid ReturnPath annotation for Updates annotation"
     ();
   assert_invalid_model
-    ~model_source:"def test.taint() -> TaintSource[Test, ReturnPath[_.all_static_fields()]]: ..."
-    ~expect:
-      "`TaintSource[(Test, ReturnPath[_.all_static_fields()])]` is an invalid taint annotation: \
-       `all_static_fields()` is not allowed within `ReturnPath[]`"
-    ();
-  assert_invalid_model
     ~model_source:"def test.taint(x: TaintInTaintOut[UpdatePath[_.all_static_fields()]]): ..."
     ~expect:
       "`TaintInTaintOut[UpdatePath[_.all_static_fields()]]` is an invalid taint annotation: \
-       `all_static_fields()` is not allowed within `UpdatePath[]`"
+       `all_static_fields()` is not allowed within `TaintInTaintOut[]`"
     ();
   assert_invalid_model
     ~model_source:"def test.taint(x: TaintInTaintOut[ParameterPath[_.all_static_fields()]]): ..."
     ~expect:
-      "Invalid model for `test.taint`: `all_static_fields()` is not allowed within \
-       `TaintInTaintOut[]`"
+      "`TaintInTaintOut[ParameterPath[_.all_static_fields()]]` is an invalid taint annotation: \
+       `all_static_fields()` is not allowed within `TaintInTaintOut[]`"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(x: TaintInTaintOut[ReturnPath[_.all_static_fields()]]): ..."
+    ~expect:
+      "`TaintInTaintOut[ReturnPath[_.all_static_fields()]]` is an invalid taint annotation: \
+       `all_static_fields()` is not allowed within `TaintInTaintOut[]`"
     ();
 
   (* Collapse depth specification. *)
@@ -4764,7 +4877,7 @@ Unexpected statement: `food(y)`
       def test.foo(x: ViaTypeOf): ...
     |}
     ~expect:
-      {|`ViaTypeOf` is an invalid taint annotation: A standalone `ViaTypeOf` without arguments can only be used in attribute or global models.|}
+      {|`ViaTypeOf` is an invalid taint annotation: A standalone `ViaTypeOf` without arguments can only be used in attribute or global models|}
     ();
   assert_invalid_model
     ~source:{|
@@ -4774,7 +4887,7 @@ Unexpected statement: `food(y)`
       def test.foo(x) -> ViaTypeOf: ...
     |}
     ~expect:
-      {|`ViaTypeOf` is an invalid taint annotation: A standalone `ViaTypeOf` without arguments can only be used in attribute or global models.|}
+      {|`ViaTypeOf` is an invalid taint annotation: A standalone `ViaTypeOf` without arguments can only be used in attribute or global models|}
     ();
   assert_invalid_model
     ~source:{|
@@ -4785,7 +4898,7 @@ Unexpected statement: `food(y)`
       def test.C.foo(x: ViaTypeOf): ...
     |}
     ~expect:
-      {|`ViaTypeOf` is an invalid taint annotation: A standalone `ViaTypeOf` without arguments can only be used in attribute or global models.|}
+      {|`ViaTypeOf` is an invalid taint annotation: A standalone `ViaTypeOf` without arguments can only be used in attribute or global models|}
     ();
   assert_invalid_model
     ~source:{|
@@ -4796,7 +4909,7 @@ Unexpected statement: `food(y)`
       def test.C.foo() -> ViaTypeOf: ...
     |}
     ~expect:
-      {|`ViaTypeOf` is an invalid taint annotation: A standalone `ViaTypeOf` without arguments can only be used in attribute or global models.|}
+      {|`ViaTypeOf` is an invalid taint annotation: A standalone `ViaTypeOf` without arguments can only be used in attribute or global models|}
     ();
   assert_valid_model
     ~source:{|
@@ -4843,6 +4956,74 @@ Unexpected statement: `food(y)`
       test.C.x: TaintSink[X, ViaTypeOf] = ...
     |}
     ();
+  (* ViaAttributeName *)
+  assert_invalid_model
+    ~source:{|
+      def foo(x: int) -> int: ...
+      |}
+    ~model_source:{|
+      def test.foo(x: ViaAttributeName): ...
+    |}
+    ~expect:
+      {|`ViaAttributeName` is an invalid taint annotation: `ViaAttributeName` can only be used in attribute or global models.|}
+    ();
+  assert_invalid_model
+    ~source:{|
+      class C:
+        def foo(x: int) -> int: ...
+      |}
+    ~model_source:{|
+      def test.C.foo() -> ViaAttributeName: ...
+    |}
+    ~expect:
+      {|`ViaAttributeName` is an invalid taint annotation: `ViaAttributeName` can only be used in attribute or global models.|}
+    ();
+  assert_valid_model
+    ~source:{|
+      class C:
+        x: int = 0
+      |}
+    ~model_source:{|
+      test.C.x: ViaAttributeName = ...
+    |}
+    ();
+  assert_valid_model
+    ~source:{|
+      class C:
+        x: int = 0
+      |}
+    ~model_source:{|
+      test.C.x: TaintInTaintOut[ViaAttributeName] = ...
+    |}
+    ();
+  assert_valid_model
+    ~source:{|
+      class C:
+        x: int = 0
+      |}
+    ~model_source:{|
+      test.C.x: ViaAttributeName[WithTag["tag"]] = ...
+    |}
+    ();
+  assert_valid_model
+    ~source:{|
+      class C:
+        x: int = 0
+      |}
+    ~model_source:{|
+      test.C.x: TaintSource[A, ViaAttributeName] = ...
+    |}
+    ();
+  assert_valid_model
+    ~source:{|
+      class C:
+        x: int = 0
+      |}
+    ~model_source:{|
+      test.C.x: TaintSink[X, ViaAttributeName] = ...
+    |}
+    ();
+  (* Model queries *)
   assert_invalid_model
     ~model_source:
       {|
@@ -4923,6 +5104,225 @@ Unexpected statement: `food(y)`
     ~expect:
       "`any_parameter.annotation.is_annotated_type` is not a valid constraint for model queries \
        with find clause of kind `globals`."
+    ();
+  assert_valid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "attributes",
+        find = "attributes",
+        where = type_annotation.is_annotated_type(),
+        model = AttributeModel(ViaTypeOf)
+      )
+    |}
+    ();
+  assert_valid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "attributes",
+        find = "attributes",
+        where = type_annotation.is_annotated_type(),
+        model = AttributeModel(ViaAttributeName)
+      )
+    |}
+    ();
+  assert_valid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "attributes",
+        find = "attributes",
+        where = type_annotation.is_annotated_type(),
+        model = AttributeModel(ViaAttributeName[WithTag["foo"]])
+      )
+    |}
+    ();
+
+  (* ParameterPath/ReturnPath/UpdatePath on model queries *)
+  assert_valid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Returns(TaintSource[Test, ReturnPath[_.bar]])
+      )
+    |}
+    ();
+  assert_valid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Parameters(TaintSource[Test, ParameterPath[_.bar]])
+      )
+    |}
+    ();
+  assert_valid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Parameters(TaintSink[Test, ParameterPath[_.bar]])
+      )
+    |}
+    ();
+  assert_valid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Parameters(TaintInTaintOut[LocalReturn, ParameterPath[_.bar], ReturnPath[_.baz]])
+      )
+    |}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Returns(TaintSource[Test, ParameterPath[_.bar]])
+      )
+    |}
+    ~expect:
+      "`TaintSource[(Test, ParameterPath[_.bar])]` is an invalid taint annotation: `ParameterPath` \
+       can only be used on parameters"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Parameters(TaintSource[Test, ReturnPath[_.bar]])
+      )
+    |}
+    ~expect:
+      "`TaintSource[(Test, ReturnPath[_.bar])]` is an invalid taint annotation: `ReturnPath[]` can \
+       only be used as a return annotation or within `TaintInTaintOut[]`"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Returns(TaintSource[Test, UpdatePath[_.bar]])
+      )
+    |}
+    ~expect:
+      "`TaintSource[(Test, UpdatePath[_.bar])]` is an invalid taint annotation: `UpdatePath` can \
+       only be used within `TaintInTaintOut[]`"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Returns(TaintInTaintOut[LocalReturn])
+      )
+    |}
+    ~expect:
+      "`TaintInTaintOut[LocalReturn]` is an invalid taint annotation: `TaintInTaintOut[]` can only \
+       be used on parameters, attributes or globals"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Parameters(TaintInTaintOut[LocalReturn, ParameterPath[_.all_static_fields()]])
+      )
+    |}
+    ~expect:
+      "`TaintInTaintOut[(LocalReturn, ParameterPath[_.all_static_fields()])]` is an invalid taint \
+       annotation: `all_static_fields()` is not allowed within `TaintInTaintOut[]`"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Parameters(TaintInTaintOut[LocalReturn, ReturnPath[_.all_static_fields()]])
+      )
+    |}
+    ~expect:
+      "`TaintInTaintOut[(LocalReturn, ReturnPath[_.all_static_fields()])]` is an invalid taint \
+       annotation: `all_static_fields()` is not allowed within `TaintInTaintOut[]`"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Parameters(TaintSource[Test, ParameterPath[_.parameter_name()]])
+      )
+    |}
+    ~expect:
+      "`TaintSource[(Test, ParameterPath[_.parameter_name()])]` is an invalid taint annotation: \
+       `parameter_name()` can only be used within `TaintInTaintOut[]`"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Parameters(TaintSink[Test, ParameterPath[_.parameter_name()]])
+      )
+    |}
+    ~expect:
+      "`TaintSink[(Test, ParameterPath[_.parameter_name()])]` is an invalid taint annotation: \
+       `parameter_name()` can only be used within `TaintInTaintOut[]`"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "functions",
+        where = name.matches("foo"),
+        model = Parameters(AppliesTo["bar", TaintSink[Test, ParameterPath[_.foo]]])
+      )
+    |}
+    ~expect:
+      "`AppliesTo[(\"bar\", TaintSink[(Test, ParameterPath[_.foo])])]` is an invalid taint \
+       annotation: `AppliesTo[]` cannot be used with `ParameterPath[]`"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "query",
+        find = "attributes",
+        where = name.matches("foo"),
+        model = AttributeModel(TaintInTaintOut[LocalReturn, ParameterPath[_.foo]])
+      )
+    |}
+    ~expect:
+      "`TaintInTaintOut[(LocalReturn, ParameterPath[_.foo])]` is an invalid taint annotation: \
+       `ParameterPath` can only be used on parameters"
     ();
   ()
 
@@ -7354,7 +7754,7 @@ let test_query_parsing context =
 
 
 let test_access_path _ =
-  let module Label = Abstract.TreeDomain.Label in
+  let module TreeLabel = Abstract.TreeDomain.Label in
   let module TaintPath = ModelParseResult.TaintPath in
   let parse_access_path source =
     PyreParser.Parser.parse_exn [source]
@@ -7376,37 +7776,57 @@ let test_access_path _ =
     | Error error -> assert_equal ~printer:ident expected (ModelVerificationError.display error)
     | Ok _ -> assert_bool (Format.sprintf "Unexpected valid access path for: %s" source) false
   in
-  assert_valid_path ~source:"_" ~expected:(TaintPath.Regular []);
-  assert_valid_path ~source:"_.foo" ~expected:(TaintPath.Regular [Label.Index "foo"]);
+  let index_label index = TaintPath.Label.TreeLabel (TreeLabel.Index index) in
+  assert_valid_path ~source:"_" ~expected:(TaintPath.Path []);
+  assert_valid_path ~source:"_.foo" ~expected:(TaintPath.Path [index_label "foo"]);
   assert_valid_path
     ~source:"_.foo.bar"
-    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "bar"]);
-  assert_valid_path ~source:"_['foo']" ~expected:(TaintPath.Regular [Label.Index "foo"]);
-  assert_valid_path ~source:"_[\"foo\"]" ~expected:(TaintPath.Regular [Label.Index "foo"]);
-  assert_valid_path ~source:"_[0]" ~expected:(TaintPath.Regular [Label.Index "0"]);
+    ~expected:(TaintPath.Path [index_label "foo"; index_label "bar"]);
+  assert_valid_path ~source:"_['foo']" ~expected:(TaintPath.Path [index_label "foo"]);
+  assert_valid_path ~source:"_[\"foo\"]" ~expected:(TaintPath.Path [index_label "foo"]);
+  assert_valid_path ~source:"_[0]" ~expected:(TaintPath.Path [index_label "0"]);
   assert_valid_path
     ~source:"_['foo']['bar']"
-    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "bar"]);
+    ~expected:(TaintPath.Path [index_label "foo"; index_label "bar"]);
   assert_valid_path
     ~source:"_['foo'].bar"
-    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "bar"]);
+    ~expected:(TaintPath.Path [index_label "foo"; index_label "bar"]);
   assert_valid_path
     ~source:"_.foo['bar']"
-    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "bar"]);
+    ~expected:(TaintPath.Path [index_label "foo"; index_label "bar"]);
   assert_valid_path
     ~source:"_.foo[0]"
-    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "0"]);
-  assert_valid_path ~source:"_.keys()" ~expected:(TaintPath.Regular [AccessPath.dictionary_keys]);
-  assert_valid_path ~source:"_.all()" ~expected:(TaintPath.Regular [Label.AnyIndex]);
+    ~expected:(TaintPath.Path [index_label "foo"; index_label "0"]);
+  assert_valid_path
+    ~source:"_.keys()"
+    ~expected:(TaintPath.Path [TaintPath.Label.TreeLabel AccessPath.dictionary_keys]);
+  assert_valid_path
+    ~source:"_.all()"
+    ~expected:(TaintPath.Path [TaintPath.Label.TreeLabel TreeLabel.AnyIndex]);
   assert_valid_path ~source:"_.all_static_fields()" ~expected:TaintPath.AllStaticFields;
+  assert_valid_path
+    ~source:"_.parameter_name()"
+    ~expected:(TaintPath.Path [TaintPath.Label.ParameterName]);
   assert_valid_path
     ~source:"_[0].keys().foo.all()"
     ~expected:
-      (TaintPath.Regular
-         [Label.Index "0"; AccessPath.dictionary_keys; Label.Index "foo"; Label.AnyIndex]);
+      (TaintPath.Path
+         [
+           index_label "0";
+           TaintPath.Label.TreeLabel AccessPath.dictionary_keys;
+           index_label "foo";
+           TaintPath.Label.TreeLabel TreeLabel.AnyIndex;
+         ]);
   assert_valid_path
-    ~source:"_.all()['a'].bar"
-    ~expected:(TaintPath.Regular [Label.AnyIndex; Label.Index "a"; Label.Index "bar"]);
+    ~source:"_.all()['a'].bar.parameter_name()"
+    ~expected:
+      (TaintPath.Path
+         [
+           TaintPath.Label.TreeLabel TreeLabel.AnyIndex;
+           index_label "a";
+           index_label "bar";
+           TaintPath.Label.ParameterName;
+         ]);
   assert_invalid_path
     ~source:"foo"
     ~expected:"`foo` is an invalid access path: access path must start with `_`";
@@ -7417,7 +7837,7 @@ let test_access_path _ =
     ~source:"_.a-b"
     ~expected:
       "`_.a.__sub__(b)` is an invalid access path: unexpected method call `__sub__` (allowed: \
-       `keys`, `all`, `all_static_fields`)";
+       `keys`, `all`, `all_static_fields`, `parameter_name`)";
   assert_invalid_path
     ~source:"_[a]"
     ~expected:
@@ -7432,7 +7852,7 @@ let test_access_path _ =
     ~source:"_.keys().something()"
     ~expected:
       "`_.keys().something()` is an invalid access path: unexpected method call `something` \
-       (allowed: `keys`, `all`, `all_static_fields`)";
+       (allowed: `keys`, `all`, `all_static_fields`, `parameter_name`)";
   assert_invalid_path
     ~source:"_.foo.all_static_fields()"
     ~expected:
@@ -7453,6 +7873,11 @@ let test_access_path _ =
     ~expected:
       "`_.keys().all_static_fields()` is an invalid access path: `all_static_fields()` can only be \
        used on `_`";
+  assert_invalid_path
+    ~source:"_.parameter_name().all_static_fields()"
+    ~expected:
+      "`_.parameter_name().all_static_fields()` is an invalid access path: `all_static_fields()` \
+       can only be used on `_`";
   assert_invalid_path
     ~source:"_.all_static_fields().foo"
     ~expected:
@@ -7541,7 +7966,7 @@ let () =
          "parameter_sanitize" >:: test_parameter_sanitize;
          "return_sanitize" >:: test_return_sanitize;
          "parameters_sanitize" >:: test_parameters_sanitize;
-         "skip_analysis" >:: test_skip_analysis;
+         "modes" >:: test_modes;
          "skip_inlining_decorator" >:: test_skip_inlining_decorator;
          "sink_breadcrumbs" >:: test_sink_breadcrumbs;
          "sink_models" >:: test_sink_models;

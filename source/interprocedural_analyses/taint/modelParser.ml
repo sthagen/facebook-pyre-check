@@ -109,7 +109,8 @@ let base_name expression =
 let is_base_name expression name = Option.equal String.equal (base_name expression) (Some name)
 
 let parse_access_path ~path ~location expression =
-  let module Label = Abstract.TreeDomain.Label in
+  let module TreeLabel = Abstract.TreeDomain.Label in
+  let module ModelLabel = TaintPath.Label in
   let open Core.Result in
   let annotation_error reason =
     model_verification_error
@@ -119,26 +120,27 @@ let parse_access_path ~path ~location expression =
   in
   let rec parse_expression expression =
     match Node.value expression with
-    | Expression.Name (Name.Identifier "_") -> Ok (TaintPath.Regular [])
+    | Expression.Name (Name.Identifier "_") -> Ok (TaintPath.Path [])
     | Expression.Name (Name.Identifier _) ->
         Error (annotation_error "access path must start with `_`")
     | Expression.Name (Name.Attribute { base; attribute; _ }) ->
         (* The analysis does not currently distinguish between fields and indices.
          * Silently convert fields to indices to prevent confusion. *)
-        parse_regular_path base
-        >>| fun base -> TaintPath.Regular (base @ [Label.create_name_index attribute])
+        parse_model_labels base
+        >>| fun base ->
+        TaintPath.Path (base @ [ModelLabel.TreeLabel (TreeLabel.create_name_index attribute)])
     | Expression.Call
         {
           callee = { Node.value = Name (Name.Attribute { base; attribute = "__getitem__"; _ }); _ };
           arguments = [{ Call.Argument.value = argument; _ }];
         } -> (
-        parse_regular_path base
+        parse_model_labels base
         >>= fun base ->
         match Node.value argument with
         | Expression.Constant (Constant.Integer index) ->
-            Ok (TaintPath.Regular (base @ [Label.create_int_index index]))
+            Ok (TaintPath.Path (base @ [ModelLabel.TreeLabel (TreeLabel.create_int_index index)]))
         | Expression.Constant (Constant.String { StringLiteral.value = key; _ }) ->
-            Ok (TaintPath.Regular (base @ [Label.create_name_index key]))
+            Ok (TaintPath.Path (base @ [ModelLabel.TreeLabel (TreeLabel.create_name_index key)]))
         | _ ->
             Error
               (annotation_error
@@ -150,21 +152,29 @@ let parse_access_path ~path ~location expression =
           callee = { Node.value = Name (Name.Attribute { base; attribute = "keys"; _ }); _ };
           arguments = [];
         } ->
-        parse_regular_path base
-        >>| fun base -> TaintPath.Regular (base @ [AccessPath.dictionary_keys])
+        parse_model_labels base
+        >>| fun base -> TaintPath.Path (base @ [ModelLabel.TreeLabel AccessPath.dictionary_keys])
     | Expression.Call
         {
           callee = { Node.value = Name (Name.Attribute { base; attribute = "all"; _ }); _ };
           arguments = [];
         } ->
-        parse_regular_path base >>| fun base -> TaintPath.Regular (base @ [Label.AnyIndex])
+        parse_model_labels base
+        >>| fun base -> TaintPath.Path (base @ [ModelLabel.TreeLabel TreeLabel.AnyIndex])
+    | Expression.Call
+        {
+          callee =
+            { Node.value = Name (Name.Attribute { base; attribute = "parameter_name"; _ }); _ };
+          arguments = [];
+        } ->
+        parse_model_labels base >>| fun base -> TaintPath.Path (base @ [ModelLabel.ParameterName])
     | Expression.Call
         {
           callee =
             { Node.value = Name (Name.Attribute { base; attribute = "all_static_fields"; _ }); _ };
           arguments = [];
         } -> (
-        parse_regular_path base
+        parse_model_labels base
         >>= function
         | [] -> Ok TaintPath.AllStaticFields
         | _ -> Error (annotation_error "`all_static_fields()` can only be used on `_`"))
@@ -175,12 +185,13 @@ let parse_access_path ~path ~location expression =
         Error
           (annotation_error
              (Format.sprintf
-                "unexpected method call `%s` (allowed: `keys`, `all`, `all_static_fields`)"
+                "unexpected method call `%s` (allowed: `keys`, `all`, `all_static_fields`, \
+                 `parameter_name`)"
                 attribute))
     | _ -> Error (annotation_error "unexpected expression")
-  and parse_regular_path expression =
+  and parse_model_labels expression =
     match parse_expression expression with
-    | Ok (TaintPath.Regular path) -> Ok path
+    | Ok (TaintPath.Path labels) -> Ok labels
     | Ok TaintPath.AllStaticFields ->
         Error (annotation_error "cannot access attributes or methods of `all_static_fields()`")
     | Error _ as error -> error
@@ -188,15 +199,79 @@ let parse_access_path ~path ~location expression =
   parse_expression expression
 
 
+module AnnotationOrigin = struct
+  type t =
+    | DefineParameter
+    | DefineReturn
+    | DefineDecorator
+    | Attribute
+    | ModelQueryParameter
+    | ModelQueryReturn
+    | ModelQueryAttribute
+    | ModelQueryGlobal
+  [@@deriving equal]
+
+  let is_attribute = function
+    | Attribute
+    | ModelQueryAttribute ->
+        true
+    | _ -> false
+
+
+  let is_model_query = function
+    | ModelQueryParameter
+    | ModelQueryReturn
+    | ModelQueryAttribute
+    | ModelQueryGlobal ->
+        true
+    | _ -> false
+
+
+  let is_parameter = function
+    | DefineParameter
+    | ModelQueryParameter ->
+        true
+    | _ -> false
+
+
+  let is_return = function
+    | DefineReturn
+    | ModelQueryReturn ->
+        true
+    | _ -> false
+end
+
+module AnnotationName = struct
+  type t =
+    | Source
+    | Sink
+    | TaintInTaintOut
+    | AddFeatureToArgument
+    | AttachToSource
+    | AttachToSink
+    | AttachToTito
+  [@@deriving equal]
+
+  let pp formatter = function
+    | Source -> Format.fprintf formatter "Source"
+    | Sink -> Format.fprintf formatter "Sink"
+    | TaintInTaintOut -> Format.fprintf formatter "TaintInTaintOut"
+    | AddFeatureToArgument -> Format.fprintf formatter "AddFeatureToArgument"
+    | AttachToSource -> Format.fprintf formatter "AttachToSource"
+    | AttachToSink -> Format.fprintf formatter "AttachToSink"
+    | AttachToTito -> Format.fprintf formatter "AttachToTito"
+
+
+  let is_tito = equal TaintInTaintOut
+end
+
 let rec parse_annotations
     ~path
     ~location
-    ~model_name
+    ~origin
     ~taint_configuration
     ~parameters
     ~callable_parameter_names_to_positions
-    ?(is_object_target = false)
-    ?(is_model_query = false)
     annotation
   =
   let open Core.Result in
@@ -252,7 +327,7 @@ let rec parse_annotations
                 "Invalid expression for taint subkind: %s"
                 (Expression.show expression)))
   in
-  let extract_via_parameters expression =
+  let extract_via_parameters via_kind expression =
     let rec parse_expression expression =
       match expression.Node.value with
       | Expression.Name (Name.Identifier name) ->
@@ -261,14 +336,14 @@ let rec parse_annotations
           [AccessPath.Root.PositionalParameter { name; position; positional_only = false }]
       | Tuple expressions -> List.map ~f:parse_expression expressions |> all >>| List.concat
       | Call { callee; _ } when is_base_name callee "WithTag" -> Ok []
-      | _ -> Error (annotation_error "Invalid expression for ViaValueOf or ViaTypeOf")
+      | _ -> Error (annotation_error (Format.sprintf "Invalid expression for `%s`" via_kind))
     in
     parse_expression expression
     |> function
-    | Ok [] -> Error (annotation_error "Missing parameter name for ViaValueOf or ViaTypeOf")
+    | Ok [] -> Error (annotation_error (Format.sprintf "Missing parameter name for `%s`" via_kind))
     | parameters -> parameters
   in
-  let rec extract_via_tag expression =
+  let rec extract_via_tag ~requires_parameter_name via_kind expression =
     match expression.Node.value with
     | Expression.Call
         {
@@ -287,16 +362,19 @@ let rec parse_annotations
         }
       when is_base_name callee "WithTag" ->
         Ok (Some value)
-    | Expression.Name (Name.Identifier _) when not is_object_target ->
-        (* This should be the parameter name. *)
-        Ok None
-    | Tuple expressions -> List.map expressions ~f:extract_via_tag |> all >>| List.find_map ~f:ident
+    | Expression.Name (Name.Identifier _) when requires_parameter_name -> Ok None
+    | Tuple expressions ->
+        List.map expressions ~f:(extract_via_tag ~requires_parameter_name via_kind)
+        |> all
+        >>| List.find_map ~f:ident
     | _ ->
         Error
           (annotation_error
-             (Format.sprintf
-                "Invalid expression in ViaValueOf or ViaTypeOf declaration: %s"
-                (Expression.show expression)))
+             (Format.asprintf
+                "Invalid expression in `%s` declaration: %a"
+                via_kind
+                Expression.pp
+                expression))
   in
   let rec extract_names expression =
     match expression.Node.value with
@@ -317,24 +395,63 @@ let rec parse_annotations
                 "expected non-negative int literal argument for CollapseDepth, got `%s`"
                 (Expression.show expression)))
   in
-  let rec extract_kinds_with_features expression =
+  let check_attribute_annotation identifier origin =
+    if AnnotationOrigin.is_attribute origin then
+      Ok ()
+    else
+      Error
+        (annotation_error
+           (Format.sprintf "`%s` can only be used in attribute or global models." identifier))
+  in
+  let check_parameter_annotation identifier origin =
+    if AnnotationOrigin.is_parameter origin then
+      Ok ()
+    else
+      Error (annotation_error (Format.sprintf "`%s` can only be used on parameters" identifier))
+  in
+  let check_tito_annotation identifier name =
+    if AnnotationName.is_tito name then
+      Ok ()
+    else
+      Error
+        (annotation_error
+           (Format.sprintf "`%s` can only be used within `TaintInTaintOut[]`" identifier))
+  in
+  let error_on_path_with_parameter_name
+      ({ TaintKindsWithFeatures.features; _ } as kinds_with_features)
+    =
+    if TaintFeatures.has_path_with_parameter_name features then
+      Error (annotation_error "`parameter_name()` can only be used within `TaintInTaintOut[]`")
+    else
+      Ok kinds_with_features
+  in
+  let rec extract_kinds_with_features ~name expression =
     match expression.Node.value with
     | Expression.Name (Name.Identifier identifier) -> (
         match identifier with
         | "ViaTypeOf" ->
-            if is_object_target or is_model_query then
-              (* ViaTypeOf is treated as ViaTypeOf[$global] *)
-              Ok
-                (TaintKindsWithFeatures.from_via_feature
-                   (Features.ViaFeature.ViaTypeOf
-                      { parameter = attribute_symbolic_parameter; tag = None }))
-            else
+            if not (AnnotationOrigin.is_attribute origin || AnnotationOrigin.is_model_query origin)
+            then
               Error
                 (annotation_error
                    "A standalone `ViaTypeOf` without arguments can only be used in attribute or \
                     global models.")
-        | "Collapse" -> Ok (TaintKindsWithFeatures.from_collapse_depth CollapseDepth.Collapse)
-        | "NoCollapse" -> Ok (TaintKindsWithFeatures.from_collapse_depth CollapseDepth.NoCollapse)
+            else (* ViaTypeOf is treated as ViaTypeOf[$global] *)
+              Ok
+                (TaintKindsWithFeatures.from_via_feature
+                   (Features.ViaFeature.ViaTypeOf
+                      { parameter = attribute_symbolic_parameter; tag = None }))
+        | "ViaAttributeName" ->
+            check_attribute_annotation identifier origin
+            >>| fun () ->
+            TaintKindsWithFeatures.from_via_feature
+              (Features.ViaFeature.ViaAttributeName { tag = None })
+        | "Collapse" ->
+            check_tito_annotation identifier name
+            >>| fun () -> TaintKindsWithFeatures.from_collapse_depth CollapseDepth.Collapse
+        | "NoCollapse" ->
+            check_tito_annotation identifier name
+            >>| fun () -> TaintKindsWithFeatures.from_collapse_depth CollapseDepth.NoCollapse
         | taint_kind -> Ok (TaintKindsWithFeatures.from_kind (Kind.from_name taint_kind)))
     | Call { callee; arguments = [{ Call.Argument.value = argument; _ }] } -> (
         match base_name callee with
@@ -343,24 +460,38 @@ let rec parse_annotations
             extract_breadcrumbs ~is_dynamic:true argument
             >>| TaintKindsWithFeatures.from_breadcrumbs
         | Some "ViaValueOf" ->
-            extract_via_tag argument
+            extract_via_tag ~requires_parameter_name:true "ViaValueOf" argument
             >>= fun tag ->
-            extract_via_parameters argument
+            extract_via_parameters "ViaValueOf" argument
             >>| List.map ~f:(fun parameter -> Features.ViaFeature.ViaValueOf { parameter; tag })
             >>| TaintKindsWithFeatures.from_via_features
         | Some "ViaTypeOf" ->
-            extract_via_tag argument
+            let requires_parameter_name =
+              not (AnnotationOrigin.is_attribute origin || AnnotationOrigin.is_model_query origin)
+            in
+            extract_via_tag ~requires_parameter_name "ViaTypeOf" argument
             >>= fun tag ->
             let parameters =
-              if not (is_object_target or is_model_query) then
-                extract_via_parameters argument
+              if requires_parameter_name then
+                extract_via_parameters "ViaTypeOf" argument
               else
                 Ok [attribute_symbolic_parameter]
             in
             parameters
             >>| List.map ~f:(fun parameter -> Features.ViaFeature.ViaTypeOf { parameter; tag })
             >>| TaintKindsWithFeatures.from_via_features
+        | Some "ViaAttributeName" ->
+            check_attribute_annotation "ViaAttributeName" origin
+            >>= fun () ->
+            extract_via_tag ~requires_parameter_name:false "ViaAttributeName" argument
+            >>| fun tag ->
+            [Features.ViaFeature.ViaAttributeName { tag }]
+            |> TaintKindsWithFeatures.from_via_features
         | Some "Updates" ->
+            check_tito_annotation "Updates" name
+            >>= fun () ->
+            check_parameter_annotation "Updates" origin
+            >>= fun () ->
             let to_leaf name =
               get_parameter_position name
               >>| fun position -> Kind.from_name (Format.sprintf "ParameterUpdate%d" position)
@@ -368,23 +499,27 @@ let rec parse_annotations
             extract_names argument
             >>= fun names -> List.map ~f:to_leaf names |> all >>| TaintKindsWithFeatures.from_kinds
         | Some "ParameterPath" ->
+            check_parameter_annotation "ParameterPath" origin
+            >>= fun () ->
             parse_access_path ~path ~location argument
             >>| TaintKindsWithFeatures.from_parameter_path
-        | Some "ReturnPath" -> (
-            parse_access_path ~path ~location argument
-            >>= function
-            | TaintPath.Regular path -> Ok (TaintKindsWithFeatures.from_return_path path)
-            | TaintPath.AllStaticFields ->
-                Error
-                  (annotation_error "`all_static_fields()` is not allowed within `ReturnPath[]`"))
-        | Some "UpdatePath" -> (
-            parse_access_path ~path ~location argument
-            >>= function
-            | TaintPath.Regular path -> Ok (TaintKindsWithFeatures.from_update_path path)
-            | TaintPath.AllStaticFields ->
-                Error
-                  (annotation_error "`all_static_fields()` is not allowed within `UpdatePath[]`"))
+        | Some "ReturnPath" ->
+            if not (AnnotationOrigin.is_return origin || AnnotationName.is_tito name) then
+              Error
+                (annotation_error
+                   "`ReturnPath[]` can only be used as a return annotation or within \
+                    `TaintInTaintOut[]`")
+            else
+              parse_access_path ~path ~location argument >>| TaintKindsWithFeatures.from_return_path
+        | Some "UpdatePath" ->
+            check_tito_annotation "UpdatePath" name
+            >>= fun () ->
+            check_parameter_annotation "UpdatePath" origin
+            >>= fun () ->
+            parse_access_path ~path ~location argument >>| TaintKindsWithFeatures.from_update_path
         | Some "CollapseDepth" ->
+            check_tito_annotation "CollapseDepth" name
+            >>= fun () ->
             extract_collapse_depth argument
             >>| fun depth -> TaintKindsWithFeatures.from_collapse_depth (CollapseDepth.Value depth)
         | Some taint_kind ->
@@ -398,7 +533,7 @@ let rec parse_annotations
                     "Invalid expression for taint kind: %s"
                     (Expression.show expression))))
     | Tuple expressions ->
-        List.map ~f:extract_kinds_with_features expressions
+        List.map ~f:(extract_kinds_with_features ~name) expressions
         |> all
         >>= fun kinds_with_features ->
         kinds_with_features
@@ -411,7 +546,8 @@ let rec parse_annotations
   in
   let get_source_kinds expression =
     let open TaintConfiguration.Heap in
-    extract_kinds_with_features expression
+    extract_kinds_with_features ~name:Source expression
+    >>= error_on_path_with_parameter_name
     >>= fun { kinds; features } ->
     List.map kinds ~f:(fun { name; subkind } ->
         AnnotationParser.parse_source ~allowed:taint_configuration.sources ?subkind name
@@ -421,7 +557,8 @@ let rec parse_annotations
   in
   let get_sink_kinds expression =
     let open TaintConfiguration.Heap in
-    extract_kinds_with_features expression
+    extract_kinds_with_features ~name:Sink expression
+    >>= error_on_path_with_parameter_name
     >>= fun { kinds; features } ->
     List.map kinds ~f:(fun { name; subkind } ->
         AnnotationParser.parse_sink ~allowed:taint_configuration.sinks ?subkind name
@@ -431,9 +568,19 @@ let rec parse_annotations
   in
   let get_taint_in_taint_out expression =
     let open TaintConfiguration.Heap in
-    extract_kinds_with_features expression
+    extract_kinds_with_features ~name:TaintInTaintOut expression
     >>= fun { kinds; features } ->
     match kinds with
+    | _ when not (AnnotationOrigin.is_parameter origin || AnnotationOrigin.is_attribute origin) ->
+        Error
+          (annotation_error
+             "`TaintInTaintOut[]` can only be used on parameters, attributes or globals")
+    | _ when TaintFeatures.has_path_with_all_static_fields features ->
+        Error (annotation_error "`all_static_fields()` is not allowed within `TaintInTaintOut[]`")
+    | _
+      when TaintFeatures.has_path_with_parameter_name features
+           && not (AnnotationOrigin.is_parameter origin) ->
+        Error (annotation_error "`parameter_name()` can only be used on parameters")
     | [] -> Ok [TaintAnnotation.Tito { tito = Sinks.LocalReturn; features }]
     | _ ->
         List.map kinds ~f:(fun { name; subkind } ->
@@ -447,7 +594,7 @@ let rec parse_annotations
   in
   let extract_attach_features ~name expression =
     (* Ensure AttachToX annotations don't have any non-Via annotations for now. *)
-    extract_kinds_with_features expression
+    extract_kinds_with_features ~name expression
     >>= function
     | {
         kinds = [];
@@ -469,7 +616,10 @@ let rec parse_annotations
     | _ ->
         Error
           (annotation_error
-             (Format.sprintf "All parameters to `%s` must be of the form `Via[feature]`." name))
+             (Format.asprintf
+                "All parameters to `%a` must be of the form `Via[feature]`."
+                AnnotationName.pp
+                name))
   in
   let invalid_annotation_error () =
     Error (annotation_error "Failed to parse the given taint annotation.")
@@ -499,9 +649,7 @@ let rec parse_annotations
             taint_configuration.partial_sink_labels
         with
         | Some { TaintConfiguration.PartialSinkLabelsMap.main; secondary } ->
-            if String.equal secondary label || String.equal main label then
-              Ok (Sinks.PartialSink { kind; label })
-            else
+            if not (String.equal secondary label || String.equal main label) then
               Error
                 (annotation_error
                    (Format.sprintf
@@ -509,6 +657,8 @@ let rec parse_annotations
                       label
                       kind
                       (String.concat [main; secondary] ~sep:", ")))
+            else
+              Ok (Sinks.PartialSink { kind; label })
         | None -> Error (annotation_error (Format.sprintf "Unrecognized partial sink `%s`." kind)))
     | _ -> invalid_annotation_error ()
   in
@@ -520,35 +670,50 @@ let rec parse_annotations
         | Some "TaintSource", _ -> get_source_kinds argument
         | Some "TaintInTaintOut", _ -> get_taint_in_taint_out argument
         | Some "AddFeatureToArgument", _ ->
-            extract_kinds_with_features argument
+            extract_kinds_with_features ~name:AddFeatureToArgument argument
             >>| fun { features; _ } -> [TaintAnnotation.AddFeatureToArgument { features }]
         | Some "AttachToSink", _ ->
-            extract_attach_features ~name:"AttachToSink" argument
+            extract_attach_features ~name:AttachToSink argument
             >>| fun features -> [TaintAnnotation.Sink { sink = Sinks.Attach; features }]
         | Some "AttachToTito", _ ->
-            extract_attach_features ~name:"AttachToTito" argument
+            extract_attach_features ~name:AttachToTito argument
             >>| fun features -> [TaintAnnotation.Tito { tito = Sinks.Attach; features }]
         | Some "AttachToSource", _ ->
-            extract_attach_features ~name:"AttachToSource" argument
+            extract_attach_features ~name:AttachToSource argument
             >>| fun features -> [TaintAnnotation.Source { source = Sources.Attach; features }]
         | Some "ViaTypeOf", _ ->
-            if is_object_target then (* Attribute annotations of the form `a: ViaTypeOf[...]`. *)
-              extract_via_tag argument
-              >>| fun tag ->
-              let via_feature =
-                Features.ViaFeature.ViaTypeOf { parameter = attribute_symbolic_parameter; tag }
-              in
-              [
-                TaintAnnotation.Tito
-                  {
-                    tito = Sinks.LocalReturn;
-                    features = { TaintFeatures.empty with via_features = [via_feature] };
-                  };
-              ]
-            else
-              Error
-                (annotation_error "`ViaTypeOf[]` can only be used in attribute or global models.")
+            check_attribute_annotation "ViaTypeOf" origin
+            >>= fun () ->
+            (* Attribute annotations of the form `a: ViaTypeOf[...]`. *)
+            extract_via_tag ~requires_parameter_name:false "ViaTypeOf" argument
+            >>| fun tag ->
+            let via_feature =
+              Features.ViaFeature.ViaTypeOf { parameter = attribute_symbolic_parameter; tag }
+            in
+            [
+              TaintAnnotation.Tito
+                {
+                  tito = Sinks.LocalReturn;
+                  features = { TaintFeatures.empty with via_features = [via_feature] };
+                };
+            ]
+        | Some "ViaAttributeName", _ ->
+            check_attribute_annotation "ViaAttributeName" origin
+            >>= fun () ->
+            (* Attribute annotations of the form `a: ViaAttributeName[...]`. *)
+            extract_via_tag ~requires_parameter_name:false "ViaAttributeName" argument
+            >>| fun tag ->
+            let via_feature = Features.ViaFeature.ViaAttributeName { tag } in
+            [
+              TaintAnnotation.Tito
+                {
+                  tito = Sinks.LocalReturn;
+                  features = { TaintFeatures.empty with via_features = [via_feature] };
+                };
+            ]
         | Some "PartialSink", _ ->
+            check_parameter_annotation "PartialSink" origin
+            >>= fun () ->
             get_partial_sink_kind argument
             >>| fun partial_sink ->
             [TaintAnnotation.Sink { sink = partial_sink; features = TaintFeatures.empty }]
@@ -571,23 +736,32 @@ let rec parse_annotations
                     (annotation_error
                        "Expected either integer or string as index in AppliesTo annotation.")
             in
+            let error_on_ambiguous_applies_to = function
+              | { TaintFeatures.applies_to = Some _; parameter_path = Some _; _ } ->
+                  Error (annotation_error "`AppliesTo[]` cannot be used with `ParameterPath[]`")
+              | { applies_to = Some _; return_path = Some _; _ } ->
+                  Error (annotation_error "`AppliesTo[]` cannot be used with `ReturnPath[]`")
+              | { applies_to = Some _; update_path = Some _; _ } ->
+                  Error (annotation_error "`AppliesTo[]` cannot be used with `UpdatePath[]`")
+              | features -> Ok features
+            in
             let extend_applies_to field = function
               | TaintAnnotation.Sink { sink; features } ->
-                  Ok
-                    (TaintAnnotation.Sink
-                       { sink; features = TaintFeatures.extend_applies_to features field })
+                  TaintFeatures.extend_applies_to features field
+                  |> error_on_ambiguous_applies_to
+                  >>| fun features -> TaintAnnotation.Sink { sink; features }
               | TaintAnnotation.Source { source; features } ->
-                  Ok
-                    (TaintAnnotation.Source
-                       { source; features = TaintFeatures.extend_applies_to features field })
+                  TaintFeatures.extend_applies_to features field
+                  |> error_on_ambiguous_applies_to
+                  >>| fun features -> TaintAnnotation.Source { source; features }
               | TaintAnnotation.Tito { tito; features } ->
-                  Ok
-                    (TaintAnnotation.Tito
-                       { tito; features = TaintFeatures.extend_applies_to features field })
+                  TaintFeatures.extend_applies_to features field
+                  |> error_on_ambiguous_applies_to
+                  >>| fun features -> TaintAnnotation.Tito { tito; features }
               | TaintAnnotation.AddFeatureToArgument { features } ->
-                  Ok
-                    (TaintAnnotation.AddFeatureToArgument
-                       { features = TaintFeatures.extend_applies_to features field })
+                  TaintFeatures.extend_applies_to features field
+                  |> error_on_ambiguous_applies_to
+                  >>| fun features -> TaintAnnotation.AddFeatureToArgument { features }
               | TaintAnnotation.Sanitize _ ->
                   Error (annotation_error "`AppliesTo[Sanitize[...]]` is not supported.")
             in
@@ -602,11 +776,10 @@ let rec parse_annotations
                 parse_annotations
                   ~path
                   ~location:expression.Node.location
-                  ~model_name
+                  ~origin
                   ~taint_configuration
                   ~parameters
                   ~callable_parameter_names_to_positions
-                  ~is_object_target
                   expression)
             |> all
             |> map ~f:List.concat
@@ -617,7 +790,12 @@ let rec parse_annotations
         | "TaintInTaintOut" ->
             Ok [Tito { tito = Sinks.LocalReturn; features = TaintFeatures.empty }]
         | "ViaTypeOf" ->
-            if is_object_target then
+            if not (AnnotationOrigin.is_attribute origin) then
+              Error
+                (annotation_error
+                   "A standalone `ViaTypeOf` without arguments can only be used in attribute or \
+                    global models")
+            else
               (* Attribute annotations of the form `a: ViaTypeOf = ...` is equivalent to:
                  TaintInTaintOut[ViaTypeOf[$global]] = ...` *)
               let via_feature =
@@ -632,22 +810,28 @@ let rec parse_annotations
                       features = { TaintFeatures.empty with via_features = [via_feature] };
                     };
                 ]
-            else
-              Error
-                (annotation_error
-                   "A standalone `ViaTypeOf` without arguments can only be used in attribute or \
-                    global models.")
+        | "ViaAttributeName" ->
+            check_attribute_annotation identifier origin
+            >>| fun () ->
+            (* Attribute annotations of the form `a: ViaAttributeName = ...`. *)
+            let via_feature = Features.ViaFeature.ViaAttributeName { tag = None } in
+            [
+              TaintAnnotation.Tito
+                {
+                  tito = Sinks.LocalReturn;
+                  features = { TaintFeatures.empty with via_features = [via_feature] };
+                };
+            ]
         | _ -> invalid_annotation_error ())
     | Expression.Tuple expressions ->
         List.map expressions ~f:(fun expression ->
             parse_annotations
               ~path
               ~location:expression.Node.location
-              ~model_name
+              ~origin
               ~taint_configuration
               ~parameters
               ~callable_parameter_names_to_positions
-              ~is_object_target
               expression)
         |> all
         >>| List.concat
@@ -866,7 +1050,7 @@ let rec class_names_from_annotation = function
 let get_class_attributes ~resolution = function
   | "object" -> Some []
   | class_name ->
-      GlobalResolution.class_summary resolution (Type.Primitive class_name)
+      GlobalResolution.class_summary resolution class_name
       >>| Node.value
       >>| fun class_summary ->
       let attributes = ClassSummary.attributes ~include_generated_attributes:false class_summary in
@@ -884,14 +1068,15 @@ let get_class_attributes ~resolution = function
 
 let get_class_attributes_transitive ~resolution class_name =
   let successors =
-    GlobalResolution.class_metadata resolution (Type.Primitive class_name)
-    >>| (fun { ClassMetadataEnvironment.successors; _ } -> successors)
-    |> Option.value ~default:[]
+    match GlobalResolution.class_metadata resolution class_name with
+    | Some { ClassMetadataEnvironment.successors = Some successors; _ } -> successors
+    | _ -> []
   in
   class_name :: successors |> List.filter_map ~f:(get_class_attributes ~resolution) |> List.concat
 
 
 let paths_for_source_or_sink ~resolution ~kind ~root ~root_annotations ~features =
+  let open Core.Result in
   let all_static_field_paths () =
     let attributes =
       root_annotations
@@ -906,6 +1091,16 @@ let paths_for_source_or_sink ~resolution ~kind ~root ~root_annotations ~features
     | attributes ->
         List.map ~f:(fun attribute -> [Abstract.TreeDomain.Label.Index attribute]) attributes
   in
+  let expand_model_path = function
+    | TaintPath.Path path ->
+        let expand_label = function
+          | TaintPath.Label.TreeLabel label -> Ok label
+          | TaintPath.Label.ParameterName ->
+              Error (Format.asprintf "`parameter_name()` is not allowed for %ss" kind)
+        in
+        path |> List.map ~f:expand_label |> Core.Result.all >>| fun path -> [path]
+    | TaintPath.AllStaticFields -> Ok (all_static_field_paths ())
+  in
   let paths_for_parameter () =
     let kind =
       match kind with
@@ -914,14 +1109,13 @@ let paths_for_source_or_sink ~resolution ~kind ~root ~root_annotations ~features
     in
     match features with
     | {
-     TaintFeatures.parameter_path = Some (TaintPath.Regular parameter_path);
+     TaintFeatures.parameter_path = Some path;
      applies_to = None;
      return_path = None;
      update_path = None;
      _;
     } ->
-        Ok [parameter_path]
-    | { parameter_path = Some TaintPath.AllStaticFields; _ } -> Ok (all_static_field_paths ())
+        expand_model_path path
     | { return_path = Some _; _ } ->
         Error (Format.sprintf "Invalid ReturnPath annotation for %s" kind)
     | { update_path = Some _; _ } ->
@@ -937,13 +1131,13 @@ let paths_for_source_or_sink ~resolution ~kind ~root ~root_annotations ~features
     in
     match features with
     | {
-     TaintFeatures.return_path = Some return_path;
+     TaintFeatures.return_path = Some path;
      applies_to = None;
      parameter_path = None;
      update_path = None;
      _;
     } ->
-        Ok [return_path]
+        expand_model_path path
     | { parameter_path = Some _; _ } ->
         Error (Format.sprintf "Invalid ParameterPath annotation for %s" kind)
     | { update_path = Some _; _ } ->
@@ -958,6 +1152,75 @@ let paths_for_source_or_sink ~resolution ~kind ~root ~root_annotations ~features
       Ok [Option.value ~default:[] applies_to]
   | AccessPath.Root.LocalResult, _ -> paths_for_return ()
   | _ -> paths_for_parameter ()
+
+
+let expand_model_labels ~parameter path =
+  let open Core.Result in
+  let expand_parameter_name () =
+    match parameter with
+    | root when AccessPath.Root.equal root attribute_symbolic_parameter ->
+        Error "`parameter_name()` is not allowed for attribute or global models"
+    | AccessPath.Root.LocalResult ->
+        Error "`parameter_name()` is not allowed for return annotations"
+    | AccessPath.Root.PositionalParameter { name; positional_only = false; _ }
+    | AccessPath.Root.NamedParameter { name; _ } ->
+        Ok (Some (Abstract.TreeDomain.Label.Index name))
+    | AccessPath.Root.PositionalParameter { positional_only = true; _ }
+    | AccessPath.Root.StarParameter _
+    | AccessPath.Root.StarStarParameter _ ->
+        Ok None
+    | AccessPath.Root.Variable _
+    | AccessPath.Root.CapturedVariable _ ->
+        failwith "unexpected access path root in model generation"
+  in
+  let expand_label = function
+    | TaintPath.Label.TreeLabel label -> Ok (Some label)
+    | TaintPath.Label.ParameterName -> expand_parameter_name ()
+  in
+  path |> List.map ~f:expand_label |> Core.Result.all >>| List.filter_map ~f:Fn.id
+
+
+let input_path_for_tito ~input_root ~kind ~features =
+  match features with
+  | { TaintFeatures.applies_to; parameter_path = None; _ } ->
+      Ok (Option.value ~default:[] applies_to)
+  | { parameter_path = Some parameter_path; applies_to = None; _ } -> (
+      match parameter_path with
+      | TaintPath.Path path -> expand_model_labels ~parameter:input_root path
+      | TaintPath.AllStaticFields ->
+          Error "`all_static_fields()` is not allowed within `TaintInTaintOut[]`")
+  | _ ->
+      Error
+        (Format.asprintf
+           "Invalid mix of AppliesTo and ParameterPath for %a annotation"
+           Sinks.pp
+           kind)
+
+
+let output_path_for_tito ~input_root ~kind ~features =
+  match Sinks.discard_transforms kind, features with
+  | _, { TaintFeatures.return_path = None; update_path = None; _ } -> Ok []
+  | Sinks.LocalReturn, { return_path = Some return_path; update_path = None; _ } -> (
+      match return_path with
+      | TaintPath.Path path -> expand_model_labels ~parameter:input_root path
+      | TaintPath.AllStaticFields ->
+          Error "`all_static_fields()` is not allowed within `TaintInTaintOut[]`")
+  | Sinks.LocalReturn, { update_path = Some _; return_path = None; _ } ->
+      Error "Invalid UpdatePath annotation for TaintInTaintOut annotation"
+  | Sinks.ParameterUpdate _, { return_path = Some _; update_path = None; _ } ->
+      Error "Invalid ReturnPath annotation for Updates annotation"
+  | Sinks.ParameterUpdate _, { update_path = Some update_path; return_path = None; _ } -> (
+      match update_path with
+      | TaintPath.Path path -> expand_model_labels ~parameter:input_root path
+      | TaintPath.AllStaticFields ->
+          Error "`all_static_fields()` is not allowed within `TaintInTaintOut[]`")
+  | Sinks.Attach, { return_path = Some _; _ } ->
+      Error "Invalid ReturnPath annotation for AttachTo annotation"
+  | Sinks.Attach, { update_path = Some _; _ } ->
+      Error "Invalid UpdatePath annotation for AttachTo annotation"
+  | kind, _ ->
+      Error
+        (Format.asprintf "Invalid mix of ReturnPath and UpdatePath for %a annotation" Sinks.pp kind)
 
 
 let type_breadcrumbs_from_annotations ~resolution annotations =
@@ -1088,44 +1351,9 @@ let introduce_taint_in_taint_out
     | Some CollapseDepth.NoCollapse -> Features.CollapseDepth.no_collapse
     | Some (CollapseDepth.Value depth) -> depth
   in
-  let input_path =
-    match features with
-    | { applies_to; parameter_path = None; _ } -> Ok (Option.value ~default:[] applies_to)
-    | { parameter_path = Some (TaintPath.Regular parameter_path); applies_to = None; _ } ->
-        Ok parameter_path
-    | { parameter_path = Some TaintPath.AllStaticFields; _ } ->
-        Error "`all_static_fields()` is not allowed within `TaintInTaintOut[]`"
-    | _ ->
-        Error
-          (Format.asprintf
-             "Invalid mix of AppliesTo and ParameterPath for %a annotation"
-             Sinks.pp
-             taint_sink_kind)
-  in
-  input_path
+  input_path_for_tito ~input_root:root ~kind:taint_sink_kind ~features
   >>= fun input_path ->
-  let output_path =
-    match Sinks.discard_transforms taint_sink_kind, features with
-    | _, { return_path = None; update_path = None; _ } -> Ok []
-    | Sinks.LocalReturn, { return_path = Some return_path; update_path = None; _ } -> Ok return_path
-    | Sinks.LocalReturn, { update_path = Some _; return_path = None; _ } ->
-        Error "Invalid UpdatePath annotation for TaintInTaintOut annotation"
-    | Sinks.ParameterUpdate _, { return_path = Some _; update_path = None; _ } ->
-        Error "Invalid ReturnPath annotation for Updates annotation"
-    | Sinks.ParameterUpdate _, { update_path = Some update_path; return_path = None; _ } ->
-        Ok update_path
-    | Sinks.Attach, { return_path = Some _; _ } ->
-        Error "Invalid ReturnPath annotation for AttachTo annotation"
-    | Sinks.Attach, { update_path = Some _; _ } ->
-        Error "Invalid UpdatePath annotation for AttachTo annotation"
-    | taint_sink_kind, _ ->
-        Error
-          (Format.asprintf
-             "Invalid mix of ReturnPath and UpdatePath for %a annotation"
-             Sinks.pp
-             taint_sink_kind)
-  in
-  output_path
+  output_path_for_tito ~input_root:root ~kind:taint_sink_kind ~features
   >>= fun output_path ->
   let tito_result_taint =
     Domains.local_return_frame ~output_path ~collapse_depth
@@ -1898,7 +2126,6 @@ let parse_model_clause
     ~path
     ~taint_configuration
     ~find_clause
-    ~is_object_target
     ({ Node.value; location } as expression)
   =
   let open Core.Result in
@@ -1910,7 +2137,7 @@ let parse_model_clause
          { expression = callee; find_clause_kind = ModelQuery.Find.show find_clause })
   in
   let parse_model ({ Node.value; _ } as model_expression) =
-    let parse_taint taint_expression =
+    let parse_taint ~origin taint_expression =
       let parse_produced_taint expression =
         match Node.value expression with
         | Expression.Call
@@ -1959,12 +2186,10 @@ let parse_model_clause
             parse_annotations
               ~path
               ~location
-              ~model_name:"model query"
+              ~origin
               ~taint_configuration
               ~parameters:[]
               ~callable_parameter_names_to_positions:None
-              ~is_object_target
-              ~is_model_query:true
               expression
             >>| List.map ~f:(fun taint -> ModelQuery.QueryTaintAnnotation.TaintAnnotation taint)
       in
@@ -1987,21 +2212,25 @@ let parse_model_clause
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
         check_find ~callee ModelQuery.Find.is_callable
-        >>= fun () -> parse_taint taint >>| fun taint -> ModelQuery.Model.Return taint
+        >>= fun () ->
+        parse_taint ~origin:ModelQueryReturn taint >>| fun taint -> ModelQuery.Model.Return taint
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "AttributeModel"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
         check_find ~callee ModelQuery.Find.is_attribute
-        >>= fun () -> parse_taint taint >>| fun taint -> ModelQuery.Model.Attribute taint
+        >>= fun () ->
+        parse_taint ~origin:ModelQueryAttribute taint
+        >>| fun taint -> ModelQuery.Model.Attribute taint
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "GlobalModel"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
         check_find ~callee ModelQuery.Find.is_global
-        >>= fun () -> parse_taint taint >>| fun taint -> ModelQuery.Model.Global taint
+        >>= fun () ->
+        parse_taint ~origin:ModelQueryGlobal taint >>| fun taint -> ModelQuery.Model.Global taint
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "Modes"); _ } as callee;
@@ -2062,7 +2291,8 @@ let parse_model_clause
         } ->
         check_find ~callee ModelQuery.Find.is_callable
         >>= fun () ->
-        parse_taint taint >>| fun taint -> ModelQuery.Model.NamedParameter { name; taint }
+        parse_taint ~origin:ModelQueryParameter taint
+        >>| fun taint -> ModelQuery.Model.NamedParameter { name; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "PositionalParameter"); _ } as callee;
@@ -2077,7 +2307,8 @@ let parse_model_clause
         } ->
         check_find ~callee ModelQuery.Find.is_callable
         >>= fun () ->
-        parse_taint taint >>| fun taint -> ModelQuery.Model.PositionalParameter { index; taint }
+        parse_taint ~origin:ModelQueryParameter taint
+        >>| fun taint -> ModelQuery.Model.PositionalParameter { index; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
@@ -2085,7 +2316,8 @@ let parse_model_clause
         } ->
         check_find ~callee ModelQuery.Find.is_callable
         >>= fun () ->
-        parse_taint taint >>| fun taint -> ModelQuery.Model.AllParameters { excludes = []; taint }
+        parse_taint ~origin:ModelQueryParameter taint
+        >>| fun taint -> ModelQuery.Model.AllParameters { excludes = []; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
@@ -2112,7 +2344,8 @@ let parse_model_clause
         in
         excludes
         >>= fun excludes ->
-        parse_taint taint >>| fun taint -> ModelQuery.Model.AllParameters { excludes; taint }
+        parse_taint ~origin:ModelQueryParameter taint
+        >>| fun taint -> ModelQuery.Model.AllParameters { excludes; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "Parameters"); _ } as callee;
@@ -2122,14 +2355,16 @@ let parse_model_clause
         >>= fun () ->
         match arguments with
         | [{ Call.Argument.value = taint; _ }] ->
-            parse_taint taint >>| fun taint -> ModelQuery.Model.Parameter { where = []; taint }
+            parse_taint ~origin:ModelQueryParameter taint
+            >>| fun taint -> ModelQuery.Model.Parameter { where = []; taint }
         | [
          { Call.Argument.value = taint; _ };
          { Call.Argument.name = Some { Node.value = "where"; _ }; value = where_clause };
         ] ->
             parse_parameter_where_clause ~path where_clause
             >>= fun where ->
-            parse_taint taint >>| fun taint -> ModelQuery.Model.Parameter { where; taint }
+            parse_taint ~origin:ModelQueryParameter taint
+            >>| fun taint -> ModelQuery.Model.Parameter { where; taint }
         | _ ->
             Error
               (model_verification_error
@@ -2193,22 +2428,20 @@ let port_annotations_from_signature ~root ~callable_annotation =
 let parse_parameter_taint
     ~path
     ~location
-    ~model_name
+    ~origin
     ~taint_configuration
     ~parameters
     ~callable_parameter_names_to_positions
-    ~is_object_target
-    (root, _name, parameter)
+    { AccessPath.NormalizedParameter.root; original = parameter; _ }
   =
   parameter.Node.value.Parameter.annotation
   >>| parse_annotations
         ~path
         ~location
-        ~model_name
+        ~origin
         ~taint_configuration
         ~parameters
         ~callable_parameter_names_to_positions
-        ~is_object_target
   |> Option.value ~default:(Ok [])
   |> Core.Result.map
        ~f:(List.map ~f:(fun annotation -> ModelAnnotation.ParameterAnnotation (root, annotation)))
@@ -2329,22 +2562,20 @@ let add_taint_annotation_to_model
 let parse_return_taint
     ~path
     ~location
-    ~model_name
+    ~origin
     ~taint_configuration
     ~parameters
     ~callable_parameter_names_to_positions
-    ~is_object_target
     expression
   =
   let open Core.Result in
   parse_annotations
     ~path
     ~location
-    ~model_name
+    ~origin
     ~taint_configuration
     ~parameters
     ~callable_parameter_names_to_positions
-    ~is_object_target
     expression
   |> map ~f:(List.map ~f:(fun annotation -> ModelAnnotation.ReturnAnnotation annotation))
 
@@ -2408,11 +2639,10 @@ let resolve_global_callable
 
 let adjust_sanitize_and_modes_and_skipped_override
     ~path
-    ~define_name
     ~taint_configuration
+    ~origin
     ~source_sink_filter
     ~top_level_decorators
-    ~is_object_target
     model
   =
   let open Core.Result in
@@ -2432,11 +2662,10 @@ let adjust_sanitize_and_modes_and_skipped_override
     parse_annotations
       ~path
       ~location
-      ~model_name:(Reference.show define_name)
+      ~origin
       ~taint_configuration
       ~parameters:[]
       ~callable_parameter_names_to_positions:None
-      ~is_object_target
       expression
     |> function
     | Ok [Sanitize sanitize_annotations] ->
@@ -2475,12 +2704,12 @@ let adjust_sanitize_and_modes_and_skipped_override
           };
         ] -> (
         match identifier with
-        | "TaintSource" when not is_object_target ->
+        | "TaintSource" when not (AnnotationOrigin.is_attribute origin) ->
             Error
               (annotation_error
                  "`TaintSource` is not supported within `Sanitize()`. Did you mean to use \
                   `SanitizeSingleTrace(...)`?")
-        | "TaintSink" when not is_object_target ->
+        | "TaintSink" when not (AnnotationOrigin.is_attribute origin) ->
             Error
               (annotation_error
                  "`TaintSink` is not supported within `Sanitize()`. Did you mean to use \
@@ -2508,13 +2737,15 @@ let adjust_sanitize_and_modes_and_skipped_override
         parse_sanitize_annotations ~location ~original_expression arguments
         >>= function
         | { Sanitize.sources; _ }
-          when (not (SanitizeTransform.SourceSet.is_empty sources)) && not is_object_target ->
+          when (not (SanitizeTransform.SourceSet.is_empty sources))
+               && not (AnnotationOrigin.is_attribute origin) ->
             Error
               (annotation_error
                  "`TaintSource` is not supported within `Sanitize(...)`. Did you mean to use \
                   `SanitizeSingleTrace(...)`?")
         | { Sanitize.sinks; _ }
-          when (not (SanitizeTransform.SinkSet.is_empty sinks)) && not is_object_target ->
+          when (not (SanitizeTransform.SinkSet.is_empty sinks))
+               && not (AnnotationOrigin.is_attribute origin) ->
             Error
               (annotation_error
                  "`TaintSink` is not supported within `Sanitize(...)`. Did you mean to use \
@@ -2598,6 +2829,7 @@ let adjust_sanitize_and_modes_and_skipped_override
     | "SkipObscure" -> Ok (sanitizers, Model.ModeSet.remove Obscure modes)
     | "Entrypoint" -> Ok (sanitizers, Model.ModeSet.add Entrypoint modes)
     | "IgnoreDecorator" -> Ok (sanitizers, Model.ModeSet.add IgnoreDecorator modes)
+    | "SkipModelBroadening" -> Ok (sanitizers, Model.ModeSet.add SkipModelBroadening modes)
     | _ -> Ok (sanitizers, modes)
   in
   List.fold_result
@@ -2623,7 +2855,6 @@ let create_model_from_signature
   =
   let open Core.Result in
   let open ModelVerifier in
-  let is_object_target = false in
   (* Strip off the decorators only used for taint annotations. *)
   let top_level_decorators, define =
     let get_taint_decorator decorator_expression =
@@ -2638,7 +2869,8 @@ let create_model_from_signature
           | ["SkipOverrides"]
           | ["Entrypoint"]
           | ["SkipObscure"]
-          | ["IgnoreDecorator"] ->
+          | ["IgnoreDecorator"]
+          | ["SkipModelBroadening"] ->
               Either.first decorator
           | _ -> Either.Second decorator_expression)
     in
@@ -2708,7 +2940,7 @@ let create_model_from_signature
   (* If there were parameters omitted from the model, the positioning will be off in the access path
      conversion. Let's fix the positions after the fact to make sure that our models aren't off. *)
   let normalized_model_parameters =
-    let parameters = AccessPath.Root.normalize_parameters parameters in
+    let parameters = AccessPath.normalize_parameters parameters in
     match callable_parameter_names_to_positions with
     | None -> Ok parameters
     | Some names_to_positions ->
@@ -2749,8 +2981,8 @@ let create_model_from_signature
               AccessPath.Root.PositionalParameter { name; position; positional_only = false }
           | root -> Ok root
         in
-        let adjust_position (root, name, parameter) =
-          adjust_position_of_root root >>| fun root -> root, name, parameter
+        let adjust_position ({ AccessPath.NormalizedParameter.root; _ } as parameter) =
+          adjust_position_of_root root >>| fun root -> { parameter with root }
         in
         List.map parameters ~f:adjust_position |> all
   in
@@ -2763,11 +2995,10 @@ let create_model_from_signature
         (parse_parameter_taint
            ~path
            ~location
-           ~model_name:(Reference.show callable_name)
+           ~origin:DefineParameter
            ~taint_configuration
            ~parameters
-           ~callable_parameter_names_to_positions
-           ~is_object_target)
+           ~callable_parameter_names_to_positions)
     |> all
     >>| List.concat
     >>= fun parameter_taint ->
@@ -2777,11 +3008,10 @@ let create_model_from_signature
            (parse_return_taint
               ~path
               ~location
-              ~model_name:(Reference.show callable_name)
+              ~origin:DefineReturn
               ~taint_configuration
               ~parameters
-              ~callable_parameter_names_to_positions
-              ~is_object_target)
+              ~callable_parameter_names_to_positions)
     |> Option.value ~default:(Ok [])
     >>| fun return_taint -> List.rev_append parameter_taint return_taint
   in
@@ -2815,10 +3045,9 @@ let create_model_from_signature
   >>= adjust_sanitize_and_modes_and_skipped_override
         ~path
         ~taint_configuration
+        ~origin:DefineDecorator
         ~source_sink_filter
         ~top_level_decorators
-        ~define_name:callable_name
-        ~is_object_target
   >>| fun model -> Model { Model.WithTarget.model; target = call_target }
 
 
@@ -2855,10 +3084,9 @@ let create_model_from_attribute
   >>= adjust_sanitize_and_modes_and_skipped_override
         ~path
         ~taint_configuration
+        ~origin:Attribute
         ~source_sink_filter
         ~top_level_decorators:decorators
-        ~define_name:name
-        ~is_object_target:true
   >>| fun model -> Model { Model.WithTarget.model; target = call_target }
 
 
@@ -2993,6 +3221,9 @@ let rec parse_statement
       let class_candidate =
         Reference.prefix name
         |> Option.map ~f:(GlobalResolution.parse_reference resolution)
+        |> Option.bind ~f:(fun parsed ->
+               let parent, _ = Type.split parsed in
+               Type.primitive_name parent)
         |> Option.bind ~f:(GlobalResolution.class_summary resolution)
       in
       let call_target =
@@ -3049,6 +3280,8 @@ let rec parse_statement
             Some (Either.Second (decorator_with_name "SkipOverrides"))
           else if String.equal name "Entrypoint" then
             Some (Either.Second (decorator_with_name "Entrypoint"))
+          else if String.equal name "SkipModelBroadening" then
+            Some (Either.Second (decorator_with_name "SkipModelBroadening"))
           else
             None
         in
@@ -3202,17 +3435,17 @@ let rec parse_statement
         || Expression.show annotation |> String.is_substring ~substring:"TaintInTaintOut["
         || Expression.show annotation |> String.equal "ViaTypeOf"
         || Expression.show annotation |> String.is_substring ~substring:"ViaTypeOf["
+        || Expression.show annotation |> String.equal "ViaAttributeName"
+        || Expression.show annotation |> String.is_substring ~substring:"ViaAttributeName["
       then
         let name = name_to_reference_exn name in
         parse_annotations
           ~path
           ~location
-          ~model_name:name
+          ~origin:Attribute
           ~taint_configuration
           ~parameters:[]
           ~callable_parameter_names_to_positions:None
-          ~is_object_target:true
-          ~is_model_query:false
           annotation
         >>| (fun annotations ->
               ParsedAttribute
@@ -3368,12 +3601,7 @@ let rec parse_statement
             parse_where_clause ~path ~find_clause:find where_clause
             |> as_result_error_list
             >>= fun where ->
-            parse_model_clause
-              ~path
-              ~taint_configuration
-              ~find_clause:find
-              ~is_object_target:(not (ModelQuery.Find.is_callable find))
-              model_clause
+            parse_model_clause ~path ~taint_configuration ~find_clause:find model_clause
             >>= check_write_to_cache_models ~path ~location ~where
             |> as_result_error_list
             >>= fun models ->

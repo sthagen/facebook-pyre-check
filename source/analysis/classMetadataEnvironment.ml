@@ -23,10 +23,13 @@ open Pyre
 module PreviousEnvironment = ClassHierarchyEnvironment
 
 type class_metadata = {
-  successors: Type.Primitive.t list;
+  (* `None` means successor computation for the given class failed (due to, e.g. inconsistent MRO).
+     TODO: Decide how `successors = None` would interact with other flags. Should we auto-derive
+     some of them based on the value of `successors`? *)
+  successors: Type.Primitive.t list option;
   is_test: bool;
+  is_mock: bool;
   is_final: bool;
-  extends_placeholder_stub_class: bool;
   is_abstract: bool;
   is_protocol: bool;
   is_typed_dictionary: bool;
@@ -52,48 +55,45 @@ let produce_class_metadata class_hierarchy_environment class_name ~dependency =
   in
   let add definition =
     let successors annotation =
-      let linearization =
-        ClassHierarchy.method_resolution_order_linearize
-          ~get_successors:
-            (ClassHierarchyEnvironment.ReadOnly.get_edges class_hierarchy_environment ?dependency)
-          annotation
+      let (module Handler) =
+        ClassHierarchyEnvironment.ReadOnly.class_hierarchy class_hierarchy_environment ?dependency
       in
-      match linearization with
-      | _ :: successors -> successors
-      | [] -> []
+      match
+        ClassHierarchy.method_resolution_order_linearize
+          ~get_successors:(ClassHierarchy.parents_of (module Handler))
+          annotation
+      with
+      | Result.Ok (_ :: successors) -> Some successors
+      | Result.Ok [] -> Some []
+      | Result.Error _ -> None
     in
     let successors = successors class_name in
     let is_final =
       definition |> fun { Node.value = definition; _ } -> ClassSummary.is_final definition
     in
-    let in_test = List.exists ~f:Type.Primitive.is_unit_test (class_name :: successors) in
-    let extends_placeholder_stub_class =
-      let empty_stub_environment =
-        AliasEnvironment.ReadOnly.empty_stub_environment alias_environment
+    let is_test =
+      List.exists ~f:Type.Primitive.is_unit_test (class_name :: Option.value successors ~default:[])
+    in
+    let is_mock =
+      let is_mock_class = function
+        | "unittest.mock.Base"
+        | "mock.Base"
+        | "unittest.mock.NonCallableMock"
+        | "mock.NonCallableMock" ->
+            true
+        | _ -> false
       in
-      definition
-      |> AnnotatedBases.extends_placeholder_stub_class
-           ~aliases:(AliasEnvironment.ReadOnly.get_alias alias_environment ?dependency)
-           ~from_empty_stub:
-             (EmptyStubEnvironment.ReadOnly.from_empty_stub empty_stub_environment ?dependency)
+      List.exists ~f:is_mock_class (class_name :: Option.value successors ~default:[])
     in
     let is_protocol = ClassSummary.is_protocol (Node.value definition) in
     let is_abstract = ClassSummary.is_abstract (Node.value definition) in
-    let class_hierarchy =
-      ClassHierarchyEnvironment.ReadOnly.class_hierarchy ?dependency class_hierarchy_environment
-    in
     let is_typed_dictionary =
-      ClassHierarchy.is_typed_dictionary_subclass ~class_hierarchy class_name
+      let total_typed_dictionary_name = Type.TypedDictionary.class_name ~total:true in
+      List.exists
+        ~f:([%compare.equal: Type.Primitive.t] total_typed_dictionary_name)
+        (Option.value successors ~default:[])
     in
-    {
-      is_test = in_test;
-      successors;
-      is_final;
-      extends_placeholder_stub_class;
-      is_protocol;
-      is_abstract;
-      is_typed_dictionary;
-    }
+    { is_test; is_mock; successors; is_final; is_protocol; is_abstract; is_typed_dictionary }
   in
   UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
     unannotated_global_environment
@@ -151,9 +151,25 @@ module ReadOnly = struct
   let class_hierarchy_environment = upstream_environment
 
   let successors read_only ?dependency class_name =
-    get_class_metadata read_only ?dependency class_name
-    >>| (fun { successors; _ } -> successors)
-    |> Option.value ~default:[]
+    match get_class_metadata read_only ?dependency class_name with
+    | Some { successors = Some successors; _ } -> successors
+    | _ -> []
+
+
+  let is_transitive_successor read_only ?dependency ~placeholder_subclass_extends_all ~target source
+    =
+    let class_hierarcy =
+      ClassHierarchyEnvironment.ReadOnly.class_hierarchy
+        ?dependency
+        (class_hierarchy_environment read_only)
+    in
+    let extends_placeholder_stub = ClassHierarchy.extends_placeholder_stub class_hierarcy in
+    let counts_as_extends_target current =
+      [%compare.equal: Type.Primitive.t] current target
+      || (placeholder_subclass_extends_all && extends_placeholder_stub current)
+    in
+    let successors_of_source = successors read_only ?dependency source in
+    List.exists (source :: successors_of_source) ~f:counts_as_extends_target
 end
 
 module MetadataReadOnly = ReadOnly

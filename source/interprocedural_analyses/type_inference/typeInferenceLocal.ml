@@ -5,7 +5,28 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* This module sets up the code needed to infer type annotations for unannotated function
+   parameters, return type, attributes, and globals.
+
+   General idea: Use annotations that are present to infer annotations that are absent.
+
+   * The forward pass of the fixpoint propagates types forward in the function: from parameters and
+   local variables to return types, variables that are assigned to, etc.
+
+   For example, if we see `return my_argument` and we know `my_argument` has type `int`, then we can
+   infer that `int` must be compatible with the type of `x`. If there are no other considerations
+   (such as other return statements), we can annotate the function as returning `-> int:`. We deal
+   similarly with `x = my_argument`.
+
+   * The backward pass propagates types backward in the function: from return statements, assignment
+   statements, function calls, etc. to variables and parameters.
+
+   For example, if we see `expect_int(my_argument)`, then we can infer that the type of
+   `my_argument` must be compatible with `int`. If there are no other considerations, we can
+   annotate the parameter as `my_argument: int`.
+
+   * The fixpoint runs the forward and backward passes till there are no more changes to any
+   variables (or we reach a threshold). *)
 
 open Core
 open Ast
@@ -1114,35 +1135,20 @@ let legacy_infer_for_define
 let infer_for_define ~configuration ~global_resolution ~source ~qualifier ~filename_lookup ~define =
   let timer = Timer.start () in
   let { Node.location; value = { Define.signature; _ } } = define in
-  let abstract = Define.Signature.is_abstract_method signature in
-  let error_to_inference { AnalysisError.location; kind; _ } =
-    let open AnalysisError in
-    match kind with
-    | MissingReturnAnnotation { annotation = Some type_; _ } when not abstract ->
-        Some Inference.{ type_; target = Return }
-    | MissingParameterAnnotation { name; annotation = Some type_; _ } ->
-        Some Inference.{ type_; target = Parameter { name } }
-    | MissingGlobalAnnotation { name; annotation = Some type_; _ } ->
-        Some Inference.{ type_; target = Global { name; location } }
-    | MissingAttributeAnnotation
-        { parent; missing_annotation = { name; annotation = Some type_; _ } } ->
-        Some
-          Inference.
-            { type_; target = Attribute { parent = type_to_reference parent; name; location } }
-    | _ -> None
-  in
-  let add_missing_annotation_error ~global_resolution ~lookup result error =
-    match error_to_inference error with
-    | None -> result
-    | Some raw ->
-        raw |> Inference.create |> LocalResult.add_inference ~global_resolution ~lookup result
+  let add_missing_annotation_error ~global_resolution ~define ~lookup result error =
+    Inference.from_error ~define error
+    |> LocalResult.add_inference ~global_resolution ~lookup result
   in
   let errors = legacy_infer_for_define ~configuration ~global_resolution ~source ~define in
   let result =
     List.fold
       ~init:
         (LocalResult.from_signature ~global_resolution ~lookup:filename_lookup ~qualifier define)
-      ~f:(add_missing_annotation_error ~global_resolution ~lookup:filename_lookup)
+      ~f:
+        (add_missing_annotation_error
+           ~global_resolution
+           ~define:(Node.value define)
+           ~lookup:filename_lookup)
       errors
   in
   let number_of_lines = location.stop.line - location.start.line + 1 in

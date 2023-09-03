@@ -40,17 +40,48 @@ module CollapseDepth = struct
 end
 
 module TaintPath = struct
+  module Label = struct
+    type t =
+      | TreeLabel of Abstract.TreeDomain.Label.t
+      | ParameterName
+    [@@deriving equal]
+
+    let pp formatter = function
+      | TreeLabel label when Abstract.TreeDomain.Label.equal label AccessPath.dictionary_keys ->
+          Format.fprintf formatter ".keys()"
+      | TreeLabel Abstract.TreeDomain.Label.AnyIndex -> Format.fprintf formatter ".all()"
+      | ParameterName -> Format.fprintf formatter ".parameter_name()"
+      | TreeLabel label -> Abstract.TreeDomain.Label.pp formatter label
+
+
+    let show = Format.asprintf "%a" pp
+  end
+
   type t =
-    | Regular of AccessPath.Path.t
+    | Path of Label.t list
     | AllStaticFields
   [@@deriving equal]
 
   let pp formatter = function
-    | Regular path -> AccessPath.Path.pp formatter path
+    | Path path -> List.iter ~f:(Label.pp formatter) path
     | AllStaticFields -> Format.fprintf formatter ".all_static_fields()"
 
 
   let show = Format.asprintf "%a" pp
+
+  let has_parameter_name = function
+    | Path path -> List.mem path ParameterName ~equal:Label.equal
+    | AllStaticFields -> false
+
+
+  let get_access_path = function
+    | Path path ->
+        let to_tree_label = function
+          | Label.TreeLabel label -> Ok label
+          | Label.ParameterName -> Error "parameter_name()"
+        in
+        path |> List.map ~f:to_tree_label |> Core.Result.all
+    | AllStaticFields -> Error "all_static_fields()"
 end
 
 module TaintFeatures = struct
@@ -59,8 +90,8 @@ module TaintFeatures = struct
     via_features: Features.ViaFeature.t list;
     applies_to: AccessPath.Path.t option;
     parameter_path: TaintPath.t option;
-    return_path: AccessPath.Path.t option;
-    update_path: AccessPath.Path.t option;
+    return_path: TaintPath.t option;
+    update_path: TaintPath.t option;
     leaf_names: Features.LeafName.t list;
     leaf_name_provided: bool;
     trace_length: int option;
@@ -154,21 +185,33 @@ module TaintFeatures = struct
       | Some value -> features @ [Format.asprintf "%s[%a]" name pp value]
       | None -> features
     in
-    let add_path_option ~name path features =
-      add_option ~name ~pp:AccessPath.Path.pp path features
-    in
     let add_collapse_depth features =
       match collapse_depth with
       | Some collapse_depth -> features @ [CollapseDepth.show collapse_depth]
       | None -> features
     in
     features
-    |> add_path_option ~name:"AppliesTo" applies_to
+    |> add_option ~name:"AppliesTo" ~pp:AccessPath.Path.pp applies_to
     |> add_option ~name:"ParameterPath" ~pp:TaintPath.pp parameter_path
-    |> add_path_option ~name:"ReturnPath" return_path
-    |> add_path_option ~name:"UpdatePath" update_path
+    |> add_option ~name:"ReturnPath" ~pp:TaintPath.pp return_path
+    |> add_option ~name:"UpdatePath" ~pp:TaintPath.pp update_path
     |> add_option ~name:"TraceLength" ~pp:Int.pp trace_length
     |> add_collapse_depth
+
+
+  let has_path_with_all_static_fields = function
+    | { parameter_path = Some TaintPath.AllStaticFields; _ }
+    | { return_path = Some TaintPath.AllStaticFields; _ }
+    | { update_path = Some TaintPath.AllStaticFields; _ } ->
+        true
+    | _ -> false
+
+
+  let has_path_with_parameter_name = function
+    | { parameter_path = Some path; _ } when TaintPath.has_parameter_name path -> true
+    | { return_path = Some path; _ } when TaintPath.has_parameter_name path -> true
+    | { update_path = Some path; _ } when TaintPath.has_parameter_name path -> true
+    | _ -> false
 end
 
 module TaintKindsWithFeatures = struct
@@ -781,7 +824,7 @@ let join
     { models = models_right; queries = queries_right; errors = errors_right }
   =
   {
-    models = Registry.merge_skewed ~join:Model.join_user_models models_left models_right;
+    models = Registry.merge ~join:Model.join_user_models models_left models_right;
     queries = List.rev_append queries_right queries_left;
     errors = List.rev_append errors_right errors_left;
   }

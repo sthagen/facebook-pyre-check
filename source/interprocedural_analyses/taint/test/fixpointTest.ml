@@ -61,15 +61,17 @@ let assert_fixpoint
     TaintFixpoint.compute
       ~scheduler
       ~type_environment
-      ~override_graph:override_graph_shared_memory
+      ~override_graph:
+        (Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory)
       ~dependency_graph
       ~context:
         {
           TaintFixpoint.Context.taint_configuration = taint_configuration_shared_memory;
           type_environment;
           class_interval_graph = class_interval_graph_shared_memory;
-          define_call_graphs;
-          global_constants;
+          define_call_graphs =
+            Interprocedural.CallGraph.DefineCallGraphSharedMemory.read_only define_call_graphs;
+          global_constants = Interprocedural.GlobalConstants.SharedMemory.read_only global_constants;
         }
       ~callables_to_analyze
       ~max_iterations:100

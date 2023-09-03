@@ -37,10 +37,10 @@ let test_simple_registration context =
     "test.C"
     (Some
        {
-         successors = ["object"];
+         successors = Some ["object"];
          is_test = false;
+         is_mock = false;
          is_final = false;
-         extends_placeholder_stub_class = false;
          is_protocol = false;
          is_abstract = false;
          is_typed_dictionary = false;
@@ -55,10 +55,10 @@ let test_simple_registration context =
     "test.C"
     (Some
        {
-         successors = ["test.D"; "object"];
+         successors = Some ["test.D"; "object"];
          is_test = false;
+         is_mock = false;
          is_final = false;
-         extends_placeholder_stub_class = false;
          is_protocol = false;
          is_abstract = false;
          is_typed_dictionary = false;
@@ -71,10 +71,10 @@ let test_simple_registration context =
     "test.C"
     (Some
        {
-         successors = ["object"];
+         successors = Some ["object"];
          is_test = false;
+         is_mock = false;
          is_final = false;
-         extends_placeholder_stub_class = false;
          is_protocol = false;
          is_abstract = true;
          is_typed_dictionary = false;
@@ -87,10 +87,10 @@ let test_simple_registration context =
     "test.C"
     (Some
        {
-         successors = ["object"];
+         successors = Some ["object"];
          is_test = false;
+         is_mock = false;
          is_final = false;
-         extends_placeholder_stub_class = false;
          is_protocol = true;
          is_abstract = false;
          is_typed_dictionary = false;
@@ -104,10 +104,44 @@ let test_simple_registration context =
     "unittest.TestCase"
     (Some
        {
-         successors = ["object"];
+         successors = Some ["object"];
          is_test = true;
+         is_mock = false;
          is_final = false;
-         extends_placeholder_stub_class = false;
+         is_protocol = false;
+         is_abstract = false;
+         is_typed_dictionary = false;
+       });
+  assert_registers
+    ~source_name:"mock"
+    {|
+      class NonCallableMock:
+        pass
+    |}
+    "mock.NonCallableMock"
+    (Some
+       {
+         successors = Some ["object"];
+         is_test = false;
+         is_mock = true;
+         is_final = false;
+         is_protocol = false;
+         is_abstract = false;
+         is_typed_dictionary = false;
+       });
+  assert_registers
+    ~source_name:"unittest/mock"
+    {|
+      class Base:
+        pass
+    |}
+    "unittest.mock.Base"
+    (Some
+       {
+         successors = Some ["object"];
+         is_test = false;
+         is_mock = true;
+         is_final = false;
          is_protocol = false;
          is_abstract = false;
          is_typed_dictionary = false;
@@ -190,10 +224,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["object"];
+              successors = Some ["object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -206,10 +240,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["object"];
+              successors = Some ["object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -233,10 +267,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["object"];
+              successors = Some ["object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -249,10 +283,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["test.D"; "object"];
+              successors = Some ["test.D"; "object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -289,10 +323,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["object"];
+              successors = Some ["object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = true;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -305,10 +339,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["placeholder.Base"; "object"];
+              successors = Some ["placeholder.Base"; "object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -345,10 +379,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["object"];
+              successors = Some ["object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -357,10 +391,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["test.C"; "object"];
+              successors = Some ["test.C"; "object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -369,10 +403,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["test.A"; "object"];
+              successors = Some ["test.A"; "object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -381,10 +415,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["test.D"; "test.C"; "test.A"; "object"];
+              successors = Some ["test.D"; "test.C"; "test.A"; "object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -393,10 +427,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["test.B"; "test.A"; "object"];
+              successors = Some ["test.B"; "test.A"; "object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = true;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -421,10 +455,10 @@ let test_updates context =
           dependency,
           Some
             {
-              successors = ["object"];
+              successors = Some ["object"];
               is_test = false;
+              is_mock = false;
               is_final = false;
-              extends_placeholder_stub_class = false;
               is_protocol = false;
               is_abstract = false;
               is_typed_dictionary = false;
@@ -434,15 +468,161 @@ let test_updates context =
   ()
 
 
+let test_is_transitive_successors context =
+  let assert_is_successor ~source ~expected ~placeholder_subclass_extends_all ~target predecessor =
+    let project =
+      ScratchProject.setup
+        ["test.py", source; "my_placeholder_stub.pyi", "# pyre-placeholder-stub"]
+        ~include_typeshed_stubs:true
+        ~include_helper_builtins:false
+        ~context
+    in
+    let read_only =
+      ScratchProject.errors_environment project
+      |> ErrorsEnvironment.Testing.ReadOnly.class_metadata_environment
+    in
+    assert_equal
+      ~cmp:Bool.equal
+      ~printer:Bool.to_string
+      expected
+      (ClassMetadataEnvironment.ReadOnly.is_transitive_successor
+         read_only
+         ~placeholder_subclass_extends_all
+         ~target
+         predecessor)
+  in
+
+  assert_is_successor
+    ~source:{|
+    class A: pass
+  |}
+    ~placeholder_subclass_extends_all:false
+    ~target:"test.A"
+    "test.A"
+    ~expected:true;
+  assert_is_successor
+    ~source:{|
+    class A: pass
+  |}
+    ~placeholder_subclass_extends_all:true
+    ~target:"test.A"
+    "test.A"
+    ~expected:true;
+
+  assert_is_successor
+    ~source:{|
+    class A: pass
+    class B: pass
+  |}
+    ~placeholder_subclass_extends_all:false
+    ~target:"test.A"
+    "test.B"
+    ~expected:false;
+  assert_is_successor
+    ~source:{|
+    class A: pass
+    class B: pass
+  |}
+    ~placeholder_subclass_extends_all:true
+    ~target:"test.A"
+    "test.B"
+    ~expected:false;
+
+  assert_is_successor
+    ~source:{|
+    class A: pass
+    class B(A): pass
+  |}
+    ~placeholder_subclass_extends_all:false
+    ~target:"test.A"
+    "test.B"
+    ~expected:true;
+  assert_is_successor
+    ~source:{|
+    class A: pass
+    class B(A): pass
+  |}
+    ~placeholder_subclass_extends_all:true
+    ~target:"test.A"
+    "test.B"
+    ~expected:true;
+
+  assert_is_successor
+    ~source:{|
+    class A: pass
+    class B(A): pass
+    class C(B): pass
+  |}
+    ~placeholder_subclass_extends_all:false
+    ~target:"test.A"
+    "test.C"
+    ~expected:true;
+  assert_is_successor
+    ~source:{|
+    class A: pass
+    class B(A): pass
+    class C(B): pass
+  |}
+    ~placeholder_subclass_extends_all:true
+    ~target:"test.A"
+    "test.C"
+    ~expected:true;
+
+  assert_is_successor
+    ~source:{|
+    class A: pass
+    class B(A): pass
+    class C: pass
+    class D(C, B): pass
+  |}
+    ~placeholder_subclass_extends_all:false
+    ~target:"test.A"
+    "test.D"
+    ~expected:true;
+  assert_is_successor
+    ~source:{|
+    class A: pass
+    class B(A): pass
+    class C: pass
+    class D(C, B): pass
+  |}
+    ~placeholder_subclass_extends_all:true
+    ~target:"test.A"
+    "test.D"
+    ~expected:true;
+
+  assert_is_successor
+    ~source:{|
+    from my_placeholder_stub import A
+    class B: pass
+    class C(A): pass
+  |}
+    ~placeholder_subclass_extends_all:true
+    ~target:"test.B"
+    "test.C"
+    ~expected:true;
+  assert_is_successor
+    ~source:{|
+    from my_placeholder_stub import A
+    class B: pass
+    class C(A): pass
+  |}
+    ~placeholder_subclass_extends_all:false
+    ~target:"test.B"
+    "test.C"
+    ~expected:false;
+  ()
+
+
 let assert_overlay_parents ~context ~overlay ~qualified_class_name expected_successors =
   match
     ClassMetadataEnvironment.ReadOnly.get_class_metadata
       (ClassMetadataEnvironment.Overlay.read_only overlay)
       qualified_class_name
   with
-  | None -> failwith ("Failed to look up " ^ qualified_class_name)
-  | Some { ClassMetadataEnvironment.successors; _ } ->
+  | Some { ClassMetadataEnvironment.successors = Some successors; _ } ->
       assert_equal ~ctxt:context ~printer:[%show: Identifier.t list] expected_successors successors
+  | _ -> failwith ("Failed to look up " ^ qualified_class_name)
 
 
 let assert_overlay_state ~context ~overlay qualified_class_name_successors_pairs =
@@ -680,6 +860,7 @@ let () =
   >::: [
          "simple_registration" >:: test_simple_registration;
          "updates" >:: test_updates;
+         "is_transitive_successors" >:: test_is_transitive_successors;
          "overlay_dependency_filtering" >:: test_overlay_dependency_filtering;
          "overlay_propagation" >:: test_overlay_propagation;
        ]

@@ -26,7 +26,10 @@ module Entry = struct
     | InitialCallables
     | ClassHierarchyGraph
     | ClassIntervalGraph
-    | InitialModels
+    | PreviousAnalysisSetup
+    | OverrideGraph
+    | CallGraph
+    | GlobalConstants
   [@@deriving compare, show { with_path = false }]
 
   let show_pretty = function
@@ -34,7 +37,10 @@ module Entry = struct
     | InitialCallables -> "initial callables"
     | ClassHierarchyGraph -> "class hierarchy graph"
     | ClassIntervalGraph -> "class interval graph"
-    | InitialModels -> "initial models"
+    | PreviousAnalysisSetup -> "previous analysis setup"
+    | OverrideGraph -> "override graph"
+    | CallGraph -> "call graph"
+    | GlobalConstants -> "global constants"
 end
 
 module EntryStatus = struct
@@ -46,9 +52,23 @@ module EntryStatus = struct
 
   let add ~name ~usage = Map.add name usage
 
+  let get = Map.find
+
   let to_json entry_status =
     let accumulate name usage so_far = (Entry.show name, `String (Usage.show usage)) :: so_far in
     `Assoc (Map.fold accumulate entry_status [])
+end
+
+module AnalysisSetup = struct
+  type t = {
+    maximum_overrides: int option;
+    attribute_targets: Interprocedural.Target.Set.t;
+    skip_analysis_targets: Interprocedural.Target.Set.t;
+    skip_overrides_targets: Ast.Reference.SerializableSet.t;
+    skipped_overrides: Interprocedural.OverrideGraph.skipped_overrides;
+    initial_callables: FetchCallables.t;
+    whole_program_call_graph: Interprocedural.CallGraph.WholeProgramCallGraph.t;
+  }
 end
 
 module SharedMemoryStatus = struct
@@ -59,7 +79,10 @@ module SharedMemoryStatus = struct
     | LoadError
     | NotFound
     | Disabled
-    | Loaded of EntryStatus.t
+    | Loaded of {
+        entry_status: EntryStatus.t;
+        previous_analysis_setup: AnalysisSetup.t;
+      }
 
   let to_json = function
     | InvalidByDecoratorChange -> `String "InvalidByDecoratorChange"
@@ -68,7 +91,44 @@ module SharedMemoryStatus = struct
     | LoadError -> `String "LoadError"
     | NotFound -> `String "NotFound"
     | Disabled -> `String "Disabled"
-    | Loaded entry_status -> `Assoc ["Loaded", EntryStatus.to_json entry_status]
+    | Loaded { entry_status; _ } -> `Assoc ["Loaded", EntryStatus.to_json entry_status]
+
+
+  let set_entry_usage ~entry ~usage status =
+    match status with
+    | Loaded ({ entry_status; _ } as loaded) ->
+        let entry_status = EntryStatus.add ~name:entry ~usage entry_status in
+        Loaded { loaded with entry_status }
+    | _ -> status
+end
+
+module PreviousAnalysisSetupSharedMemory = struct
+  let entry = Entry.PreviousAnalysisSetup
+
+  module T = SaveLoadSharedMemory.MakeSingleValue (struct
+    type t = AnalysisSetup.t
+
+    let prefix = Hack_parallel.Std.Prefix.make ()
+
+    let name = Entry.show_pretty entry
+  end)
+
+  let load_from_cache entry_status =
+    match T.load_from_cache () with
+    | Ok previous_analysis_setup ->
+        let entry_status =
+          EntryStatus.add ~name:entry ~usage:SaveLoadSharedMemory.Usage.Used entry_status
+        in
+        SharedMemoryStatus.Loaded { entry_status; previous_analysis_setup }
+    | Error error ->
+        Log.info
+          "Reset shared memory due to failing to load the previous analysis setup: %s"
+          (SaveLoadSharedMemory.Usage.show error);
+        Memory.reset_shared_memory ();
+        SharedMemoryStatus.LoadError
+
+
+  let save_to_cache = T.save_to_cache
 end
 
 type t = {
@@ -131,24 +191,27 @@ let check_decorator_invalidation ~decorator_configuration:current_configuration 
 
 
 let try_load ~scheduler ~configuration ~decorator_configuration ~enabled =
+  let save_cache = enabled in
   if not enabled then
-    { status = SharedMemoryStatus.Disabled; save_cache = false; scheduler; configuration }
+    { status = SharedMemoryStatus.Disabled; save_cache; scheduler; configuration }
   else
     let open Result in
     let status =
       match initialize_shared_memory ~configuration with
       | Ok () -> (
           match check_decorator_invalidation ~decorator_configuration with
-          | Ok () -> SharedMemoryStatus.Loaded EntryStatus.empty
+          | Ok () ->
+              let entry_status = EntryStatus.empty in
+              PreviousAnalysisSetupSharedMemory.load_from_cache entry_status
           | Error error ->
               (* If there exist updates to certain decorators, it wastes memory and might not be
                  safe to leave the old type environment in the shared memory. *)
-              Log.info "Reset shared memory";
+              Log.info "Resetting shared memory";
               Memory.reset_shared_memory ();
               error)
       | Error error -> error
     in
-    { status; save_cache = true; scheduler; configuration }
+    { status; save_cache; scheduler; configuration }
 
 
 let load_type_environment ~scheduler ~configuration =
@@ -204,15 +267,18 @@ let type_environment ({ status; save_cache; scheduler; configuration } as cache)
   in
   let environment, status =
     match status with
-    | Loaded entry_status -> (
+    | Loaded _ -> (
         match load_type_environment ~scheduler ~configuration with
         | Ok environment ->
-            let entry_status =
-              EntryStatus.add ~name:Entry.TypeEnvironment ~usage:Usage.Used entry_status
+            let status =
+              SharedMemoryStatus.set_entry_usage
+                ~entry:Entry.TypeEnvironment
+                ~usage:Usage.Used
+                status
             in
-            environment, SharedMemoryStatus.Loaded entry_status
+            environment, status
         | Error error_status ->
-            Log.info "Reset shared memory due to failing to load the type environment";
+            Log.info "Resetting shared memory due to failing to load the type environment";
             Memory.reset_shared_memory ();
             compute_and_save_environment (), error_status)
     | _ -> compute_and_save_environment (), status
@@ -242,19 +308,44 @@ let save_shared_memory ~configuration =
       Ok ())
 
 
-let save { save_cache; configuration; _ } =
+let save
+    ~maximum_overrides
+    ~attribute_targets
+    ~skip_analysis_targets
+    ~skip_overrides_targets
+    ~skipped_overrides
+    ~override_graph_shared_memory
+    ~initial_callables
+    ~call_graph_shared_memory
+    ~whole_program_call_graph
+    ~global_constants
+    { save_cache; configuration; _ }
+  =
   if save_cache then
+    let () =
+      Interprocedural.OverrideGraph.SharedMemory.save_to_cache override_graph_shared_memory
+    in
+    let () =
+      Interprocedural.CallGraph.DefineCallGraphSharedMemory.save_to_cache call_graph_shared_memory
+    in
+    let () = Interprocedural.GlobalConstants.SharedMemory.save_to_cache global_constants in
+    let () =
+      PreviousAnalysisSetupSharedMemory.save_to_cache
+        {
+          AnalysisSetup.maximum_overrides;
+          attribute_targets;
+          skip_analysis_targets;
+          skip_overrides_targets;
+          skipped_overrides;
+          initial_callables;
+          whole_program_call_graph;
+        }
+    in
     save_shared_memory ~configuration |> ignore
 
 
 let set_entry_usage ~entry ~usage ({ status; _ } as cache) =
-  let status =
-    match status with
-    | Loaded entry_status ->
-        let entry_status = EntryStatus.add ~name:entry ~usage entry_status in
-        SharedMemoryStatus.Loaded entry_status
-    | _ -> status
-  in
+  let status = SharedMemoryStatus.set_entry_usage ~entry ~usage status in
   { cache with status }
 
 
@@ -262,11 +353,15 @@ module type CacheEntryType = sig
   type t
 
   val entry : Entry.t
+
+  val prefix : Hack_parallel.Std.Prefix.t
 end
 
 module MakeCacheEntry (CacheEntry : CacheEntryType) = struct
   module T = SaveLoadSharedMemory.MakeSingleValue (struct
     type t = CacheEntry.t
+
+    let prefix = CacheEntry.prefix
 
     let name = Entry.show_pretty CacheEntry.entry
   end)
@@ -276,7 +371,7 @@ module MakeCacheEntry (CacheEntry : CacheEntryType) = struct
       match status with
       | Loaded _ ->
           let value, usage =
-            match T.load () with
+            match T.load_from_cache () with
             | Ok value -> value, Usage.Used
             | Error error -> f (), error
           in
@@ -284,7 +379,7 @@ module MakeCacheEntry (CacheEntry : CacheEntryType) = struct
           value, cache
       | _ -> f (), cache
     in
-    if save_cache then T.save value;
+    if save_cache then T.save_to_cache value;
     value, cache
 end
 
@@ -292,47 +387,242 @@ module ClassHierarchyGraphSharedMemory = MakeCacheEntry (struct
   type t = ClassHierarchyGraph.Heap.t
 
   let entry = Entry.ClassHierarchyGraph
-end)
 
-module InitialCallablesSharedMemory = MakeCacheEntry (struct
-  type t = FetchCallables.t
-
-  let entry = Entry.InitialCallables
+  let prefix = Hack_parallel.Std.Prefix.make ()
 end)
 
 module ClassIntervalGraphSharedMemory = MakeCacheEntry (struct
   type t = ClassIntervalSetGraph.Heap.t
 
   let entry = Entry.ClassIntervalGraph
+
+  let prefix = Hack_parallel.Std.Prefix.make ()
 end)
 
-let initial_callables = InitialCallablesSharedMemory.load_or_compute
+let initial_callables ({ status; _ } as cache) compute_value =
+  match status with
+  | Loaded
+      ({ entry_status; previous_analysis_setup = { AnalysisSetup.initial_callables; _ }; _ } as
+      loaded) ->
+      let entry_status =
+        EntryStatus.add
+          ~name:Entry.InitialCallables
+          ~usage:SaveLoadSharedMemory.Usage.Used
+          entry_status
+      in
+      let status = SharedMemoryStatus.Loaded { loaded with entry_status } in
+      initial_callables, { cache with status }
+  | _ -> compute_value (), cache
+
 
 let class_hierarchy_graph = ClassHierarchyGraphSharedMemory.load_or_compute
 
 let class_interval_graph = ClassIntervalGraphSharedMemory.load_or_compute
 
-module InitialModelsSharedMemory = struct
-  let entry = Entry.InitialModels
+module OverrideGraphSharedMemory = struct
+  let is_reusable
+      ~skip_overrides_targets
+      ~maximum_overrides
+      {
+        AnalysisSetup.maximum_overrides = previous_maximum_overrides;
+        skip_overrides_targets = previous_skip_overrides_targets;
+        _;
+      }
+    =
+    let no_change_in_skip_overrides =
+      Ast.Reference.SerializableSet.equal previous_skip_overrides_targets skip_overrides_targets
+    in
+    let no_change_in_maximum_overrides =
+      Option.equal Int.equal maximum_overrides previous_maximum_overrides
+    in
+    no_change_in_skip_overrides && no_change_in_maximum_overrides
 
-  module T = SaveLoadSharedMemory.MakeSingleValue (struct
-    type t = (Interprocedural.Target.t * Model.t) list
 
-    let name = Entry.show_pretty entry
-  end)
+  let load_or_compute_if_unloadable
+      ~skip_overrides_targets
+      ~previous_analysis_setup:{ AnalysisSetup.skipped_overrides; _ }
+      ~maximum_overrides
+      entry_status
+      compute_value
+    =
+    match Interprocedural.OverrideGraph.SharedMemory.load_from_cache () with
+    | Ok override_graph_shared_memory ->
+        let override_graph_heap =
+          Interprocedural.OverrideGraph.SharedMemory.to_heap override_graph_shared_memory
+        in
+        ( {
+            Interprocedural.OverrideGraph.override_graph_heap;
+            override_graph_shared_memory;
+            skipped_overrides;
+          },
+          EntryStatus.add
+            ~name:Entry.OverrideGraph
+            ~usage:SaveLoadSharedMemory.Usage.Used
+            entry_status )
+    | Error error ->
+        ( compute_value ~skip_overrides_targets ~maximum_overrides (),
+          EntryStatus.add ~name:Entry.OverrideGraph ~usage:error entry_status )
 
-  let save initial_models = initial_models |> Registry.to_alist |> T.save
 
-  let load ({ status; _ } as cache) =
+  let remove_previous () =
+    match Interprocedural.OverrideGraph.SharedMemory.load_from_cache () with
+    | Ok override_graph_shared_memory ->
+        Log.info "Removing the previous override graph.";
+        Interprocedural.OverrideGraph.SharedMemory.cleanup override_graph_shared_memory
+    | Error _ -> Log.warning "Failed to remove the previous override graph."
+
+
+  let load_or_compute_if_stale_or_unloadable
+      ~skip_overrides_targets
+      ~maximum_overrides
+      ({ status; _ } as cache)
+      compute_value
+    =
     match status with
-    | Loaded _ -> (
-        match T.load () with
-        | Ok initial_models ->
-            ( Some (Registry.of_alist ~join:Model.join initial_models),
-              set_entry_usage ~entry ~usage:SaveLoadSharedMemory.Usage.Used cache )
-        | Error error -> None, set_entry_usage ~entry ~usage:error cache)
-    | _ ->
-        (* Initial models from the previous run are loaded only to see if they have changed, so that
-           we know whether to reuse the cached override graph. *)
-        None, cache
+    | Loaded ({ previous_analysis_setup; entry_status } as loaded) ->
+        let reusable =
+          is_reusable ~skip_overrides_targets ~maximum_overrides previous_analysis_setup
+        in
+        if reusable then
+          let () = Log.info "Trying to reuse the override graph from the cache." in
+          let value, entry_status =
+            load_or_compute_if_unloadable
+              ~skip_overrides_targets
+              ~previous_analysis_setup
+              ~maximum_overrides
+              entry_status
+              compute_value
+          in
+          let status = SharedMemoryStatus.Loaded { loaded with entry_status } in
+          value, { cache with status }
+        else
+          let () = Log.info "Override graph from the cache is stale." in
+          let () = remove_previous () in
+          let cache =
+            set_entry_usage
+              ~entry:Entry.OverrideGraph
+              ~usage:(SaveLoadSharedMemory.Usage.Unused Stale)
+              cache
+          in
+          compute_value ~skip_overrides_targets ~maximum_overrides (), cache
+    | _ -> compute_value ~skip_overrides_targets ~maximum_overrides (), cache
 end
+
+let override_graph = OverrideGraphSharedMemory.load_or_compute_if_stale_or_unloadable
+
+module CallGraphSharedMemory = struct
+  let compare_attribute_targets ~previous_attribute_targets ~attribute_targets =
+    let is_equal = Interprocedural.Target.Set.equal attribute_targets previous_attribute_targets in
+    if not is_equal then
+      Log.info "Detected changes in the attribute targets";
+    is_equal
+
+
+  let compare_skip_analysis_targets ~previous_skip_analysis_targets ~skip_analysis_targets =
+    let is_equal =
+      Interprocedural.Target.Set.equal skip_analysis_targets previous_skip_analysis_targets
+    in
+    if not is_equal then
+      Log.info "Detected changes in the skip analysis targets";
+    is_equal
+
+
+  let is_reusable
+      ~attribute_targets
+      ~skip_analysis_targets
+      entry_status
+      {
+        AnalysisSetup.attribute_targets = previous_attribute_targets;
+        skip_analysis_targets = previous_skip_analysis_targets;
+        _;
+      }
+    =
+    (* Technically we should also compare the changes in the definitions, but such comparison is
+       unnecessary because we invalidate the cache when there is a source code change -- which
+       implies no change in the definitions. *)
+    EntryStatus.get Entry.OverrideGraph entry_status == SaveLoadSharedMemory.Usage.Used
+    && compare_attribute_targets ~previous_attribute_targets ~attribute_targets
+    && compare_skip_analysis_targets ~previous_skip_analysis_targets ~skip_analysis_targets
+
+
+  let remove_previous () =
+    match Interprocedural.CallGraph.DefineCallGraphSharedMemory.load_from_cache () with
+    | Ok call_graph_shared_memory ->
+        Log.info "Removing the previous call graph.";
+        Interprocedural.CallGraph.DefineCallGraphSharedMemory.cleanup call_graph_shared_memory
+    | Error _ -> Log.warning "Failed to remove the previous call graph."
+
+
+  let load_or_compute_if_not_loadable
+      ~attribute_targets
+      ~skip_analysis_targets
+      ~definitions
+      ~previous_analysis_setup:{ AnalysisSetup.whole_program_call_graph; _ }
+      compute_value
+    =
+    match Interprocedural.CallGraph.DefineCallGraphSharedMemory.load_from_cache () with
+    | Ok define_call_graphs ->
+        ( { Interprocedural.CallGraph.whole_program_call_graph; define_call_graphs },
+          SaveLoadSharedMemory.Usage.Used )
+    | Error error -> compute_value ~attribute_targets ~skip_analysis_targets ~definitions (), error
+
+
+  let load_or_recompute
+      ~attribute_targets
+      ~skip_analysis_targets
+      ~definitions
+      ({ status; _ } as cache)
+      compute_value
+    =
+    match status with
+    | Loaded ({ previous_analysis_setup; entry_status } as loaded) ->
+        let reusable =
+          is_reusable ~attribute_targets ~skip_analysis_targets entry_status previous_analysis_setup
+        in
+        if reusable then
+          let () = Log.info "Trying to reuse the call graph from the cache." in
+          let value, usage =
+            load_or_compute_if_not_loadable
+              ~attribute_targets
+              ~skip_analysis_targets
+              ~definitions
+              ~previous_analysis_setup
+              compute_value
+          in
+          let entry_status = EntryStatus.add ~name:Entry.CallGraph ~usage entry_status in
+          let status = SharedMemoryStatus.Loaded { loaded with entry_status } in
+          value, { cache with status }
+        else
+          let () = Log.info "Call graph from the cache is stale." in
+          let () = remove_previous () in
+          let cache =
+            set_entry_usage
+              ~entry:Entry.CallGraph
+              ~usage:(SaveLoadSharedMemory.Usage.Unused Stale)
+              cache
+          in
+          compute_value ~attribute_targets ~skip_analysis_targets ~definitions (), cache
+    | _ -> compute_value ~attribute_targets ~skip_analysis_targets ~definitions (), cache
+end
+
+let call_graph = CallGraphSharedMemory.load_or_recompute
+
+module GlobalConstantsSharedMemory = struct
+  let load_or_compute_if_not_loadable compute_value =
+    match Interprocedural.GlobalConstants.SharedMemory.load_from_cache () with
+    | Ok global_constants -> global_constants, SaveLoadSharedMemory.Usage.Used
+    | Error error -> compute_value (), error
+
+
+  let load_or_recompute_if_stale_or_not_loadable ({ status; _ } as cache) compute_value =
+    match status with
+    | Loaded ({ entry_status; _ } as loaded) ->
+        let () = Log.info "Trying to reuse the global constants from the cache." in
+        let value, usage = load_or_compute_if_not_loadable compute_value in
+        let entry_status = EntryStatus.add ~name:Entry.GlobalConstants ~usage entry_status in
+        let status = SharedMemoryStatus.Loaded { loaded with entry_status } in
+        value, { cache with status }
+    | _ -> compute_value (), cache
+end
+
+let global_constants = GlobalConstantsSharedMemory.load_or_recompute_if_stale_or_not_loadable

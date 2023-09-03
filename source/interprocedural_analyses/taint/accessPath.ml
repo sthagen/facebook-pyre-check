@@ -44,56 +44,6 @@ module Root = struct
       | None -> name
 
 
-    let normalize_parameters parameters =
-      let normalize_parameters
-          position
-          (seen_star, excluded, normalized)
-          ({ Node.value = { Parameter.name = prefixed_name; _ }; _ } as original)
-        =
-        let prefixed_name_string = prefixed_name in
-        if String.equal prefixed_name_string "/" then
-          let mark_as_positional_only (parameter, name, original) =
-            let parameter =
-              match parameter with
-              | PositionalParameter { position; name; _ } ->
-                  PositionalParameter { position; name; positional_only = true }
-              | _ -> parameter
-            in
-            parameter, name, original
-          in
-          seen_star, excluded, List.map ~f:mark_as_positional_only normalized
-        else if String.is_prefix ~prefix:"**" prefixed_name_string then
-          let prefixed_variable_name = String.chop_prefix_exn prefixed_name_string ~prefix:"**" in
-          ( true,
-            excluded,
-            (StarStarParameter { excluded }, prefixed_variable_name, original) :: normalized )
-        else if Identifier.equal (Identifier.sanitized prefixed_name_string) "*" then
-          (* This is not a real starred argument, but instead is just the indicator for the beginning
-           * of the keyword only arguments *)
-          true, excluded, normalized
-        else if String.is_prefix ~prefix:"*" prefixed_name_string then
-          let prefixed_variable_name = String.chop_prefix_exn prefixed_name_string ~prefix:"*" in
-          ( true,
-            excluded,
-            (StarParameter { position }, prefixed_variable_name, original) :: normalized )
-        else if seen_star then
-          let normal_name = prefixed_name_string |> chop_parameter_prefix in
-          ( true,
-            normal_name :: excluded,
-            (NamedParameter { name = normal_name }, prefixed_name, original) :: normalized )
-        else
-          let normal_name = prefixed_name_string |> chop_parameter_prefix in
-          ( false,
-            normal_name :: excluded,
-            ( PositionalParameter { position; name = normal_name; positional_only = false },
-              prefixed_name,
-              original )
-            :: normalized )
-      in
-      List.foldi parameters ~f:normalize_parameters ~init:(false, [], [])
-      |> fun (_, _, parameters) -> List.rev parameters
-
-
     let parameter_name = function
       | PositionalParameter { name; _ }
       | NamedParameter { name } ->
@@ -123,6 +73,74 @@ module Root = struct
   include T
   module Set = Caml.Set.Make (T)
 end
+
+module NormalizedParameter = struct
+  type t = {
+    root: Root.t;
+    (* Qualified name (prefixed with `$parameter$`), ignoring stars. *)
+    qualified_name: Identifier.t;
+    original: Parameter.t;
+  }
+end
+
+let normalize_parameters parameters =
+  let normalize_parameters
+      position
+      (seen_star, excluded, normalized)
+      ({ Node.value = { Parameter.name = qualified_name; _ }; _ } as original)
+    =
+    if Identifier.equal (Identifier.sanitized qualified_name) "/" then
+      let mark_as_positional_only ({ NormalizedParameter.root; _ } as parameter) =
+        let root =
+          match root with
+          | Root.PositionalParameter { position; name; _ } ->
+              Root.PositionalParameter { position; name; positional_only = true }
+          | _ -> root
+        in
+        { parameter with root }
+      in
+      seen_star, excluded, List.map ~f:mark_as_positional_only normalized
+    else if String.is_prefix ~prefix:"**" qualified_name then
+      let qualified_name = String.chop_prefix_exn qualified_name ~prefix:"**" in
+      ( true,
+        excluded,
+        { NormalizedParameter.root = Root.StarStarParameter { excluded }; qualified_name; original }
+        :: normalized )
+    else if Identifier.equal (Identifier.sanitized qualified_name) "*" then
+      (* This is not a real starred argument, but instead is just the indicator for the beginning
+       * of the keyword only arguments *)
+      true, excluded, normalized
+    else if String.is_prefix ~prefix:"*" qualified_name then
+      let qualified_name = String.chop_prefix_exn qualified_name ~prefix:"*" in
+      ( true,
+        excluded,
+        { NormalizedParameter.root = Root.StarParameter { position }; qualified_name; original }
+        :: normalized )
+    else if seen_star then
+      let unqualified_name = Root.chop_parameter_prefix qualified_name in
+      ( true,
+        unqualified_name :: excluded,
+        {
+          NormalizedParameter.root = Root.NamedParameter { name = unqualified_name };
+          qualified_name;
+          original;
+        }
+        :: normalized )
+    else
+      let unqualified_name = Root.chop_parameter_prefix qualified_name in
+      ( false,
+        unqualified_name :: excluded,
+        {
+          NormalizedParameter.root =
+            Root.PositionalParameter { position; name = unqualified_name; positional_only = false };
+          qualified_name;
+          original;
+        }
+        :: normalized )
+  in
+  List.foldi parameters ~f:normalize_parameters ~init:(false, [], [])
+  |> fun (_, _, parameters) -> List.rev parameters
+
 
 module Path = struct
   type t = Abstract.TreeDomain.Label.t list
@@ -241,9 +259,9 @@ let match_actuals_to_formals arguments roots =
         let formals = List.filter_map roots ~f:(filter_to_positional position) in
         increment position, (argument, formals) :: matches
     | Some { value = name; _ }, _ ->
-        let normal_name = chop_parameter_prefix name in
+        let unqualified_name = chop_parameter_prefix name in
         let formals =
-          List.filter_map roots ~f:(filter_to_named matched_names (`Name normal_name))
+          List.filter_map roots ~f:(filter_to_named matched_names (`Name unqualified_name))
         in
         position, (argument, formals) :: matches
   in

@@ -23,6 +23,26 @@ open Statement
 open Expression
 open Pyre
 
+module JsonHelper = struct
+  let add_optional name value to_json bindings =
+    match value with
+    | Some value -> (name, to_json value) :: bindings
+    | None -> bindings
+
+
+  let add_flag_if name condition bindings =
+    if condition then
+      (name, `Bool true) :: bindings
+    else
+      bindings
+
+
+  let add_list name elements to_json bindings =
+    match elements with
+    | [] -> bindings
+    | _ -> (name, `List (List.map ~f:to_json elements)) :: bindings
+end
+
 (** Represents type information about the return type of a call. *)
 module ReturnType = struct
   type t = {
@@ -120,6 +140,18 @@ module ReturnType = struct
       | _ -> Lazy.force return_type
     in
     from_annotation ~resolution:(Resolution.global_resolution resolution) annotation
+
+
+  let to_json { is_boolean; is_integer; is_float; is_enumeration } =
+    let add_string_if name condition elements =
+      if condition then `String name :: elements else elements
+    in
+    []
+    |> add_string_if "boolean" is_boolean
+    |> add_string_if "integer" is_integer
+    |> add_string_if "float" is_float
+    |> add_string_if "enum" is_enumeration
+    |> fun elements -> `List elements
 end
 
 (** A specific target of a given call, with extra information. *)
@@ -183,6 +215,16 @@ module CallTarget = struct
     && implicit_self_left == implicit_self_right
     && implicit_dunder_call_left == implicit_dunder_call_right
     && index_left == index_right
+
+
+  let to_json { target; implicit_self; implicit_dunder_call; index; return_type; receiver_type } =
+    ["index", `Int index; "target", `String (Target.external_name target)]
+    |> JsonHelper.add_flag_if "implicit_self" implicit_self
+    |> JsonHelper.add_flag_if "implicit_dunder_call" implicit_dunder_call
+    |> JsonHelper.add_optional "return_type" return_type ReturnType.to_json
+    |> JsonHelper.add_optional "receiver_type" receiver_type (fun annotation ->
+           `String (Type.show annotation))
+    |> fun bindings -> `Assoc (List.rev bindings)
 end
 
 (** Information about an argument being a callable. *)
@@ -220,6 +262,12 @@ module HigherOrderParameter = struct
 
   let deduplicate { index; call_targets; unresolved } =
     { index; call_targets = CallTarget.dedup_and_sort call_targets; unresolved }
+
+
+  let to_json { index; call_targets; unresolved } =
+    ["parameter_index", `Int index; "calls", `List (List.map ~f:CallTarget.to_json call_targets)]
+    |> JsonHelper.add_flag_if "unresolved" unresolved
+    |> fun bindings -> `Assoc bindings
 end
 
 (** Mapping from a parameter index to its HigherOrderParameter, if any. *)
@@ -269,6 +317,10 @@ module HigherOrderParameterMap = struct
 
   let first_index map =
     Map.min_binding_opt map >>| fun (_, higher_order_parameter) -> higher_order_parameter
+
+
+  let to_json map =
+    map |> Map.data |> List.map ~f:HigherOrderParameter.to_json |> fun elements -> `List elements
 end
 
 (** An aggregate of all possible callees at a call site. *)
@@ -471,6 +523,24 @@ module CallCallees = struct
       ] ->
         true
     | _ -> false
+
+
+  let to_json { call_targets; new_targets; init_targets; higher_order_parameters; unresolved } =
+    let bindings =
+      []
+      |> JsonHelper.add_list "calls" call_targets CallTarget.to_json
+      |> JsonHelper.add_list "new_calls" new_targets CallTarget.to_json
+      |> JsonHelper.add_list "init_calls" init_targets CallTarget.to_json
+    in
+    let bindings =
+      if not (HigherOrderParameterMap.is_empty higher_order_parameters) then
+        ("higher_order_parameters", HigherOrderParameterMap.to_json higher_order_parameters)
+        :: bindings
+      else
+        bindings
+    in
+    let bindings = JsonHelper.add_flag_if "unresolved" unresolved bindings in
+    `Assoc (List.rev bindings)
 end
 
 (** An aggregrate of all possible callees for a given attribute access. *)
@@ -535,6 +605,13 @@ module AttributeAccessCallees = struct
   let empty = { property_targets = []; global_targets = []; is_attribute = true }
 
   let is_empty attribute_access_callees = equal attribute_access_callees empty
+
+  let to_json { property_targets; global_targets; is_attribute } =
+    []
+    |> JsonHelper.add_list "properties" property_targets CallTarget.to_json
+    |> JsonHelper.add_list "globals" global_targets CallTarget.to_json
+    |> JsonHelper.add_flag_if "is_attribute" is_attribute
+    |> fun bindings -> `Assoc (List.rev bindings)
 end
 
 (** An aggregate of all possible callees for a given identifier expression, i.e `foo`. *)
@@ -548,6 +625,9 @@ module IdentifierCallees = struct
 
 
   let all_targets { global_targets } = List.map ~f:CallTarget.target global_targets
+
+  let to_json { global_targets } =
+    `Assoc ["globals", `List (List.map ~f:CallTarget.to_json global_targets)]
 end
 
 (** An aggregate of callees for formatting strings. *)
@@ -584,6 +664,12 @@ module StringFormatCallees = struct
   let from_stringify_targets stringify_targets = { stringify_targets; f_string_targets = [] }
 
   let from_f_string_targets f_string_targets = { stringify_targets = []; f_string_targets }
+
+  let to_json { stringify_targets; f_string_targets } =
+    []
+    |> JsonHelper.add_list "stringify" stringify_targets CallTarget.to_json
+    |> JsonHelper.add_list "f-string" f_string_targets CallTarget.to_json
+    |> fun bindings -> `Assoc bindings
 end
 
 (** An aggregate of all possible callees for an arbitrary expression. *)
@@ -703,6 +789,15 @@ module ExpressionCallees = struct
          attribute_access_right
     && Option.equal IdentifierCallees.equal identifier_left identifier_right
     && Option.equal StringFormatCallees.equal string_format_left string_format_right
+
+
+  let to_json { call; attribute_access; identifier; string_format } =
+    []
+    |> JsonHelper.add_optional "call" call CallCallees.to_json
+    |> JsonHelper.add_optional "attribute_access" attribute_access AttributeAccessCallees.to_json
+    |> JsonHelper.add_optional "identifier" identifier IdentifierCallees.to_json
+    |> JsonHelper.add_optional "string_format" string_format StringFormatCallees.to_json
+    |> fun bindings -> `Assoc (List.rev bindings)
 end
 
 (** An aggregate of all possible callees for an arbitrary location.
@@ -738,6 +833,18 @@ module LocationCallees = struct
     | Compound map_left, Compound map_right ->
         SerializableStringMap.equal ExpressionCallees.equal_ignoring_types map_left map_right
     | _ -> false
+
+
+  let to_json = function
+    | Singleton callees -> `Assoc ["singleton", ExpressionCallees.to_json callees]
+    | Compound map ->
+        let bindings =
+          SerializableStringMap.fold
+            (fun key value sofar -> (key, ExpressionCallees.to_json value) :: sofar)
+            map
+            []
+        in
+        `Assoc ["compound", `Assoc bindings]
 end
 
 module UnprocessedLocationCallees = struct
@@ -834,6 +941,30 @@ module DefineCallGraph = struct
     Location.Map.Tree.data call_graph
     |> List.concat_map ~f:LocationCallees.all_targets
     |> List.dedup_and_sort ~compare:Target.compare
+
+
+  let to_json ~resolution ~resolve_module_path ~callable call_graph =
+    let bindings = ["callable", `String (Target.external_name callable)] in
+    let bindings =
+      let resolve_module_path = Option.value ~default:(fun _ -> None) resolve_module_path in
+      Target.get_module_and_definition ~resolution callable
+      >>| fst
+      >>= resolve_module_path
+      >>| (function
+            | { RepositoryPath.filename = Some filename; _ } ->
+                ("filename", `String filename) :: bindings
+            | { path; _ } ->
+                ("filename", `String "*") :: ("path", `String (PyrePath.absolute path)) :: bindings)
+      |> Option.value ~default:bindings
+    in
+    let bindings =
+      let edges =
+        Location.Map.Tree.fold call_graph ~init:[] ~f:(fun ~key ~data sofar ->
+            (Location.show key, LocationCallees.to_json data) :: sofar)
+      in
+      ("calls", `Assoc edges) :: bindings
+    in
+    `Assoc (List.rev bindings)
 end
 
 (* Produce call targets with a textual order index.
@@ -915,10 +1046,11 @@ let rec callee_kind ~resolution callee callee_type =
   | Type.Callable _ -> (
       match Node.value callee with
       | Expression.Name (Name.Attribute { base; _ }) ->
-          let parent_type = CallResolution.resolve_ignoring_optional ~resolution base in
+          let parent_type = CallResolution.resolve_ignoring_errors ~resolution base in
           let is_class () =
-            parent_type
-            |> GlobalResolution.class_summary (Resolution.global_resolution resolution)
+            let primitive, _ = Type.split parent_type in
+            Type.primitive_name primitive
+            >>= GlobalResolution.class_summary (Resolution.global_resolution resolution)
             |> Option.is_some
           in
           if Type.is_meta parent_type then
@@ -960,7 +1092,7 @@ let compute_indirect_targets ~resolution ~override_graph ~receiver_type implemen
   let global_resolution = Resolution.global_resolution resolution in
   let get_class_type = GlobalResolution.parse_reference global_resolution in
   let get_actual_target method_name =
-    if OverrideGraph.SharedMemory.overrides_exist override_graph method_name then
+    if OverrideGraph.SharedMemory.ReadOnly.overrides_exist override_graph method_name then
       Target.get_corresponding_override method_name
     else
       method_name
@@ -976,7 +1108,9 @@ let compute_indirect_targets ~resolution ~override_graph ~receiver_type implemen
     [get_actual_target implementation_target]
   else
     match
-      OverrideGraph.SharedMemory.get_overriding_types override_graph ~member:implementation_target
+      OverrideGraph.SharedMemory.ReadOnly.get_overriding_types
+        override_graph
+        ~member:implementation_target
     with
     | None ->
         (* case b *)
@@ -1391,7 +1525,7 @@ let resolve_recognized_callees
     when Set.mem Recognized.allowlisted_callable_class_decorators name ->
       (* Because of the special class, we don't get a bound method & lose the self argument for
          non-classmethod LRU cache wrappers. Reconstruct self in this case. *)
-      CallResolution.resolve_ignoring_optional ~resolution base
+      CallResolution.resolve_ignoring_errors ~resolution base
       |> fun implementing_class ->
       resolve_callee_from_defining_expression
         ~resolution
@@ -1459,7 +1593,7 @@ let resolve_callee_ignoring_decorators ~resolution ~call_indexer ~return_type ca
               _;
             }) -> (
           let class_name = Reference.create ~prefix:from name |> Reference.show in
-          GlobalResolution.class_summary global_resolution (Type.Primitive class_name)
+          GlobalResolution.class_summary global_resolution class_name
           >>| Node.value
           >>| ClassSummary.attributes
           >>= Identifier.SerializableMap.find_opt attribute
@@ -1478,12 +1612,12 @@ let resolve_callee_ignoring_decorators ~resolution ~call_indexer ~return_type ca
   | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
       (* Resolve `base.attribute` by looking up the type of `base` or the types of its parent
          classes in the Method Resolution Order. *)
-      match CallResolution.resolve_ignoring_optional ~resolution base with
+      match CallResolution.resolve_ignoring_errors ~resolution base with
       | Type.Primitive class_name
       | Type.Parametric { name = "type"; parameters = [Single (Type.Primitive class_name)] } -> (
           let find_attribute element =
             match
-              GlobalResolution.class_summary global_resolution (Type.Primitive element)
+              GlobalResolution.class_summary global_resolution element
               >>| Node.value
               >>| ClassSummary.attributes
               >>= Identifier.SerializableMap.find_opt attribute
@@ -1628,22 +1762,29 @@ let resolve_attribute_access_global_targets ~resolution ~base_annotation ~base ~
             let attribute = Format.sprintf "__class__.%s" attribute in
             let target = Reference.create ~prefix:parent attribute in
             target :: targets
-        | annotation ->
+        | Type.Primitive class_name ->
             (* Access on an instance, i.e `self.foo`. *)
             let parents =
               let successors =
-                GlobalResolution.class_metadata (Resolution.global_resolution resolution) annotation
-                >>| (fun { ClassMetadataEnvironment.successors; _ } -> successors)
-                |> Option.value ~default:[]
-                |> List.map ~f:(fun name -> Type.Primitive name)
+                match
+                  GlobalResolution.class_metadata
+                    (Resolution.global_resolution resolution)
+                    class_name
+                with
+                | Some { ClassMetadataEnvironment.successors = Some successors; _ } -> successors
+                | _ -> []
               in
-              annotation :: successors
+              class_name :: successors
             in
             let add_target targets parent =
-              let target = Reference.create ~prefix:(Type.class_name parent) attribute in
+              let parent = Reference.create parent in
+              let target = Reference.create ~prefix:parent attribute in
               target :: targets
             in
             List.fold ~init:targets ~f:add_target parents
+        | annotation ->
+            let target = Reference.create ~prefix:(Type.class_name annotation) attribute in
+            target :: targets
       in
       find_targets [] base_annotation
 
@@ -1685,7 +1826,7 @@ module DefineCallGraphFixpoint (Context : sig
 
   val callees_at_location : UnprocessedLocationCallees.t Location.Table.t
 
-  val override_graph : OverrideGraph.SharedMemory.t
+  val override_graph : OverrideGraph.SharedMemory.ReadOnly.t
 
   val call_indexer : CallTargetIndexer.t
 
@@ -1715,7 +1856,7 @@ struct
   let attribute_targets = Context.attribute_targets
 
   let resolve_regular_callees ~resolution ~override_graph ~call_indexer ~return_type ~callee =
-    let callee_type = CallResolution.resolve_ignoring_optional ~resolution callee in
+    let callee_type = CallResolution.resolve_ignoring_errors ~resolution callee in
     log
       "Checking if `%a` is a callable, resolved type is `%a`"
       Expression.pp
@@ -1825,7 +1966,8 @@ struct
       ~special
       ~setter
     =
-    let base_annotation = CallResolution.resolve_ignoring_optional ~resolution base in
+    let base_annotation = CallResolution.resolve_ignoring_errors ~resolution base in
+
     log
       "Checking if `%s` is an attribute, property or global variable. Resolved type for base `%a` \
        is `%a`"
@@ -1848,6 +1990,7 @@ struct
     let global_targets =
       resolve_attribute_access_global_targets ~resolution ~base_annotation ~base ~attribute ~special
       |> List.map ~f:Target.create_object
+      (* Use a hashset here for faster lookups. *)
       |> List.filter ~f:(Hash_set.mem attribute_targets)
       |> List.map
            ~f:
@@ -2353,22 +2496,40 @@ let call_graph_of_callable
 (** Call graphs of callables, stored in the shared memory. This is a mapping from a callable to its
     `DefineCallGraph.t`. *)
 module DefineCallGraphSharedMemory = struct
-  include
-    Memory.WithCache.Make
+  module T =
+    SaveLoadSharedMemory.MakeKeyValue
       (Target.SharedMemoryKey)
       (struct
         type t = LocationCallees.t Location.Map.Tree.t
 
         let prefix = Hack_parallel.Std.Prefix.make ()
 
+        let handle_prefix = Hack_parallel.Std.Prefix.make ()
+
         let description = "call graphs of defines"
       end)
 
-  type t = Handle
+  type t = T.t
 
-  let set Handle ~callable ~call_graph = add callable call_graph
+  let add handle ~callable ~call_graph = T.add handle callable call_graph
 
-  let get Handle ~callable = get callable
+  let create = T.create
+
+  let merge_same_handle = T.merge_same_handle
+
+  module ReadOnly = struct
+    type t = T.ReadOnly.t
+
+    let get handle ~callable = T.ReadOnly.get handle callable
+  end
+
+  let read_only = T.read_only
+
+  let cleanup = T.cleanup
+
+  let save_to_cache = T.save_to_cache
+
+  let load_from_cache = T.load_from_cache
 end
 
 (** Whole-program call graph, stored in the ocaml heap. This is a mapping from a callable to all its
@@ -2416,19 +2577,27 @@ type call_graphs = {
     fixpoint. *)
 let build_whole_program_call_graph
     ~scheduler
-    ~static_analysis_configuration
+    ~static_analysis_configuration:
+      ({
+         Configuration.StaticAnalysis.save_results_to;
+         output_format;
+         dump_call_graph;
+         configuration = { local_root; _ };
+         _;
+       } as static_analysis_configuration)
     ~environment
+    ~resolve_module_path
     ~override_graph
     ~store_shared_memory
     ~attribute_targets
     ~skip_analysis_targets
     ~definitions
   =
-  let define_call_graphs = DefineCallGraphSharedMemory.Handle in
-  let whole_program_call_graph =
-    let build_call_graph whole_program_call_graph callable =
+  let attribute_targets = attribute_targets |> Target.Set.elements |> Target.HashSet.of_list in
+  let define_call_graphs, whole_program_call_graph =
+    let build_call_graph ((define_call_graphs, whole_program_call_graph) as so_far) callable =
       if Target.Set.mem callable skip_analysis_targets then
-        whole_program_call_graph
+        so_far
       else
         let callable_call_graph =
           Alarm.with_alarm
@@ -2444,18 +2613,37 @@ let build_whole_program_call_graph
                 ~callable)
             ()
         in
-        let () =
+        let define_call_graphs =
           if store_shared_memory then
-            DefineCallGraphSharedMemory.set
+            DefineCallGraphSharedMemory.add
               define_call_graphs
               ~callable
               ~call_graph:callable_call_graph
+          else
+            define_call_graphs
         in
-        WholeProgramCallGraph.add_or_exn
-          whole_program_call_graph
-          ~callable
-          ~callees:(DefineCallGraph.all_targets callable_call_graph)
+        let whole_program_call_graph =
+          WholeProgramCallGraph.add_or_exn
+            whole_program_call_graph
+            ~callable
+            ~callees:(DefineCallGraph.all_targets callable_call_graph)
+        in
+        define_call_graphs, whole_program_call_graph
     in
+    let reduce
+        (left_define_call_graphs, left_whole_program_call_graph)
+        (right_define_call_graphs, right_whole_program_call_graph)
+      =
+      (* We should check the keys in two define call graphs are disjoint. If not disjoint, we should
+         fail the analysis. But we don't perform such check due to performance reasons. *)
+      ( DefineCallGraphSharedMemory.merge_same_handle
+          left_define_call_graphs
+          right_define_call_graphs,
+        WholeProgramCallGraph.merge_disjoint
+          left_whole_program_call_graph
+          right_whole_program_call_graph )
+    in
+    let define_call_graphs = DefineCallGraphSharedMemory.create () in
     Scheduler.map_reduce
       scheduler
       ~policy:
@@ -2464,26 +2652,63 @@ let build_whole_program_call_graph
            ~minimum_chunk_size:100
            ~preferred_chunk_size:2000
            ())
-      ~initial:WholeProgramCallGraph.empty
+      ~initial:(define_call_graphs, WholeProgramCallGraph.empty)
       ~map:(fun definitions ->
-        List.fold definitions ~init:WholeProgramCallGraph.empty ~f:build_call_graph)
-      ~reduce:WholeProgramCallGraph.merge_disjoint
+        List.fold
+          definitions
+          ~init:(define_call_graphs, WholeProgramCallGraph.empty)
+          ~f:build_call_graph)
+      ~reduce
       ~inputs:definitions
       ()
   in
+  let resolution = TypeEnvironment.ReadOnly.global_resolution environment in
+  let define_call_graphs_read_only = DefineCallGraphSharedMemory.read_only define_call_graphs in
+  let call_graph_to_json callable =
+    match DefineCallGraphSharedMemory.ReadOnly.get define_call_graphs_read_only ~callable with
+    | Some call_graph ->
+        [
+          {
+            NewlineDelimitedJson.Line.kind = CallGraph;
+            data = DefineCallGraph.to_json ~resolution ~resolve_module_path ~callable call_graph;
+          };
+        ]
+    | None -> []
+  in
   let () =
-    match static_analysis_configuration.Configuration.StaticAnalysis.save_results_to with
-    | Some path ->
-        let path = PyrePath.append path ~element:"call-graph.json" in
-        Log.info "Writing the call graph to `%s`" (PyrePath.absolute path);
-        whole_program_call_graph |> WholeProgramCallGraph.to_target_graph |> TargetGraph.dump ~path
+    match save_results_to with
+    | Some directory ->
+        Log.info "Writing the call graph to `%s`" (PyrePath.absolute directory);
+        let () =
+          match output_format with
+          | Configuration.TaintOutputFormat.Json ->
+              NewlineDelimitedJson.write_file
+                ~path:(PyrePath.append directory ~element:"call-graph.json")
+                ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+                ~to_json_lines:call_graph_to_json
+                definitions
+          | Configuration.TaintOutputFormat.ShardedJson ->
+              NewlineDelimitedJson.remove_sharded_files ~directory ~filename_prefix:"call-graph";
+              NewlineDelimitedJson.write_sharded_files
+                ~scheduler
+                ~directory
+                ~filename_prefix:"call-graph"
+                ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+                ~to_json_lines:call_graph_to_json
+                definitions
+        in
+        ()
     | None -> ()
   in
   let () =
-    match static_analysis_configuration.Configuration.StaticAnalysis.dump_call_graph with
+    match dump_call_graph with
     | Some path ->
         Log.warning "Emitting the contents of the call graph to `%s`" (PyrePath.absolute path);
-        whole_program_call_graph |> WholeProgramCallGraph.to_target_graph |> TargetGraph.dump ~path
+        NewlineDelimitedJson.write_file
+          ~path
+          ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+          ~to_json_lines:call_graph_to_json
+          definitions
     | None -> ()
   in
   { whole_program_call_graph; define_call_graphs }

@@ -23,7 +23,7 @@ val parse_annotation
   Expression.t ->
   Type.t
 
-val class_summary : t -> Type.t -> ClassSummary.t Node.t option
+val class_summary : t -> Type.Primitive.t -> ClassSummary.t Node.t option
 
 val define_body : t -> Reference.t -> Define.t Node.t option
 
@@ -100,7 +100,7 @@ val module_tracker : t -> ModuleTracker.ReadOnly.t
 
 val get_module_metadata : t -> Reference.t -> Module.t option
 
-val class_metadata : t -> Type.t -> ClassMetadataEnvironment.class_metadata option
+val class_metadata : t -> Type.Primitive.t -> ClassMetadataEnvironment.class_metadata option
 
 val is_protocol : t -> Type.t -> bool
 

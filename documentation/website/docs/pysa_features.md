@@ -35,11 +35,13 @@ features: [
 ]
 ```
 
-The `via` feature can be appended to `TaintSource`, `TaintSink` and
-`TaintInTaintOut` annotations, to add extra metadata to any flow that goes
-through that annotated function/parameter/attribute. This is done by adding
-`Via[FEATURE_NAME]` within square brackets after the `TaintXXXX` annotation in a
-model file:
+The `via` feature can be appended to `TaintSource` and `TaintSink` annotations
+to add extra metadata to the specified source and sink flows. It can also be
+appended to `TaintInTaintOut` annotations, to add extra metadata to any flow
+that goes through that annotated function/parameter/attribute.
+
+This is done by adding `Via[FEATURE_NAME]` within square brackets after the
+`TaintXXXX` annotation in a model file:
 
 ```python
 # Augmenting TaintSource
@@ -167,16 +169,7 @@ def subprocess.run(
 ): ...
 ```
 
-The `via-type` feature also supports adding tags, using the same syntax as the `via-value`
-feature:
-
-```python
-def subprocess.run(
-    args: TaintSink[RemoteCodeExecution, ViaTypeOf[args, WithTag["subprocess-arg"]]]
-): ...
-```
-
-`ViaTypeOf` can also be used on attribute or global models, although tags are not supported. For example:
+The `via-type` feature can also be used on attribute or global models. For example:
 ```python
 my_module.MyClass.source: TaintSource[Test, ViaTypeOf] = ...
 my_module.MyClass.sink: TaintSource[Test, ViaTypeOf] = ...
@@ -185,6 +178,16 @@ my_module.MyClass.sink: TaintSource[Test, ViaTypeOf] = ...
 A standalone `ViaTypeOf` is also supported in this case, and is shorthand for `TaintInTaintOut[ViaTypeOf]`:
 ```python
 my_module.MyClass.my_attribute: ViaTypeOf = ...
+```
+
+The `via-type` feature also supports adding tags, using the same syntax as the `via-value`
+feature:
+```python
+def subprocess.run(
+    args: TaintSink[RemoteCodeExecution, ViaTypeOf[args, WithTag["my_tag"]]]
+): ...
+my_module.MyClass.sink: TaintSource[Test, ViaTypeOf[WithTag["my_tag"]]] = ...
+my_module.MyClass.other_attribute: ViaTypeOf[WithTag["my_tag"]] = ...
 ```
 
 Note that `ViaTypeOf` on `Annotated` types will not include the annotations after the first type specified.
@@ -198,6 +201,29 @@ class Foo:
 
 If there is a `ViaTypeOf` on `Foo.x` here, the feature shown on traces will be `via-type-of:typing.Annotated[int]`,
 **not** `via-type-of:typing.Annotated[int, "foo"]`.
+
+### `via-attribute` Feature Using `ViaAttributeName[]`
+
+The `via-attribute` feature is similar to the `via-value` feature, however,
+it can only be used to model attributes, and captures *the name of the attribute
+being accessed*.
+
+For instance:
+```python
+my_module.MyClass.my_attribute: ViaAttributeName = ...
+```
+
+Pysa will add the feature `"via-attribute:my_attribute` when taint flows through
+the attribute.
+
+This also supports tags, using the same syntax as `via-value`:
+```python
+my_module.MyClass.my_attribute: ViaAttributeName[WithTag["example"]] = ...
+```
+
+Note that `via-attribute` is most useful in
+[model queries](pysa_model_dsl.md#using-viaattributename-with-the-attributemodel-clause),
+when the attribute name is not known in advance.
 
 ### Supporting Features Dynamically Using `ViaDynamicFeature[]`
 
@@ -273,84 +299,23 @@ through a conversion to `int` before reaching the sink. Note that **the
 `always-` version of a feature is _exclusive_ with the non-`always-` version**;
 if `always-type:scalar` is present, `type:scalar` will not be present.
 
-### `broadening` Feature
+### `broadening` Features
 
-The `broadening` feature is automatically added whenever Pysa makes an
-approximation about a taint flow. This is also referred as "taint collapsing"
-because the taint is internally represented as a tree structure where edges are
-attributes or indexes. Collapsing usually leads to tainting a whole object
-instead of a single attribute of that object.
+Pysa automatically adds broadening features when
+[taint broadening](pysa_advanced.md#taint-broadening) is applied during the
+analysis.
 
-Pysa also provides more fine grained features for all scenario where we make
-approximations.
+Broadening features are:
+* `tito-broadening`
+* `model-broadening`
+* `model-source-broadening`
+* `model-sink-broadening`
+* `model-tito-broadening`
+* `model-shaping`
+* `model-source-shaping`
+* `model-sink-shaping`
+* `model-tito-shaping`
+* `widen-broadening`
+* `issue-broadening`
 
-#### `model-broadening` Feature
-
-The `model-broadening` feature is added when the model of a callable has been
-simplified because the source, sink or tito taint tree hit a width or depth
-threshold.
-
-For instance, this can happen when the number of tainted key-value pairs of a
-dictionary hit a certain threshold. For scalability reasons, Pysa cannot track
-an infinite amount of indexes, and thus makes the approximation that the whole
-object is tainted.
-
-```python
-def foo(condition):
-    d = {}
-    if condition:
-        d["a"] = source()
-        d["b"] = source()
-        # c, d, e, etc.
-    else:
-        d["1"] = source()
-        d["2"] = source()
-        # etc.
-    return d # too many indexes, the whole return value is considered tainted.
-```
-
-See [tune the taint tree width and depth](pysa_advanced.md#tune-the-taint-tree-width-and-depth)
-for more information.
-
-#### `widen-broadening` Feature
-
-The `widen-broadening` feature is added when a taint tree is exceeding
-the maximum depth within a loop.
-
-For instance:
-```python
-def foo(person):
-    while person.parent is not None:
-        person = person.parent
-        # Infer sinks on person.name, person.parent.name, person.parent.parent.name, etc.
-        sink(person.name)
-```
-
-#### `tito-broadening` Feature
-
-The `tito-broadening` feature is added when an object with tainted attributes is
-propagated through a function to its return value. For correctness reasons, Pysa
-makes the approximation that the whole returned object is tainted. This is
-referred as "Taint-In-Taint-Out collapsing".
-
-```python
-def identity(x):
-  return x
-
-def foo():
-  x = {"a": source(), "b": "foo"} # only `x["a"]` is tainted.
-  y = identity(x)
-  sink(y) # the whole `y` variable is tainted because of tito collapsing.
-  sink(y['b']) # since `y` is tainted, any access to `y` is also tainted.
-```
-
-#### `issue-broadening` Feature
-
-The `issue-broadening` feature is added when an object with a tainted attribute
-reaches a taint sink. Pysa will consider the flow as valid even if the whole
-object is not tainted.
-
-```python
-d = {"a": source(), "b": "foo"}
-sink(d) # `d` itself is not tainted, but `d["a"]` is, thus we emit an issue.
-```
+See [taint broadening](pysa_advanced.md#taint-broadening) for more infomation.

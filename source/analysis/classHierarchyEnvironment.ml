@@ -34,21 +34,75 @@ let empty_stub_environment alias_environment =
   AliasEnvironment.ReadOnly.empty_stub_environment alias_environment
 
 
-type edges = {
-  parents: ClassHierarchy.Target.t list;
-  has_placeholder_stub_parent: bool;
-}
-[@@deriving compare]
-
 module EdgesValue = struct
-  type t = edges option
+  type t = ClassHierarchy.Edges.t option
 
   let prefix = Hack_parallel.Std.Prefix.make ()
 
   let description = "Edges"
 
-  let equal = Memory.equal_from_compare (Option.compare compare_edges)
+  let equal = Memory.equal_from_compare [%compare: ClassHierarchy.Edges.t option]
 end
+
+let compute_extends_placeholder_stub_class
+    { Node.value = { ClassSummary.bases = { base_classes; metaclass; _ }; _ }; _ }
+    ~aliases
+    ~from_empty_stub
+  =
+  let metaclass_is_from_placeholder_stub =
+    metaclass
+    >>| AnnotatedBases.base_is_from_placeholder_stub ~aliases ~from_empty_stub
+    |> Option.value ~default:false
+  in
+  List.exists
+    base_classes
+    ~f:(AnnotatedBases.base_is_from_placeholder_stub ~aliases ~from_empty_stub)
+  || metaclass_is_from_placeholder_stub
+
+
+let find_propagated_type_variables parsed_bases =
+  (* Note: We want to preserve order when deduplicating, so we can't use `List.dedup_and_sort`. This
+     is quadratic, but it should be fine given the small number of generic variables. *)
+  let deduplicate ~equal xs =
+    let add_if_not_seen_so_far (seen, unique_items) x =
+      if List.mem seen x ~equal then
+        seen, unique_items
+      else
+        x :: seen, x :: unique_items
+    in
+    List.fold xs ~init:([], []) ~f:add_if_not_seen_so_far |> snd |> List.rev
+  in
+  List.concat_map ~f:Type.Variable.all_free_variables parsed_bases
+  |> deduplicate ~equal:Type.Variable.equal
+  |> List.map ~f:Type.Variable.to_parameter
+
+
+let compute_generic_base parsed_bases =
+  let is_generic base_type =
+    let primitive, _ = Type.split base_type in
+    Type.is_generic_primitive primitive
+  in
+  let extract_protocol_parameters base_type =
+    let primitive, parameters = Type.split base_type in
+    let is_protocol =
+      primitive
+      |> Type.primitive_name
+      >>| String.equal "typing.Protocol"
+      |> Option.value ~default:false
+    in
+    Option.some_if is_protocol parameters
+  in
+  match List.find ~f:is_generic parsed_bases with
+  | Some _ as generic_base -> generic_base
+  | None -> (
+      let create variables = Type.parametric "typing.Generic" variables in
+      match List.find_map parsed_bases ~f:extract_protocol_parameters with
+      | Some parameters -> Some (create parameters)
+      | None ->
+          (* TODO:(T60673574) Ban propagating multiple type variables *)
+          let variables = find_propagated_type_variables parsed_bases in
+          if List.is_empty variables then None else Some (create variables))
+
 
 let get_parents alias_environment name ~dependency =
   let object_index = IndexTracker.index "object" in
@@ -57,7 +111,10 @@ let get_parents alias_environment name ~dependency =
       ?dependency
       alias_environment
   in
-  (* Register normal annotations. *)
+  (* Split `base_expression` into `(name, params)` where `name` is the name of the class and
+     `params` is its type parameters. E.g. `Foo[T]` ==> `("Foo", [TypeVar "T"])` *)
+  (* For some reason, this function parses `base_expression` into type with `allow_untracked` set to
+     true, which is not the case for other invocations of parse_annotation within this file. *)
   let extract_supertype base_expression =
     let value = delocalize base_expression in
     match Node.value value with
@@ -81,10 +138,7 @@ let get_parents alias_environment name ~dependency =
         | _ -> None)
     | _ -> None
   in
-  let bases ({ Node.value = { ClassSummary.bases = { base_classes; _ }; _ }; _ } as definition) =
-    let inferred_generic_base = AnnotatedBases.inferred_generic_base definition ~parse_annotation in
-    base_classes @ inferred_generic_base
-  in
+  let bases { Node.value = { ClassSummary.bases = { base_classes; _ }; _ }; _ } = base_classes in
   let add_special_parents parents =
     let simples = List.map ~f:(fun parent -> parent, []) in
     match parents, name with
@@ -94,6 +148,33 @@ let get_parents alias_environment name ~dependency =
     | _, "numbers.Complex" -> simples ["numbers.Number"]
     | [], _ -> simples ["object"]
     | _ -> parents
+  in
+  (* If `typing.Generic[]` appears in the base list, that entry needs to go through special
+     handling. This behavior was established in PEP 560 and gets implemented in CPython via
+     `GenericAlias.__mro_entries__()`. See https://fburl.com/mro_in_pyre for more detailed
+     explanation. *)
+  let filter_shadowed_generic_bases name_and_parameters =
+    let is_protocol =
+      List.exists name_and_parameters ~f:(fun (name, _) -> String.equal name "typing.Protocol")
+    in
+    let process_parent ((name, _) as current) rest =
+      match name with
+      | "typing.Generic" ->
+          (* TODO: type parameters of the `name` class is expected to be non-empty here because
+             Python forbids inheriting from `typing.Generic` directly. But we currently can't check
+             for that since we lack the setup to emit errors from this environment. *)
+          if is_protocol then
+            (* Hide `Generic` from MRO if the class also extends from `Protocol` *)
+            rest
+          else if List.exists rest ~f:(fun (_, parameters) -> not (List.is_empty parameters)) then
+            (* Hide `Generic` from MRO if there exist other generic aliases down the base class
+               list *)
+            rest
+          else
+            current :: rest
+      | _ -> current :: rest
+    in
+    List.fold_right name_and_parameters ~init:[] ~f:process_parent
   in
   let is_not_primitive_cycle (parent, _) = not (String.equal name parent) in
   let convert_to_targets =
@@ -125,25 +206,34 @@ let get_parents alias_environment name ~dependency =
   with
   | None -> None
   | Some class_summary ->
+      let base_classes = bases class_summary in
       let parents =
-        class_summary
-        |> bases
-        |> List.filter_map ~f:extract_supertype
+        List.filter_map base_classes ~f:extract_supertype
         |> add_special_parents
         |> List.filter ~f:is_not_primitive_cycle
+        |> filter_shadowed_generic_bases
         |> convert_to_targets
         |> deduplicate
         |> remove_extra_edges_to_object
       in
+      let generic_base =
+        let open Option in
+        let parsed_bases = List.map base_classes ~f:parse_annotation in
+        compute_generic_base parsed_bases
+        >>= fun base ->
+        extract_supertype (Type.expression base)
+        >>= fun (name, parameters) ->
+        Some { ClassHierarchy.Target.target = IndexTracker.index name; parameters }
+      in
       let has_placeholder_stub_parent =
-        AnnotatedBases.extends_placeholder_stub_class
+        compute_extends_placeholder_stub_class
           class_summary
           ~aliases:(AliasEnvironment.ReadOnly.get_alias alias_environment ?dependency)
           ~from_empty_stub:
             (EmptyStubEnvironment.ReadOnly.from_empty_stub
                (empty_stub_environment alias_environment))
       in
-      Some { parents; has_placeholder_stub_parent }
+      Some { ClassHierarchy.Edges.parents; generic_base; has_placeholder_stub_parent }
 
 
 module Edges = Environment.EnvironmentTable.WithCache (struct
@@ -176,7 +266,7 @@ module Edges = Environment.EnvironmentTable.WithCache (struct
     key_to_trigger index |> ModuleTracker.Overlay.owns_identifier module_tracker_overlay
 
 
-  let equal_value = Option.equal [%compare.equal: edges]
+  let equal_value = [%compare.equal: ClassHierarchy.Edges.t option]
 end)
 
 module ReadOnly = struct
@@ -184,15 +274,7 @@ module ReadOnly = struct
 
   let alias_environment = upstream_environment
 
-  let get_edges read_only ?dependency key =
-    get read_only ?dependency key >>| fun { parents; _ } -> parents
-
-
-  let extends_placeholder_stub read_only ?dependency key =
-    get read_only ?dependency key
-    >>| (fun { has_placeholder_stub_parent; _ } -> has_placeholder_stub_parent)
-    |> Option.value ~default:false
-
+  let get_edges = get
 
   let check_integrity read_only =
     let unannotated_global_environment =
@@ -204,8 +286,6 @@ module ReadOnly = struct
     let class_hierarchy =
       (module struct
         let edges = get_edges read_only ?dependency:None
-
-        let extends_placeholder_stub = extends_placeholder_stub read_only ?dependency:None
 
         let contains key =
           UnannotatedGlobalEnvironment.ReadOnly.get_class_summary unannotated_global_environment key
@@ -222,8 +302,6 @@ module ReadOnly = struct
     in
     (module struct
       let edges = get_edges read_only ?dependency
-
-      let extends_placeholder_stub = extends_placeholder_stub read_only ?dependency
 
       let contains key =
         let env_controls = AliasEnvironment.ReadOnly.controls alias_environment in
@@ -263,11 +341,19 @@ let update_this_and_all_preceding_environments
   in
   let read_only = read_only this_environment in
   let controls = ReadOnly.controls read_only in
-  if
-    EnvironmentControls.debug controls
-    && not (EnvironmentControls.use_lazy_module_tracking controls)
+  (if
+   EnvironmentControls.debug controls && not (EnvironmentControls.use_lazy_module_tracking controls)
   then
-    ReadOnly.check_integrity read_only;
+     match ReadOnly.check_integrity read_only with
+     | Result.Ok () -> ()
+     | Result.Error error ->
+         let message =
+           Format.asprintf
+             "Class hierarchy integrity check failed: %a"
+             Sexp.pp
+             (ClassHierarchy.CheckIntegrityError.sexp_of_t error)
+         in
+         failwith message);
   result
 
 

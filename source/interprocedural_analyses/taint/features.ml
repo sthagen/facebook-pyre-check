@@ -230,22 +230,31 @@ module Breadcrumb = struct
         value: string;
       }
     (* Via inferred from ViaTypeOf. *)
+    | ViaAttributeName of {
+        tag: string option;
+        value: string;
+      }
+    (* Via inferred from ViaAttributeName. *)
     | Tito (* Taint In Taint Out *)
     | Type of string (* Type constraint *)
     | Broadening (* Taint tree was collapsed for various reasons *)
     | WidenBroadening (* Taint tree was collapsed during widening *)
     | TitoBroadening (* Taint tree was collapsed when applying tito *)
-    | ModelBroadening (* Taint tree was collapsed when simplifying the model *)
-    | ModelSourceBroadening (* Source tree was collapsed when simplifying the model *)
-    | ModelSinkBroadening (* Sink tree was collapsed when simplifying the model *)
-    | ModelTitoBroadening (* Tito tree was collapsed when simplifying the model *)
+    | ModelBroadening (* Taint tree was collapsed during model broadening *)
+    | ModelSourceBroadening (* Source tree was collapsed during model broadening *)
+    | ModelSinkBroadening (* Sink tree was collapsed during model broadening *)
+    | ModelTitoBroadening (* Tito tree was collapsed during model broadening *)
+    | ModelShaping (* Taint tree was collapsed during model shaping *)
+    | ModelSourceShaping (* Source tree was collapsed during model shaping *)
+    | ModelSinkShaping (* Sink tree was collapsed during model shaping *)
+    | ModelTitoShaping (* Tito tree was collapsed during model shaping *)
     | IssueBroadening (* Taint tree was collapsed when matching sources and sinks *)
     | Crtex (* Taint comes from the Cross Repository Taint EXchange *)
     | TransformTitoDepth of int
   [@@deriving equal]
 
   let pp formatter breadcrumb =
-    let pp_via_value_or_type header tag value =
+    let pp_via header tag value =
       match tag with
       | None -> Format.fprintf formatter "%s[%s]" header value
       | Some tag -> Format.fprintf formatter "%s[%s, tag=%s]" header value tag
@@ -256,8 +265,9 @@ module Breadcrumb = struct
     | ObscureUnknownCallee -> Format.fprintf formatter "ObscureUnknownCallee"
     | Lambda -> Format.fprintf formatter "Lambda"
     | SimpleVia name -> Format.fprintf formatter "SimpleVia[%s]" name
-    | ViaValue { tag; value } -> pp_via_value_or_type "ViaValue" tag value
-    | ViaType { tag; value } -> pp_via_value_or_type "ViaType" tag value
+    | ViaValue { tag; value } -> pp_via "ViaValue" tag value
+    | ViaType { tag; value } -> pp_via "ViaType" tag value
+    | ViaAttributeName { tag; value } -> pp_via "ViaAttributeName" tag value
     | Tito -> Format.fprintf formatter "Tito"
     | Type name -> Format.fprintf formatter "Type[%s]" name
     | Broadening -> Format.fprintf formatter "Broadening"
@@ -267,6 +277,10 @@ module Breadcrumb = struct
     | ModelSourceBroadening -> Format.fprintf formatter "ModelSourceBroadening"
     | ModelSinkBroadening -> Format.fprintf formatter "ModelSinkBroadening"
     | ModelTitoBroadening -> Format.fprintf formatter "ModelTitoBroadening"
+    | ModelShaping -> Format.fprintf formatter "ModelShaping"
+    | ModelSourceShaping -> Format.fprintf formatter "ModelSourceShaping"
+    | ModelSinkShaping -> Format.fprintf formatter "ModelSinkShaping"
+    | ModelTitoShaping -> Format.fprintf formatter "ModelTitoShaping"
     | IssueBroadening -> Format.fprintf formatter "IssueBroadening"
     | Crtex -> Format.fprintf formatter "Crtex"
     | TransformTitoDepth depth -> Format.fprintf formatter "TransformTitoDepth(%d)" depth
@@ -276,7 +290,7 @@ module Breadcrumb = struct
 
   let to_json ~on_all_paths breadcrumb =
     let prefix = if on_all_paths then "always-" else "" in
-    let via_value_or_type_annotation ~via_kind ~tag ~value =
+    let via_to_json ~via_kind ~tag ~value =
       match tag with
       | None -> `Assoc [Format.sprintf "%svia-%s" prefix via_kind, `String value]
       | Some tag -> `Assoc [Format.sprintf "%svia-%s-%s" prefix tag via_kind, `String value]
@@ -287,8 +301,9 @@ module Breadcrumb = struct
     | ObscureUnknownCallee -> `Assoc [prefix ^ "via", `String "obscure:unknown-callee"]
     | Lambda -> `Assoc [prefix ^ "via", `String "lambda"]
     | SimpleVia name -> `Assoc [prefix ^ "via", `String name]
-    | ViaValue { tag; value } -> via_value_or_type_annotation ~via_kind:"value" ~tag ~value
-    | ViaType { tag; value } -> via_value_or_type_annotation ~via_kind:"type" ~tag ~value
+    | ViaValue { tag; value } -> via_to_json ~via_kind:"value" ~tag ~value
+    | ViaType { tag; value } -> via_to_json ~via_kind:"type" ~tag ~value
+    | ViaAttributeName { tag; value } -> via_to_json ~via_kind:"attribute" ~tag ~value
     | Tito -> `Assoc [prefix ^ "via", `String "tito"]
     | Type name -> `Assoc [prefix ^ "type", `String name]
     | Broadening -> `Assoc [prefix ^ "via", `String "broadening"]
@@ -298,6 +313,10 @@ module Breadcrumb = struct
     | ModelSourceBroadening -> `Assoc [prefix ^ "via", `String "model-source-broadening"]
     | ModelSinkBroadening -> `Assoc [prefix ^ "via", `String "model-sink-broadening"]
     | ModelTitoBroadening -> `Assoc [prefix ^ "via", `String "model-tito-broadening"]
+    | ModelShaping -> `Assoc [prefix ^ "via", `String "model-shaping"]
+    | ModelSourceShaping -> `Assoc [prefix ^ "via", `String "model-source-shaping"]
+    | ModelSinkShaping -> `Assoc [prefix ^ "via", `String "model-sink-shaping"]
+    | ModelTitoShaping -> `Assoc [prefix ^ "via", `String "model-tito-shaping"]
     | IssueBroadening -> `Assoc [prefix ^ "via", `String "issue-broadening"]
     | Crtex -> `Assoc [prefix ^ "via", `String "crtex"]
     | TransformTitoDepth depth ->
@@ -335,18 +354,23 @@ module ViaFeature = struct
         parameter: AccessPath.Root.t;
         tag: string option;
       }
+    | ViaAttributeName of { tag: string option }
   [@@deriving compare, equal]
 
   let pp formatter simple =
-    let pp_via_value_or_type header parameter tag =
-      match tag with
-      | None -> Format.fprintf formatter "%s[%a]" header AccessPath.Root.pp_external parameter
-      | Some tag ->
+    let pp_via header parameter tag =
+      match parameter, tag with
+      | None, None -> Format.fprintf formatter "%s" header
+      | None, Some tag -> Format.fprintf formatter "%s[tag=%s]" header tag
+      | Some parameter, None ->
+          Format.fprintf formatter "%s[%a]" header AccessPath.Root.pp_external parameter
+      | Some parameter, Some tag ->
           Format.fprintf formatter "%s[%a, tag=%s]" header AccessPath.Root.pp_external parameter tag
     in
     match simple with
-    | ViaValueOf { parameter; tag } -> pp_via_value_or_type "ViaValueOf" parameter tag
-    | ViaTypeOf { parameter; tag } -> pp_via_value_or_type "ViaTypeOf" parameter tag
+    | ViaValueOf { parameter; tag } -> pp_via "ViaValueOf" (Some parameter) tag
+    | ViaTypeOf { parameter; tag } -> pp_via "ViaTypeOf" (Some parameter) tag
+    | ViaAttributeName { tag } -> pp_via "ViaAttributeName" None tag
 
 
   let show = Format.asprintf "%a" pp
@@ -402,21 +426,30 @@ module ViaFeature = struct
     Breadcrumb.ViaType { value = feature; tag } |> BreadcrumbInterned.intern
 
 
+  let via_attribute_name_breadcrumb_for_object ?tag ~object_target () =
+    Breadcrumb.ViaAttributeName { value = object_target |> Reference.create |> Reference.last; tag }
+    |> BreadcrumbInterned.intern
+
+
   let to_json via =
-    let to_json_via_value_or_type kind parameter tag =
+    let via_to_json kind parameter tag =
+      let json = ["kind", `String kind] in
       let json =
-        ["kind", `String kind; "parameter", `String (AccessPath.Root.show_external parameter)]
+        match parameter with
+        | Some parameter -> ("parameter", `String (AccessPath.Root.show_external parameter)) :: json
+        | None -> json
       in
       let json =
         match tag with
         | Some tag -> ("tag", `String tag) :: json
         | None -> json
       in
-      `Assoc json
+      `Assoc (List.rev json)
     in
     match via with
-    | ViaValueOf { parameter; tag } -> to_json_via_value_or_type "ViaValueOf" parameter tag
-    | ViaTypeOf { parameter; tag } -> to_json_via_value_or_type "ViaTypeOf" parameter tag
+    | ViaValueOf { parameter; tag } -> via_to_json "ViaValueOf" (Some parameter) tag
+    | ViaTypeOf { parameter; tag } -> via_to_json "ViaTypeOf" (Some parameter) tag
+    | ViaAttributeName { tag } -> via_to_json "ViaAttributeName" None tag
 end
 
 module ViaFeatureSet = Abstract.SetDomain.Make (ViaFeature)
@@ -597,6 +630,21 @@ let model_tito_broadening_set =
     [Breadcrumb.Broadening; Breadcrumb.ModelBroadening; Breadcrumb.ModelTitoBroadening]
 
 
+let model_source_shaping_set =
+  memoize_breadcrumb_set
+    [Breadcrumb.Broadening; Breadcrumb.ModelShaping; Breadcrumb.ModelSourceShaping]
+
+
+let model_sink_shaping_set =
+  memoize_breadcrumb_set
+    [Breadcrumb.Broadening; Breadcrumb.ModelShaping; Breadcrumb.ModelSinkShaping]
+
+
+let model_tito_shaping_set =
+  memoize_breadcrumb_set
+    [Breadcrumb.Broadening; Breadcrumb.ModelShaping; Breadcrumb.ModelTitoShaping]
+
+
 let issue_broadening_set =
   memoize_breadcrumb_set [Breadcrumb.Broadening; Breadcrumb.IssueBroadening]
 
@@ -660,6 +708,14 @@ let expand_via_features ~resolution ~callees ~arguments via_features =
                 ()
         in
         BreadcrumbSet.add breadcrumb breadcrumbs
+    | ViaFeature.ViaAttributeName { tag } -> (
+        match callees with
+        | [Interprocedural.Target.Object object_target] ->
+            let breadcrumb =
+              ViaFeature.via_attribute_name_breadcrumb_for_object ?tag ~object_target ()
+            in
+            BreadcrumbSet.add breadcrumb breadcrumbs
+        | _ -> breadcrumbs)
   in
   ViaFeatureSet.fold
     ViaFeatureSet.Element

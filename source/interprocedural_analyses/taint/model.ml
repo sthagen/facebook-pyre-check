@@ -58,7 +58,7 @@ module Forward = struct
          (ForwardState.to_json
             ~expand_overrides:None
             ~is_valid_callee:(fun ~port:_ ~path:_ ~callee:_ -> true)
-            ~filename_lookup:None
+            ~resolve_module_path:None
             ~export_leaf_names:ExportLeafNames.Always
             source_taint))
 
@@ -98,7 +98,7 @@ module Backward = struct
          (BackwardState.to_json
             ~expand_overrides:None
             ~is_valid_callee:(fun ~port:_ ~path:_ ~callee:_ -> true)
-            ~filename_lookup:None
+            ~resolve_module_path:None
             ~export_leaf_names:ExportLeafNames.Always
             taint_in_taint_out))
       (json_to_string
@@ -106,7 +106,7 @@ module Backward = struct
          (BackwardState.to_json
             ~expand_overrides:None
             ~is_valid_callee:(fun ~port:_ ~path:_ ~callee:_ -> true)
-            ~filename_lookup:None
+            ~resolve_module_path:None
             ~export_leaf_names:ExportLeafNames.Always
             sink_taint))
 
@@ -218,6 +218,7 @@ module Mode = struct
     | SkipOverrides
     | Entrypoint
     | IgnoreDecorator
+    | SkipModelBroadening
   [@@deriving compare, equal]
 
   let pp formatter = function
@@ -227,6 +228,7 @@ module Mode = struct
     | SkipOverrides -> Format.fprintf formatter "SkipOverrides"
     | Entrypoint -> Format.fprintf formatter "Entrypoint"
     | IgnoreDecorator -> Format.fprintf formatter "IgnoreDecorator"
+    | SkipModelBroadening -> Format.fprintf formatter "SkipModelBroadening"
 
 
   let show = Format.asprintf "%a" pp
@@ -240,6 +242,7 @@ module Mode = struct
     | "SkipOverrides" -> Some SkipOverrides
     | "Entrypoint" -> Some Entrypoint
     | "IgnoreDecorator" -> Some IgnoreDecorator
+    | "SkipModelBroadening" -> Some SkipModelBroadening
     | _ -> None
 end
 
@@ -349,8 +352,8 @@ let add_obscure_sink ~resolution ~call_target model =
             BackwardTaint.singleton CallInfo.declaration (Sinks.NamedSink "Obscure") Frame.initial
             |> BackwardState.Tree.create_leaf
           in
-          let parameters = AccessPath.Root.normalize_parameters parameters in
-          let add_parameter_sink sink_taint (root, _, _) =
+          let parameters = AccessPath.normalize_parameters parameters in
+          let add_parameter_sink sink_taint { AccessPath.NormalizedParameter.root; _ } =
             BackwardState.assign ~root ~path:[] sink sink_taint
           in
           let sink_taint =
@@ -668,7 +671,7 @@ let join_user_models ({ modes = left_modes; _ } as left) ({ modes = right_modes;
 let to_json
     ~expand_overrides
     ~is_valid_callee
-    ~filename_lookup
+    ~resolve_module_path
     ~export_leaf_names
     callable
     {
@@ -689,7 +692,7 @@ let to_json
             ForwardState.to_json
               ~expand_overrides
               ~is_valid_callee
-              ~filename_lookup
+              ~resolve_module_path
               ~export_leaf_names
               source_taint );
         ]
@@ -704,7 +707,7 @@ let to_json
             BackwardState.to_json
               ~expand_overrides
               ~is_valid_callee
-              ~filename_lookup
+              ~resolve_module_path
               ~export_leaf_names
               sink_taint );
         ]
@@ -719,7 +722,7 @@ let to_json
             BackwardState.to_json
               ~expand_overrides
               ~is_valid_callee
-              ~filename_lookup
+              ~resolve_module_path
               ~export_leaf_names
               taint_in_taint_out );
         ]
@@ -750,7 +753,7 @@ let to_json
     else
       model_json
   in
-  `Assoc ["kind", `String "model"; "data", `Assoc model_json]
+  `Assoc model_json
 
 
 module WithTarget = struct

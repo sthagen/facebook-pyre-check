@@ -13,13 +13,25 @@ open Core
 open Ast
 open Pyre
 
-exception Cyclic of String.Hash_set.t
-
-exception Incomplete
+exception Cyclic of Type.Primitive.t
 
 exception InconsistentMethodResolutionOrder of Type.Primitive.t
 
 exception Untracked of string
+
+module MethodResolutionOrderError = struct
+  type t =
+    | Cyclic of Type.Primitive.t
+    | Inconsistent of Type.Primitive.t
+  [@@deriving sexp, compare]
+end
+
+module CheckIntegrityError = struct
+  type t =
+    | Cyclic of Type.Primitive.t
+    | Incomplete of Type.Primitive.t
+  [@@deriving sexp, compare]
+end
 
 module Target = struct
   type t = {
@@ -89,15 +101,43 @@ end
 
 let generic_primitive = "typing.Generic"
 
-module type Handler = sig
-  val edges : IndexTracker.t -> Target.t list option
+module Edges = struct
+  type t = {
+    parents: Target.t list;
+    (* The instantiation of `typing.Generic` that the class inherits from but is not necessarily
+       listed explicitly as a parent. It needs to be stored separately because this class may not
+       take part in MRO computation. *)
+    generic_base: Target.t option;
+    has_placeholder_stub_parent: bool;
+  }
+  [@@deriving sexp, compare]
+end
 
-  val extends_placeholder_stub : IndexTracker.t -> bool
+module type Handler = sig
+  val edges : IndexTracker.t -> Edges.t option
 
   val contains : Type.Primitive.t -> bool
 end
 
 let index_of annotation = IndexTracker.index annotation
+
+let parents_of (module Handler : Handler) target =
+  Handler.edges target >>| fun { parents; _ } -> parents
+
+
+let parents_and_generic_of_target (module Handler : Handler) target =
+  Handler.edges target
+  >>= fun { parents; generic_base; _ } ->
+  match generic_base with
+  | None -> Some parents
+  | Some base -> Some (List.append parents [base])
+
+
+let extends_placeholder_stub_of_target (module Handler : Handler) target =
+  match Handler.edges target with
+  | None -> false
+  | Some { has_placeholder_stub_parent; _ } -> has_placeholder_stub_parent
+
 
 let contains (module Handler : Handler) = Handler.contains
 
@@ -117,7 +157,24 @@ let raise_if_untracked order annotation =
     raise (Untracked annotation)
 
 
-let method_resolution_order_linearize ~get_successors class_name =
+let method_resolution_order_linearize_exn ~get_successors class_name =
+  (* The `merge` function takes a list of "constraints" as input and return a list `L` representing
+     the computed MRO that satisfy those constraints. Each "constraint" is by itself another list of
+     class names indicating what orderings must be perserved in `L`.
+
+     For example, if we pass `[["A"; "B"; "C"]; ["C", "D"]]` to `merge`, then we know that in the
+     returned list, class `A` must precede class `B`, class `B` must precede class `C` (from the
+     first constraint), and class `C` must precede class `D` (from the second constraint). One
+     possible return list that satisfies all of these ordering constraint would be `["A"; "B"; "C";
+     "D"]`.
+
+     The intuition behind the C3 algorithm for computing `L` is straightforward: it's an iterative
+     process where each iteration would inspect all constraints we currently have, and pick a
+     candidate class that does not break any of them (i.e. look at the first class from each
+     "constraint" and see if that class gets preceded by any other classes in other constraints),
+     add the candidate to the result list, and advance to the next iteration. If at any iteration we
+     could not find a valid candidate, an inconsistent MRO would be detected and we fail the entire
+     process. *)
   let rec merge = function
     | [] -> []
     | [single_linearized_parent] -> single_linearized_parent
@@ -147,37 +204,53 @@ let method_resolution_order_linearize ~get_successors class_name =
         let linearized_successors = List.filter_map ~f:(strip_head head) linearized_successors in
         head :: merge linearized_successors
   in
+  (* `linearize C` computes the MRO for class `C`. The additional `visited` parameter is used to
+     detect when MRO computation would run into cycles (e.g. class A inherits from class B, which in
+     turn inherits from class A).
+
+     For a given class `C` that inherits from 2 parents `A` and `B`, the MRO for class `C` must obey
+     2 kinds of constraints: (1) C's MRO must satisfy all constraints of `A`'s MRO and `B`'s MRO.
+     (2) In C's MRO, `A` must precede `B` because `A` comes before `B` in the base class list.
+
+     The implementation here simply translates the two points above into a list of constraints, and
+     invoke `merge` to "solve" those constraints and get a satisfying MRO. *)
   let rec linearize ~visited class_name =
-    if Hash_set.mem visited class_name then (
-      Log.error "Order is cyclic:\nTrace: {%s}" (Hash_set.to_list visited |> String.concat ~sep:", ");
-      raise (Cyclic visited));
-    let visited = Hash_set.copy visited in
-    Hash_set.add visited class_name;
-    let linearized_successors =
+    if String.Set.mem visited class_name then (
+      Log.error
+        "Order is cyclic:\nTrace: {%s}"
+        (String.Set.to_list visited |> String.concat ~sep:", ");
+      raise (Cyclic class_name));
+    let visited = String.Set.add visited class_name in
+    let successors =
       let create_annotation { Target.target = index; _ } = IndexTracker.annotation index in
       index_of class_name
       |> get_successors
       |> Option.value ~default:[]
       |> List.map ~f:create_annotation
-      |> List.map ~f:(linearize ~visited)
     in
-    class_name :: merge linearized_successors
+    let linearized_successors = List.map successors ~f:(linearize ~visited) in
+    class_name :: merge (List.append linearized_successors [successors])
   in
-  linearize ~visited:(String.Hash_set.create ()) class_name
+  linearize ~visited:String.Set.empty class_name
 
 
-let successors (module Handler : Handler) annotation =
-  let linearization = method_resolution_order_linearize ~get_successors:Handler.edges annotation in
-  match linearization with
-  | _ :: successors -> successors
-  | [] -> []
+let method_resolution_order_linearize ~get_successors class_name =
+  match method_resolution_order_linearize_exn ~get_successors class_name with
+  | result -> Result.Ok result
+  | exception Cyclic name -> Result.Error (MethodResolutionOrderError.Cyclic name)
+  | exception InconsistentMethodResolutionOrder name ->
+      Result.Error (MethodResolutionOrderError.Inconsistent name)
 
 
 let immediate_parents (module Handler : Handler) class_name =
   index_of class_name
-  |> Handler.edges
+  |> parents_of (module Handler)
   >>| List.map ~f:(fun target -> Target.target target |> IndexTracker.annotation)
   |> Option.value ~default:[]
+
+
+let extends_placeholder_stub (module Handler : Handler) class_name =
+  index_of class_name |> extends_placeholder_stub_of_target (module Handler)
 
 
 let parameters_to_variables parameters =
@@ -196,7 +269,7 @@ let variables ?(default = None) (module Handler : Handler) = function
   | primitive_name ->
       let generic_index = index_of generic_primitive in
       let primitive_index = index_of primitive_name in
-      Handler.edges primitive_index
+      parents_and_generic_of_target (module Handler) primitive_index
       >>= List.find ~f:(fun { Target.target; _ } ->
               [%compare.equal: IndexTracker.t] target generic_index)
       >>| (fun { Target.parameters; _ } -> parameters_to_variables parameters)
@@ -251,41 +324,11 @@ let least_common_successor order ~successors left right =
 
 let least_upper_bound ((module Handler : Handler) as order) =
   let successors index =
-    match Handler.edges index with
+    match parents_of (module Handler) index with
     | Some targets -> targets |> List.map ~f:Target.target |> IndexTracker.Set.of_list
     | None -> IndexTracker.Set.empty
   in
   least_common_successor order ~successors
-
-
-let is_transitive_successor
-    ?(placeholder_subclass_extends_all = true)
-    ((module Handler : Handler) as handler)
-    ~source
-    ~target
-  =
-  raise_if_untracked handler source;
-  raise_if_untracked handler target;
-  let worklist = Queue.create () in
-  let visited = IndexTracker.Hash_set.create () in
-  Queue.enqueue worklist { Target.target = index_of source; parameters = [] };
-  let rec iterate worklist =
-    match Queue.dequeue worklist with
-    | None -> false
-    | Some { Target.target = current; _ } -> (
-        match Hash_set.strict_add visited current with
-        | Error _ -> iterate worklist
-        | Ok () ->
-            if
-              [%compare.equal: IndexTracker.t] current (index_of target)
-              || (placeholder_subclass_extends_all && Handler.extends_placeholder_stub current)
-            then
-              true
-            else (
-              Option.iter (Handler.edges current) ~f:(Queue.enqueue_all worklist);
-              iterate worklist))
-  in
-  iterate worklist
 
 
 let instantiate_successors_parameters ((module Handler : Handler) as handler) ~source ~target =
@@ -299,7 +342,7 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~s
         | TupleVariadic _ -> Type.OrderedTypes.to_parameters Type.Variable.Variadic.Tuple.any
       in
       index_of target
-      |> Handler.edges
+      |> parents_and_generic_of_target (module Handler)
       >>= get_generic_parameters ~generic_index
       >>= parameters_to_variables
       >>| List.concat_map ~f:to_any
@@ -371,7 +414,7 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~s
                   in
                   List.map successors ~f:instantiate_parameters
                 in
-                Handler.edges target_index
+                parents_and_generic_of_target (module Handler) target_index
                 >>| get_instantiated_successors ~generic_index ~parameters
               in
               if [%compare.equal: IndexTracker.t] target_index (index_of target) then
@@ -388,19 +431,7 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~s
       split >>= handle_split
 
 
-let check_integrity (module Handler : Handler) ~(indices : IndexTracker.t list) =
-  (* Ensure keys are consistent. *)
-  let key_consistent key =
-    let raise_if_none value =
-      if Option.is_none value then (
-        Log.error "Inconsistency in type order: No value for key %s" (IndexTracker.show key);
-        raise Incomplete)
-    in
-    raise_if_none (Handler.edges key)
-  in
-  List.iter ~f:key_consistent indices;
-
-  (* Check for cycles. *)
+let check_for_cycles_exn (module Handler : Handler) ~(indices : IndexTracker.t list) =
   let started_from = ref IndexTracker.Set.empty in
   let find_cycle start =
     if not (Set.mem !started_from start) then
@@ -408,10 +439,10 @@ let check_integrity (module Handler : Handler) ~(indices : IndexTracker.t list) 
         if List.mem ~equal:[%compare.equal: IndexTracker.t] reverse_visited index then (
           let trace = List.rev_map ~f:IndexTracker.annotation (index :: reverse_visited) in
           Log.error "Order is cyclic:\nTrace: %s" (String.concat ~sep:" -> " trace);
-          raise (Cyclic (String.Hash_set.of_list trace)))
+          raise (Cyclic (IndexTracker.annotation index)))
         else if not (Set.mem !started_from index) then (
           started_from := Set.add !started_from index;
-          match Handler.edges index with
+          match parents_of (module Handler) index with
           | Some successors ->
               successors
               |> List.map ~f:Target.target
@@ -420,7 +451,19 @@ let check_integrity (module Handler : Handler) ~(indices : IndexTracker.t list) 
       in
       visit [] start
   in
-  indices |> List.iter ~f:find_cycle
+  List.iter indices ~f:find_cycle
+
+
+let check_integrity ~indices (module Handler : Handler) =
+  let no_edges key = Handler.edges key |> Option.is_none in
+  match List.find indices ~f:no_edges with
+  | Some key ->
+      let name = IndexTracker.show key in
+      Log.error "Inconsistency in type order: No edges for key %s" name;
+      Result.Error (CheckIntegrityError.Incomplete name)
+  | None -> (
+      try Result.Ok (check_for_cycles_exn ~indices (module Handler)) with
+      | Cyclic name -> Result.Error (CheckIntegrityError.Cyclic name))
 
 
 let to_dot (module Handler : Handler) ~indices =
@@ -434,7 +477,7 @@ let to_dot (module Handler : Handler) ~indices =
       |> Buffer.add_string buffer)
     nodes;
   let add_edges index =
-    Handler.edges index
+    parents_of (module Handler) index
     >>| List.sort ~compare:Target.compare
     >>| List.iter ~f:(fun { Target.target = successor; parameters } ->
             Format.asprintf "  %s -> %s" (IndexTracker.show index) (IndexTracker.show successor)
@@ -451,24 +494,3 @@ let to_dot (module Handler : Handler) ~indices =
   List.iter ~f:add_edges indices;
   Buffer.add_string buffer "}";
   Buffer.contents buffer
-
-
-let is_typed_dictionary_subclass ~class_hierarchy name =
-  let (module TypeOrderHandler : Handler) = class_hierarchy in
-  TypeOrderHandler.contains name
-  && TypeOrderHandler.contains (Type.TypedDictionary.class_name ~total:true)
-  && is_transitive_successor
-       ~placeholder_subclass_extends_all:false
-       class_hierarchy
-       ~source:name
-       ~target:(Type.TypedDictionary.class_name ~total:true)
-  && not (String.equal name (Type.TypedDictionary.class_name ~total:true))
-
-
-let is_total_typed_dictionary ~class_hierarchy name =
-  not
-    (is_transitive_successor
-       ~placeholder_subclass_extends_all:false
-       class_hierarchy
-       ~source:name
-       ~target:(Type.TypedDictionary.class_name ~total:false))

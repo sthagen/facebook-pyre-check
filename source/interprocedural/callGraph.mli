@@ -29,6 +29,8 @@ module ReturnType : sig
   val integer : t
 
   val from_annotation : resolution:GlobalResolution.t -> Type.t -> t
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** A specific target of a given call, with extra information. *)
@@ -59,6 +61,8 @@ module CallTarget : sig
     ?receiver_type:Type.t ->
     Target.t ->
     t
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** Information about an argument being a callable. *)
@@ -71,6 +75,8 @@ module HigherOrderParameter : sig
     unresolved: bool;
   }
   [@@deriving eq, show]
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** Mapping from a parameter index to its HigherOrderParameter, if any. *)
@@ -86,6 +92,8 @@ module HigherOrderParameterMap : sig
   val to_list : t -> HigherOrderParameter.t list
 
   val first_index : t -> HigherOrderParameter.t option
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** An aggregate of all possible callees at a call site. *)
@@ -129,6 +137,8 @@ module CallCallees : sig
   val is_object_new : CallTarget.t list -> bool
 
   val is_object_init : CallTarget.t list -> bool
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** An aggregrate of all possible callees for a given attribute access. *)
@@ -143,11 +153,15 @@ module AttributeAccessCallees : sig
   [@@deriving eq, show]
 
   val empty : t
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** An aggregate of all possible callees for a given identifier expression, i.e `foo`. *)
 module IdentifierCallees : sig
   type t = { global_targets: CallTarget.t list } [@@deriving eq, show]
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** An aggregate of callees for formatting strings. *)
@@ -163,6 +177,8 @@ module StringFormatCallees : sig
   val from_stringify_targets : CallTarget.t list -> t
 
   val from_f_string_targets : CallTarget.t list -> t
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** An aggregate of all possible callees for an arbitrary expression. *)
@@ -184,6 +200,8 @@ module ExpressionCallees : sig
   val from_identifier : IdentifierCallees.t -> t
 
   val from_string_format : StringFormatCallees.t -> t
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** An aggregate of all possible callees for an arbitrary location.
@@ -194,6 +212,8 @@ module LocationCallees : sig
     | Singleton of ExpressionCallees.t
     | Compound of ExpressionCallees.t SerializableStringMap.t
   [@@deriving eq, show]
+
+  val to_json : t -> Yojson.Safe.t
 end
 
 (** The call graph of a function or method definition. *)
@@ -229,12 +249,19 @@ module DefineCallGraph : sig
 
   (** Return all callees of the call graph, as a sorted list. *)
   val all_targets : t -> Target.t list
+
+  val to_json
+    :  resolution:GlobalResolution.t ->
+    resolve_module_path:(Reference.t -> RepositoryPath.t option) option ->
+    callable:Target.t ->
+    t ->
+    Yojson.Safe.t
 end
 
 val call_graph_of_define
   :  static_analysis_configuration:Configuration.StaticAnalysis.t ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
-  override_graph:OverrideGraph.SharedMemory.t ->
+  override_graph:OverrideGraph.SharedMemory.ReadOnly.t ->
   attribute_targets:Target.HashSet.t ->
   qualifier:Reference.t ->
   define:Ast.Statement.Define.t ->
@@ -245,7 +272,7 @@ val redirect_special_calls : resolution:Resolution.t -> Call.t -> Call.t
 val call_graph_of_callable
   :  static_analysis_configuration:Configuration.StaticAnalysis.t ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
-  override_graph:OverrideGraph.SharedMemory.t ->
+  override_graph:OverrideGraph.SharedMemory.ReadOnly.t ->
   attribute_targets:Target.HashSet.t ->
   callable:Target.t ->
   DefineCallGraph.t
@@ -255,7 +282,19 @@ val call_graph_of_callable
 module DefineCallGraphSharedMemory : sig
   type t
 
-  val get : t -> callable:Target.t -> DefineCallGraph.t option
+  val cleanup : t -> unit
+
+  val save_to_cache : t -> unit
+
+  val load_from_cache : unit -> (t, SaveLoadSharedMemory.Usage.t) result
+
+  module ReadOnly : sig
+    type t
+
+    val get : t -> callable:Target.t -> DefineCallGraph.t option
+  end
+
+  val read_only : t -> ReadOnly.t
 end
 
 (** Whole-program call graph, stored in the ocaml heap. This is a mapping from a callable to all its
@@ -290,9 +329,10 @@ val build_whole_program_call_graph
   :  scheduler:Scheduler.t ->
   static_analysis_configuration:Configuration.StaticAnalysis.t ->
   environment:TypeEnvironment.ReadOnly.t ->
-  override_graph:OverrideGraph.SharedMemory.t ->
+  resolve_module_path:(Reference.t -> RepositoryPath.t option) option ->
+  override_graph:OverrideGraph.SharedMemory.ReadOnly.t ->
   store_shared_memory:bool ->
-  attribute_targets:Target.HashSet.t ->
+  attribute_targets:Target.Set.t ->
   skip_analysis_targets:Target.Set.t ->
   definitions:Target.t list ->
   call_graphs

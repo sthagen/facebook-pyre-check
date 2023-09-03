@@ -109,6 +109,22 @@ let create_artifact_path_event ~build_system { SourcePath.Event.kind; path } =
   BuildSystem.lookup_artifact build_system path |> List.map ~f:(ArtifactPath.Event.create ~kind)
 
 
+let create_status_update_response status = lazy (Response.StatusUpdate status)
+
+let create_type_errors_response ~configuration ~build_system errors_environment =
+  lazy
+    (let errors =
+       ErrorsEnvironment.ReadOnly.get_all_errors errors_environment
+       |> List.sort ~compare:AnalysisError.compare
+     in
+     Response.TypeErrors
+       (instantiate_errors_with_build_system
+          errors
+          ~build_system
+          ~configuration
+          ~module_tracker:(ErrorsEnvironment.ReadOnly.module_tracker errors_environment)))
+
+
 let process_incremental_update_request
     ~properties:{ ServerProperties.configuration; critical_files; _ }
     ~state:({ ServerState.overlaid_environment; subscriptions; build_system; _ } as state)
@@ -128,20 +144,6 @@ let process_incremental_update_request
   | None ->
       let overall_timer = Timer.start () in
       let source_path_events = List.map paths ~f:create_source_path_event in
-      let create_status_update_response status = lazy (Response.StatusUpdate status) in
-      let create_type_errors_response =
-        lazy
-          (let errors =
-             ErrorsEnvironment.ReadOnly.get_all_errors errors_environment
-             |> List.sort ~compare:AnalysisError.compare
-           in
-           Response.TypeErrors
-             (instantiate_errors_with_build_system
-                errors
-                ~build_system
-                ~configuration
-                ~module_tracker:(ErrorsEnvironment.ReadOnly.module_tracker errors_environment)))
-      in
       Subscription.batch_send
         ~response:(create_status_update_response Response.ServerStatus.Rebuilding)
         subscriptions
@@ -164,12 +166,16 @@ let process_incremental_update_request
           ~f:(fun scheduler ->
             OverlaidEnvironment.run_update_root overlaid_environment ~scheduler changed_paths)
       in
-      List.filter subscriptions ~f:Subscription.wants_type_errors
-      |> Subscription.batch_send ~response:create_type_errors_response
+      let type_error_subscriptions, status_change_subscriptions =
+        List.partition_tf subscriptions ~f:Subscription.wants_type_errors
+      in
+      Subscription.batch_send
+        type_error_subscriptions
+        ~response:(create_type_errors_response ~configuration ~build_system errors_environment)
       >>= fun () ->
-      List.filter subscriptions ~f:(fun x -> not (Subscription.wants_type_errors x))
-      |> Subscription.batch_send
-           ~response:(create_status_update_response Response.ServerStatus.Ready)
+      Subscription.batch_send
+        status_change_subscriptions
+        ~response:(create_status_update_response Response.ServerStatus.Ready)
       >>= fun () ->
       Subscription.batch_send ~response:(create_telemetry_response overall_timer) subscriptions
       >>= fun () -> Lwt.return state

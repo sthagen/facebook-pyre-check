@@ -309,10 +309,6 @@ let alias_environment class_metadata_environment =
     (class_hierarchy_environment class_metadata_environment)
 
 
-let empty_stub_environment class_metadata_environment =
-  alias_environment class_metadata_environment |> AliasEnvironment.ReadOnly.empty_stub_environment
-
-
 let unannotated_global_environment class_metadata_environment =
   alias_environment class_metadata_environment
   |> AliasEnvironment.ReadOnly.unannotated_global_environment
@@ -325,17 +321,6 @@ let class_summary class_metadata_environment annotation ~dependency =
   >>= UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
         (unannotated_global_environment class_metadata_environment)
         ?dependency
-
-
-let aliases class_metadata_environment ~dependency =
-  AliasEnvironment.ReadOnly.get_alias ?dependency (alias_environment class_metadata_environment)
-
-
-let is_suppressed_module class_metadata_environment ~dependency reference =
-  EmptyStubEnvironment.ReadOnly.from_empty_stub
-    (empty_stub_environment class_metadata_environment)
-    ?dependency
-    reference
 
 
 let class_name { Node.value = { ClassSummary.name; _ }; _ } = name
@@ -2466,12 +2451,20 @@ class base class_metadata_environment dependency =
           (class_hierarchy_environment class_metadata_environment)
       in
       let metaclass class_name ~assumptions = self#metaclass class_name ~assumptions in
+      let is_transitive_successor ~source ~target =
+        ClassMetadataEnvironment.ReadOnly.is_transitive_successor
+          class_metadata_environment
+          ~placeholder_subclass_extends_all:true
+          ?dependency
+          ~target
+          source
+      in
       {
         ConstraintsSet.class_hierarchy =
           {
             instantiate_successors_parameters =
               ClassHierarchy.instantiate_successors_parameters class_hierarchy_handler;
-            is_transitive_successor = ClassHierarchy.is_transitive_successor class_hierarchy_handler;
+            is_transitive_successor;
             variables = ClassHierarchy.variables class_hierarchy_handler;
             least_upper_bound = ClassHierarchy.least_upper_bound class_hierarchy_handler;
           };
@@ -2680,7 +2673,7 @@ class base class_metadata_environment dependency =
                   |> List.filter_map ~f:(fun variable ->
                          invalid_generic_int (Type.Variable variable))
                 in
-                if List.length errors > 0 then
+                if not (List.is_empty errors) then
                   Any, errors @ sofar
                 else
                   annotation, sofar
@@ -3070,13 +3063,16 @@ class base class_metadata_environment dependency =
           add_if_missing ~attribute_name:"__getattr__" ~annotation:Type.Any
         in
         add_actual ();
-        if
-          include_generated_attributes
-          && AnnotatedBases.extends_placeholder_stub_class
-               parent
-               ~aliases:(aliases class_metadata_environment ~dependency)
-               ~from_empty_stub:(is_suppressed_module class_metadata_environment ~dependency)
-        then
+        let extends_placeholder_stubs class_name =
+          let class_hierarchy =
+            ClassHierarchyEnvironment.ReadOnly.class_hierarchy
+              (ClassMetadataEnvironment.ReadOnly.class_hierarchy_environment
+                 class_metadata_environment)
+              ?dependency
+          in
+          ClassHierarchy.extends_placeholder_stub class_hierarchy class_name
+        in
+        if include_generated_attributes && extends_placeholder_stubs class_name then
           add_placeholder_stub_inheritances ();
         let () =
           if include_generated_attributes then
@@ -3111,7 +3107,7 @@ class base class_metadata_environment dependency =
             ?dependency
             class_name )
       with
-      | Some definition, Some { is_typed_dictionary; is_test = in_test; _ } ->
+      | Some definition, Some { is_typed_dictionary; is_test = in_test; successors = Some _; _ } ->
           let is_declarative_sqlalchemy_class () =
             Option.equal
               Type.equal
@@ -3162,7 +3158,7 @@ class base class_metadata_environment dependency =
             if accessed_through_class && special_method then
               []
             else if transitive then
-              class_name :: successors
+              class_name :: Option.value successors ~default:[]
             else
               [class_name]
           in

@@ -218,7 +218,7 @@ let parse_models_and_queries_from_configuration
          ~stubs
          ~python_version
   in
-  let () = ModelVerificationError.verify_models_and_dsl errors verify_models in
+  let () = ModelVerificationError.verify_models_and_dsl ~raise_exception:verify_models errors in
   parse_result
 
 
@@ -266,12 +266,18 @@ let initialize_models
         Log.info "Generating models from model queries...";
         let timer = Timer.start () in
         let verbose = Option.is_some taint_configuration.dump_model_query_results_path in
-        let model_query_results, model_query_errors =
+        let {
+          ModelQueryExecution.ExecutionResult.models = model_query_results;
+          errors = model_query_errors;
+        }
+          =
           ModelQueryExecution.generate_models_from_queries
             ~resolution
             ~scheduler
             ~class_hierarchy_graph
             ~verbose
+            ~error_on_unexpected_models:true
+            ~error_on_empty_result:true
             ~source_sink_filter:(Some taint_configuration.source_sink_filter)
             ~definitions_and_stubs:
               (Interprocedural.FetchCallables.get initial_callables ~definitions:true ~stubs:true)
@@ -286,8 +292,8 @@ let initialize_models
         in
         let () =
           ModelVerificationError.verify_models_and_dsl
+            ~raise_exception:static_analysis_configuration.verify_dsl
             model_query_errors
-            static_analysis_configuration.verify_dsl
         in
         let errors = List.append errors model_query_errors in
         let models =
@@ -340,11 +346,31 @@ let compact_ocaml_heap ~name =
   Statistics.performance ~name ~phase_name:name ~timer ()
 
 
+let resolve_module_path
+    ~build_system
+    ~module_tracker
+    ~static_analysis_configuration:
+      { Configuration.StaticAnalysis.configuration = { local_root; _ }; repository_root; _ }
+    qualifier
+  =
+  match
+    Server.PathLookup.instantiate_path_with_build_system ~build_system ~module_tracker qualifier
+  with
+  | None -> None
+  | Some path ->
+      let root = Option.value repository_root ~default:local_root in
+      let path = PyrePath.create_absolute path in
+      Some
+        {
+          Interprocedural.RepositoryPath.filename = PyrePath.get_relative_to_root ~root ~path;
+          path;
+        }
+
+
 let run_taint_analysis
     ~static_analysis_configuration:
       ({
          Configuration.StaticAnalysis.configuration;
-         repository_root;
          use_cache;
          limit_entrypoints;
          compact_ocaml_heap = compact_ocaml_heap_flag;
@@ -387,8 +413,10 @@ let run_taint_analysis
     |> Analysis.TypeEnvironment.ReadOnly.module_tracker
   in
   let qualifiers = Analysis.ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
-
   let read_only_environment = Analysis.TypeEnvironment.read_only environment in
+  let resolve_module_path =
+    resolve_module_path ~build_system ~module_tracker ~static_analysis_configuration
+  in
 
   let class_hierarchy_graph, cache =
     Cache.class_hierarchy_graph cache (fun () ->
@@ -458,35 +486,46 @@ let run_taint_analysis
       ~environment:(Analysis.TypeEnvironment.read_only environment)
       ~initial_callables
   in
-  let _, cache = Cache.InitialModelsSharedMemory.load cache in
-  let () = if use_cache then Cache.InitialModelsSharedMemory.save initial_models in
 
   Log.info "Computing overrides...";
   let timer = Timer.start () in
-  let {
-    Interprocedural.OverrideGraph.override_graph_heap;
-    override_graph_shared_memory;
-    skipped_overrides;
-  }
+  let maximum_overrides = TaintConfiguration.maximum_overrides_to_analyze taint_configuration in
+  let skip_overrides_targets = Registry.skip_overrides initial_models in
+  let ( {
+          Interprocedural.OverrideGraph.override_graph_heap;
+          override_graph_shared_memory;
+          skipped_overrides;
+        },
+        cache )
     =
-    Interprocedural.OverrideGraph.build_whole_program_overrides
-      ~static_analysis_configuration
-      ~scheduler
-      ~environment:(Analysis.TypeEnvironment.read_only environment)
-      ~include_unit_tests:false
-      ~skip_overrides:(Registry.skip_overrides initial_models)
-      ~maximum_overrides:(TaintConfiguration.maximum_overrides_to_analyze taint_configuration)
-      ~qualifiers
+    Cache.override_graph
+      ~skip_overrides_targets
+      ~maximum_overrides
+      cache
+      (fun ~skip_overrides_targets ~maximum_overrides () ->
+        Interprocedural.OverrideGraph.build_whole_program_overrides
+          ~static_analysis_configuration
+          ~scheduler
+          ~environment:(Analysis.TypeEnvironment.read_only environment)
+          ~include_unit_tests:false
+          ~skip_overrides_targets
+          ~maximum_overrides
+          ~qualifiers)
+  in
+  let override_graph_shared_memory_read_only =
+    Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory
   in
   Statistics.performance ~name:"Overrides computed" ~phase_name:"Computing overrides" ~timer ();
 
   Log.info "Indexing global constants...";
   let timer = Timer.start () in
-  let global_constants =
-    Interprocedural.GlobalConstants.SharedMemory.from_qualifiers
-      ~scheduler
-      ~environment:(Analysis.TypeEnvironment.read_only environment)
-      ~qualifiers
+  let global_constants, cache =
+    Cache.global_constants cache (fun () ->
+        Interprocedural.GlobalConstants.SharedMemory.from_qualifiers
+          ~handle:(Interprocedural.GlobalConstants.SharedMemory.create ())
+          ~scheduler
+          ~environment:(Analysis.TypeEnvironment.read_only environment)
+          ~qualifiers)
   in
   Statistics.performance
     ~name:"Finished constant propagation analysis"
@@ -496,16 +535,26 @@ let run_taint_analysis
 
   Log.info "Building call graph...";
   let timer = Timer.start () in
-  let { Interprocedural.CallGraph.whole_program_call_graph; define_call_graphs } =
-    Interprocedural.CallGraph.build_whole_program_call_graph
-      ~scheduler
-      ~static_analysis_configuration
-      ~environment:(Analysis.TypeEnvironment.read_only environment)
-      ~override_graph:override_graph_shared_memory
-      ~store_shared_memory:true
-      ~attribute_targets:(Registry.object_targets initial_models)
-      ~skip_analysis_targets:(Registry.skip_analysis initial_models)
-      ~definitions:(Interprocedural.FetchCallables.get_definitions initial_callables)
+  let definitions = Interprocedural.FetchCallables.get_definitions initial_callables in
+  let attribute_targets = Registry.object_targets initial_models in
+  let skip_analysis_targets = Registry.skip_analysis initial_models in
+  let { Interprocedural.CallGraph.whole_program_call_graph; define_call_graphs }, cache =
+    Cache.call_graph
+      ~attribute_targets
+      ~skip_analysis_targets
+      ~definitions
+      cache
+      (fun ~attribute_targets ~skip_analysis_targets ~definitions () ->
+        Interprocedural.CallGraph.build_whole_program_call_graph
+          ~scheduler
+          ~static_analysis_configuration
+          ~environment:(Analysis.TypeEnvironment.read_only environment)
+          ~resolve_module_path:(Some resolve_module_path)
+          ~override_graph:override_graph_shared_memory_read_only
+          ~store_shared_memory:true
+          ~attribute_targets
+          ~skip_analysis_targets
+          ~definitions)
   in
   Statistics.performance ~name:"Call graph built" ~phase_name:"Building call graph" ~timer ();
 
@@ -544,6 +593,26 @@ let run_taint_analysis
     ~timer
     ();
 
+  let () =
+    Cache.save
+      ~maximum_overrides
+      ~attribute_targets
+      ~skip_analysis_targets
+      ~skip_overrides_targets
+      ~skipped_overrides
+      ~override_graph_shared_memory
+      ~initial_callables
+      ~call_graph_shared_memory:define_call_graphs
+      ~whole_program_call_graph
+      ~global_constants
+      cache
+  in
+
+  Log.info "Purging shared memory...";
+  let timer = Timer.start () in
+  let () = purge_shared_memory ~environment ~qualifiers in
+  Statistics.performance ~name:"Purged shared memory" ~phase_name:"Purging shared memory" ~timer ();
+
   let initial_models =
     MissingFlow.add_unknown_callee_models
       ~static_analysis_configuration
@@ -555,8 +624,6 @@ let run_taint_analysis
   let timer = Timer.start () in
   let () = purge_shared_memory ~environment ~qualifiers in
   Statistics.performance ~name:"Purged shared memory" ~phase_name:"Purging shared memory" ~timer ();
-
-  let () = Cache.save cache in
 
   if compact_ocaml_heap_flag then
     compact_ocaml_heap ~name:"before fixpoint";
@@ -577,15 +644,16 @@ let run_taint_analysis
     Taint.TaintFixpoint.compute
       ~scheduler
       ~type_environment:(Analysis.TypeEnvironment.read_only environment)
-      ~override_graph:override_graph_shared_memory
+      ~override_graph:override_graph_shared_memory_read_only
       ~dependency_graph
       ~context:
         {
           Taint.TaintFixpoint.Context.taint_configuration = taint_configuration_shared_memory;
           type_environment = Analysis.TypeEnvironment.read_only environment;
           class_interval_graph = class_interval_graph_shared_memory;
-          define_call_graphs;
-          global_constants;
+          define_call_graphs =
+            Interprocedural.CallGraph.DefineCallGraphSharedMemory.read_only define_call_graphs;
+          global_constants = Interprocedural.GlobalConstants.SharedMemory.read_only global_constants;
         }
       ~callables_to_analyze
       ~max_iterations:100
@@ -593,18 +661,6 @@ let run_taint_analysis
       ~shared_models
   in
 
-  let filename_lookup path_reference =
-    match
-      Server.PathLookup.instantiate_path_with_build_system
-        ~build_system
-        ~module_tracker
-        path_reference
-    with
-    | None -> None
-    | Some full_path ->
-        let root = Option.value repository_root ~default:configuration.local_root in
-        PyrePath.get_relative_to_root ~root ~path:(PyrePath.create_absolute full_path)
-  in
   let callables =
     Target.Set.of_list (List.rev_append (Registry.targets initial_models) callables_to_analyze)
   in
@@ -613,7 +669,7 @@ let run_taint_analysis
   let timer = Timer.start () in
   let () =
     MultiSourcePostProcessing.update_multi_source_issues
-      ~filename_lookup
+      ~resolve_module_path
       ~taint_configuration
       ~callables:callables_to_analyze
       ~fixpoint_state
@@ -629,7 +685,7 @@ let run_taint_analysis
       ~scheduler
       ~static_analysis_configuration
       ~taint_configuration:taint_configuration_shared_memory
-      ~filename_lookup
+      ~resolve_module_path
       ~callables
       ~fixpoint_timer
       ~fixpoint_state
@@ -658,8 +714,8 @@ let run_taint_analysis
           ~result_directory
           ~output_format
           ~local_root
-          ~filename_lookup
-          ~override_graph:override_graph_shared_memory
+          ~resolve_module_path
+          ~override_graph:override_graph_shared_memory_read_only
           ~callables
           ~skipped_overrides
           ~model_verification_errors

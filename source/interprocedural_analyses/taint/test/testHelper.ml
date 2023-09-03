@@ -450,6 +450,7 @@ type test_environment = {
   initial_callables: FetchCallables.t;
   stubs: Target.t list;
   initial_models: Registry.t;
+  model_query_results: ModelQueryExecution.ModelQueryRegistryMap.t;
   type_environment: TypeEnvironment.ReadOnly.t;
   class_interval_graph: ClassIntervalSetGraph.Heap.t;
   class_interval_graph_shared_memory: ClassIntervalSetGraph.SharedMemory.t;
@@ -473,8 +474,7 @@ let initialize
     ?(add_initial_models = true)
     ?find_missing_flows
     ?(taint_configuration = TaintConfiguration.Heap.default)
-    ?expected_dump_string
-    ?(verify_model_queries = true)
+    ?(verify_empty_model_queries = true)
     ?model_path
     ~context
     source_content
@@ -494,10 +494,9 @@ let initialize
     Configuration.StaticAnalysis.create configuration ?find_missing_flows ()
   in
   let ast_environment = TypeEnvironment.ReadOnly.ast_environment type_environment in
+  let qualifier = Reference.create (String.chop_suffix_exn handle ~suffix:".py") in
   let source =
-    AstEnvironment.ReadOnly.get_processed_source
-      ast_environment
-      (Reference.create (String.chop_suffix_exn handle ~suffix:".py"))
+    AstEnvironment.ReadOnly.get_processed_source ast_environment qualifier
     |> fun option -> Option.value_exn option
   in
   (if not (List.is_empty errors) then
@@ -534,7 +533,7 @@ let initialize
   let class_hierarchy_graph =
     ClassHierarchyGraph.Heap.from_source ~environment:type_environment ~source
   in
-  let user_models =
+  let user_models, model_query_results =
     let models_source =
       match models_source, add_initial_models with
       | Some source, true ->
@@ -543,7 +542,7 @@ let initialize
       | models_source, _ -> models_source
     in
     match models_source with
-    | None -> Registry.empty
+    | None -> Registry.empty, ModelQueryExecution.ModelQueryRegistryMap.empty
     | Some source ->
         let { ModelParseResult.models; errors; queries } =
           ModelParser.parse
@@ -564,35 +563,20 @@ let initialize
              source)
           (List.is_empty errors);
 
-        let model_query_results, errors =
+        let { ModelQueryExecution.ExecutionResult.models = model_query_results; errors } =
           ModelQueryExecution.generate_models_from_queries
             ~resolution:global_resolution
             ~scheduler:(Test.mock_scheduler ())
             ~class_hierarchy_graph
             ~source_sink_filter:(Some taint_configuration.source_sink_filter)
             ~verbose:false
+            ~error_on_unexpected_models:true
+            ~error_on_empty_result:verify_empty_model_queries
             ~definitions_and_stubs:(List.rev_append stubs definitions)
             ~stubs:(Target.HashSet.of_list stubs)
             queries
         in
-        let dumped_models_equal left right =
-          let left, right = Yojson.Safe.from_string left, Yojson.Safe.from_string right in
-          Yojson.Safe.equal left right
-        in
-        (match taint_configuration.dump_model_query_results_path, expected_dump_string with
-        | Some path, Some expected_string ->
-            ModelQueryExecution.DumpModelQueryResults.dump_to_file_and_string
-              ~model_query_results
-              ~path
-            |> assert_equal ~cmp:dumped_models_equal ~printer:Fn.id expected_string
-        | Some path, None ->
-            ModelQueryExecution.DumpModelQueryResults.dump_to_file ~model_query_results ~path
-        | None, Some expected_string ->
-            ModelQueryExecution.DumpModelQueryResults.dump_to_string ~model_query_results
-            |> assert_equal ~cmp:dumped_models_equal ~printer:Fn.id expected_string
-        | None, None -> ());
-        let verify = static_analysis_configuration.verify_models && verify_model_queries in
-        ModelVerificationError.verify_models_and_dsl errors verify;
+        ModelVerificationError.verify_models_and_dsl ~raise_exception:true errors;
         let models =
           model_query_results
           |> ModelQueryExecution.ModelQueryRegistryMap.get_registry
@@ -606,7 +590,7 @@ let initialize
             ~stubs:(Target.HashSet.of_list stubs)
             ~initial_models:models
         in
-        models
+        models, model_query_results
   in
   let inferred_models = ClassModels.infer ~environment:type_environment ~user_models in
   let initial_models = Registry.merge ~join:Model.join_user_models inferred_models user_models in
@@ -616,9 +600,14 @@ let initialize
     |> OverrideGraph.Heap.skip_overrides ~to_skip:(Registry.skip_overrides user_models)
   in
   let override_graph_shared_memory = OverrideGraph.SharedMemory.from_heap override_graph_heap in
+  let override_graph_shared_memory_read_only =
+    Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory
+  in
 
+  let global_constants_shared_memory = GlobalConstants.SharedMemory.create () in
   let global_constants =
-    GlobalConstants.Heap.from_source source |> GlobalConstants.SharedMemory.from_heap
+    GlobalConstants.Heap.from_source ~qualifier source
+    |> GlobalConstants.SharedMemory.add_heap global_constants_shared_memory
   in
 
   (* Initialize models *)
@@ -628,7 +617,8 @@ let initialize
       ~scheduler:(Test.mock_scheduler ())
       ~static_analysis_configuration
       ~environment:type_environment
-      ~override_graph:override_graph_shared_memory
+      ~resolve_module_path:None
+      ~override_graph:override_graph_shared_memory_read_only
       ~store_shared_memory:true
       ~attribute_targets:(Registry.object_targets initial_models)
       ~skip_analysis_targets:Target.Set.empty
@@ -657,6 +647,7 @@ let initialize
     initial_callables;
     stubs;
     initial_models;
+    model_query_results;
     type_environment;
     class_interval_graph;
     class_interval_graph_shared_memory;
@@ -785,6 +776,7 @@ let end_to_end_integration_test path context =
       override_graph_heap;
       override_graph_shared_memory;
       initial_models;
+      model_query_results = _;
       initial_callables;
       stubs;
       class_interval_graph;
@@ -792,14 +784,21 @@ let end_to_end_integration_test path context =
       global_constants;
     }
       =
-      initialize
-        ~handle
-        ?models_source
-        ~add_initial_models
-        ~taint_configuration
-        ~verify_model_queries:false
-        ~context
-        source
+      try
+        initialize
+          ~handle
+          ?models_source
+          ~add_initial_models
+          ~taint_configuration
+          ~verify_empty_model_queries:false
+          ~context
+          source
+      with
+      | ModelVerificationError.ModelVerificationErrors errors as exn ->
+          Printf.printf "Unexpected model verification errors:\n";
+          List.iter errors ~f:(fun error ->
+              Printf.printf "%s\n" (ModelVerificationError.display error));
+          raise exn
     in
     let entrypoints = Registry.entrypoints initial_models in
     let prune_method =
@@ -822,37 +821,46 @@ let end_to_end_integration_test path context =
         ~stubs
         ~override_targets
     in
+    let override_graph_shared_memory_read_only =
+      Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory
+    in
     let fixpoint_state =
       TaintFixpoint.compute
         ~scheduler:(Test.mock_scheduler ())
         ~type_environment
-        ~override_graph:override_graph_shared_memory
+        ~override_graph:override_graph_shared_memory_read_only
         ~dependency_graph
         ~context:
           {
             TaintFixpoint.Context.taint_configuration = taint_configuration_shared_memory;
             type_environment;
             class_interval_graph = class_interval_graph_shared_memory;
-            define_call_graphs;
-            global_constants;
+            define_call_graphs =
+              Interprocedural.CallGraph.DefineCallGraphSharedMemory.read_only define_call_graphs;
+            global_constants =
+              Interprocedural.GlobalConstants.SharedMemory.read_only global_constants;
           }
         ~callables_to_analyze
         ~max_iterations:100
         ~epoch:TaintFixpoint.Epoch.initial
         ~shared_models
     in
-    let filename_lookup =
-      TypeEnvironment.ReadOnly.module_tracker type_environment
-      |> ModuleTracker.ReadOnly.lookup_relative_path
+    let resolve_module_path qualifier =
+      ModuleTracker.ReadOnly.lookup_relative_path
+        (TypeEnvironment.ReadOnly.module_tracker type_environment)
+        qualifier
+      >>| fun filename ->
+      { RepositoryPath.filename = Some filename; path = PyrePath.create_absolute filename }
     in
     let serialize_model callable =
       TaintReporting.fetch_and_externalize
         ~taint_configuration
         ~fixpoint_state
-        ~filename_lookup
-        ~override_graph:override_graph_shared_memory
+        ~resolve_module_path
+        ~override_graph:override_graph_shared_memory_read_only
         ~dump_override_models:true
         callable
+      |> List.map ~f:NewlineDelimitedJson.Line.to_json
       |> List.map ~f:(fun json -> Yojson.Safe.pretty_to_string ~std:true json ^ "\n")
       |> String.concat ~sep:""
     in
@@ -861,7 +869,7 @@ let end_to_end_integration_test path context =
       [create_call_graph_files whole_program_call_graph; create_overrides_files override_graph_heap]
     in
     MultiSourcePostProcessing.update_multi_source_issues
-      ~filename_lookup
+      ~resolve_module_path
       ~taint_configuration
       ~callables:callables_to_analyze
       ~fixpoint_state;

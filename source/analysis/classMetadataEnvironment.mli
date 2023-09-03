@@ -8,10 +8,10 @@
 open SharedMemoryKeys
 
 type class_metadata = {
-  successors: Type.Primitive.t list;
+  successors: Type.Primitive.t list option;
   is_test: bool;
+  is_mock: bool;
   is_final: bool;
-  extends_placeholder_stub_class: bool;
   is_abstract: bool;
   is_protocol: bool;
   is_typed_dictionary: bool;
@@ -32,6 +32,14 @@ module MetadataReadOnly : sig
   val class_hierarchy_environment : t -> ClassHierarchyEnvironment.ReadOnly.t
 
   val successors : t -> ?dependency:DependencyKey.registered -> Type.Primitive.t -> string list
+
+  val is_transitive_successor
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    placeholder_subclass_extends_all:bool ->
+    target:Type.Primitive.t ->
+    Type.Primitive.t ->
+    bool
 end
 
 include

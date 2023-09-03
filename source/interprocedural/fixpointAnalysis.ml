@@ -143,54 +143,46 @@ module Make (Analysis : ANALYSIS) = struct
 
     let singleton ~target ~model = Target.Map.singleton target model
 
-    let size registry = Target.Map.length registry
+    let size registry = Target.Map.cardinal registry
 
-    let set registry ~target ~model = Target.Map.set ~key:target ~data:model registry
+    let set registry ~target ~model = Target.Map.add target model registry
 
     let add ~join registry ~target ~model =
-      Target.Map.update registry target ~f:(function
-          | None -> model
-          | Some existing -> join existing model)
+      Target.Map.update
+        target
+        (function
+          | None -> Some model
+          | Some existing -> Some (join existing model))
+        registry
 
 
-    let get registry target = Target.Map.find registry target
+    let get target registry = Target.Map.find_opt registry target
 
     let merge ~join left right =
-      Target.Map.merge left right ~f:(fun ~key:_ -> function
-        | `Both (left, right) -> Some (join left right)
-        | `Left model
-        | `Right model ->
-            Some model)
+      Target.Map.union (fun _ left right -> Some (join left right)) left right
 
 
-    let merge_skewed ~join left right =
-      Target.Map.merge_skewed left right ~combine:(fun ~key:_ left right -> join left right)
+    let of_alist ~join = Target.Map.of_alist ~f:join
 
+    let to_alist registry = Target.Map.to_alist registry
 
-    let of_alist ~join = Target.Map.of_alist_reduce ~f:join
+    let iteri registry ~f = Target.Map.iter (fun key data -> f ~target:key ~model:data) registry
 
-    let to_alist registry = Target.Map.to_alist ~key_order:`Increasing registry
-
-    let iteri registry ~f =
-      Target.Map.iteri registry ~f:(fun ~key ~data -> f ~target:key ~model:data)
-
-
-    let map registry ~f = Target.Map.map ~f registry
+    let map registry ~f = Target.Map.map f registry
 
     let targets registry = Target.Map.keys registry
 
     let object_targets registry =
-      let objects = Target.HashSet.create () in
-      let add ~key:target ~data:_ =
+      let add target _ so_far =
         match target with
-        | Target.Object _ -> Hash_set.add objects target
-        | _ -> ()
+        | Target.Object _ -> Target.Set.add target so_far
+        | _ -> so_far
       in
-      let () = Target.Map.iteri ~f:add registry in
-      objects
+      Target.Map.fold add registry Target.Set.empty
 
 
-    let fold ~init ~f = Target.Map.fold ~init ~f:(fun ~key ~data -> f ~target:key ~model:data)
+    let fold ~init ~f map =
+      Target.Map.fold (fun key data so_far -> f ~target:key ~model:data so_far) map init
   end
 
   module Epoch = struct
@@ -392,13 +384,13 @@ module Make (Analysis : ANALYSIS) = struct
     (* Augment models with initial inferred and obscure models *)
     let add_missing_initial_models models =
       initial_callables
-      |> List.filter ~f:(fun target -> not (Target.Map.mem models target))
+      |> List.filter ~f:(fun target -> not (Target.Map.mem target models))
       |> List.fold ~init:models ~f:(fun models target ->
              Registry.set models ~target ~model:Analysis.initial_model)
     in
     let add_missing_obscure_models models =
       stubs
-      |> List.filter ~f:(fun target -> not (Target.Map.mem models target))
+      |> List.filter ~f:(fun target -> not (Target.Map.mem target models))
       |> List.fold ~init:models ~f:(fun models target ->
              Registry.set models ~target ~model:Analysis.obscure_model)
     in
@@ -469,7 +461,7 @@ module Make (Analysis : ANALYSIS) = struct
     =
     let timer = Timer.start () in
     let overrides =
-      OverrideGraph.SharedMemory.get_overriding_types
+      OverrideGraph.SharedMemory.ReadOnly.get_overriding_types
         override_graph
         ~member:(Target.get_corresponding_method callable)
       |> Option.value ~default:[]
@@ -480,9 +472,11 @@ module Make (Analysis : ANALYSIS) = struct
         match State.get_model shared_models_handle override with
         | None ->
             Format.asprintf
-              "During override analysis, can't find model for %a"
+              "During override analysis, can't find model for %a when analyzing %a"
               Target.pp_pretty
               override
+              Target.pp_pretty
+              callable
             |> failwith
         | Some model -> model |> Model.strip_for_callsite
       in

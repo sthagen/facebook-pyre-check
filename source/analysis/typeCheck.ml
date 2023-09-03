@@ -823,6 +823,16 @@ module State (Context : Context) = struct
     | _ -> None
 
 
+  let module_path_of_type ~global_resolution annotation =
+    let module_tracker = GlobalResolution.module_tracker global_resolution in
+    let annotation_base, _ = Type.split annotation in
+    Type.primitive_name annotation_base
+    >>= GlobalResolution.class_summary global_resolution
+    >>| Node.value
+    >>= fun { ClassSummary.qualifier; _ } ->
+    ModuleTracker.ReadOnly.lookup_module_path module_tracker qualifier
+
+
   let forward_reference ~resolution ~location ~errors reference =
     let global_resolution = Resolution.global_resolution resolution in
     let reference = GlobalResolution.legacy_resolve_exports global_resolution reference in
@@ -1210,13 +1220,6 @@ module State (Context : Context) = struct
               Some (class_data, attribute, undefined_target)
           | None -> None
         in
-        let module_path_of_parent_module class_type =
-          let module_tracker = GlobalResolution.module_tracker global_resolution in
-          GlobalResolution.class_summary global_resolution class_type
-          >>| Node.value
-          >>= fun { ClassSummary.qualifier; _ } ->
-          ModuleTracker.ReadOnly.lookup_module_path module_tracker qualifier
-        in
         match
           Type.class_data_for_attribute_lookup resolved_base
           >>| List.map ~f:find_attribute
@@ -1238,7 +1241,8 @@ module State (Context : Context) = struct
                            Error.Class
                              {
                                class_origin = ClassType resolved_base;
-                               parent_module_path = module_path_of_parent_module resolved_base;
+                               parent_module_path =
+                                 module_path_of_type ~global_resolution resolved_base;
                              };
                        })
             in
@@ -1320,7 +1324,8 @@ module State (Context : Context) = struct
                                Error.Class
                                  {
                                    class_origin;
-                                   parent_module_path = module_path_of_parent_module target;
+                                   parent_module_path =
+                                     module_path_of_type ~global_resolution target;
                                  };
                            })
               | _ -> errors
@@ -1634,13 +1639,7 @@ module State (Context : Context) = struct
                     (Error.UnsupportedOperand
                        (Binary { operator_name; left_operand = target; right_operand = resolved }))
               | _ ->
-                  let class_module =
-                    let module_tracker = GlobalResolution.module_tracker global_resolution in
-                    GlobalResolution.class_summary global_resolution target
-                    >>| Node.value
-                    >>= fun { ClassSummary.qualifier; _ } ->
-                    ModuleTracker.ReadOnly.lookup_module_path module_tracker qualifier
-                  in
+                  let class_module = module_path_of_type ~global_resolution target in
                   Some
                     (Error.UndefinedAttribute
                        {
@@ -2031,19 +2030,23 @@ module State (Context : Context) = struct
                 forward_right (Some not_none_left)
             | _, _ -> forward_right (Some resolved_left)))
     | Call { callee = { Node.value = Name (Name.Identifier "super"); _ } as callee; arguments } -> (
-        let metadata =
+        let superclass ~class_name { ClassMetadataEnvironment.successors; _ } =
+          let extends_placeholder_stub_class =
+            let class_hierarchy = GlobalResolution.class_hierarchy global_resolution in
+            ClassHierarchy.extends_placeholder_stub class_hierarchy class_name
+          in
+          match successors with
+          | Some successors when not extends_placeholder_stub_class ->
+              List.find successors ~f:(GlobalResolution.class_exists global_resolution)
+          | _ -> None
+        in
+        let resolved_superclass =
           Resolution.parent resolution
-          >>| (fun parent -> Type.Primitive (Reference.show parent))
-          >>= GlobalResolution.class_metadata global_resolution
+          >>| Reference.show
+          >>= fun class_name ->
+          GlobalResolution.class_metadata global_resolution class_name >>= superclass ~class_name
         in
-        (* Resolve `super()` calls. *)
-        let superclass { ClassMetadataEnvironment.successors; extends_placeholder_stub_class; _ } =
-          if extends_placeholder_stub_class then
-            None
-          else
-            List.find successors ~f:(GlobalResolution.class_exists global_resolution)
-        in
-        match metadata >>= superclass with
+        match resolved_superclass with
         | Some superclass ->
             let resolved = Type.Primitive superclass in
             {
@@ -4447,13 +4450,7 @@ module State (Context : Context) = struct
                                  custom definition of `__setattr__`, we should run signature select
                                  against the value type. *)
                               let parent_module_path =
-                                let module_tracker =
-                                  GlobalResolution.module_tracker global_resolution
-                                in
-                                GlobalResolution.class_summary global_resolution parent
-                                >>| Node.value
-                                >>= fun { ClassSummary.qualifier; _ } ->
-                                ModuleTracker.ReadOnly.lookup_module_path module_tracker qualifier
+                                module_path_of_type ~global_resolution parent
                               in
                               emit_error
                                 ~errors
@@ -6878,9 +6875,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                 let { ClassSummary.name; _ } = definition in
                 let class_name = Reference.show name in
                 let is_protocol_or_abstract class_name =
-                  match
-                    GlobalResolution.class_metadata global_resolution (Primitive class_name)
-                  with
+                  match GlobalResolution.class_metadata global_resolution class_name with
                   | Some { is_protocol; is_abstract; _ } when is_protocol || is_abstract ->
                       `Fst { class_name; is_abstract; is_protocol }
                   | Some { is_protocol; is_abstract; _ } ->
@@ -6969,11 +6964,10 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
               errors
           in
           match expression_value with
-          | { Node.value = Name name; _ } when is_simple_name name ->
-              let reference = name_to_reference_exn name in
-              GlobalResolution.class_metadata
-                global_resolution
-                (Type.Primitive (Reference.show reference))
+          | { Node.value = Name name; _ } ->
+              name_to_reference name
+              >>| Reference.show
+              >>= GlobalResolution.class_metadata global_resolution
               >>| add_error
               |> Option.value ~default:errors
           | _ -> errors
@@ -7148,16 +7142,36 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
         in
         override_errors @ errors
       in
+      let check_inconsistent_mro ~class_name { ClassMetadataEnvironment.successors; _ } =
+        match successors with
+        | Some _ -> None
+        | None ->
+            let kind = AnalysisError.InconsistentMethodResolutionOrder { class_name } in
+            let error =
+              Error.create
+                ~location:(Location.with_module ~module_reference:Context.qualifier location)
+                ~kind
+                ~define:Context.define
+            in
+            Some error
+      in
       let name = Reference.prefix name >>| Reference.show |> Option.value ~default:"" in
-      GlobalResolution.class_summary global_resolution (Type.Primitive name)
-      >>| Node.value
-      >>| (fun definition ->
-            errors
-            |> check_bases
-            |> check_protocol definition
-            |> check_attribute_initialization definition
-            |> check_overrides definition)
-      |> Option.value ~default:errors
+      match
+        GlobalResolution.class_metadata global_resolution name
+        >>| check_inconsistent_mro ~class_name:name
+      with
+      | None -> errors
+      | Some (Some mro_error) ->
+          (* Do not bother doing other checks if the class itself does not have a consistent MRO. *)
+          mro_error :: errors
+      | Some None -> (
+          match GlobalResolution.class_summary global_resolution name with
+          | None -> errors
+          | Some { Node.value = definition; _ } ->
+              check_bases errors
+              |> check_protocol definition
+              |> check_attribute_initialization definition
+              |> check_overrides definition)
     else
       errors
   in

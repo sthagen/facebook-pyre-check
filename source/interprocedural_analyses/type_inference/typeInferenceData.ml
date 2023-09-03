@@ -5,7 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* This module contains the data types needed to track the inferred type for globals, attributes,
+   and functions/methods. The overall results are intended to be deserialized into JSON and piped
+   straight to the `pyre infer` Python command. *)
 
 open Core
 open Pyre
@@ -344,28 +346,55 @@ module Inference = struct
 
   type t = raw option [@@deriving show]
 
-  let create { type_ = raw_type; target } =
+  let should_ignore ~target sanitized_type =
     let is_parameter =
       match target with
       | Parameter _ -> true
       | _ -> false
     in
+    Type.contains_unknown sanitized_type
+    || Type.contains_undefined sanitized_type
+    || Type.contains_prohibited_any sanitized_type
+    || (is_parameter && Type.equal sanitized_type NoneType)
+    || Type.ReadOnly.is_readonly sanitized_type
+
+
+  let create { type_ = raw_type; target } =
     let sanitized_type =
       raw_type
       |> Type.Variable.mark_all_free_variables_as_escaped
       |> Type.Variable.convert_all_escaped_free_variables_to_anys
       |> Type.infer_transform
     in
-    let ignore =
-      Type.contains_unknown sanitized_type
-      || Type.contains_undefined sanitized_type
-      || Type.contains_prohibited_any sanitized_type
-      || (is_parameter && Type.equal sanitized_type NoneType)
-    in
-    if ignore then
+    if should_ignore ~target sanitized_type then
       None
     else
       Some { type_ = sanitized_type; target }
+
+
+  let from_error ~define { AnalysisError.location; kind; _ } =
+    let raw_inference =
+      let open AnalysisError in
+      let open Statement in
+      match kind with
+      | MissingReturnAnnotation { annotation = Some type_; _ }
+        when not (Define.is_abstract_method define) ->
+          Some { type_; target = Return }
+      | MissingParameterAnnotation { name; annotation = Some type_; _ } ->
+          Some { type_; target = Parameter { name } }
+      | MissingGlobalAnnotation { name; annotation = Some type_; _ } ->
+          Some { type_; target = Global { name; location } }
+      | MissingAttributeAnnotation
+          { parent; missing_annotation = { name; annotation = Some type_; _ } } ->
+          Some { type_; target = Attribute { parent = type_to_reference parent; name; location } }
+      | _ -> None
+    in
+    raw_inference >>= create
+
+
+  module TestingOnly = struct
+    let should_ignore = should_ignore
+  end
 end
 
 module LocalResult = struct

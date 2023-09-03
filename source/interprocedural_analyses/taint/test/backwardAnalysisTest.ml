@@ -37,8 +37,13 @@ let assert_taint ~context source expected =
       CallGraph.call_graph_of_define
         ~static_analysis_configuration
         ~environment:type_environment
-        ~override_graph:(OverrideGraph.SharedMemory.create ())
-        ~attribute_targets:(Registry.object_targets initial_models)
+        ~override_graph:
+          (OverrideGraph.SharedMemory.create () |> OverrideGraph.SharedMemory.read_only)
+        ~attribute_targets:
+          (initial_models
+          |> Registry.object_targets
+          |> Target.Set.elements
+          |> Target.HashSet.of_list)
         ~qualifier
         ~define:(Ast.Node.value define)
     in
@@ -50,8 +55,7 @@ let assert_taint ~context source expected =
         ~environment:type_environment
         ~class_interval_graph:(ClassIntervalSetGraph.SharedMemory.create ())
         ~global_constants:
-          (Interprocedural.GlobalConstants.SharedMemory.from_heap
-             Interprocedural.GlobalConstants.Heap.empty)
+          (GlobalConstants.SharedMemory.create () |> GlobalConstants.SharedMemory.read_only)
         ~qualifier
         ~callable:call_target
         ~define

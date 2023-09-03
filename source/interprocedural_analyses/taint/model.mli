@@ -44,6 +44,7 @@ module Mode : sig
     | SkipOverrides
     | Entrypoint
     | IgnoreDecorator
+    | SkipModelBroadening
   [@@deriving show, compare, equal]
 
   val from_string : string -> t option
@@ -109,9 +110,9 @@ val apply_sanitizers : taint_configuration:TaintConfiguration.Heap.t -> t -> t
 val should_externalize : t -> bool
 
 val to_json
-  :  expand_overrides:OverrideGraph.SharedMemory.t option ->
+  :  expand_overrides:OverrideGraph.SharedMemory.ReadOnly.t option ->
   is_valid_callee:(port:AccessPath.Root.t -> path:AccessPath.Path.t -> callee:Target.t -> bool) ->
-  filename_lookup:(Ast.Reference.t -> string option) option ->
+  resolve_module_path:(Ast.Reference.t -> RepositoryPath.t option) option ->
   export_leaf_names:ExportLeafNames.t ->
   Target.t ->
   t ->

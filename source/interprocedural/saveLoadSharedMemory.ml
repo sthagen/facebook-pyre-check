@@ -6,6 +6,7 @@
  *)
 
 open Core
+open Data_structures
 
 let exception_to_error ~error ~message ~f =
   try f () with
@@ -15,7 +16,10 @@ let exception_to_error ~error ~message ~f =
 
 
 module Usage = struct
-  type error = LoadError [@@deriving show { with_path = false }]
+  type error =
+    | LoadError
+    | Stale
+  [@@deriving show { with_path = false }]
 
   type t =
     | Used
@@ -26,21 +30,21 @@ end
 module type SingleValueValueType = sig
   type t
 
+  val prefix : Hack_parallel.Std.Prefix.t
+
   val name : string
 end
 
 (* Support storing / loading a single OCaml value into / from the shared memory, for caching
    purposes. *)
 module MakeSingleValue (Value : SingleValueValueType) = struct
-  let shared_memory_prefix = Hack_parallel.Std.Prefix.make ()
-
   module T = Memory.Serializer (struct
     type t = Value.t
 
     module Serialized = struct
       type t = Value.t
 
-      let prefix = shared_memory_prefix
+      let prefix = Value.prefix
 
       let description = Value.name
     end
@@ -50,7 +54,7 @@ module MakeSingleValue (Value : SingleValueValueType) = struct
     let deserialize = Fn.id
   end)
 
-  let load () =
+  let load_from_cache () =
     exception_to_error
       ~error:(Usage.Unused Usage.LoadError)
       ~message:(Format.asprintf "Loading %s from cache" Value.name)
@@ -61,7 +65,7 @@ module MakeSingleValue (Value : SingleValueValueType) = struct
         Ok value)
 
 
-  let save value =
+  let save_to_cache value =
     exception_to_error
       ~error:()
       ~message:(Format.asprintf "Saving %s to cache" Value.name)
@@ -77,6 +81,8 @@ module type KeyValueValueType = sig
   type t
 
   val prefix : Hack_parallel.Std.Prefix.t
+
+  val handle_prefix : Hack_parallel.Std.Prefix.t
 
   val description : string
 end
@@ -100,7 +106,7 @@ struct
   module Handle = struct
     type t = {
       first_class_handle: FirstClass.t;
-      keys: FirstClass.KeySet.t;
+      keys: Key.t BigList.t;
     }
   end
 
@@ -108,20 +114,67 @@ struct
 
   type t = Handle.t
 
-  let create () =
-    { Handle.first_class_handle = FirstClass.create (); keys = FirstClass.KeySet.empty }
+  let create () = { Handle.first_class_handle = FirstClass.create (); keys = BigList.empty }
 
+  let add { Handle.first_class_handle; keys } key value =
+    let keys = BigList.cons key keys in
+    let () = FirstClass.add first_class_handle key value in
+    { Handle.first_class_handle; keys }
 
-  let get { Handle.first_class_handle; _ } = FirstClass.get first_class_handle
-
-  let mem { Handle.first_class_handle; _ } = FirstClass.mem first_class_handle
 
   (* Partially invalidate the shared memory. *)
-  let cleanup { Handle.first_class_handle; keys } = FirstClass.remove_batch first_class_handle keys
+  let cleanup { Handle.first_class_handle; keys } =
+    FirstClass.remove_batch first_class_handle (keys |> BigList.to_list |> FirstClass.KeySet.of_list)
+
 
   let of_alist list =
     let save_entry ~first_class_handle (key, value) = FirstClass.add first_class_handle key value in
     let first_class_handle = FirstClass.create () in
     List.iter list ~f:(save_entry ~first_class_handle);
-    { Handle.first_class_handle; keys = list |> List.map ~f:fst |> FirstClass.KeySet.of_list }
+    { Handle.first_class_handle; keys = list |> List.map ~f:fst |> BigList.of_list }
+
+
+  let to_alist { Handle.first_class_handle; keys } =
+    FirstClass.get_batch first_class_handle (keys |> BigList.to_list |> KeySet.of_list)
+    |> FirstClass.KeyMap.elements
+    |> List.filter_map ~f:(fun (key, value) ->
+           match value with
+           | Some value -> Some (key, value)
+           | None -> None)
+
+
+  let merge_same_handle
+      { Handle.first_class_handle = left_first_class_handle; keys = left_keys }
+      { Handle.first_class_handle = right_first_class_handle; keys = right_keys }
+    =
+    if not (FirstClass.equal left_first_class_handle right_first_class_handle) then
+      failwith "Cannot merge with different handles"
+    else
+      {
+        Handle.first_class_handle = left_first_class_handle;
+        keys = BigList.merge left_keys right_keys;
+      }
+
+
+  module HandleSharedMemory = MakeSingleValue (struct
+    type t = Handle.t
+
+    let prefix = Value.handle_prefix
+
+    let name = Format.asprintf "Handle of %s" Value.description
+  end)
+
+  let save_to_cache = HandleSharedMemory.save_to_cache
+
+  let load_from_cache = HandleSharedMemory.load_from_cache
+
+  module ReadOnly = struct
+    type t = FirstClass.t
+
+    let get = FirstClass.get
+
+    let mem = FirstClass.mem
+  end
+
+  let read_only { Handle.first_class_handle; _ } = first_class_handle
 end

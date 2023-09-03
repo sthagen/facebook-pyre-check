@@ -129,7 +129,7 @@ module Heap = struct
 
   let skip_overrides ~to_skip overrides =
     Target.Map.Tree.filter_keys
-      ~f:(fun override -> not (Reference.Set.mem to_skip (Target.define_name override)))
+      ~f:(fun override -> not (Reference.SerializableSet.mem (Target.define_name override) to_skip))
       overrides
 
 
@@ -185,6 +185,8 @@ module SharedMemory = struct
 
         let prefix = Hack_parallel.Std.Prefix.make ()
 
+        let handle_prefix = Hack_parallel.Std.Prefix.make ()
+
         let description = "overriding types"
       end)
 
@@ -192,30 +194,42 @@ module SharedMemory = struct
 
   let create = T.create
 
-  let get_overriding_types handle ~member = T.get handle member
-
-  let overrides_exist handle member = T.mem handle member
-
   (** Records a heap override graph in shared memory. *)
   let from_heap overrides = overrides |> Target.Map.Tree.to_alist |> T.of_alist
+
+  let to_heap handle = handle |> T.to_alist |> Target.Map.Tree.of_alist_exn
 
   (** Remove an override graph from shared memory. This must be called before storing another
       override graph. *)
   let cleanup = T.cleanup
 
-  let expand_override_targets handle callees =
-    let rec expand_and_gather expanded = function
-      | (Target.Function _ | Target.Method _ | Target.Object _) as real -> real :: expanded
-      | Target.Override _ as override ->
-          let make_override at_type = Target.create_derived_override override ~at_type in
-          let overrides =
-            let member = Target.get_corresponding_method override in
-            T.get handle member |> Option.value ~default:[] |> List.map ~f:make_override
-          in
-          Target.get_corresponding_method override
-          :: List.fold overrides ~f:expand_and_gather ~init:expanded
-    in
-    List.fold callees ~init:[] ~f:expand_and_gather |> List.dedup_and_sort ~compare:Target.compare
+  let read_only = T.read_only
+
+  module ReadOnly = struct
+    type t = T.ReadOnly.t
+
+    let get_overriding_types handle ~member = T.ReadOnly.get handle member
+
+    let overrides_exist handle member = T.ReadOnly.mem handle member
+
+    let expand_override_targets handle callees =
+      let rec expand_and_gather expanded = function
+        | (Target.Function _ | Target.Method _ | Target.Object _) as real -> real :: expanded
+        | Target.Override _ as override ->
+            let make_override at_type = Target.create_derived_override override ~at_type in
+            let overrides =
+              let member = Target.get_corresponding_method override in
+              T.ReadOnly.get handle member |> Option.value ~default:[] |> List.map ~f:make_override
+            in
+            Target.get_corresponding_method override
+            :: List.fold overrides ~f:expand_and_gather ~init:expanded
+      in
+      List.fold callees ~init:[] ~f:expand_and_gather |> List.dedup_and_sort ~compare:Target.compare
+  end
+
+  let save_to_cache = T.save_to_cache
+
+  let load_from_cache = T.load_from_cache
 end
 
 let get_source ~environment qualifier =
@@ -223,10 +237,12 @@ let get_source ~environment qualifier =
   AstEnvironment.ReadOnly.get_processed_source ast_environment qualifier
 
 
+type skipped_overrides = Target.t list
+
 type whole_program_overrides = {
   override_graph_heap: Heap.t;
   override_graph_shared_memory: SharedMemory.t;
-  skipped_overrides: Target.t list;
+  skipped_overrides: skipped_overrides;
 }
 
 (** Compute the override graph, which maps overide_targets (parent methods which are overridden) to
@@ -236,7 +252,7 @@ let build_whole_program_overrides
     ~static_analysis_configuration
     ~environment
     ~include_unit_tests
-    ~skip_overrides
+    ~skip_overrides_targets
     ~maximum_overrides
     ~qualifiers
   =
@@ -248,7 +264,7 @@ let build_whole_program_overrides
       | Some source ->
           let new_overrides =
             Heap.from_source ~environment ~include_unit_tests ~source
-            |> Heap.skip_overrides ~to_skip:skip_overrides
+            |> Heap.skip_overrides ~to_skip:skip_overrides_targets
           in
           Target.Map.Tree.merge_skewed ~combine overrides new_overrides
     in

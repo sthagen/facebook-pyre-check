@@ -140,7 +140,7 @@ let parse_single_statement ?(preprocess = false) ?(coerce_special_methods = fals
 
 let parse_last_statement source =
   match parse source with
-  | { Source.statements; _ } when List.length statements > 0 -> List.last_exn statements
+  | { Source.statements; _ } when not (List.is_empty statements) -> List.last_exn statements
   | _ -> failwith "Could not parse last statement"
 
 
@@ -201,17 +201,23 @@ let parse_location_with_module location =
 
 
 let diff ~print format (left, right) =
-  let input =
-    let command =
-      Format.sprintf
-        "diff -u <(printf '%s') <(printf '%s')"
-        (Format.asprintf "%a" print left)
-        (Format.asprintf "%a" print right)
+  try
+    let input =
+      let command =
+        Format.sprintf
+          "diff -u <(printf '%s') <(printf '%s')"
+          (Format.asprintf "%a" print left)
+          (Format.asprintf "%a" print right)
+      in
+      CamlUnix.open_process_args_in "/bin/bash" [| "/bin/bash"; "-c"; command |]
     in
-    CamlUnix.open_process_args_in "/bin/bash" [| "/bin/bash"; "-c"; command |]
-  in
-  Format.fprintf format "\n%s" (In_channel.input_all input);
-  In_channel.close input
+    Format.fprintf format "\n%s" (In_channel.input_all input);
+    In_channel.close input
+  with
+  | CamlUnix.Unix_error (CamlUnix.E2BIG, _, _) ->
+      Format.fprintf
+        format
+        "\nWarning: `diff -u <(printf '...') <(printf '...')` failed: input too large"
 
 
 let map_printer ~key_pp ~data_pp map =
@@ -3414,7 +3420,7 @@ let assert_equivalent_attributes
 
 module MockClassHierarchyHandler = struct
   type t = {
-    edges: ClassHierarchy.Target.t list IndexTracker.Table.t;
+    edges: ClassHierarchy.Edges.t IndexTracker.Table.t;
     all_indices: IndexTracker.Hash_set.t;
   }
 
@@ -3427,7 +3433,7 @@ module MockClassHierarchyHandler = struct
 
 
   let pp format { edges; _ } =
-    let print_edge (source, targets) =
+    let print_edge (source, { ClassHierarchy.Edges.parents; _ }) =
       let targets =
         let target { ClassHierarchy.Target.target; parameters } =
           Format.asprintf
@@ -3436,7 +3442,7 @@ module MockClassHierarchyHandler = struct
             (Type.pp_parameters ~pp_type:Type.pp_concise)
             parameters
         in
-        targets |> List.map ~f:target |> String.concat ~sep:", "
+        List.map parents ~f:target |> String.concat ~sep:", "
       in
       Format.fprintf format "  %s -> %s\n" (IndexTracker.annotation source) targets
     in
@@ -3452,8 +3458,6 @@ module MockClassHierarchyHandler = struct
     (module struct
       let edges = Hashtbl.find order.edges
 
-      let extends_placeholder_stub _ = false
-
       let contains annotation = Hash_set.mem order.all_indices (IndexTracker.index annotation)
     end : ClassHierarchy.Handler)
 
@@ -3463,15 +3467,38 @@ module MockClassHierarchyHandler = struct
     let successor = IndexTracker.index successor in
     let edges = order.edges in
     (* Add edges. *)
-    let successors = Hashtbl.find edges predecessor |> Option.value ~default:[] in
-    Hashtbl.set
-      edges
-      ~key:predecessor
-      ~data:({ ClassHierarchy.Target.target = successor; parameters } :: successors)
+    let new_target = { ClassHierarchy.Target.target = successor; parameters } in
+    let predecessor_edges =
+      match Hashtbl.find edges predecessor with
+      | None ->
+          {
+            ClassHierarchy.Edges.parents = [new_target];
+            generic_base = None;
+            has_placeholder_stub_parent = false;
+          }
+      | Some ({ ClassHierarchy.Edges.parents; _ } as edges) ->
+          { edges with parents = new_target :: parents }
+    in
+    Hashtbl.set edges ~key:predecessor ~data:predecessor_edges
+
+
+  let set_extends_placeholder_stub order annotation =
+    let index = IndexTracker.index annotation in
+    Hashtbl.change order.edges index ~f:(function
+        | None -> None
+        | Some edges -> Some { edges with has_placeholder_stub_parent = true })
 
 
   let insert order annotation =
     let index = IndexTracker.index annotation in
     Hash_set.add order.all_indices index;
-    Hashtbl.set order.edges ~key:index ~data:[]
+    Hashtbl.set
+      order.edges
+      ~key:index
+      ~data:
+        {
+          ClassHierarchy.Edges.parents = [];
+          generic_base = None;
+          has_placeholder_stub_parent = false;
+        }
 end

@@ -20,30 +20,22 @@ let test_simple_registration context =
       |> ErrorsEnvironment.Testing.ReadOnly.class_hierarchy_environment
     in
     let expected_edges =
-      expected_edges
-      >>| List.map ~f:(fun name ->
-              { ClassHierarchy.Target.target = IndexTracker.index name; parameters = [] })
-    in
-    let printer v =
-      let show_target_readable { ClassHierarchy.Target.target; parameters } =
-        Format.asprintf
-          "%s[%a]"
-          (IndexTracker.annotation target)
-          (Type.pp_parameters ~pp_type:Type.pp)
-          parameters
-      in
-      v >>| List.to_string ~f:show_target_readable |> Option.value ~default:"none"
+      Some
+        {
+          ClassHierarchy.Edges.parents =
+            List.map
+              ~f:(fun name ->
+                { ClassHierarchy.Target.target = IndexTracker.index name; parameters = [] })
+              expected_edges;
+          generic_base = None;
+          has_placeholder_stub_parent = expected_extends_placeholder_stub;
+        }
     in
     assert_equal
-      ~printer
+      ~cmp:[%compare.equal: ClassHierarchy.Edges.t option]
+      ~printer:(fun edges -> [%sexp_of: ClassHierarchy.Edges.t option] edges |> Sexp.to_string_hum)
       expected_edges
-      (ClassHierarchyEnvironment.ReadOnly.get_edges read_only (IndexTracker.index name));
-    assert_equal
-      ~printer:string_of_bool
-      expected_extends_placeholder_stub
-      (ClassHierarchyEnvironment.ReadOnly.extends_placeholder_stub
-         read_only
-         (IndexTracker.index name))
+      (ClassHierarchyEnvironment.ReadOnly.get_edges read_only (IndexTracker.index name))
   in
   assert_registers
     ["test.py", {|
@@ -51,7 +43,7 @@ let test_simple_registration context =
       pass
   |}]
     "test.C"
-    ~expected_edges:(Some ["object"])
+    ~expected_edges:["object"]
     ~expected_extends_placeholder_stub:false;
   assert_registers
     ["test.py", {|
@@ -61,7 +53,7 @@ let test_simple_registration context =
       pass
   |}]
     "test.C"
-    ~expected_edges:(Some ["test.D"])
+    ~expected_edges:["test.D"]
     ~expected_extends_placeholder_stub:false;
   assert_registers
     [
@@ -75,7 +67,7 @@ let test_simple_registration context =
   |};
     ]
     "test.C"
-    ~expected_edges:(Some ["object"])
+    ~expected_edges:["object"]
     ~expected_extends_placeholder_stub:true;
   assert_registers
     [
@@ -93,7 +85,7 @@ let test_simple_registration context =
   |};
     ]
     "test.C"
-    ~expected_edges:(Some ["test.D"])
+    ~expected_edges:["test.D"]
     ~expected_extends_placeholder_stub:false;
   assert_registers
     [
@@ -111,36 +103,35 @@ let test_simple_registration context =
   |};
     ]
     "test.C"
-    ~expected_edges:(Some ["test.D"])
+    ~expected_edges:["test.D"]
     ~expected_extends_placeholder_stub:true;
   ()
 
 
-let test_inferred_generic_base context =
-  let assert_registers source name expected =
+let test_parents_and_inferred_generic_base context =
+  let assert_registers ~expected_parents ?expected_inferred_generic_base source name =
     let project = ScratchProject.setup ["test.py", source] ~context ~track_dependencies:true in
     let read_only =
       ScratchProject.errors_environment project
       |> ErrorsEnvironment.Testing.ReadOnly.class_hierarchy_environment
     in
-    let expected =
-      expected
-      >>| List.map ~f:(fun (name, concretes) ->
-              {
-                ClassHierarchy.Target.target = IndexTracker.index name;
-                parameters = List.map concretes ~f:(fun single -> Type.Parameter.Single single);
-              })
+    let create_target (name, concretes) =
+      {
+        ClassHierarchy.Target.target = IndexTracker.index name;
+        parameters = List.map concretes ~f:(fun single -> Type.Parameter.Single single);
+      }
     in
-    let printer v =
-      let show_target_readable { ClassHierarchy.Target.target; parameters } =
-        (*Printf.sprintf*)
-        (*"%s[%s]"*)
-        Type.show (Type.parametric (IndexTracker.annotation target) parameters)
-      in
-      v >>| List.to_string ~f:show_target_readable |> Option.value ~default:"none"
+    let expected =
+      Some
+        {
+          ClassHierarchy.Edges.parents = List.map expected_parents ~f:create_target;
+          generic_base = Option.map expected_inferred_generic_base ~f:create_target;
+          has_placeholder_stub_parent = false;
+        }
     in
     assert_equal
-      ~printer
+      ~cmp:[%compare.equal: ClassHierarchy.Edges.t option]
+      ~printer:(fun edges -> [%sexp_of: ClassHierarchy.Edges.t option] edges |> Sexp.to_string_hum)
       expected
       (ClassHierarchyEnvironment.ReadOnly.get_edges read_only (IndexTracker.index name))
   in
@@ -151,7 +142,7 @@ let test_inferred_generic_base context =
          pass
      |}
     "test.C"
-    (Some ["object", []]);
+    ~expected_parents:["object", []];
   assert_registers
     {|
        _T = typing.TypeVar("_T")
@@ -161,7 +152,45 @@ let test_inferred_generic_base context =
          pass
      |}
     "test.C"
-    (Some ["test.List", [Type.variable "test._T"]; "typing.Generic", [Type.variable "test._T"]]);
+    ~expected_parents:["test.List", [Type.variable "test._T"]]
+    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
+  assert_registers
+    {|
+       import typing
+       _T = typing.TypeVar("_T")
+       class List:
+         pass
+       class C(typing.Generic[_T], List):
+         pass
+     |}
+    "test.C"
+    ~expected_parents:["typing.Generic", [Type.variable "test._T"]; "test.List", []]
+    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
+  assert_registers
+    {|
+       import typing
+       _T = typing.TypeVar("_T")
+       class List(typing.Generic[_T]):
+         pass
+       class C(typing.Generic[_T], List[_T]):
+         pass
+     |}
+    "test.C"
+    ~expected_parents:["test.List", [Type.variable "test._T"]]
+    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
+  assert_registers
+    {|
+       import typing
+       _T = typing.TypeVar("_T")
+       _U = typing.TypeVar("_U")
+       class List(typing.Generic[_U]):
+         pass
+       class C(typing.Generic[_T], List[_T]):
+         pass
+     |}
+    "test.C"
+    ~expected_parents:["test.List", [Type.variable "test._T"]]
+    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
   assert_registers
     {|
        _T = typing.TypeVar("_T")
@@ -171,7 +200,131 @@ let test_inferred_generic_base context =
          pass
      |}
     "test.List"
-    (Some ["test.Iterable", [Type.variable "test._T"]; "typing.Generic", [Type.variable "test._T"]]);
+    ~expected_parents:
+      ["test.Iterable", [Type.variable "test._T"]; "typing.Generic", [Type.variable "test._T"]]
+    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
+  assert_registers
+    {|
+       import typing
+       T1 = typing.TypeVar("T1")
+       T2 = typing.TypeVar("T2")
+       class Foo1(typing.Generic[T1]): pass
+       class Foo2(typing.Generic[T2]): pass
+       class Bar(Foo1[T1], Foo2[T2]): pass
+     |}
+    "test.Bar"
+    ~expected_parents:
+      ["test.Foo1", [Type.variable "test.T1"]; "test.Foo2", [Type.variable "test.T2"]]
+    ~expected_inferred_generic_base:
+      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+  assert_registers
+    {|
+       import typing
+       T1 = typing.TypeVar("T1")
+       T2 = typing.TypeVar("T2")
+       class Foo1(typing.Generic[T1]): pass
+       class Foo2(typing.Generic[T2]): pass
+       class Bar(typing.Generic[T1, T2], Foo1[T1], Foo2[T2]): pass
+     |}
+    "test.Bar"
+    ~expected_parents:
+      ["test.Foo1", [Type.variable "test.T1"]; "test.Foo2", [Type.variable "test.T2"]]
+    ~expected_inferred_generic_base:
+      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+  assert_registers
+    {|
+       import typing
+       T1 = typing.TypeVar("T1")
+       T2 = typing.TypeVar("T2")
+       class Foo1(typing.Generic[T1]): pass
+       class Foo2(typing.Generic[T2]): pass
+       class Bar(Foo1[T1], Foo2[T2], typing.Generic[T1, T2]): pass
+     |}
+    "test.Bar"
+    ~expected_parents:
+      [
+        "test.Foo1", [Type.variable "test.T1"];
+        "test.Foo2", [Type.variable "test.T2"];
+        "typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"];
+      ]
+    ~expected_inferred_generic_base:
+      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+  assert_registers
+    {|
+       import typing
+       T1 = typing.TypeVar("T1")
+       T2 = typing.TypeVar("T2")
+       class Foo1(typing.Generic[T1]): pass
+       class Foo2(typing.Generic[T2]): pass
+       # Note that Foo1 doesn't have type parameter here
+       class Bar(typing.Generic[T1, T2], Foo1, Foo2[T2]): pass
+     |}
+    "test.Bar"
+    ~expected_parents:["test.Foo1", []; "test.Foo2", [Type.variable "test.T2"]]
+    ~expected_inferred_generic_base:
+      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+  assert_registers
+    {|
+       import typing
+       T1 = typing.TypeVar("T1")
+       T2 = typing.TypeVar("T2")
+       class Foo1(typing.Generic[T1]): pass
+       class Foo2(typing.Generic[T2]): pass
+       class Bar(Foo1[T1], typing.Generic[T1, T2], Foo2[T2]): pass
+     |}
+    "test.Bar"
+    ~expected_parents:
+      ["test.Foo1", [Type.variable "test.T1"]; "test.Foo2", [Type.variable "test.T2"]]
+    ~expected_inferred_generic_base:
+      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+  assert_registers
+    {|
+       import typing
+       T1 = typing.TypeVar("T1")
+       T2 = typing.TypeVar("T2")
+       class Foo1(typing.Generic[T1]): pass
+       class Foo2(typing.Generic[T2]): pass
+       # Note that Foo2 doesn't have type parameter here
+       class Bar(Foo1[T1], typing.Generic[T1, T2], Foo2): pass
+     |}
+    "test.Bar"
+    ~expected_parents:
+      [
+        "test.Foo1", [Type.variable "test.T1"];
+        "typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"];
+        "test.Foo2", [];
+      ]
+    ~expected_inferred_generic_base:
+      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+  assert_registers
+    {|
+       import typing
+       T1 = typing.TypeVar("T1")
+       T2 = typing.TypeVar("T2")
+       class Foo1(typing.Generic[T1]): pass
+       class Foo2(typing.Generic[T2]): pass
+       class Bar(typing.Generic[T1, T2], Foo1, Foo2): pass
+     |}
+    "test.Bar"
+    ~expected_parents:
+      [
+        "typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"];
+        "test.Foo1", [];
+        "test.Foo2", [];
+      ]
+    ~expected_inferred_generic_base:
+      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+  assert_registers
+    {|
+       import typing
+       T = typing.TypeVar("T")
+       class Foo(typing.Generic[T]): pass
+       class Bar(typing.Protocol[T], Generic[T], Foo[T]): pass
+     |}
+    "test.Bar"
+    ~expected_parents:
+      ["typing.Protocol", [Type.variable "test.T"]; "test.Foo", [Type.variable "test.T"]]
+    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test.T"]);
   assert_registers
     {|
       _T1 = typing.TypeVar('_T1')
@@ -181,11 +334,9 @@ let test_inferred_generic_base context =
       class Foo(Dict[_T1, _T2]): pass
     |}
     "test.Foo"
-    (Some
-       [
-         "test.Dict", [Type.variable "test._T1"; Type.variable "test._T2"];
-         "typing.Generic", [Type.variable "test._T1"; Type.variable "test._T2"];
-       ]);
+    ~expected_parents:["test.Dict", [Type.variable "test._T1"; Type.variable "test._T2"]]
+    ~expected_inferred_generic_base:
+      ("typing.Generic", [Type.variable "test._T1"; Type.variable "test._T2"]);
   assert_registers
     {|
       _T1 = typing.TypeVar('_T1')
@@ -195,11 +346,8 @@ let test_inferred_generic_base context =
       class Foo(Dict[_T1, _T1]): pass
     |}
     "test.Foo"
-    (Some
-       [
-         "test.Dict", [Type.variable "test._T1"; Type.variable "test._T1"];
-         "typing.Generic", [Type.variable "test._T1"];
-       ]);
+    ~expected_parents:["test.Dict", [Type.variable "test._T1"; Type.variable "test._T1"]]
+    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T1"]);
   ()
 
 
@@ -229,26 +377,25 @@ let test_updates context =
     in
     let execute_action = function
       | `Edges (class_name, dependency, expectation) ->
-          let printer v =
-            let show_target_readable { ClassHierarchy.Target.target; parameters } =
-              Format.asprintf
-                "%s[%a]"
-                (IndexTracker.annotation target)
-                (Type.pp_parameters ~pp_type:Type.pp)
-                parameters
-            in
-            v >>| List.to_string ~f:show_target_readable |> Option.value ~default:"none"
-          in
           let expectation =
-            expectation
-            >>| List.map ~f:(fun name ->
-                    { ClassHierarchy.Target.target = IndexTracker.index name; parameters = [] })
+            Option.map expectation ~f:(fun expectation ->
+                {
+                  ClassHierarchy.Edges.parents =
+                    List.map expectation ~f:(fun name ->
+                        { ClassHierarchy.Target.target = IndexTracker.index name; parameters = [] });
+                  generic_base = None;
+                  has_placeholder_stub_parent = false;
+                })
           in
           ClassHierarchyEnvironment.ReadOnly.get_edges
             read_only
             ~dependency
             (IndexTracker.index class_name)
-          |> assert_equal ~printer expectation
+          |> assert_equal
+               ~cmp:[%compare.equal: ClassHierarchy.Edges.t option]
+               ~printer:(fun edges ->
+                 [%sexp_of: ClassHierarchy.Edges.t option] edges |> Sexp.to_string_hum)
+               expectation
     in
     List.iter middle_actions ~f:execute_action;
     if Option.is_some original_source then
@@ -380,11 +527,183 @@ let test_updates context =
   ()
 
 
+let ( !! ) concretes = List.map concretes ~f:(fun single -> Type.Parameter.Single single)
+
+let test_compute_inferred_generic_base context =
+  let assert_inferred_generic ~target source expected =
+    let qualifier = Reference.create "test" in
+    let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
+      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
+    in
+    let source =
+      AstEnvironment.ReadOnly.get_processed_source
+        (AnnotatedGlobalEnvironment.ReadOnly.ast_environment global_environment)
+        qualifier
+    in
+    let source = Option.value_exn source in
+    let { Source.statements; _ } = source in
+    let target =
+      let target = function
+        | {
+            Node.location;
+            value = Ast.Statement.Statement.Class ({ Statement.Class.name; _ } as definition);
+          }
+          when String.equal (Reference.show name) target ->
+            Some { Node.location; value = definition }
+        | _ -> None
+      in
+      List.find_map ~f:target statements
+      |> Option.value_exn
+      |> fun { Node.value; _ } -> ClassSummary.create ~qualifier value
+    in
+    let resolution = GlobalResolution.create global_environment in
+    let parse_annotation =
+      GlobalResolution.parse_annotation ~validation:ValidatePrimitives resolution
+    in
+    let { ClassSummary.bases = { base_classes; _ }; _ } = target in
+    let actual =
+      List.map base_classes ~f:parse_annotation |> ClassHierarchyEnvironment.compute_generic_base
+    in
+    assert_equal
+      ~printer:[%show: Expression.t option]
+      ~cmp:[%compare.equal: Expression.t option]
+      (Option.map expected ~f:Type.expression)
+      (Option.map actual ~f:Type.expression)
+  in
+  assert_inferred_generic
+    ~target:"test.C"
+    {|
+       _T = typing.TypeVar('_T')
+       class C:
+         pass
+     |}
+    None;
+  assert_inferred_generic
+    ~target:"test.C"
+    {|
+       _T = typing.TypeVar("_T")
+       class List(typing.Generic[_T]):
+         pass
+       class C(List[_T]):
+         pass
+     |}
+    (Some (Type.parametric "typing.Generic" !![Type.variable "test._T"]));
+  assert_inferred_generic
+    ~target:"test.List"
+    {|
+       _T = TypeVar("_T")
+       class Iterable(typing.Generic[_T]):
+         pass
+       class List(Iterable[_T], typing.Generic[_T]):
+         pass
+     |}
+    None;
+  assert_inferred_generic
+    ~target:"test.Foo"
+    {|
+      _T1 = typing.TypeVar('_T1')
+      _T2 = typing.TypeVar('_T2')
+      class Foo(typing.Dict[_T1, _T2]): pass
+    |}
+    (Some (Type.parametric "typing.Generic" !![Type.variable "test._T1"; Type.variable "test._T2"]));
+  assert_inferred_generic
+    ~target:"test.Foo"
+    {|
+      _T1 = typing.TypeVar('_T1')
+      class Foo(typing.Dict[_T1, _T1]): pass
+    |}
+    (Some (Type.parametric "typing.Generic" !![Type.variable "test._T1"]));
+  assert_inferred_generic
+    ~target:"test.Foo"
+    {|
+      TParams = pyre_extensions.ParameterSpecification("TParams")
+      class Base(typing.Generic[TParams]): pass
+      class Foo(Base[TParams]): pass
+    |}
+    (Some
+       (Type.parametric
+          "typing.Generic"
+          [
+            Type.Parameter.CallableParameters
+              (Type.Variable.Variadic.Parameters.self_reference
+                 (Type.Variable.Variadic.Parameters.create "test.TParams"));
+          ]));
+  assert_inferred_generic
+    ~target:"test.Child"
+    {|
+      Ts = pyre_extensions.TypeVarTuple("Ts")
+
+      class Base(typing.Generic[pyre_extensions.Unpack[Ts]]): ...
+
+      class Child(Base[pyre_extensions.Unpack[Ts]]): ...
+    |}
+    (Some
+       (Type.parametric
+          "typing.Generic"
+          [
+            Unpacked
+              (Type.OrderedTypes.Concatenation.create_unpackable
+                 (Type.Variable.Variadic.Tuple.create "test.Ts"));
+          ]));
+  (* We should not sort the generic variables in alphabetical order. *)
+  assert_inferred_generic
+    ~target:"test.Foo"
+    {|
+      from typing import Dict, TypeVar
+
+      A = TypeVar("A")
+      B = TypeVar("B")
+
+      class Foo(Dict[B, A]): ...
+    |}
+    (Some (Type.parametric "typing.Generic" !![Type.variable "test.B"; Type.variable "test.A"]));
+  assert_inferred_generic
+    ~target:"test.Foo"
+    {|
+      from typing import Generic, TypeVar
+
+      A = TypeVar("A", bound=str)
+      B = TypeVar("B", bound=int)
+
+      class BaseAB(Generic[A, B]): ...
+      class BaseBA(Generic[B, A]): ...
+
+      class Foo(BaseAB[A, B], BaseBA[B, A]): ...
+    |}
+    (Some (Type.parametric "typing.Generic" !![Type.variable "test.A"; Type.variable "test.B"]));
+  assert_inferred_generic
+    ~target:"test.Foo"
+    {|
+      from typing import Dict, Generic, TypeVar
+
+      A = TypeVar("A", bound=str)
+      B = TypeVar("B", bound=int)
+
+      class BaseAB(Generic[A, B]): ...
+
+      class Foo(BaseAB[Dict[A, B], A]): ...
+    |}
+    (Some (Type.parametric "typing.Generic" !![Type.variable "test.A"; Type.variable "test.B"]));
+  (* This is actually illegal in Python, but Pyre currently lacks the capability to detect it *)
+  assert_inferred_generic
+    ~target:"test.Foo"
+    {|
+      from typing import Generic, TypeVar
+
+      class Base: pass
+      T = TypeVar("T")
+      class Foo(Base, metaclass=Generic[T]): ...
+    |}
+    None;
+  ()
+
+
 let () =
   "environment"
   >::: [
          "simple_registration" >:: test_simple_registration;
-         "inferred_bases" >:: test_inferred_generic_base;
+         "parents_and_inferred_generic_bases" >:: test_parents_and_inferred_generic_base;
+         "compute_inferred_generic_base" >:: test_compute_inferred_generic_base;
          "updates" >:: test_updates;
        ]
   |> Test.run

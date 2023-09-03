@@ -11,11 +11,17 @@ open Statement
 open Expression
 
 module Heap = struct
-  type t = StringLiteral.t Reference.Map.t
+  type t = StringLiteral.t Reference.Map.t [@@deriving show, eq]
+
+  let of_alist_exn alist =
+    alist
+    |> List.map ~f:(fun (key, value) -> key, StringLiteral.create value)
+    |> Reference.Map.of_alist_exn
+
 
   let empty = Reference.Map.empty
 
-  let from_source source =
+  let from_source ~qualifier source =
     let extract_string = function
       (* __module__ affects name resolution, due to __module__ specifying the module something was
          defined in, so a solution is just to skip __module__ assignments *)
@@ -40,7 +46,11 @@ module Heap = struct
         }
         when Option.is_some (Ast.Expression.name_to_reference name) ->
           let as_local = Ast.Expression.name_to_reference_exn name in
-          Some (Ast.Reference.delocalize as_local, value)
+          let delocalized = Ast.Reference.delocalize as_local in
+          if Ast.Reference.is_prefix ~prefix:qualifier delocalized then
+            Some (delocalized, value)
+          else (* Should not collect global variables imported from a different module. *)
+            None
       | _ -> None
     in
     let split_for_map = function
@@ -60,7 +70,7 @@ module Heap = struct
     let build_per_qualifier qualifier =
       match Analysis.AstEnvironment.ReadOnly.get_processed_source ast_environment qualifier with
       | None -> empty
-      | Some source -> from_source source
+      | Some source -> from_source ~qualifier source
     in
     let reduce =
       let merge ~key = function
@@ -84,27 +94,24 @@ end
 
 module SharedMemory = struct
   include
-    Memory.WithCache.Make
+    SaveLoadSharedMemory.MakeKeyValue
       (Analysis.SharedMemoryKeys.ReferenceKey)
       (struct
         type t = StringLiteral.t
 
         let prefix = Hack_parallel.Std.Prefix.make ()
 
+        let handle_prefix = Hack_parallel.Std.Prefix.make ()
+
         let description = "Mapping from fully qualified global name to expression"
       end)
 
-  type t = Handle
-
-  let from_heap heap =
-    Reference.Map.iteri heap ~f:(fun ~key ~data -> add key data);
-    Handle
+  let add_heap handle heap =
+    Reference.Map.fold heap ~init:handle ~f:(fun ~key ~data handle -> add handle key data)
 
 
-  let get Handle = get
-
-  let from_qualifiers ~scheduler ~environment ~qualifiers =
-    Scheduler.iter
+  let from_qualifiers ~handle ~scheduler ~environment ~qualifiers =
+    Scheduler.map_reduce
       scheduler
       ~policy:
         (Scheduler.Policy.fixed_chunk_count
@@ -112,9 +119,9 @@ module SharedMemory = struct
            ~minimum_chunk_size:50
            ~preferred_chunks_per_worker:1
            ())
-      ~f:(fun qualifiers ->
-        let (_ : t) = from_heap (Heap.from_qualifiers ~environment ~qualifiers) in
-        ())
-      ~inputs:qualifiers;
-    Handle
+      ~initial:handle
+      ~map:(fun qualifiers -> add_heap handle (Heap.from_qualifiers ~environment ~qualifiers))
+      ~reduce:(fun left_handle right_handle -> merge_same_handle left_handle right_handle)
+      ~inputs:qualifiers
+      ()
 end

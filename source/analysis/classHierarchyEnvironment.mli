@@ -14,9 +14,7 @@ module HierarchyReadOnly : sig
     :  t ->
     ?dependency:DependencyKey.registered ->
     IndexTracker.t ->
-    ClassHierarchy.Target.t list option
-
-  val extends_placeholder_stub : t -> ?dependency:DependencyKey.registered -> IndexTracker.t -> bool
+    ClassHierarchy.Edges.t option
 
   val alias_environment : t -> AliasEnvironment.ReadOnly.t
 
@@ -34,3 +32,6 @@ include
   Environment.S
     with module ReadOnly = HierarchyReadOnly
      and module PreviousEnvironment = AliasEnvironment
+
+(* Exposed for testing purpose only *)
+val compute_generic_base : Type.t list -> Type.t option

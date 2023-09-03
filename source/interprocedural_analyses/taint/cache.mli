@@ -17,7 +17,19 @@ val try_load
   enabled:bool ->
   t
 
-val save : t -> unit
+val save
+  :  maximum_overrides:int option ->
+  attribute_targets:Interprocedural.Target.Set.t ->
+  skip_analysis_targets:Interprocedural.Target.Set.t ->
+  skip_overrides_targets:Ast.Reference.SerializableSet.t ->
+  skipped_overrides:Interprocedural.OverrideGraph.skipped_overrides ->
+  override_graph_shared_memory:Interprocedural.OverrideGraph.SharedMemory.t ->
+  initial_callables:FetchCallables.t ->
+  call_graph_shared_memory:Interprocedural.CallGraph.DefineCallGraphSharedMemory.t ->
+  whole_program_call_graph:Interprocedural.CallGraph.WholeProgramCallGraph.t ->
+  global_constants:Interprocedural.GlobalConstants.SharedMemory.t ->
+  t ->
+  unit
 
 val type_environment : t -> (unit -> TypeEnvironment.t) -> TypeEnvironment.t * t
 
@@ -35,8 +47,29 @@ val class_interval_graph
 
 val metadata_to_json : t -> Yojson.Safe.t
 
-module InitialModelsSharedMemory : sig
-  val save : Registry.t -> unit
+val override_graph
+  :  skip_overrides_targets:Ast.Reference.SerializableSet.t ->
+  maximum_overrides:int option ->
+  t ->
+  (skip_overrides_targets:Ast.Reference.SerializableSet.t ->
+  maximum_overrides:int option ->
+  unit ->
+  Interprocedural.OverrideGraph.whole_program_overrides) ->
+  Interprocedural.OverrideGraph.whole_program_overrides * t
 
-  val load : t -> Registry.t option * t
-end
+val call_graph
+  :  attribute_targets:Interprocedural.Target.Set.t ->
+  skip_analysis_targets:Interprocedural.Target.Set.t ->
+  definitions:Interprocedural.Target.t list ->
+  t ->
+  (attribute_targets:Interprocedural.Target.Set.t ->
+  skip_analysis_targets:Interprocedural.Target.Set.t ->
+  definitions:Interprocedural.Target.t list ->
+  unit ->
+  Interprocedural.CallGraph.call_graphs) ->
+  Interprocedural.CallGraph.call_graphs * t
+
+val global_constants
+  :  t ->
+  (unit -> Interprocedural.GlobalConstants.SharedMemory.t) ->
+  Interprocedural.GlobalConstants.SharedMemory.t * t

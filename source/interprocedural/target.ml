@@ -51,7 +51,7 @@ end
 include T
 
 module Map = struct
-  include Map.Make (T)
+  include Data_structures.SerializableMap.Make (T)
 
   module Tree = Map.Make_tree (struct
     include T
@@ -92,9 +92,9 @@ let pp_kind formatter = function
 let pp_pretty formatter = function
   | Function { name; kind } -> Format.fprintf formatter "%s%a" name pp_kind kind
   | Method { class_name; method_name; kind } ->
-      Format.fprintf formatter "%s::%s%a" class_name method_name pp_kind kind
+      Format.fprintf formatter "%s.%s%a" class_name method_name pp_kind kind
   | Override { class_name; method_name; kind } ->
-      Format.fprintf formatter "Override{%s::%s%a}" class_name method_name pp_kind kind
+      Format.fprintf formatter "Override{%s.%s%a}" class_name method_name pp_kind kind
   | Object name -> Format.fprintf formatter "Object{%s}" name
 
 
@@ -103,9 +103,9 @@ let show_pretty = Format.asprintf "%a" pp_pretty
 let pp_pretty_with_kind formatter = function
   | Function { name; kind } -> Format.fprintf formatter "%s%a (fun)" name pp_kind kind
   | Method { class_name; method_name; kind } ->
-      Format.fprintf formatter "%s::%s%a (method)" class_name method_name pp_kind kind
+      Format.fprintf formatter "%s.%s%a (method)" class_name method_name pp_kind kind
   | Override { class_name; method_name; kind } ->
-      Format.fprintf formatter "%s::%s%a (override)" class_name method_name pp_kind kind
+      Format.fprintf formatter "%s.%s%a (override)" class_name method_name pp_kind kind
   | Object name -> Format.fprintf formatter "%s (object)" name
 
 
@@ -123,7 +123,7 @@ let pp_external formatter = function
   | Method { class_name; method_name; kind } ->
       Format.fprintf formatter "%s.%s%a" class_name method_name pp_kind kind
   | Override { class_name; method_name; kind } ->
-      Format.fprintf formatter "Ovr{%s::%s%a}" class_name method_name pp_kind kind
+      Format.fprintf formatter "Ovr{%s.%s%a}" class_name method_name pp_kind kind
   | Object name -> Format.fprintf formatter "Obj{%s}" name
 
 
@@ -246,14 +246,14 @@ let get_definitions ~resolution define_name =
   in
   let fold ({ callables; _ } as result) define =
     let target = create define in
-    match Map.find callables target with
-    | None -> { result with callables = Map.set callables ~key:target ~data:define }
+    match Map.find_opt target callables with
+    | None -> { result with callables = Map.add target define callables }
     | Some previous_define -> (
         (* Prefer the non-stub definition, so we can analyze its body. *)
         match Define.is_stub (Node.value previous_define), Define.is_stub (Node.value define) with
         | true, true -> result
         | false, true -> result
-        | true, false -> { result with callables = Map.set callables ~key:target ~data:define }
+        | true, false -> { result with callables = Map.add target define callables }
         | false, false -> { result with has_multiple_definitions = true })
   in
   List.fold
@@ -266,7 +266,7 @@ let get_module_and_definition ~resolution callable =
   define_name callable
   |> get_definitions ~resolution
   >>= fun { qualifier; callables; _ } ->
-  Map.find callables callable >>| fun define -> qualifier, define
+  Map.find_opt callable callables >>| fun define -> qualifier, define
 
 
 let resolve_method ~resolution ~class_type ~method_name =

@@ -1202,6 +1202,34 @@ ModelQuery(
 )
 ```
 
+#### Using `ViaAttributeName` with the `AttributeModel` clause
+
+`ViaAttributeName` can be used within `AttributeModel` to add a feature containing
+the name of the attribute to any taint flowing through the given attributes.
+
+For instance:
+```python
+ModelQuery(
+  name = "get_attribute_of_Foo",
+  find = "attributes",
+  where = [cls.name.equals("Foo")],
+  model = [
+    AttributeModel(ViaAttributeName[WithTag["Foo"]])
+  ]
+)
+```
+
+On the following code:
+```python
+class Foo:
+  first_name: str
+  last_name: str
+
+def last_name_to_sink(foo: Foo):
+  sink(foo.last_name)
+```
+This will add the feature `via-Foo-attribute:last_name` on the flow to the sink.
+
 ### Models for globals
 
 Taint for global models requires a `GlobalModel` model clause, which can only be used when the find clause specifies globals.
@@ -1235,6 +1263,8 @@ The available modes are:
 - [`SkipDecoratorWhenInlining`](pysa_advanced.md#prevent-inlining-decorators-with-skipdecoratorwheninlining)
   - Prevents the selected decorator from being inlined during analysis
   - Note: this mode will be a no-op, since model queries are generated after decorators are inlined
+- [`SkipModelBroadening`](pysa_advanced.md#model-broadening)
+  - Prevents model broadening for the given function or method
 
 For instance, instead of annotating each function separately, as in the following `.pysa` file:
 

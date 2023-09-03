@@ -89,17 +89,21 @@ let triangle_order =
   insert order "B";
   insert order "C";
   connect order ~predecessor:"B" ~successor:"A";
-  connect order ~predecessor:"C" ~successor:"B";
+  (* NOTE: The C->A edge needs to be inserted before the C->B edge. If the order gets reversed,
+     we'll get a inconsistent MRO issue. *)
   connect order ~predecessor:"C" ~successor:"A";
+  connect order ~predecessor:"C" ~successor:"B";
   handler order
 
 
 let test_method_resolution_order_linearize _ =
   let assert_method_resolution_order (module Handler : Handler) annotation expected =
+    let get_successors = ClassHierarchy.parents_of (module Handler) in
     assert_equal
-      ~printer:(List.fold ~init:"" ~f:(fun sofar next -> sofar ^ Type.Primitive.show next ^ " "))
+      ~cmp:[%compare.equal: string list]
+      ~printer:(fun names -> [%sexp_of: string list] names |> Sexp.to_string_hum)
       expected
-      (method_resolution_order_linearize annotation ~get_successors:Handler.edges)
+      (method_resolution_order_linearize annotation ~get_successors |> Result.ok |> Option.value_exn)
   in
   assert_method_resolution_order butterfly "3" ["3"];
   assert_method_resolution_order butterfly "0" ["0"; "3"; "2"];
@@ -109,24 +113,6 @@ let test_method_resolution_order_linearize _ =
   assert_method_resolution_order triangle_order "C" ["C"; "B"; "A"]
 
 
-let test_successors _ =
-  (* Butterfly:
-   *  0 - 2
-   *    X
-   *  1 - 3 *)
-  assert_equal (successors butterfly "3") [];
-  assert_equal (successors butterfly "0") ["3"; "2"];
-
-  (*          0 - 3
-   *          /   /   \
-   *          BOTTOM - 1      TOP
-   *          |  \       /
-   *          4 -- 2 --- *)
-  assert_equal (successors order "3") [];
-  assert_equal (successors order "0") ["3"];
-  assert_equal (successors order "bottom") ["4"; "2"; "1"; "0"; "3"]
-
-
 let test_immediate_parents _ =
   assert_equal (immediate_parents butterfly "3") [];
   assert_equal (immediate_parents butterfly "0") ["3"; "2"];
@@ -134,58 +120,6 @@ let test_immediate_parents _ =
   assert_equal (immediate_parents order "3") [];
   assert_equal (immediate_parents order "0") ["3"];
   assert_equal (immediate_parents order "bottom") ["4"; "2"; "1"; "0"];
-  ()
-
-
-let test_is_transitive_successor _ =
-  let order = MockClassHierarchyHandler.create () in
-  let open MockClassHierarchyHandler in
-  let predecessor = "predecessor" in
-  let successor = "successor" in
-  insert order predecessor;
-  insert order successor;
-  connect order ~predecessor ~successor;
-
-  let no_placeholder_subclasses_handler order =
-    (module struct
-      let edges = Hashtbl.find order.edges
-
-      let extends_placeholder_stub _ = false
-
-      let contains annotation = Hash_set.mem order.all_indices (IndexTracker.index annotation)
-    end : ClassHierarchy.Handler)
-  in
-  let all_placeholder_subclasses_handler order =
-    (module struct
-      let edges = Hashtbl.find order.edges
-
-      let extends_placeholder_stub _ = true
-
-      let contains annotation = Hash_set.mem order.all_indices (IndexTracker.index annotation)
-    end : ClassHierarchy.Handler)
-  in
-  assert_true
-    (is_transitive_successor
-       (no_placeholder_subclasses_handler order)
-       ~source:predecessor
-       ~target:successor);
-  assert_false
-    (is_transitive_successor
-       (no_placeholder_subclasses_handler order)
-       ~source:successor
-       ~target:predecessor);
-  assert_true
-    (is_transitive_successor
-       (all_placeholder_subclasses_handler order)
-       ~source:successor
-       ~target:predecessor);
-  (* The flag disables the special-casing of placeholder stub subclasses. *)
-  assert_false
-    (is_transitive_successor
-       ~placeholder_subclass_extends_all:false
-       (all_placeholder_subclasses_handler order)
-       ~source:successor
-       ~target:predecessor);
   ()
 
 
@@ -199,19 +133,24 @@ let test_least_upper_bound _ =
 
 
 let test_check_integrity _ =
-  let assert_raises_cyclic nodes expression =
-    (* `assert_raises` doesn't work because it uses the polymorphic equality.
-     * We implement our own equality check here. *)
-    try
-      let _ = expression () in
-      assert_failure "expression did not raise an exception"
-    with
-    | Cyclic visited -> assert_equal ~cmp:Hash_set.equal visited (String.Hash_set.of_list nodes)
-    | _ -> assert_failure "expression raised an unexpected exception"
+  let assert_ok ~indices order =
+    match check_integrity ~indices order with
+    | Result.Ok _ -> ()
+    | Result.Error _ -> assert_failure "unexpected failure"
+  in
+  let assert_cyclic ~indices order =
+    match check_integrity ~indices order with
+    | Result.Error (ClassHierarchy.CheckIntegrityError.Cyclic _) -> ()
+    | _ -> assert_failure "expected a cyclic error but did not get one"
+  in
+  let assert_incomplete ~indices order =
+    match check_integrity ~indices order with
+    | Result.Error (ClassHierarchy.CheckIntegrityError.Incomplete _) -> ()
+    | _ -> assert_failure "expected a cyclic error but did not get one"
   in
 
-  check_integrity order ~indices:order_indices;
-  check_integrity butterfly ~indices:butterfly_indices;
+  assert_ok order ~indices:order_indices;
+  assert_ok butterfly ~indices:butterfly_indices;
 
   (*(* 0 <-> 1 *)*)
   let order, indices =
@@ -223,10 +162,7 @@ let test_check_integrity _ =
     connect order ~predecessor:"1" ~successor:"0";
     handler order, Hash_set.to_list order.all_indices
   in
-  assert_raises_cyclic ["0"; "1"] (fun _ -> check_integrity order ~indices);
-  assert_raises_cyclic ["0"; "1"] (fun _ ->
-      let (module Handler : Handler) = order in
-      method_resolution_order_linearize "1" ~get_successors:Handler.edges);
+  assert_cyclic order ~indices;
 
   (* 0 -> 1
    * ^    |
@@ -245,10 +181,16 @@ let test_check_integrity _ =
     connect order ~predecessor:"2" ~successor:"3";
     handler order, Hash_set.to_list order.all_indices
   in
-  assert_raises_cyclic ["0"; "1"; "2"] (fun _ -> check_integrity order ~indices);
-  assert_raises_cyclic ["0"; "1"; "2"] (fun _ ->
-      let (module Handler : Handler) = order in
-      method_resolution_order_linearize "2" ~get_successors:Handler.edges)
+  assert_cyclic order ~indices;
+
+  let order, indices =
+    let order = MockClassHierarchyHandler.create () in
+    let open MockClassHierarchyHandler in
+    insert order "0";
+    handler order, [IndexTracker.index "1"]
+  in
+  assert_incomplete order ~indices;
+  ()
 
 
 let test_to_dot _ =
@@ -629,9 +571,7 @@ let () =
          "check_integrity" >:: test_check_integrity;
          "is_instantiated" >:: test_is_instantiated;
          "least_upper_bound" >:: test_least_upper_bound;
-         "successors" >:: test_successors;
          "immediate_parents" >:: test_immediate_parents;
-         "is_transitive_successor" >:: test_is_transitive_successor;
          "to_dot" >:: test_to_dot;
          "variables" >:: test_variables;
          "instantiate_successors_parameters" >:: test_instantiate_successors_parameters;

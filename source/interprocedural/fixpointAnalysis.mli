@@ -138,12 +138,6 @@ module Make (Analysis : ANALYSIS) : sig
 
     val merge : join:(Analysis.Model.t -> Analysis.Model.t -> Analysis.Model.t) -> t -> t -> t
 
-    val merge_skewed
-      :  join:(Analysis.Model.t -> Analysis.Model.t -> Analysis.Model.t) ->
-      t ->
-      t ->
-      t
-
     val of_alist
       :  join:(Analysis.Model.t -> Analysis.Model.t -> Analysis.Model.t) ->
       (Target.t * Analysis.Model.t) list ->
@@ -157,7 +151,7 @@ module Make (Analysis : ANALYSIS) : sig
 
     val targets : t -> Target.t list
 
-    val object_targets : t -> Target.HashSet.t
+    val object_targets : t -> Target.Set.t
 
     val fold : init:'a -> f:(target:Target.t -> model:Analysis.Model.t -> 'a -> 'a) -> t -> 'a
 
@@ -186,7 +180,7 @@ module Make (Analysis : ANALYSIS) : sig
   val compute
     :  scheduler:Scheduler.t ->
     type_environment:TypeEnvironment.ReadOnly.t ->
-    override_graph:OverrideGraph.SharedMemory.t ->
+    override_graph:OverrideGraph.SharedMemory.ReadOnly.t ->
     dependency_graph:DependencyGraph.t ->
     context:Analysis.context ->
     callables_to_analyze:Target.t list ->
