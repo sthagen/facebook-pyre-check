@@ -17,22 +17,15 @@ Pyre daemon. Context on this:
 
 import dataclasses
 import json
-from typing import List, Optional, Union
-
-from .. import error
+from typing import Optional, Union
 
 from . import incremental
 
-
-@dataclasses.dataclass(frozen=True)
-class TypeErrors:
-    errors: List[error.Error] = dataclasses.field(default_factory=list)
+TypeErrors = incremental.TypeErrors
 
 
 def _parse_type_error_subscription(response: object) -> TypeErrors:
-    return TypeErrors(
-        errors=incremental.parse_type_error_response_json(["TypeErrors", response])
-    )
+    return incremental.parse_type_error_response_json(["TypeErrors", response])
 
 
 @dataclasses.dataclass(frozen=True)

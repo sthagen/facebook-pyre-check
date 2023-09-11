@@ -5,17 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
-
-[@@@warning "-27"]
-
-open Core
-open Ast
-open Statement
-open Pyre
-open Expression
-module Error = AnalysisError
-
 (** This module allows us to statically catch `RuntimeWarning`s that "coroutine `foo` was never
     awaited".
 
@@ -57,6 +46,13 @@ module Error = AnalysisError
     mark the original awaitable as awaited. So, whenever we detect that a variable is being assigned
     some other variable, we copy over all the awaitables that are pointed to by the other variable. *)
 
+open Core
+open Ast
+open Statement
+open Pyre
+open Expression
+module Error = AnalysisError
+
 (* Return true if the expression is of an awaitable type that will lead to a `RuntimeWarning` that
    `coroutine ... was never awaited`.
 
@@ -72,7 +68,7 @@ module Error = AnalysisError
    which is seen as a function returning an awaitable, since `BuilderClass` satisfies `Awaitable`.
    Given that there is no RuntimeWarning for classes with hand-rolled `__await__`, we can leave them
    out of our analysis. *)
-let can_lead_to_runtime_warning_if_unawaited ~global_resolution = function
+let can_lead_to_runtime_warning_if_unawaited ~global_resolution:_ = function
   | Type.Parametric { name = "typing.Coroutine" | "typing.Awaitable" | "asyncio.futures.Future"; _ }
     ->
       true
@@ -129,12 +125,12 @@ module State (Context : Context) = struct
   type alias_for_awaitable =
     (* This is a variable that refers to an awaitable. *)
     | NamedAlias of Reference.t
-    (* This represents an expression that contains nested aliases.
+    (* This represents a call that contains nested aliases.
 
        For example, if `foo` is an instance of a class that derives from `Awaitable`, then we may
-       have `foo.set_x(1).set_y(2)`. Awaiting the whole expression needs to mark `foo`'s awaitable
-       as awaited. *)
-    | ExpressionWithNestedAliases of { expression_location: Location.t }
+       have `foo.set_x(1).set_y(2)`. Awaiting the whole call needs to mark `foo`'s awaitable as
+       awaited. *)
+    | CallWithNestedAliases of { location: Location.t }
   [@@deriving compare, sexp, show]
 
   module AliasMap = Map.Make (struct
@@ -142,10 +138,9 @@ module State (Context : Context) = struct
   end)
 
   type t = {
-    (* For every location where we encounter an awaitable, we maintain whether that awaitable's
-       state, i.e., has it been awaited or not? *)
+    (* For every awaitable, we maintain that awaitable's state, i.e., has it been awaited or not? *)
     awaitable_to_awaited_state: awaitable_state Awaitable.Map.t;
-    (* For an alias, what awaitable locations could it point to? *)
+    (* For an alias, what awaitables could it point to? *)
     awaitables_for_alias: Awaitable.Set.t AliasMap.t;
     (* HACK: This flag represents whether an expression should be expected to await.
 
@@ -156,21 +151,6 @@ module State (Context : Context) = struct
        we don't need to worry about that here. *)
     expect_expressions_to_be_awaited: bool;
   }
-
-  (* The result of `forward_expression`. *)
-  type forward_expression_result = {
-    state: t;
-    (* The nested awaitable expressions that would be awaited by awaiting/handling the overall
-       expression.
-
-       For example, if the expression is a list containing awaitables (maybe nested), this will have
-       the individual awaitable expressions. That way, if someone passes the overall expression into
-       `asyncio.gather` or some other function, they will all be marked as awaited (or
-       not-unawaited). In short, we won't have to emit unawaited errors for them. *)
-    nested_awaitable_expressions: Expression.t list;
-  }
-
-  let result_state { state; nested_awaitable_expressions = _ } = state
 
   let show { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited } =
     let awaitable_to_awaited_state =
@@ -184,12 +164,12 @@ module State (Context : Context) = struct
         Set.to_list awaitables |> List.map ~f:Awaitable.show |> String.concat ~sep:", "
       in
       Map.to_alist awaitables_for_alias
-      |> List.map ~f:(fun (alias_for_awaitable, locations) ->
+      |> List.map ~f:(fun (alias_for_awaitable, awaitables) ->
              Format.asprintf
                "%a -> {%s}"
                pp_alias_for_awaitable
                alias_for_awaitable
-               (show_awaitables locations))
+               (show_awaitables awaitables))
       |> String.concat ~sep:", "
     in
     Format.sprintf
@@ -200,6 +180,25 @@ module State (Context : Context) = struct
 
 
   let pp format state = Format.fprintf format "%s" (show state)
+
+  (* The result of `forward_expression`. *)
+  type forward_expression_result = {
+    state: t;
+    (* The nested awaitable expressions that would be awaited by awaiting/handling the overall
+       expression.
+
+       For example, if the expression is a list containing awaitables (maybe nested), this will have
+       the individual awaitable expressions. That way, if someone passes the overall expression into
+       `asyncio.gather` or some other function, they will all be marked as awaited (or
+       not-unawaited). In short, we won't have to emit unawaited errors for them. *)
+    nested_awaitable_expressions: Expression.t list;
+  }
+  [@@deriving show]
+
+  (* Dummy use to avoid unused-declaration error. *)
+  let _ = show_forward_expression_result
+
+  let result_state { state; nested_awaitable_expressions = _ } = state
 
   let bottom =
     {
@@ -237,7 +236,7 @@ module State (Context : Context) = struct
             | None -> errors
           in
           Awaitable.Set.fold awaitables ~init:errors ~f:add_reference
-      | ExpressionWithNestedAliases _ -> errors
+      | CallWithNestedAliases _ -> errors
     in
     let error (awaitable, unawaited_awaitable) =
       Error.create
@@ -257,9 +256,9 @@ module State (Context : Context) = struct
       | Awaited, Some Awaited -> true
       | _ -> false
     in
-    let less_or_equal_awaitables_for_alias (reference, locations) =
+    let less_or_equal_awaitables_for_alias (reference, awaitables) =
       match Map.find right.awaitables_for_alias reference with
-      | Some other_locations -> Set.is_subset locations ~of_:other_locations
+      | Some other_awaitables -> Set.is_subset awaitables ~of_:other_awaitables
       | None -> false
     in
     Map.to_alist left.awaitable_to_awaited_state |> List.for_all ~f:less_or_equal_unawaited
@@ -301,11 +300,12 @@ module State (Context : Context) = struct
     =
     if is_simple_name name then
       let awaitable_to_awaited_state =
-        let await_location awaitable_to_awaited_state awaitable =
+        let await_awaitable awaitable_to_awaited_state awaitable =
           Map.set awaitable_to_awaited_state ~key:awaitable ~data:Awaited
         in
         Map.find awaitables_for_alias (NamedAlias (name_to_reference_exn name))
-        >>| (fun locations -> Set.fold locations ~init:awaitable_to_awaited_state ~f:await_location)
+        >>| (fun awaitables ->
+              Set.fold awaitables ~init:awaitable_to_awaited_state ~f:await_awaitable)
         |> Option.value ~default:awaitable_to_awaited_state
       in
       { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited }
@@ -327,7 +327,7 @@ module State (Context : Context) = struct
       match
         Map.find
           awaitables_for_alias
-          (ExpressionWithNestedAliases { expression_location = Awaitable.to_location awaitable })
+          (CallWithNestedAliases { location = Awaitable.to_location awaitable })
       with
       | Some awaitables ->
           let awaitable_to_awaited_state =
@@ -357,6 +357,20 @@ module State (Context : Context) = struct
     in
     let mark state name = mark_name_as_awaited state ~name:(Node.value name) in
     List.fold names ~init:state ~f:mark
+
+
+  let awaitables_pointed_to_by_expression
+      ~state:{ awaitable_to_awaited_state; awaitables_for_alias; _ }
+      { Node.value; location }
+    =
+    let awaitable = Awaitable.create location in
+    if Map.mem awaitable_to_awaited_state awaitable then
+      Some (Awaitable.Set.singleton awaitable)
+    else
+      match value with
+      | Expression.Name name when is_simple_name name ->
+          Map.find awaitables_for_alias (NamedAlias (name_to_reference_exn name))
+      | _ -> Map.find awaitables_for_alias (CallWithNestedAliases { location })
 
 
   let rec forward_generator
@@ -440,22 +454,6 @@ module State (Context : Context) = struct
           let state = { state with expect_expressions_to_be_awaited } in
           { state; nested_awaitable_expressions }
     in
-    let find_aliases
-        ~state:{ awaitable_to_awaited_state; awaitables_for_alias; _ }
-        { Node.value; location }
-      =
-      let awaitable = Awaitable.create location in
-      if Map.mem awaitable_to_awaited_state awaitable then
-        Some (Awaitable.Set.singleton awaitable)
-      else
-        match value with
-        | Expression.Name name when is_simple_name name ->
-            Map.find awaitables_for_alias (NamedAlias (name_to_reference_exn name))
-        | _ ->
-            Map.find
-              awaitables_for_alias
-              (ExpressionWithNestedAliases { expression_location = location })
-    in
     let expression = { Node.value = Expression.Call call; location } in
     let {
       state =
@@ -473,14 +471,17 @@ module State (Context : Context) = struct
            ~global_resolution:(Resolution.global_resolution resolution)
            annotation
     then
-      (* If the callee is a method on an awaitable, make the assumption that the returned value is
-         the same awaitable. *)
       let nested_awaitable_expressions = expression :: nested_awaitable_expressions in
       let awaitable = Awaitable.create location in
       match Node.value callee with
       | Name (Name.Attribute { base; _ }) -> (
-          match find_aliases ~state base with
-          | Some locations ->
+          match
+            ( awaitables_pointed_to_by_expression ~state base,
+              Map.find awaitable_to_awaited_state awaitable )
+          with
+          | Some awaitables, Some (Unawaited _) ->
+              (* The callee is an awaitable method on an unawaited `base`, so assume that the
+                 returned value is the same awaitable. *)
               {
                 state =
                   {
@@ -488,12 +489,12 @@ module State (Context : Context) = struct
                     awaitables_for_alias =
                       Map.set
                         awaitables_for_alias
-                        ~key:(ExpressionWithNestedAliases { expression_location = location })
-                        ~data:locations;
+                        ~key:(CallWithNestedAliases { location })
+                        ~data:awaitables;
                   };
                 nested_awaitable_expressions;
               }
-          | None ->
+          | _ ->
               {
                 state =
                   {
@@ -522,8 +523,8 @@ module State (Context : Context) = struct
 
              Do this by pretending that the entire expression actually refers to the same
              awaitable(s) pointed to by `base`. *)
-          match find_aliases ~state base with
-          | Some locations ->
+          match awaitables_pointed_to_by_expression ~state base with
+          | Some awaitables ->
               {
                 state =
                   {
@@ -531,8 +532,8 @@ module State (Context : Context) = struct
                     awaitables_for_alias =
                       Map.set
                         awaitables_for_alias
-                        ~key:(ExpressionWithNestedAliases { expression_location = location })
-                        ~data:locations;
+                        ~key:(CallWithNestedAliases { location })
+                        ~data:awaitables;
                   };
                 nested_awaitable_expressions;
               }
@@ -658,8 +659,8 @@ module State (Context : Context) = struct
         let nested_awaitable_expressions =
           match Map.find state.awaitables_for_alias (NamedAlias (name_to_reference_exn name)) with
           | Some aliases ->
-              let add_unawaited unawaited location =
-                match Map.find state.awaitable_to_awaited_state location with
+              let add_unawaited unawaited awaitable =
+                match Map.find state.awaitable_to_awaited_state awaitable with
                 | Some (Unawaited expression) -> expression :: unawaited
                 | _ -> unawaited
               in
@@ -708,11 +709,11 @@ module State (Context : Context) = struct
                been awaited. So, make `target` also point to them. *)
             let awaitables_for_alias =
               Map.find awaitables_for_alias (NamedAlias (name_to_reference_exn value))
-              >>| (fun locations ->
+              >>| (fun awaitables ->
                     Map.set
                       awaitables_for_alias
                       ~key:(NamedAlias (Reference.create target_name))
-                      ~data:locations)
+                      ~data:awaitables)
               |> Option.value ~default:awaitables_for_alias
             in
             { state with awaitables_for_alias }
