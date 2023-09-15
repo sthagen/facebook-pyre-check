@@ -22,12 +22,12 @@ let test_simple_registration context =
       |> ErrorsEnvironment.Testing.ReadOnly.class_metadata_environment
     in
     let printer v =
-      v >>| ClassMetadataEnvironment.show_class_metadata |> Option.value ~default:"none"
+      v >>| ClassSuccessorMetadataEnvironment.show_class_metadata |> Option.value ~default:"none"
     in
     assert_equal
       ~printer
       expected
-      (ClassMetadataEnvironment.ReadOnly.get_class_metadata read_only name)
+      (ClassSuccessorMetadataEnvironment.ReadOnly.get_class_metadata read_only name)
   in
   assert_registers
     {|
@@ -174,9 +174,9 @@ let test_updates context =
     in
     let execute_action (class_name, dependency, expectation) =
       let printer v =
-        v >>| ClassMetadataEnvironment.show_class_metadata |> Option.value ~default:"none"
+        v >>| ClassSuccessorMetadataEnvironment.show_class_metadata |> Option.value ~default:"none"
       in
-      ClassMetadataEnvironment.ReadOnly.get_class_metadata read_only ~dependency class_name
+      ClassSuccessorMetadataEnvironment.ReadOnly.get_class_metadata read_only ~dependency class_name
       |> assert_equal ~printer expectation
     in
     List.iter middle_actions ~f:execute_action;
@@ -203,7 +203,7 @@ let test_updates context =
     assert_equal
       ~printer
       expected_triggers
-      (ClassMetadataEnvironment.UpdateResult.locally_triggered_dependencies update_result);
+      (ClassSuccessorMetadataEnvironment.UpdateResult.locally_triggered_dependencies update_result);
     post_actions >>| List.iter ~f:execute_action |> Option.value ~default:()
   in
   let dependency =
@@ -485,7 +485,7 @@ let test_is_transitive_successors context =
       ~cmp:Bool.equal
       ~printer:Bool.to_string
       expected
-      (ClassMetadataEnvironment.ReadOnly.is_transitive_successor
+      (ClassSuccessorMetadataEnvironment.ReadOnly.is_transitive_successor
          read_only
          ~placeholder_subclass_extends_all
          ~target
@@ -614,13 +614,70 @@ let test_is_transitive_successors context =
   ()
 
 
+let test_least_upper_bound context =
+  let assert_least_upper_bound ~source ~expected left right =
+    let project =
+      ScratchProject.setup
+        ["test.py", source]
+        ~include_typeshed_stubs:false
+        ~include_helper_builtins:false
+        ~context
+    in
+    let read_only =
+      ScratchProject.errors_environment project
+      |> ErrorsEnvironment.Testing.ReadOnly.class_metadata_environment
+    in
+    assert_equal
+      ~ctxt:context
+      ~cmp:[%compare.equal: Type.Primitive.t option]
+      ~printer:(fun bound -> Sexp.to_string_hum ([%sexp_of: Type.Primitive.t option] bound))
+      expected
+      (ClassSuccessorMetadataEnvironment.ReadOnly.least_upper_bound read_only left right)
+  in
+  let source0 =
+    {|
+    class A0(A3): pass
+    class A1(A3): pass
+    class A2: pass
+    class A3: pass
+    class A4(A2): pass
+    class A5: pass
+    class Bottom(A4, A2, A1, A0): pass
+  |}
+  in
+  let source1 =
+    {|
+    class A0(A3, A2): pass
+    class A1(A3, A2): pass
+    class A2: pass
+    class A3: pass
+  |}
+  in
+  let source2 =
+    {|
+    class One:
+      pass
+    class Two:
+      pass
+    class Zero(Two, One):
+      pass
+  |}
+  in
+  assert_least_upper_bound "test.A3" "test.A1" ~source:source0 ~expected:(Some "test.A3");
+  assert_least_upper_bound "test.A4" "test.Bottom" ~source:source0 ~expected:(Some "test.A4");
+  assert_least_upper_bound "test.A0" "test.A2" ~source:source0 ~expected:(Some "object");
+  assert_least_upper_bound "test.A0" "test.A1" ~source:source1 ~expected:(Some "test.A3");
+  assert_least_upper_bound "test.One" "test.Two" ~source:source2 ~expected:(Some "object");
+  ()
+
+
 let assert_overlay_parents ~context ~overlay ~qualified_class_name expected_successors =
   match
-    ClassMetadataEnvironment.ReadOnly.get_class_metadata
-      (ClassMetadataEnvironment.Overlay.read_only overlay)
+    ClassSuccessorMetadataEnvironment.ReadOnly.get_class_metadata
+      (ClassSuccessorMetadataEnvironment.Overlay.read_only overlay)
       qualified_class_name
   with
-  | Some { ClassMetadataEnvironment.successors = Some successors; _ } ->
+  | Some { ClassSuccessorMetadataEnvironment.successors = Some successors; _ } ->
       assert_equal ~ctxt:context ~printer:[%show: Identifier.t list] expected_successors successors
   | _ -> failwith ("Failed to look up " ^ qualified_class_name)
 
@@ -673,7 +730,7 @@ let test_overlay_dependency_filtering context =
     ScratchProject.errors_environment project
     |> ErrorsEnvironment.Testing.ReadOnly.class_metadata_environment
   in
-  let overlay = ClassMetadataEnvironment.Overlay.create parent in
+  let overlay = ClassSuccessorMetadataEnvironment.Overlay.create parent in
   (* Initially, nothing inherits from Base1 *)
   assert_overlay_state
     ~context
@@ -687,7 +744,7 @@ let test_overlay_dependency_filtering context =
   let local_root = ScratchProject.local_root_of project in
   (* Update just a.py so that A inherits from Base1 rather than Base0. This should not affect
      results for c.py at all, but should affect results for a.py *)
-  ClassMetadataEnvironment.Overlay.update_overlaid_code
+  ClassSuccessorMetadataEnvironment.Overlay.update_overlaid_code
     overlay
     ~code_updates:
       [
@@ -709,7 +766,7 @@ let test_overlay_dependency_filtering context =
   (* Add c.py to the overlay, without changing the actual code or including b.py in the overlay. to
      detect the overlay. But instances of b.B should still behave as if a.A were defined on disk,
      because we don't allow fanout to update the attribute table of b.B. *)
-  ClassMetadataEnvironment.Overlay.update_overlaid_code
+  ClassSuccessorMetadataEnvironment.Overlay.update_overlaid_code
     overlay
     ~code_updates:
       [
@@ -726,7 +783,7 @@ let test_overlay_dependency_filtering context =
       "c.Ca", ["a.A"; "a.Base1"; "object"];
       "c.Cb", ["b.B"; "a.Base0"; "object"];
     ];
-  ClassMetadataEnvironment.Overlay.update_overlaid_code
+  ClassSuccessorMetadataEnvironment.Overlay.update_overlaid_code
     overlay
     ~code_updates:
       [
@@ -768,7 +825,7 @@ let test_overlay_propagation context =
     ScratchProject.errors_environment project
     |> ErrorsEnvironment.Testing.ReadOnly.class_metadata_environment
   in
-  let overlay = ClassMetadataEnvironment.Overlay.create parent in
+  let overlay = ClassSuccessorMetadataEnvironment.Overlay.create parent in
   (* Initially all metadata is from disk *)
   assert_overlay_state
     ~context
@@ -781,7 +838,7 @@ let test_overlay_propagation context =
     ];
   (* After we update the overlay, the overlay should see consistent state *)
   let local_root = ScratchProject.local_root_of project in
-  ClassMetadataEnvironment.Overlay.update_overlaid_code
+  ClassSuccessorMetadataEnvironment.Overlay.update_overlaid_code
     overlay
     ~code_updates:
       [
@@ -842,7 +899,8 @@ let test_overlay_propagation context =
     ];
   (* Now propagate the update. We should see a consistent state where the overlay-owned metadat afor
      in_overlay.py reflects the new on_filesystem.py source *)
-  ClassMetadataEnvironment.Overlay.propagate_parent_update overlay parent_update_result |> ignore;
+  ClassSuccessorMetadataEnvironment.Overlay.propagate_parent_update overlay parent_update_result
+  |> ignore;
   assert_overlay_state
     ~context
     ~overlay
@@ -861,6 +919,7 @@ let () =
          "simple_registration" >:: test_simple_registration;
          "updates" >:: test_updates;
          "is_transitive_successors" >:: test_is_transitive_successors;
+         "least_upper_bound" >:: test_least_upper_bound;
          "overlay_dependency_filtering" >:: test_overlay_dependency_filtering;
          "overlay_propagation" >:: test_overlay_propagation;
        ]

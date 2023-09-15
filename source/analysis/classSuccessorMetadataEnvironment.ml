@@ -5,13 +5,13 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* ClassMetadataEnvironment: layer of the environment stack
+(* ClassSuccessorMetadataEnvironment: layer of the environment stack
  * - upstream: ClassHierarchyEnvironment
  * - downstream: AttributeResolution
  * - key: the name type, as an Identifier.t
- * - value: ClassMetadataEnvironment.class_meatadata
+ * - value: ClassSuccessorMetadataEnvironment.class_meatadata
  *
- * The ClassMetadataEnvironment is a cache for metadata about classes
+ * The ClassSuccessorMetadataEnvironment is a cache for metadata about classes
  * that require the full ancestors (`successors`), which includes
  * - the successors list itself
  * - several flags computed based on inheritance
@@ -170,6 +170,18 @@ module ReadOnly = struct
     in
     let successors_of_source = successors read_only ?dependency source in
     List.exists (source :: successors_of_source) ~f:counts_as_extends_target
+
+
+  (* NOTE: This function is not symetric: least_upper_bound(A, B) can return different result from
+     least_upper_bound(B, A) when multiple inheritance is involved. *)
+  let least_upper_bound read_only ?dependency left right =
+    match
+      get_class_metadata read_only ?dependency left, get_class_metadata read_only ?dependency right
+    with
+    | Some { successors = Some left_mro; _ }, Some { successors = Some right_mro; _ } ->
+        let right_mro_set = String.Hash_set.of_list (right :: right_mro) in
+        List.find (left :: left_mro) ~f:(Hash_set.mem right_mro_set)
+    | _, _ -> None
 end
 
 module MetadataReadOnly = ReadOnly

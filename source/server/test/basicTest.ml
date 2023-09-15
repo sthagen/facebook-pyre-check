@@ -78,13 +78,13 @@ let test_basic client =
   Client.assert_response
     client
     ~request:(Request.DisplayTypeError [])
-    ~expected:(Response.TypeErrors [error_in_test; error_in_test2])
+    ~expected:(create_type_error_response [error_in_test; error_in_test2])
   >>= fun () ->
   (* Query type errors for `test.py`. *)
   Client.assert_response
     client
     ~request:(Request.DisplayTypeError [PyrePath.absolute test_path])
-    ~expected:(Response.TypeErrors [error_in_test])
+    ~expected:(create_type_error_response [error_in_test])
   >>= fun () ->
   (* Sending `IncrementalUpdate` without the corresponding filesystem should have no impact on the
      type errors. *)
@@ -96,7 +96,7 @@ let test_basic client =
   Client.assert_response
     client
     ~request:(Request.DisplayTypeError [])
-    ~expected:(Response.TypeErrors [error_in_test; error_in_test2])
+    ~expected:(create_type_error_response [error_in_test; error_in_test2])
   >>= fun () ->
   (* Actually test incrementally changes on `test.py`. *)
   let new_test_content =
@@ -114,7 +114,7 @@ let test_basic client =
   Client.assert_response
     client
     ~request:(Request.DisplayTypeError [])
-    ~expected:(Response.TypeErrors [error_in_test2])
+    ~expected:(create_type_error_response [error_in_test2])
 
 
 let test_basic context =
@@ -224,7 +224,7 @@ let test_watchman_integration ~watchman_mailbox client =
   Client.assert_response
     client
     ~request:(Request.DisplayTypeError [])
-    ~expected:(Response.TypeErrors [initial_error])
+    ~expected:(create_type_error_response [initial_error])
   >>= fun () ->
   (* Update an existing file and send a watchman response. *)
   let new_test_content =
@@ -242,7 +242,7 @@ let test_watchman_integration ~watchman_mailbox client =
   Client.assert_response
     client
     ~request:(Request.DisplayTypeError [])
-    ~expected:(Response.TypeErrors [])
+    ~expected:(create_type_error_response [])
   >>= fun () ->
   (* Add a new file and send a watchman response. *)
   let test2_path = PyrePath.create_relative ~root:global_root ~relative:"test2.py" in
@@ -281,7 +281,7 @@ let test_watchman_integration ~watchman_mailbox client =
   Client.assert_response
     client
     ~request:(Request.DisplayTypeError [])
-    ~expected:(Response.TypeErrors [new_error])
+    ~expected:(create_type_error_response [new_error])
   >>= fun () ->
   (* Remove a file and send a watchman response. *)
   PyrePath.remove test2_path;
@@ -293,7 +293,7 @@ let test_watchman_integration ~watchman_mailbox client =
   Client.assert_response
     client
     ~request:(Request.DisplayTypeError [])
-    ~expected:(Response.TypeErrors [])
+    ~expected:(create_type_error_response [])
 
 
 let test_watchman_integration context =
@@ -397,7 +397,7 @@ let test_subscription_responses_with_type_errors client =
   Client.subscribe
     client
     ~subscription:(Subscription.Request.SubscribeToTypeErrors "foo")
-    ~expected_response:(Response.TypeErrors [error])
+    ~expected_response:(create_type_error_response [error])
   >>= fun () ->
   (* Verifies that we've managed to record the subscriptions in the server state. *)
   assert_bool
@@ -429,7 +429,7 @@ let test_subscription_responses_with_type_errors client =
   >>= fun () ->
   Client.assert_subscription_response
     client
-    ~expected:{ Subscription.Response.name = "foo"; body = Response.TypeErrors [error] }
+    ~expected:{ Subscription.Response.name = "foo"; body = create_type_error_response [error] }
   >>= fun () -> Client.assert_telemetry_response client
 
 
@@ -498,6 +498,120 @@ let test_subscription_responses context =
   |> ScratchProject.test_server_with ~f:test_subscription_responses_no_type_errors
 
 
+let test_build_system_failure ~fail_switch client =
+  let { ServerProperties.configuration = { Configuration.Analysis.project_root; _ }; _ } =
+    Client.get_server_properties client
+  in
+  let test_path = PyrePath.create_relative ~root:project_root ~relative:"test.py" in
+  let error =
+    Analysis.AnalysisError.Instantiated.of_yojson
+      (`Assoc
+        [
+          "line", `Int 3;
+          "column", `Int 2;
+          "stop_line", `Int 3;
+          "stop_column", `Int 14;
+          "path", `String (PyrePath.absolute test_path);
+          "code", `Int 7;
+          "name", `String "Incompatible return type";
+          "description", `String "Incompatible return type [7]: Expected `str` but got `int`.";
+          ( "long_description",
+            `String
+              "Incompatible return type [7]: Expected `str` but got `int`.\n\
+               Type `str` expected on line 3, specified on line 2." );
+          ( "concise_description",
+            `String "Incompatible return type [7]: Expected `str` but got `int`." );
+          "define", `String "test.foo";
+        ])
+    |> Result.ok_or_failwith
+  in
+  (* Server should work initially. *)
+  Client.assert_response
+    client
+    ~request:(Request.DisplayTypeError [PyrePath.absolute test_path])
+    ~expected:(create_type_error_response [error])
+  >>= fun () ->
+  (* Server should work with a successful update. *)
+  Client.assert_response
+    client
+    ~request:(Request.IncrementalUpdate [PyrePath.absolute test_path])
+    ~expected:Response.Ok
+  >>= fun () ->
+  (* Intentionally change a file and inject a build system failiure *)
+  let new_test_content =
+    Test.trim_extra_indentation {|
+       def foo(x: int) -> int:
+         return x
+    |}
+  in
+  File.create ~content:new_test_content test_path |> File.write;
+  fail_switch := true;
+
+  (* Update should not crash the server *)
+  Client.assert_response
+    client
+    ~request:(Request.IncrementalUpdate [PyrePath.absolute test_path])
+    ~expected:Response.Ok
+  >>= fun () ->
+  (* We are still seeing old type errors. *)
+  Client.assert_response
+    client
+    ~request:(Request.DisplayTypeError [PyrePath.absolute test_path])
+    ~expected:
+      (create_type_error_response
+         ~build_failure:"Cannot build the project: fake description."
+         [error])
+  >>= fun () ->
+  (* "Fix" the build system failure *)
+  fail_switch := false;
+  Client.assert_response
+    client
+    ~request:(Request.IncrementalUpdate [PyrePath.absolute test_path])
+    ~expected:Response.Ok
+  >>= fun () ->
+  (* Server should have recovered from the build system failure, with updated type errors *)
+  Client.assert_response
+    client
+    ~request:(Request.DisplayTypeError [PyrePath.absolute test_path])
+    ~expected:(create_type_error_response [])
+  >>= fun () -> Lwt.return_unit
+
+
+let test_build_system_failure context =
+  let sources =
+    ["test.py", {|
+          def foo(x: int) -> str:
+            return x + 1
+        |}]
+  in
+  let fail_switch = ref false in
+  let build_system_initializer =
+    let initialize () =
+      let update _ =
+        if !fail_switch then
+          raise
+            Buck.Raw.(
+              BuckError
+                {
+                  buck_command = "fake_buck";
+                  arguments = ArgumentList.empty;
+                  description = "fake description";
+                  exit_code = None;
+                  additional_logs = [];
+                })
+        else
+          Lwt.return []
+      in
+      Lwt.return (BuildSystem.create_for_testing ~update ())
+    in
+    let load () = failwith "saved state loading is not supported" in
+    let cleanup () = Lwt.return_unit in
+    BuildSystem.Initializer.create_for_testing ~initialize ~load ~cleanup ()
+  in
+  ScratchProject.setup ~context ~build_system_initializer ~include_helper_builtins:false sources
+  |> ScratchProject.test_server_with ~f:(test_build_system_failure ~fail_switch)
+
+
 let () =
   "basic_test"
   >::: [
@@ -509,5 +623,6 @@ let () =
          "watchman_integration" >:: OUnitLwt.lwt_wrapper test_watchman_integration;
          "watchman_failure" >:: OUnitLwt.lwt_wrapper test_watchman_failure;
          "on_server_socket_ready" >:: OUnitLwt.lwt_wrapper test_on_server_socket_ready;
+         "build_system_failure" >:: OUnitLwt.lwt_wrapper test_build_system_failure;
        ]
   |> Test.run

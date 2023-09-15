@@ -163,12 +163,12 @@ let test_type_errors context =
     Client.assert_response
       client
       ~request:(Request.DisplayTypeError [])
-      ~expected:(Response.TypeErrors [test_error; test2_error])
+      ~expected:(create_type_error_response [test_error; test2_error])
     >>= fun () ->
     Client.assert_response
       client
       ~request:(Request.DisplayTypeError ["/foo/test.py"])
-      ~expected:(Response.TypeErrors [test_error])
+      ~expected:(create_type_error_response [test_error])
   in
   ScratchProject.setup
     ~context
@@ -225,7 +225,7 @@ let test_type_errors_in_multiple_artifacts context =
     Client.send_request client (Request.DisplayTypeError ["/foo/test.py"])
     >>= fun raw_response ->
     match Yojson.Safe.from_string raw_response with
-    | `List [`String "TypeErrors"; `List errors] ->
+    | `List [`String "TypeErrors"; `Assoc [("errors", `List errors); _]] ->
         (* Given that `/foo/test.py` is mapped to two artifact paths, the client should see type
            errors in both files. *)
         assert_equal ~ctxt:context ~cmp:Int.equal ~printer:Int.to_string 2 (List.length errors);
@@ -324,7 +324,7 @@ let test_update context =
     Client.assert_response
       client
       ~request:(Request.DisplayTypeError [])
-      ~expected:(Response.TypeErrors [expected_error])
+      ~expected:(create_type_error_response [expected_error])
     >>= fun () -> Lwt.return_unit
   in
   ScratchProject.setup

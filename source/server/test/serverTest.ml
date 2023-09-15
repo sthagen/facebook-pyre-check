@@ -9,6 +9,8 @@ open Core
 open OUnit2
 open Server
 
+let create_type_error_response ?build_failure errors = Response.TypeErrors { errors; build_failure }
+
 module Client = struct
   type t = {
     context: test_ctxt;

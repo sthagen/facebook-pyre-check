@@ -15,6 +15,7 @@
   core_unix
   core_unix.filename_unix
   ounit2
+  pyrelib.taint
   pyrelib.service
   pyrelib.analysis))
 
@@ -28,7 +29,9 @@
   statisticsTest
   profilingTest
   algorithmsTest
-  jsonParsingTest)
+  jsonParsingTest
+  criticalFileTest
+  watchmanTest)
  (modules :standard \ test)
  (preprocess
   (pps
@@ -40,7 +43,10 @@
    ppx_deriving_yojson))
  (libraries
   ounit2
+  ounit2-lwt
   pyrelib.service
   pyrelib.analysis
   pyrelib.test
-  pyrelib.algorithms))
+  pyrelib.algorithms
+  pyrelib.criticalFile
+  pyrelib.watchman))

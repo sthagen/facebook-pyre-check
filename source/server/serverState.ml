@@ -26,17 +26,44 @@ module Subscriptions = struct
   let all subscriptions = Hashtbl.data subscriptions
 end
 
+module BuildFailure = struct
+  type t = {
+    (* Holds the error message of last build failure that occurred. *)
+    mutable message: string option;
+    (* Holds temporarily stashed update events that lead to the build failure. Intended to be
+       processed again at a later point when the build is fixed. *)
+    mutable deferred_events: SourcePath.Event.t list;
+  }
+
+  let create () = { message = None; deferred_events = [] }
+
+  let update ~events ~error_message build_failure =
+    build_failure.message <- Some error_message;
+    build_failure.deferred_events <- List.rev_append events build_failure.deferred_events
+
+
+  let get_last_error_message { message; _ } = message
+
+  let get_deferred_events { deferred_events; _ } = List.rev deferred_events
+
+  let clear build_failure =
+    build_failure.message <- None;
+    build_failure.deferred_events <- []
+end
+
 type t = {
   build_system: BuildSystem.t;
   overlaid_environment: OverlaidEnvironment.t;
   subscriptions: Subscriptions.t;
+  build_failure: BuildFailure.t;
 }
 
-let create ?subscriptions ~build_system ~overlaid_environment () =
+let create ?subscriptions ?build_failure ~build_system ~overlaid_environment () =
   {
     build_system;
     overlaid_environment;
     subscriptions = Option.value subscriptions ~default:(Subscriptions.create ());
+    build_failure = Option.value build_failure ~default:(BuildFailure.create ());
   }
 
 

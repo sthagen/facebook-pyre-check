@@ -1259,14 +1259,19 @@ end = struct
               let open Features in
               let make_leaf_name callee =
                 let port =
-                  let root_name =
+                  let root =
                     match port with
-                    | AccessPath.Root.LocalResult -> Some "return"
-                    | _ -> AccessPath.Root.parameter_name port
+                    | AccessPath.Root.LocalResult -> "return"
+                    | AccessPath.Root.PositionalParameter { name; _ }
+                    | AccessPath.Root.NamedParameter { name } ->
+                        name
+                    | AccessPath.Root.StarParameter _ -> "*"
+                    | AccessPath.Root.StarStarParameter _ -> "**"
+                    | AccessPath.Root.Variable _
+                    | AccessPath.Root.CapturedVariable _ ->
+                        failwith "unexpected port in apply_call"
                   in
-                  root_name
-                  |> Option.map ~f:(fun root ->
-                         Format.asprintf "leaf:%s%a" root AccessPath.Path.pp path)
+                  LeafPort.Leaf { root; path }
                 in
                 LeafName.{ leaf = Target.external_name callee; port } |> LeafNameInterned.intern
               in

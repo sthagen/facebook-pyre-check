@@ -925,7 +925,7 @@ let rec parse_annotations
             Features.LeafName.
               {
                 leaf = canonical_name;
-                port = Some (Format.sprintf "producer:%d:%s" producer_id canonical_port);
+                port = Features.LeafPort.Producer { id = producer_id; port = canonical_port };
               }
           in
           match annotation with
@@ -985,7 +985,7 @@ let rec parse_annotations
         let add_cross_repository_information annotation =
           let leaf_name =
             Features.LeafName.
-              { leaf = canonical_name; port = Some (Format.sprintf "anchor:%s" canonical_port) }
+              { leaf = canonical_name; port = Features.LeafPort.Anchor { port = canonical_port } }
           in
           match annotation with
           | TaintAnnotation.Source { source; features } ->
@@ -1069,7 +1069,7 @@ let get_class_attributes ~resolution = function
 let get_class_attributes_transitive ~resolution class_name =
   let successors =
     match GlobalResolution.class_metadata resolution class_name with
-    | Some { ClassMetadataEnvironment.successors = Some successors; _ } -> successors
+    | Some { ClassSuccessorMetadataEnvironment.successors = Some successors; _ } -> successors
     | _ -> []
   in
   class_name :: successors |> List.filter_map ~f:(get_class_attributes ~resolution) |> List.concat

@@ -19,14 +19,30 @@ module Subscriptions : sig
   val all : t -> Subscription.t list
 end
 
+module BuildFailure : sig
+  type t
+
+  val create : unit -> t
+
+  val update : events:SourcePath.Event.t list -> error_message:string -> t -> unit
+
+  val get_last_error_message : t -> string option
+
+  val get_deferred_events : t -> SourcePath.Event.t list
+
+  val clear : t -> unit
+end
+
 type t = private {
   build_system: BuildSystem.t;
   overlaid_environment: Analysis.OverlaidEnvironment.t;
   subscriptions: Subscriptions.t;
+  build_failure: BuildFailure.t;
 }
 
 val create
   :  ?subscriptions:Subscriptions.t ->
+  ?build_failure:BuildFailure.t ->
   build_system:BuildSystem.t ->
   overlaid_environment:Analysis.OverlaidEnvironment.t ->
   unit ->

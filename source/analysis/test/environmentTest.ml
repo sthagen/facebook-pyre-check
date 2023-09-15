@@ -955,8 +955,6 @@ let test_join_type_order context =
   assert_equal
     (TypeOrder.join order (Type.Union [Type.integer; Type.string]) Type.integer)
     (Type.Union [Type.integer; Type.string]);
-  assert_raises (ClassHierarchy.Untracked "test.durp") (fun _ ->
-      TypeOrder.join order bar (Type.Primitive "test.durp"));
 
   (* Special cases. *)
   assert_equal (TypeOrder.join order Type.integer Type.float) Type.float
@@ -1094,32 +1092,6 @@ let test_default_class_hierarchy context =
   assert_type_equal (meet order Type.integer Type.float) Type.integer;
   assert_type_equal (meet order Type.integer Type.complex) Type.integer;
   assert_type_equal (meet order Type.float Type.complex) Type.float
-
-
-let test_connect_annotations_to_top context =
-  (* Partial partial order:*)
-  (*  0 - 2                *)
-  (*  |                    *)
-  (*  1   object           *)
-  let project =
-    ScratchProject.setup
-      ~context
-      [
-        ( "test.py",
-          {|
-       class One:
-         pass
-       class Two:
-         pass
-       class Zero(Two, One):
-         pass
-    |}
-        );
-      ]
-  in
-  let global_environment = ScratchProject.global_environment project in
-  let order = class_hierarchy global_environment in
-  assert_equal (ClassHierarchy.least_upper_bound order "test.One" "test.Two") ["object"]
 
 
 let test_deduplicate context =
@@ -1319,7 +1291,6 @@ let () =
          "register_globals" >:: test_register_globals;
          "register_implicit_namespace_modules" >:: test_register_implicit_namespace_modules;
          "default_class_hierarchy" >:: test_default_class_hierarchy;
-         "connect_to_top" >:: test_connect_annotations_to_top;
          "deduplicate" >:: test_deduplicate;
          "remove_extra" >:: test_remove_extra_edges_to_object;
          "update_and_compute_dependencies" >:: test_update_and_compute_dependencies;

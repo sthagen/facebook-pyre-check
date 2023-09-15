@@ -283,54 +283,6 @@ let get_generic_parameters ~generic_index edges =
   List.find_map ~f:generic_parameters edges
 
 
-let least_common_successor order ~successors left right =
-  raise_if_untracked order left;
-  raise_if_untracked order right;
-  if Type.Primitive.compare left right = 0 then
-    [left]
-  else
-    (let rec iterate left right =
-       let successors sources =
-         Set.fold
-           ~init:IndexTracker.Set.empty
-           ~f:(fun sofar index -> Set.union sofar (successors index))
-           sources
-       in
-       let left_successors = successors (List.hd_exn left) in
-       let right_successors = successors (List.hd_exn right) in
-       if Set.is_empty left_successors && Set.is_empty right_successors then
-         []
-       else
-         let intersect left right =
-           let collect = List.fold ~init:IndexTracker.Set.empty ~f:Set.union in
-           Set.inter (collect left) (collect right)
-         in
-         let left = left_successors :: left in
-         let right = right_successors :: right in
-         let left_tail_right = intersect (List.tl_exn left) right in
-         let left_right_tail = intersect left (List.tl_exn right) in
-         if (not (Set.is_empty left_tail_right)) || not (Set.is_empty left_right_tail) then
-           Set.union left_tail_right left_right_tail |> Set.to_list
-         else
-           let left_right = intersect left right in
-           if not (Set.is_empty left_right) then
-             Set.to_list left_right
-           else
-             iterate left right
-     in
-     iterate [IndexTracker.Set.of_list [index_of left]] [IndexTracker.Set.of_list [index_of right]])
-    |> List.map ~f:IndexTracker.annotation
-
-
-let least_upper_bound ((module Handler : Handler) as order) =
-  let successors index =
-    match parents_of (module Handler) index with
-    | Some targets -> targets |> List.map ~f:Target.target |> IndexTracker.Set.of_list
-    | None -> IndexTracker.Set.empty
-  in
-  least_common_successor order ~successors
-
-
 let instantiate_successors_parameters ((module Handler : Handler) as handler) ~source ~target =
   raise_if_untracked handler target;
   let generic_index = IndexTracker.index generic_primitive in
