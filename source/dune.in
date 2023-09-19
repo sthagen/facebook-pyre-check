@@ -27,7 +27,7 @@
    ppx_hash
    ppx_compare
    ppx_sexp_conv))
- (libraries pyrelib.log core))
+ (libraries pyrelib.log))
 
 (library
  (name timer)
@@ -55,7 +55,7 @@
    ppx_hash
    ppx_compare
    ppx_sexp_conv))
- (libraries core core_unix.time_unix core_unix.sys_unix))
+ (libraries core))
 
 (library
  (name recognized)
@@ -285,7 +285,6 @@
    ppx_sexp_conv))
  (libraries
   core
-  core_unix.sys_unix
   sexplib
   ppxlib
   ppx_deriving
@@ -436,7 +435,7 @@
    ppx_hash
    ppx_compare
    ppx_sexp_conv))
- (libraries core_unix.command_unix pyrelib))
+ (libraries cmdliner core pyrelib))
 
 (alias
  (name DEFAULT)
