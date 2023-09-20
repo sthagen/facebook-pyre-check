@@ -66,6 +66,7 @@ class QueryModulesOfPathResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
 class GetDefinitionLocationsResponse:
     source: DaemonQuerierSource
     data: List[lsp.LspLocation]
+    original_error_message: Optional[str] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -118,10 +119,10 @@ def path_to_expression_coverage_response(
 
 
 def should_fall_back_to_glean(server_state: state.ServerState) -> bool:
-    return (
-        server_state.status_tracker.get_status().connection_status
-        == state.ConnectionStatus.DISCONNECTED
-    )
+    return server_state.status_tracker.get_status().connection_status in {
+        state.ConnectionStatus.DISCONNECTED,
+        state.ConnectionStatus.NOT_CONNECTED,
+    }
 
 
 class AbstractDaemonQuerier(abc.ABC):
@@ -871,7 +872,8 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
         if should_fall_back_to_glean(self.base_querier.server_state):
             indexed_result = await self.index.definition(path, position)
             return GetDefinitionLocationsResponse(
-                source=DaemonQuerierSource.GLEAN_INDEXER, data=indexed_result
+                source=DaemonQuerierSource.GLEAN_INDEXER,
+                data=indexed_result,
             )
         return await self.base_querier.get_definition_locations(path, position)
 
