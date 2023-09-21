@@ -165,7 +165,7 @@ let parse_models_and_queries_from_sources
     ~python_version
     sources
   =
-  (* TODO(T117715045): Do not pass all definitions and stubs explicitly to map_reduce,
+  (* TODO(T117715045): Do not pass all definitions explicitly to map_reduce,
    * since this will marshal-ed between processes and hence is costly. *)
   let map sources =
     let taint_configuration = TaintConfiguration.SharedMemory.get taint_configuration in
@@ -239,9 +239,9 @@ let initialize_models
   let definitions_hashset =
     initial_callables |> Interprocedural.FetchCallables.get_definitions |> Target.HashSet.of_list
   in
-  let stubs_hashset =
-    initial_callables |> Interprocedural.FetchCallables.get_stubs |> Target.HashSet.of_list
-  in
+  let stubs_list = Interprocedural.FetchCallables.get_stubs initial_callables in
+  let stubs_hashset = Target.HashSet.of_list stubs_list in
+  let stubs_shared_memory = Interprocedural.Target.HashsetSharedMemory.from_heap stubs_list in
   let { ModelParseResult.models; queries; errors } =
     parse_models_and_queries_from_configuration
       ~scheduler
@@ -250,7 +250,7 @@ let initialize_models
       ~resolution
       ~source_sink_filter:taint_configuration.source_sink_filter
       ~definitions:(Some definitions_hashset)
-      ~stubs:stubs_hashset
+      ~stubs:(Interprocedural.Target.HashsetSharedMemory.read_only stubs_shared_memory)
   in
   Statistics.performance
     ~name:"Parsed taint models"
@@ -281,7 +281,7 @@ let initialize_models
             ~source_sink_filter:(Some taint_configuration.source_sink_filter)
             ~definitions_and_stubs:
               (Interprocedural.FetchCallables.get initial_callables ~definitions:true ~stubs:true)
-            ~stubs:stubs_hashset
+            ~stubs:(Interprocedural.Target.HashsetSharedMemory.read_only stubs_shared_memory)
             queries
         in
         let () =
@@ -323,6 +323,8 @@ let initialize_models
       ~stubs:stubs_hashset
       ~initial_models:models
   in
+
+  let () = Interprocedural.Target.HashsetSharedMemory.cleanup stubs_shared_memory in
 
   { ModelParseResult.models; queries = []; errors }
 

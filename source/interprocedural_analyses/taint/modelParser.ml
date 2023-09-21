@@ -1078,12 +1078,18 @@ let get_class_attributes_transitive ~resolution class_name =
 let paths_for_source_or_sink ~resolution ~kind ~root ~root_annotations ~features =
   let open Core.Result in
   let all_static_field_paths () =
+    let is_return = AccessPath.Root.equal root LocalResult in
     let attributes =
       root_annotations
+      |> List.map ~f:(if is_return then CallResolution.extract_coroutine_value else Fn.id)
+      |> List.map ~f:CallResolution.strip_optional
+      |> List.map ~f:CallResolution.strip_readonly
+      |> List.map ~f:CallResolution.unbind_type_variable
       |> List.map ~f:class_names_from_annotation
       |> List.concat
       |> List.map ~f:(get_class_attributes_transitive ~resolution)
       |> List.concat
+      |> List.filter ~f:(fun attribute -> not (Ast.Expression.is_dunder_attribute attribute))
       |> List.dedup_and_sort ~compare:Identifier.compare
     in
     match attributes with
@@ -3089,7 +3095,7 @@ let create_model_from_attribute
 let is_obscure ~definitions ~stubs call_target =
   (* The callable is obscure if and only if it is a type stub or it is not in the set of known
      definitions. *)
-  Hash_set.mem stubs call_target
+  Interprocedural.Target.HashsetSharedMemory.ReadOnly.mem stubs call_target
   || definitions >>| Core.Fn.flip Hash_set.mem call_target >>| not |> Option.value ~default:false
 
 
