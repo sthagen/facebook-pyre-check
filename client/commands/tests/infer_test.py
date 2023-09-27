@@ -170,30 +170,6 @@ class InferTest(testslide.TestCase):
         )
         assert_parsed(
             {
-                "attributes": [
-                    {
-                        "parent": "Foo",
-                        "name": "x",
-                        "location": {"qualifier": "test", "path": "test.py", "line": 3},
-                        "annotation": "int",
-                    }
-                ]
-            },
-            infer.RawInferOutput(
-                attribute_annotations=[
-                    infer.RawAttributeAnnotation(
-                        parent="Foo",
-                        name="x",
-                        location=infer.RawAnnotationLocation(
-                            qualifier="test", path="test.py", line=3
-                        ),
-                        annotation="int",
-                    )
-                ]
-            ),
-        )
-        assert_parsed(
-            {
                 "defines": [
                     {
                         "name": "test.foo",
@@ -259,6 +235,41 @@ class InferTest(testslide.TestCase):
                             ),
                         ],
                         is_async=True,
+                    )
+                ]
+            ),
+        )
+
+    def test_parse_raw_infer_output__attributes(self) -> None:
+        def assert_parsed(
+            input: Dict[str, object], expected: infer.RawInferOutput
+        ) -> None:
+            self.assertEqual(infer.RawInferOutput.create_from_json(input), expected)
+
+        assert_parsed(
+            {
+                "attributes": [
+                    {
+                        "parent": "foo.bar.test.Foo",
+                        "name": "x",
+                        "location": {
+                            "qualifier": "foo.bar.test",
+                            "path": "foo/bar/test.py",
+                            "line": 3,
+                        },
+                        "annotation": "int",
+                    }
+                ]
+            },
+            infer.RawInferOutput(
+                attribute_annotations=[
+                    infer.RawAttributeAnnotation(
+                        parent="foo.bar.test.Foo",
+                        name="x",
+                        location=infer.RawAnnotationLocation(
+                            qualifier="foo.bar.test", path="foo/bar/test.py", line=3
+                        ),
+                        annotation="int",
                     )
                 ]
             ),
@@ -517,16 +528,32 @@ class ModuleAnnotationTest(testslide.TestCase):
             ),
         )
 
+    def test_module_annotations_from_infer_output__attributes(self) -> None:
+        def assert_result(
+            path: str,
+            infer_output: infer.RawInferOutputForPath,
+            options: infer.StubGenerationOptions,
+            expected: infer.ModuleAnnotations,
+        ) -> None:
+            self.assertEqual(
+                infer.ModuleAnnotations.from_infer_output(path, infer_output, options),
+                expected,
+            )
+
+        default_path = "test.py"
+        default_qualifier = "test"
+        default_options = infer.StubGenerationOptions()
+
         assert_result(
             path=default_path,
             infer_output=infer.RawInferOutputForPath(
                 qualifier=default_qualifier,
                 attribute_annotations=[
                     infer.RawAttributeAnnotation(
-                        parent="Foo",
+                        parent="foo.bar.test.Foo",
                         name="x",
                         location=infer.RawAnnotationLocation(
-                            qualifier="test", path="test.py", line=3
+                            qualifier="foo.bar.test", path="foo/bar/test.py", line=3
                         ),
                         annotation="int",
                     )
@@ -548,10 +575,10 @@ class ModuleAnnotationTest(testslide.TestCase):
                 qualifier=default_qualifier,
                 attribute_annotations=[
                     infer.RawAttributeAnnotation(
-                        parent="Foo",
+                        parent="foo.bar.test.Foo",
                         name="x",
                         location=infer.RawAnnotationLocation(
-                            qualifier="test", path="test.py", line=3
+                            qualifier="foo.bar.test", path="foo/bar/test.py", line=3
                         ),
                         annotation="int",
                     )
@@ -563,7 +590,7 @@ class ModuleAnnotationTest(testslide.TestCase):
                 options=annotate_attribute_options,
                 attributes=[
                     infer.AttributeAnnotation(
-                        parent="Foo",
+                        parent="foo.bar.test.Foo",
                         name="x",
                         annotation=infer.TypeAnnotation.from_raw(
                             "int",
@@ -805,15 +832,17 @@ class StubGenerationTest(testslide.TestCase):
         use_future_annotations: bool = False,
         quote_annotations: bool = False,
         simple_annotations: bool = False,
+        test_path: str = "/root/test.py",
+        qualifier: str = "test",
+        root: str = "/root",
     ) -> None:
-        test_path = "/root/test.py"
         infer_output = infer.RawInferOutput.create_from_json(
             {
                 category: [
                     {
                         "location": {
                             "path": test_path,
-                            "qualifier": "test",
+                            "qualifier": qualifier,
                             "line": 1,
                         },
                         **value,
@@ -825,7 +854,7 @@ class StubGenerationTest(testslide.TestCase):
         )
         module_annotations = infer.create_module_annotations(
             infer_output=infer_output,
-            base_path=Path("/root"),
+            base_path=Path(root),
             options=infer.StubGenerationOptions(
                 annotate_attributes=annotate_attributes,
                 use_future_annotations=use_future_annotations,
@@ -1256,6 +1285,48 @@ class StubGenerationTest(testslide.TestCase):
             annotate_attributes=True,
         )
 
+    def test_stubs_attributes__path_matches_qualifier(self) -> None:
+        self._assert_stubs(
+            {
+                "attributes": [
+                    {
+                        "annotation": "int",
+                        "name": "some_attribute",
+                        "parent": "foo.bar.test.Foo",
+                    }
+                ],
+            },
+            """\
+            class Foo:
+                some_attribute: int = ...
+            """,
+            annotate_attributes=True,
+            root="/root",
+            test_path="/root/foo/bar/test.py",
+            qualifier="foo.bar.test",
+        )
+
+    def test_stubs_attributes__full_path_but_does_not_match_qualifier(self) -> None:
+        """TODO(T164419913): If the path differs from the qualifier, we
+        spuriously consider the class to be "nested" and ignore it
+        completely."""
+        self._assert_stubs(
+            {
+                "attributes": [
+                    {
+                        "annotation": "int",
+                        "name": "some_attribute",
+                        "parent": "foo.bar.test.Foo",
+                    }
+                ],
+            },
+            "",
+            annotate_attributes=True,
+            root="/root",
+            test_path="/root/extra_module/foo/bar/test.py",
+            qualifier="foo.bar.test",
+        )
+
     def test_stubs_no_typing_import(self) -> None:
         """
         Make sure we don't spuriously import from typing
@@ -1546,4 +1617,20 @@ class StubApplicationTest(testslide.TestCase):
                 return
             """,
             None,
+        )
+
+    def test_class_attributes(self) -> None:
+        self._assert_in_place(
+            stub_file_contents="""
+            class Foo:
+                some_attribute: int = ...
+            """,
+            code_file_contents="""
+            class Foo:
+                some_attribute = ...
+            """,
+            expected_annotated_code_file_contents="""
+            class Foo:
+                some_attribute: int = ...
+            """,
         )

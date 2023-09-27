@@ -476,12 +476,14 @@ module Testing : sig
           | Simple
           | Method
           | Property
+          | Variable
         [@@deriving sexp, compare, yojson { strict = false }]
       end
 
       type t = {
         label: string;
         kind: CompletionItemKind.t;
+        detail: string;
       }
       [@@deriving sexp, compare, yojson { strict = false }]
     end

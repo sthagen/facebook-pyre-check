@@ -112,20 +112,26 @@ class PyreCompletionItemKind(str, enum.Enum):
     SIMPLE = "SIMPLE"
     METHOD = "METHOD"
     PROPERTY = "PROPERTY"
+    VARIABLE = "VARIABLE"
 
     def to_lsp_completion_item_kind(self) -> lsp.CompletionItemKind:
-        if self == self.METHOD:
-            return lsp.CompletionItemKind.METHOD
-        elif self == self.PROPERTY:
-            return lsp.CompletionItemKind.PROPERTY
-        else:
-            return lsp.CompletionItemKind.TEXT
+        # pyre-ignore T164827212
+        match self:
+            case self.METHOD:
+                return lsp.CompletionItemKind.METHOD
+            case self.VARIABLE:
+                return lsp.CompletionItemKind.VARIABLE
+            case self.PROPERTY:
+                return lsp.CompletionItemKind.PROPERTY
+            case self.SIMPLE:
+                return lsp.CompletionItemKind.TEXT
 
 
 @dataclasses.dataclass(frozen=True)
 class PyreCompletionItem(json_mixins.CamlCaseAndExcludeJsonMixin):
     label: str
     kind: PyreCompletionItemKind
+    detail: str
 
     def to_lsp_completion_item(self) -> lsp.CompletionItem:
         return lsp.CompletionItem(
@@ -133,6 +139,7 @@ class PyreCompletionItem(json_mixins.CamlCaseAndExcludeJsonMixin):
             kind=self.kind.to_lsp_completion_item_kind(),
             filterText=self.label,
             sortText=self.label,
+            detail=self.detail,
         )
 
 

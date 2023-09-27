@@ -1721,7 +1721,10 @@ let test_resolve_definition_for_symbol context =
   ()
 
 
-let test_resolve_completions_for_symbol context =
+let ( >>: ) test_name test_function = test_name >:: fun context -> test_function ~context
+
+let test_resolve_completions_for_symbol =
+  let open AttributeResolution.AttributeDetail in
   let default_external_sources =
     [
       ( "library.py",
@@ -1738,6 +1741,7 @@ let test_resolve_completions_for_symbol context =
   in
   let module_reference = !&"test" in
   let assert_resolved_completion_items
+      ~context
       ?(external_sources = default_external_sources)
       ~source
       expected
@@ -1760,34 +1764,48 @@ let test_resolve_completions_for_symbol context =
         right_inclusive_cursor_position
     in
     let attributes =
-      match
-        symbol_data >>= LocationBasedLookup.resolve_completions_for_symbol ~type_environment
-      with
-      | Some attributes_map -> attributes_map
-      | None -> Identifier.SerializableMap.empty
+      symbol_data
+      >>| LocationBasedLookup.resolve_completions_for_symbol ~type_environment
+      |> Option.value ~default:[]
     in
-    let list_diff format list = Format.fprintf format "%s\n" (String.concat ~sep:"\n" list) in
-    assert_equal
-      ~cmp:(fun left right ->
-        let sort_str_list = List.sort ~compare:String.compare in
-        List.equal String.equal (sort_str_list left) (sort_str_list right))
-      ~printer:(String.concat ~sep:", ")
-      ~pp_diff:(diff ~print:list_diff)
-      expected
-      (attributes |> Identifier.SerializableMap.bindings |> List.map ~f:(fun (attr, _) -> attr))
+    assert_equal ~printer:[%show: AttributeResolution.AttributeDetail.t list] expected attributes
   in
-  assert_resolved_completion_items
-    ~source:
-      {|
-        def getint() -> int:
-                      # ^- cursor
-          return 42
-      |}
-    (* TODO(T158922360) not an attribute, modify this testcase when we support local autocomplete *)
-    [];
-  assert_resolved_completion_items
-    ~source:
-      {|
+  let default_completions =
+    [
+      { name = "__class__"; kind = Property; detail = "object" };
+      { name = "__delattr__"; kind = Method; detail = "object" };
+      { name = "__dir__"; kind = Method; detail = "object" };
+      { name = "__doc__"; kind = Variable; detail = "object" };
+      { name = "__eq__"; kind = Method; detail = "object" };
+      { name = "__format__"; kind = Method; detail = "object" };
+      { name = "__getattribute__"; kind = Method; detail = "object" };
+      { name = "__hash__"; kind = Method; detail = "object" };
+      { name = "__init__"; kind = Method; detail = "object" };
+      { name = "__init_subclass__"; kind = Variable; detail = "object" };
+      { name = "__module__"; kind = Variable; detail = "object" };
+      { name = "__ne__"; kind = Method; detail = "object" };
+      { name = "__new__"; kind = Variable; detail = "object" };
+      { name = "__reduce__"; kind = Method; detail = "object" };
+      { name = "__repr__"; kind = Method; detail = "object" };
+      { name = "__setattr__"; kind = Method; detail = "object" };
+      { name = "__sizeof__"; kind = Method; detail = "object" };
+      { name = "__str__"; kind = Method; detail = "object" };
+    ]
+  in
+  [
+    "TODO(T158922360) not an attribute, modify this testcase when we support local autocomplete"
+    >>: assert_resolved_completion_items
+          ~source:
+            {|
+              def getint() -> int:
+                            # ^- cursor
+                return 42
+            |}
+          [];
+    "Single layer class attribute completion"
+    >>: assert_resolved_completion_items
+          ~source:
+            {|
         class Foo: ...
 
         class Bar:
@@ -1799,11 +1817,16 @@ let test_resolve_completions_for_symbol context =
         Bar().attribute
         #       ^- cursor
     |}
-    (* Single layer class attribute completion *)
-    ["attribute3"; "attribute2"; "attribute"];
-  assert_resolved_completion_items
-    ~source:
-      {|
+          ([
+             { name = "attribute"; kind = Variable; detail = "test.Bar" };
+             { name = "attribute2"; kind = Variable; detail = "test.Bar" };
+             { name = "attribute3"; kind = Variable; detail = "test.Bar" };
+           ]
+          @ default_completions);
+    "Multi layer class attribute completion"
+    >>: assert_resolved_completion_items
+          ~source:
+            {|
         class Foo:
           foo_attribute: int = 1
           foo_attribute2: int = 2
@@ -1819,11 +1842,16 @@ let test_resolve_completions_for_symbol context =
         Bar().attribute.foo_attribute
         #                ^- cursor
     |}
-    (* Multi layer class attribute completion *)
-    ["foo_attribute"; "foo_attribute2"; "foo_attribute3"];
-  assert_resolved_completion_items
-    ~source:
-      {|
+          ([
+             { name = "foo_attribute"; kind = Variable; detail = "test.Foo" };
+             { name = "foo_attribute2"; kind = Variable; detail = "test.Foo" };
+             { name = "foo_attribute3"; kind = Variable; detail = "test.Foo" };
+           ]
+          @ default_completions);
+    "Incomplete attribute string (attr is not a valid attribute), attribute completion"
+    >>: assert_resolved_completion_items
+          ~source:
+            {|
         class Foo: ...
 
         class Bar:
@@ -1835,11 +1863,16 @@ let test_resolve_completions_for_symbol context =
         Bar().attr
         #      ^- cursor
     |}
-    (* Incomplete attribute string (attr is not a valid attribute), attribute completion *)
-    ["attribute"; "attribute2"; "attribute3"];
-  assert_resolved_completion_items
-    ~source:
-      {|
+          ([
+             { name = "attribute"; kind = Variable; detail = "test.Bar" };
+             { name = "attribute2"; kind = Variable; detail = "test.Bar" };
+             { name = "attribute3"; kind = Variable; detail = "test.Bar" };
+           ]
+          @ default_completions);
+    "Incomplete attribute string + cursor at end of line, attribute completion"
+    >>: assert_resolved_completion_items
+          ~source:
+            {|
         class Foo: ...
 
         class Bar:
@@ -1851,19 +1884,24 @@ let test_resolve_completions_for_symbol context =
         Bar().attr
         #         ^- cursor
     |}
-    (* Incomplete attribute string + cursor at end of line, attribute completion *)
-    ["attribute"; "attribute2"; "attribute3"];
-  assert_resolved_completion_items
-    ~source:{|
+          ([
+             { name = "attribute"; kind = Variable; detail = "test.Bar" };
+             { name = "attribute2"; kind = Variable; detail = "test.Bar" };
+             { name = "attribute3"; kind = Variable; detail = "test.Bar" };
+           ]
+          @ default_completions);
+    "Cursor at column 0 on newline"
+    >>: assert_resolved_completion_items
+          ~source:{|
         class Foo: ...
 
        #^- cursor
       |}
-    (* Cursor at column 0 on newline *)
-    [];
-  assert_resolved_completion_items
-    ~source:
-      {|
+          [];
+    "trailing period"
+    >>: assert_resolved_completion_items
+          ~source:
+            {|
       class Foo:
         def foo() -> None: ...
 
@@ -1871,8 +1909,44 @@ let test_resolve_completions_for_symbol context =
       foo.
          #^- cursor
     |}
-    ["foo"];
-  ()
+          ([{ name = "foo"; kind = Method; detail = "test.Foo" }] @ default_completions);
+    "trailing period with inheritence"
+    >>: assert_resolved_completion_items
+          ~source:
+            {|
+      class Bar:
+        def bar() -> None: ...
+      class Foo(Bar):
+        def foo() -> None: ...
+
+      Foo.
+         #^- cursor
+    |}
+          ([
+             { name = "foo"; kind = Method; detail = "test.Foo" };
+             { name = "bar"; kind = Method; detail = "test.Bar" };
+           ]
+          @ default_completions);
+    "trailing period on non-instance"
+    >>: assert_resolved_completion_items
+          ~source:
+            {|
+      class Foo:
+        def foo() -> None: ...
+
+      Foo.
+         #^- cursor
+    |}
+          ~external_sources:
+            ["builtins.pyi", {|
+      class object:
+        def test(self) -> None: ...
+    |}]
+          [
+            { name = "foo"; kind = Method; detail = "test.Foo" };
+            { name = "test"; kind = Method; detail = "object" };
+          ];
+  ]
 
 
 (* Annotations *)
@@ -3863,6 +3937,18 @@ let test_hover_info_for_position context =
       x = 5
   |}
     { value = Some "typing_extensions.Literal['docstring']"; docstring = None };
+  assert_hover_info_for_position
+    {|
+      def test() -> None:
+          """docstring 'using single-quotes' rest of docstring"""
+          x = 5
+      test
+      # ^- cursor
+  |}
+    {
+      value = Some "() -> None";
+      docstring = Some "docstring 'using single-quotes' rest of docstring";
+    };
   ()
 
 
@@ -3874,7 +3960,7 @@ let () =
          "narrowest_match" >:: test_narrowest_match;
          "find_narrowest_spanning_symbol" >:: test_find_narrowest_spanning_symbol;
          "resolve_definition_for_symbol" >:: test_resolve_definition_for_symbol;
-         "resolve_completions_for_symbol" >:: test_resolve_completions_for_symbol;
+         test_list test_resolve_completions_for_symbol;
          "lookup_attributes" >:: test_lookup_attributes;
          "lookup_assign" >:: test_lookup_assign;
          "lookup_call_arguments" >:: test_lookup_call_arguments;

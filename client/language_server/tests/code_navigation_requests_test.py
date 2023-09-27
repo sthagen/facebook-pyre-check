@@ -177,9 +177,10 @@ class CodeNavigationRequestsTest(testslide.TestCase):
     def test_completion_response(self) -> None:
         response = {
             "completions": [
-                {"label": "attribute", "kind": "SIMPLE"},
-                {"label": "attribute2", "kind": "METHOD"},
-                {"label": "attribute3", "kind": "PROPERTY"},
+                {"label": "attribute", "kind": "SIMPLE", "detail": "object"},
+                {"label": "attribute2", "kind": "METHOD", "detail": "object"},
+                {"label": "attribute3", "kind": "PROPERTY", "detail": "object"},
+                {"label": "attribute4", "kind": "VARIABLE", "detail": "object"},
             ]
         }
         self.assertEqual(
@@ -192,14 +193,22 @@ class CodeNavigationRequestsTest(testslide.TestCase):
                     code_navigation_request.PyreCompletionItem(
                         label="attribute",
                         kind=code_navigation_request.PyreCompletionItemKind.SIMPLE,
+                        detail="object",
                     ),
                     code_navigation_request.PyreCompletionItem(
                         label="attribute2",
                         kind=code_navigation_request.PyreCompletionItemKind.METHOD,
+                        detail="object",
                     ),
                     code_navigation_request.PyreCompletionItem(
                         label="attribute3",
                         kind=code_navigation_request.PyreCompletionItemKind.PROPERTY,
+                        detail="object",
+                    ),
+                    code_navigation_request.PyreCompletionItem(
+                        label="attribute4",
+                        kind=code_navigation_request.PyreCompletionItemKind.VARIABLE,
+                        detail="object",
                     ),
                 ]
             ),
