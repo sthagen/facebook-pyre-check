@@ -19,9 +19,11 @@ import asyncio
 import dataclasses
 import logging
 import random
+from collections import defaultdict
 from pathlib import Path
 from typing import (
     ClassVar,
+    DefaultDict,
     Dict,
     Generic,
     List,
@@ -317,6 +319,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
     server_state: state.ServerState
 
     querier: daemon_querier.AbstractDaemonQuerier
+    index_querier: daemon_querier.AbstractDaemonQuerier
     client_type_error_handler: type_error_handler.ClientTypeErrorHandler
 
     async def write_telemetry(
@@ -1190,7 +1193,9 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
         rename_edits = await self.querier.get_rename(
-            document_path, parameters.position.to_pyre_position(), parameters.new_name
+            document_path,
+            parameters.position.to_pyre_position(),
+            parameters.new_name,
         )
         error_message = None
         if isinstance(rename_edits, DaemonQueryFailure):

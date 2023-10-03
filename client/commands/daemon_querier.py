@@ -31,7 +31,12 @@ from ..language_server import (
     protocol as lsp,
     remote_index,
 )
-from . import daemon_query, expression_level_coverage, server_state as state
+from . import (
+    daemon_query,
+    expression_level_coverage,
+    libcst_util,
+    server_state as state,
+)
 from .daemon_query_failer import AbstractDaemonQueryFailer
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -244,6 +249,102 @@ class AbstractDaemonQuerier(abc.ABC):
 
     def get_language_server_features(self) -> features.LanguageServerFeatures:
         return self.server_state.server_options.language_server_features
+
+
+class EmptyQuerier(AbstractDaemonQuerier):
+    async def get_type_errors(
+        self,
+        path: Path,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[error.Error]]:
+        raise NotImplementedError()
+
+    async def get_type_coverage(
+        self,
+        path: Path,
+    ) -> Union[daemon_query.DaemonQueryFailure, Optional[lsp.TypeCoverageResponse]]:
+        raise NotImplementedError()
+
+    async def get_hover(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> Union[daemon_query.DaemonQueryFailure, GetHoverResponse]:
+        raise NotImplementedError()
+
+    async def get_definition_locations(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> Union[daemon_query.DaemonQueryFailure, GetDefinitionLocationsResponse]:
+        raise NotImplementedError()
+
+    async def get_completions(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CompletionItem]]:
+        raise NotImplementedError()
+
+    async def get_reference_locations(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
+        raise NotImplementedError()
+
+    async def get_init_call_hierarchy(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
+        raise NotImplementedError()
+
+    async def get_call_hierarchy_from_item(
+        self,
+        path: Path,
+        call_hierarchy_item: lsp.CallHierarchyItem,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
+        raise NotImplementedError()
+
+    async def get_rename(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+        new_text: str,
+    ) -> Union[daemon_query.DaemonQueryFailure, Optional[lsp.WorkspaceEdit]]:
+        raise NotImplementedError()
+
+    async def handle_file_opened(
+        self,
+        path: Path,
+        code: str,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        raise NotImplementedError()
+
+    async def handle_file_closed(
+        self,
+        path: Path,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        raise NotImplementedError()
+
+    async def update_overlay(
+        self,
+        path: Path,
+        code: str,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        raise NotImplementedError()
+
+    async def handle_register_client(
+        self,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        raise NotImplementedError()
+
+    async def handle_dispose_client(
+        self,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        raise NotImplementedError()
 
 
 class PersistentDaemonQuerier(AbstractDaemonQuerier):
@@ -744,7 +845,13 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
         path: Path,
         position: lsp.PyrePosition,
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
-        return []
+        if path not in self.server_state.opened_documents.keys():
+            return []
+        code = self.server_state.opened_documents[path].code
+        global_root = Path(
+            self.server_state.server_options.start_arguments.base_arguments.global_root
+        )
+        return libcst_util.find_references(path, global_root, code, position)
 
     async def update_overlay(
         self,
@@ -945,7 +1052,18 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
         position: lsp.PyrePosition,
         new_text: str,
     ) -> Union[daemon_query.DaemonQueryFailure, Optional[lsp.WorkspaceEdit]]:
-        references = await self.index.references(path, position)
+        references: List[lsp.LspLocation] = []
+        # generate cst and fetch local references
+        local_references = await self.base_querier.get_reference_locations(
+            path, position
+        )
+        if (
+            not isinstance(local_references, daemon_query.DaemonQueryFailure)
+            and local_references is not None
+        ):
+            references.extend(local_references)
+        # fetch global references
+        references.extend(await self.index.references(path, position))
         if len(references) == 0:
             return None
         changes: DefaultDict[str, List[lsp.TextEdit]] = defaultdict(list)
