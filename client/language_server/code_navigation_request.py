@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
-from .. import dataclasses_json_extensions as json_mixins
+from .. import dataclasses_json_extensions as json_mixins, error
 
 from . import daemon_connection, protocol as lsp
 
@@ -56,6 +56,21 @@ class LocationOfDefinitionRequest:
                     "line": self.position.line,
                     "column": self.position.character,
                 },
+            },
+        ]
+
+
+@dataclasses.dataclass(frozen=True)
+class TypeErrorsRequest:
+    path: str
+    client_id: str
+
+    def to_json(self) -> List[object]:
+        return [
+            "GetTypeErrors",
+            {
+                "path": self.path,
+                "client_id": self.client_id,
             },
         ]
 
@@ -105,6 +120,14 @@ class DefinitionResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
 @dataclasses.dataclass(frozen=True)
 class LocationOfDefinitionResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     definitions: List[DefinitionResponse]
+
+
+@dataclasses.dataclass(frozen=True)
+class TypeErrorsResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
+    errors: List[Dict[str, Any]]
+
+    def to_errors_response(self) -> List[error.Error]:
+        return [error.Error.from_json(error_response) for error_response in self.errors]
 
 
 class PyreCompletionItemKind(str, enum.Enum):
@@ -311,6 +334,21 @@ async def async_handle_definition_request(
         response,
         expected_response_kind="LocationOfDefinition",
         response_type=LocationOfDefinitionResponse,
+    )
+
+
+async def async_handle_type_errors_request(
+    socket_path: Path,
+    type_errors_request: TypeErrorsRequest,
+) -> Union[TypeErrorsResponse, ErrorResponse]:
+    raw_request = json.dumps(["Query", type_errors_request.to_json()])
+    response = await daemon_connection.attempt_send_async_raw_request(
+        socket_path, raw_request
+    )
+    if isinstance(response, daemon_connection.DaemonConnectionFailure):
+        return ErrorResponse(message=response.error_message)
+    return parse_raw_response(
+        response, expected_response_kind="TypeErrors", response_type=TypeErrorsResponse
     )
 
 
