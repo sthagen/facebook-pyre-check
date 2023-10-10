@@ -40,6 +40,8 @@ module Request = struct
     | SaveServerState of PyrePath.t
     | Superclasses of Reference.t list
     | Type of Expression.t
+    | IsTypechecked of string list
+    | TypecheckedPaths
     | TypesInFiles of string list
     | ValidateTaintModels of {
         path: string option;
@@ -136,6 +138,12 @@ module Response = struct
     }
     [@@deriving equal]
 
+    type typechecked = {
+      path: string;
+      is_typechecked: bool;
+    }
+    [@@deriving equal, to_yojson]
+
     let range_to_yojson { start; end_ } =
       `Assoc ["start", position_to_yojson start; "end", position_to_yojson end_]
 
@@ -174,6 +182,8 @@ module Response = struct
       | Success of string
       | Superclasses of superclasses_mapping list
       | Type of Type.t
+      | IsTypechecked of typechecked list
+      | TypecheckedPaths of string list
       | TypesByPath of types_at_path list
     [@@deriving equal]
 
@@ -215,6 +225,7 @@ module Response = struct
                      ~f:(fun error -> AnalysisError.Instantiated.to_yojson error)
                      global_leaks) );
             ]
+      | TypecheckedPaths paths -> `List (List.map paths ~f:(fun path -> `String path))
       | ModelVerificationErrors errors ->
           `Assoc ["errors", `List (List.map errors ~f:Taint.ModelVerificationError.to_json)]
       | FoundAttributes attributes ->
@@ -272,6 +283,7 @@ module Response = struct
           in
           `List (List.map class_to_superclasses_mapping ~f:mapping_to_yojson)
       | Type annotation -> `Assoc ["type", Type.to_yojson annotation]
+      | IsTypechecked paths -> `List (List.map paths ~f:typechecked_to_yojson)
       | TypesByPath paths_to_annotations ->
           `List (List.map paths_to_annotations ~f:types_at_path_to_yojson)
   end
@@ -418,7 +430,9 @@ let rec parse_request_exn query =
           Request.SaveServerState (PyrePath.create_absolute (string path))
       | "superclasses", names -> Superclasses (List.map ~f:reference names)
       | "type", [argument] -> Type (expression argument)
+      | "typechecked_paths", _ -> Request.TypecheckedPaths
       | "types", paths -> Request.TypesInFiles (List.map ~f:string paths)
+      | "is_typechecked", paths -> Request.IsTypechecked (List.map ~f:string paths)
       | "validate_taint_models", arguments -> parse_validate_taint_models arguments
       | _ -> raise (InvalidQuery "unexpected query"))
   | Ok _ -> raise (InvalidQuery "unexpected query")
@@ -699,6 +713,15 @@ let rec process_request_exn ~type_environment ~build_system request =
         get_program_call_graph ()
         |> Reference.Map.fold ~f:create_response_with_caller ~init:[]
         |> fun result -> Single (Base.Callgraph result)
+    (* Attempt to build a query for the files that are checked by a given configuration *)
+    | TypecheckedPaths ->
+        Single
+          (Base.TypecheckedPaths
+             (ModuleTracker.ReadOnly.module_paths module_tracker
+             |> List.filter ~f:(fun { ModulePath.is_external; _ } -> not is_external)
+             |> List.map ~f:(fun { ModulePath.raw = { relative; _ }; _ } ->
+                    let { Configuration.Analysis.project_root = root; _ } = configuration in
+                    PyrePath.create_relative ~root ~relative |> PyrePath.absolute)))
     | ExpressionLevelCoverage paths ->
         let read_text_file path =
           try In_channel.read_lines path |> List.map ~f:(fun x -> Result.Ok x) with
@@ -980,6 +1003,16 @@ let rec process_request_exn ~type_environment ~build_system request =
     | Type expression ->
         let annotation = Resolution.resolve_expression_to_type resolution expression in
         Single (Type annotation)
+    | IsTypechecked paths ->
+        let get_is_typechecked path =
+          match
+            LocationBasedLookupProcessor.get_module_path ~build_system ~type_environment path
+          with
+          | Result.Ok { Ast.ModulePath.is_external; _ } ->
+              { Base.path; is_typechecked = not is_external }
+          | Result.Error _ -> { Base.path; is_typechecked = false }
+        in
+        Single (Base.IsTypechecked (List.map paths ~f:get_is_typechecked))
     | TypesInFiles paths ->
         let find_resolved_types path =
           match

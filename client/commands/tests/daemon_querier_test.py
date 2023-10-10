@@ -709,12 +709,7 @@ class FailableDaemonQuerierTest(testslide.TestCase):
         await codenav_querier.get_hover(
             path=Path("bar1.py"), position=lsp.PyrePosition(line=42, character=10)
         )
-        try:
-            await codenav_querier.get_type_errors(path=Path("bar2.py"))
-            self.fail("Expected NotImplementedError to be raised.")
-        except NotImplementedError:
-            pass
-
+        await codenav_querier.get_type_errors(path=Path("bar2.py"))
         await codenav_querier.get_definition_locations(
             path=Path("bar3.py"), position=lsp.PyrePosition(line=42, character=10)
         )
@@ -832,7 +827,7 @@ def foo(bar: int):
 
 print(foo(10))
 """
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir:
             tmpfile = tempfile.NamedTemporaryFile(suffix=".py", dir=tmpdir)
             tmpfile.write(test_text.encode("utf-8"))
             tmpfile.flush()
