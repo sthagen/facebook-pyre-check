@@ -83,9 +83,7 @@ let run tests =
   let rec bracket test =
     let bracket_test test context =
       initialize ();
-      test context;
-      Core_unix.unsetenv "HH_SERVER_DAEMON_PARAM";
-      Core_unix.unsetenv "HH_SERVER_DAEMON"
+      test context
     in
     match test with
     | OUnitTest.TestLabel (name, test) -> OUnitTest.TestLabel (name, bracket test)
@@ -3133,7 +3131,7 @@ module ScratchProject = struct
 
 
   let delete_from_root ~root ~relative =
-    PyrePath.create_relative ~root ~relative |> PyrePath.absolute |> Core_unix.remove
+    PyrePath.create_relative ~root ~relative |> PyrePath.absolute |> CamlUnix.unlink
 
 
   let add_to_local_root project content ~relative =
