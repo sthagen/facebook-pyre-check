@@ -216,7 +216,9 @@ module Mode = struct
     | SkipObscure (* Don't treat as obscure *)
     | SkipAnalysis (* Don't analyze at all *)
     | SkipDecoratorWhenInlining
-    | SkipOverrides
+    | SkipOverrides (* Don't analyze any override *)
+    | AnalyzeAllOverrides
+      (* Force analyzing all overrides, regardless of SkipOverrides or maximum overrides *)
     | Entrypoint
     | IgnoreDecorator
     | SkipModelBroadening
@@ -228,6 +230,7 @@ module Mode = struct
     | SkipAnalysis -> Format.fprintf formatter "SkipAnalysis"
     | SkipDecoratorWhenInlining -> Format.fprintf formatter "SkipDecoratorWhenInlining"
     | SkipOverrides -> Format.fprintf formatter "SkipOverrides"
+    | AnalyzeAllOverrides -> Format.fprintf formatter "AnalyzeAllOverrides"
     | Entrypoint -> Format.fprintf formatter "Entrypoint"
     | IgnoreDecorator -> Format.fprintf formatter "IgnoreDecorator"
     | SkipModelBroadening -> Format.fprintf formatter "SkipModelBroadening"
@@ -246,6 +249,7 @@ module Mode = struct
     | "Entrypoint" -> Some Entrypoint
     | "IgnoreDecorator" -> Some IgnoreDecorator
     | "SkipModelBroadening" -> Some SkipModelBroadening
+    | "AnalyzeAllOverrides" -> Some AnalyzeAllOverrides
     | _ -> None
 end
 
@@ -265,14 +269,21 @@ module ModeSet = struct
     Format.fprintf formatter "  Modes: %s" (json_to_string ~indent:"    " (to_json modes))
 
 
-  let join_user_modes left right =
-    let result = join left right in
-    (* If one model has `@SkipObscure` and the other does not, we expect the
-     * joined model to have `@SkipObscure` and not `@Obscure`. *)
-    if contains SkipObscure result then
-      remove Obscure result
-    else
-      result
+  let resolve_conflicting_modes result =
+    let resolve_conflicts ~to_keep ~to_discard result =
+      if contains to_keep result && contains to_discard result then
+        remove to_discard result
+      else
+        result
+    in
+    (* If a mode set has both `to_keep` and `to_discard`, we expect it to keep `to_keep` and discard
+       `to_discard`. *)
+    result
+    |> resolve_conflicts ~to_keep:SkipObscure ~to_discard:Obscure
+    |> resolve_conflicts ~to_keep:AnalyzeAllOverrides ~to_discard:SkipOverrides
+
+
+  let join_user_modes left right = join left right |> resolve_conflicting_modes
 end
 
 type t = {

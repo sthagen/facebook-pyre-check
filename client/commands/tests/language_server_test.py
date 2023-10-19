@@ -1529,10 +1529,7 @@ class DidChangeTest(ApiTestCase):
             features.TelemetryAvailability.DISABLED,
         ):
             querier = server_setup.MockDaemonQuerier()
-            (
-                api,
-                output_writer,
-            ) = server_setup.create_pyre_language_server_api_and_output(
+            setup = server_setup.create_pyre_language_server_api_setup(
                 opened_documents={
                     tracked_path: state.OpenedDocumentState(
                         code=server_setup.DEFAULT_FILE_CONTENTS
@@ -1545,6 +1542,8 @@ class DidChangeTest(ApiTestCase):
                     ),
                 ),
             )
+            api = setup.api
+            output_writer = setup.output_writer
             await api.process_did_change_request(
                 parameters=lsp.DidChangeTextDocumentParameters(
                     text_document=lsp.TextDocumentIdentifier(
@@ -1594,10 +1593,7 @@ class DidChangeTest(ApiTestCase):
                     ),
                 ]
             )
-            (
-                api,
-                output_writer,
-            ) = server_setup.create_pyre_language_server_api_and_output(
+            setup = server_setup.create_pyre_language_server_api_setup(
                 opened_documents={
                     tracked_path: state.OpenedDocumentState(
                         code=unsaved_file_content,
@@ -1611,6 +1607,8 @@ class DidChangeTest(ApiTestCase):
                     ),
                 ),
             )
+            api = setup.api
+            output_writer = setup.output_writer
             await api.process_did_change_request(
                 parameters=lsp.DidChangeTextDocumentParameters(
                     text_document=lsp.TextDocumentIdentifier(
@@ -1670,10 +1668,7 @@ class DidChangeTest(ApiTestCase):
             querier = server_setup.MockDaemonQuerier(
                 mock_type_errors=[],
             )
-            (
-                api,
-                output_writer,
-            ) = server_setup.create_pyre_language_server_api_and_output(
+            setup = server_setup.create_pyre_language_server_api_setup(
                 opened_documents={
                     tracked_path: state.OpenedDocumentState(
                         code=server_setup.DEFAULT_FILE_CONTENTS
@@ -1687,6 +1682,8 @@ class DidChangeTest(ApiTestCase):
                     ),
                 ),
             )
+            api = setup.api
+            output_writer = setup.output_writer
             await api.process_did_change_request(
                 parameters=lsp.DidChangeTextDocumentParameters(
                     text_document=lsp.TextDocumentIdentifier(
@@ -1727,6 +1724,102 @@ class DidChangeTest(ApiTestCase):
                 expectations,
             )
 
+    @setup.async_test
+    async def test_did_change__debounce(self) -> None:
+        unsaved_file_content_list = [f"# some example code {i}" for i in range(3)]
+        tracked_path = Path("/tracked.py")
+        querier = server_setup.MockDaemonQuerier(
+            mock_type_errors=[
+                error.Error(
+                    line=1,
+                    column=1,
+                    stop_line=2,
+                    stop_column=2,
+                    path=Path("/tracked.py"),
+                    code=42,
+                    name="name",
+                    description="description",
+                ),
+            ]
+        )
+        setup = server_setup.create_pyre_language_server_api_setup(
+            opened_documents={
+                tracked_path: state.OpenedDocumentState(
+                    code=unsaved_file_content_list[0],
+                )
+            },
+            querier=querier,
+            server_options=server_setup.create_server_options(
+                language_server_features=features.LanguageServerFeatures(
+                    unsaved_changes=features.UnsavedChangesAvailability.ENABLED,
+                    type_errors=features.TypeErrorsAvailability.ENABLED,
+                    telemetry=features.TelemetryAvailability.ENABLED,
+                ),
+            ),
+        )
+        api = setup.api
+        output_writer = setup.output_writer
+        for i in range(len(unsaved_file_content_list)):
+            await api.process_did_change_request(
+                parameters=lsp.DidChangeTextDocumentParameters(
+                    text_document=lsp.TextDocumentIdentifier(
+                        uri=lsp.DocumentUri.from_file_path(tracked_path).unparse(),
+                    ),
+                    content_changes=[
+                        lsp.ContentChange(text=unsaved_file_content_list[i])
+                    ],
+                ),
+            )
+            setup.server_state.status_tracker.set_status(
+                state.ConnectionStatus.INCREMENTAL_CHECK
+            )
+        self.assertEqual(
+            querier.requests,
+            [
+                # we expect to be able to send only the first request, since the
+                # remaining requests will put the server in a non-ready state
+                {"path": tracked_path, "code": unsaved_file_content_list[0]}
+            ],
+        )
+        expect_diagnostics = self._expect_diagnostics(
+            uri="file:///tracked.py",
+            diagnostics=[
+                lsp.Diagnostic(
+                    range=lsp.LspRange(
+                        start=lsp.LspPosition(line=0, character=1),
+                        end=lsp.LspPosition(line=1, character=2),
+                    ),
+                    message="description",
+                    severity=lsp.DiagnosticSeverity.ERROR,
+                    code=None,
+                    source="Pyre",
+                )
+            ],
+        )
+        expectations = [
+            self._expect_telemetry_event(
+                operation="didChange",
+                result=None,
+            ),
+            expect_diagnostics,
+            self._expect_telemetry_event(
+                operation="typeErrors",
+                result=None,
+            ),
+            self._expect_telemetry_event(
+                operation="didChange",
+                result=None,
+            ),
+            self._expect_telemetry_event(
+                operation="didChange",
+                result=None,
+            ),
+        ]
+        self._assert_output_messages(
+            output_writer,
+            expectations,
+        )
+
 
 class HoverTest(ApiTestCase):
     @setup.async_test
@@ -1747,10 +1840,7 @@ class HoverTest(ApiTestCase):
                     data=expected_response,
                 )
             )
-            (
-                api,
-                output_writer,
-            ) = server_setup.create_pyre_language_server_api_and_output(
+            setup = server_setup.create_pyre_language_server_api_setup(
                 opened_documents={
                     tracked_path: state.OpenedDocumentState(
                         code=server_setup.DEFAULT_FILE_CONTENTS
@@ -1763,6 +1853,8 @@ class HoverTest(ApiTestCase):
                     ),
                 ),
             )
+            api = setup.api
+            output_writer = setup.output_writer
             await api.process_hover_request(
                 parameters=lsp.HoverParameters(
                     text_document=lsp.TextDocumentIdentifier(
@@ -1820,10 +1912,7 @@ class HoverTest(ApiTestCase):
                     data=expected_response,
                 ),
             )
-            (
-                api,
-                output_writer,
-            ) = server_setup.create_pyre_language_server_api_and_output(
+            setup = server_setup.create_pyre_language_server_api_setup(
                 opened_documents={
                     tracked_path: state.OpenedDocumentState(
                         code=server_setup.DEFAULT_FILE_CONTENTS
@@ -1837,6 +1926,8 @@ class HoverTest(ApiTestCase):
                     ),
                 ),
             )
+            api = setup.api
+            output_writer = setup.output_writer
             await api.process_hover_request(
                 parameters=lsp.HoverParameters(
                     text_document=lsp.TextDocumentIdentifier(
@@ -1883,7 +1974,7 @@ class HoverTest(ApiTestCase):
         untracked_path = Path("/not_tracked.py")
         lsp_line = 3
         querier = server_setup.MockDaemonQuerier()
-        api, output_writer = server_setup.create_pyre_language_server_api_and_output(
+        setup = server_setup.create_pyre_language_server_api_setup(
             opened_documents={
                 tracked_path: state.OpenedDocumentState(
                     code=server_setup.DEFAULT_FILE_CONTENTS
@@ -1891,6 +1982,8 @@ class HoverTest(ApiTestCase):
             },
             querier=querier,
         )
+        api = setup.api
+        output_writer = setup.output_writer
         await api.process_hover_request(
             parameters=lsp.HoverParameters(
                 text_document=lsp.TextDocumentIdentifier(
@@ -1937,10 +2030,7 @@ class DefinitionTest(ApiTestCase):
             querier = server_setup.MockDaemonQuerier(
                 mock_definition_response=expected_response,
             )
-            (
-                api,
-                output_writer,
-            ) = server_setup.create_pyre_language_server_api_and_output(
+            setup = server_setup.create_pyre_language_server_api_setup(
                 opened_documents={
                     tracked_path: state.OpenedDocumentState(
                         code=server_setup.DEFAULT_FILE_CONTENTS
@@ -1953,6 +2043,8 @@ class DefinitionTest(ApiTestCase):
                     ),
                 ),
             )
+            api = setup.api
+            output_writer = setup.output_writer
             await api.process_definition_request(
                 parameters=lsp.DefinitionParameters(
                     text_document=lsp.TextDocumentIdentifier(
@@ -2017,10 +2109,7 @@ class DefinitionTest(ApiTestCase):
             querier = server_setup.MockDaemonQuerier(
                 mock_definition_response=expected_response,
             )
-            (
-                api,
-                output_writer,
-            ) = server_setup.create_pyre_language_server_api_and_output(
+            setup = server_setup.create_pyre_language_server_api_setup(
                 opened_documents={
                     tracked_path: state.OpenedDocumentState(
                         code=server_setup.DEFAULT_FILE_CONTENTS
@@ -2034,6 +2123,8 @@ class DefinitionTest(ApiTestCase):
                     ),
                 ),
             )
+            api = setup.api
+            output_writer = setup.output_writer
             await api.process_definition_request(
                 parameters=lsp.DefinitionParameters(
                     text_document=lsp.TextDocumentIdentifier(
@@ -2096,7 +2187,7 @@ class DefinitionTest(ApiTestCase):
         querier = server_setup.MockDaemonQuerier(
             mock_definition_response=expected_telemetry_response,
         )
-        api, output_writer = server_setup.create_pyre_language_server_api_and_output(
+        setup = server_setup.create_pyre_language_server_api_setup(
             opened_documents={
                 tracked_path: state.OpenedDocumentState(
                     code=server_setup.DEFAULT_FILE_CONTENTS
@@ -2110,6 +2201,8 @@ class DefinitionTest(ApiTestCase):
                 ),
             ),
         )
+        api = setup.api
+        output_writer = setup.output_writer
         await api.process_definition_request(
             parameters=lsp.DefinitionParameters(
                 text_document=lsp.TextDocumentIdentifier(
@@ -2153,7 +2246,7 @@ class DefinitionTest(ApiTestCase):
         untracked_path = Path("/not_tracked.py")
         lsp_line = 3
         querier = server_setup.MockDaemonQuerier()
-        api, output_writer = server_setup.create_pyre_language_server_api_and_output(
+        setup = server_setup.create_pyre_language_server_api_setup(
             opened_documents={
                 tracked_path: state.OpenedDocumentState(
                     code=server_setup.DEFAULT_FILE_CONTENTS
@@ -2161,6 +2254,8 @@ class DefinitionTest(ApiTestCase):
             },
             querier=querier,
         )
+        api = setup.api
+        output_writer = setup.output_writer
         await api.process_definition_request(
             parameters=lsp.DefinitionParameters(
                 text_document=lsp.TextDocumentIdentifier(
@@ -2197,7 +2292,7 @@ class DefinitionTest(ApiTestCase):
         querier = server_setup.MockDaemonQuerier(
             mock_definition_response=expected_telemetry_response,
         )
-        api, output_writer = server_setup.create_pyre_language_server_api_and_output(
+        setup = server_setup.create_pyre_language_server_api_setup(
             opened_documents={
                 tracked_path: state.OpenedDocumentState(
                     code=server_setup.DEFAULT_FILE_CONTENTS
@@ -2213,6 +2308,8 @@ class DefinitionTest(ApiTestCase):
             # Pyre daemon not "READY", will serve indexed results
             connection_status=state.ConnectionStatus.STARTING,
         )
+        api = setup.api
+        output_writer = setup.output_writer
         await api.process_definition_request(
             parameters=lsp.DefinitionParameters(
                 text_document=lsp.TextDocumentIdentifier(
@@ -2269,7 +2366,7 @@ class ReferencesTest(ApiTestCase):
         querier = server_setup.MockDaemonQuerier(
             mock_references_response=expected_response,
         )
-        api, output_writer = server_setup.create_pyre_language_server_api_and_output(
+        setup = server_setup.create_pyre_language_server_api_setup(
             opened_documents={
                 tracked_path: state.OpenedDocumentState(
                     code=server_setup.DEFAULT_FILE_CONTENTS
@@ -2277,6 +2374,8 @@ class ReferencesTest(ApiTestCase):
             },
             querier=querier,
         )
+        api = setup.api
+        output_writer = setup.output_writer
         await api.process_find_all_references_request(
             lsp.ReferencesParameters(
                 text_document=lsp.TextDocumentIdentifier(
@@ -2312,7 +2411,7 @@ class ReferencesTest(ApiTestCase):
         untracked_path = Path("/not_tracked.py")
         lsp_line = 3
         querier = server_setup.MockDaemonQuerier()
-        api, output_writer = server_setup.create_pyre_language_server_api_and_output(
+        setup = server_setup.create_pyre_language_server_api_setup(
             opened_documents={
                 tracked_path: state.OpenedDocumentState(
                     code=server_setup.DEFAULT_FILE_CONTENTS
@@ -2320,6 +2419,8 @@ class ReferencesTest(ApiTestCase):
             },
             querier=querier,
         )
+        api = setup.api
+        output_writer = setup.output_writer
         await api.process_find_all_references_request(
             lsp.ReferencesParameters(
                 text_document=lsp.TextDocumentIdentifier(
@@ -2343,10 +2444,7 @@ class DocumentSymbolsTest(ApiTestCase):
             temporary_file.write(b"def foo(x):\n  pass\n")
             temporary_file.flush()
             test_path = Path(temporary_file.name)
-            (
-                api,
-                output_writer,
-            ) = server_setup.create_pyre_language_server_api_and_output(
+            setup = server_setup.create_pyre_language_server_api_setup(
                 opened_documents={
                     test_path: state.OpenedDocumentState(
                         code=server_setup.DEFAULT_FILE_CONTENTS
@@ -2354,6 +2452,8 @@ class DocumentSymbolsTest(ApiTestCase):
                 },
                 querier=server_setup.MockDaemonQuerier(),
             )
+            api = setup.api
+            output_writer = setup.output_writer
             await api.process_document_symbols_request(
                 lsp.DocumentSymbolsParameters(
                     text_document=lsp.TextDocumentIdentifier(uri=test_path.as_uri())

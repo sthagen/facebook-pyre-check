@@ -500,6 +500,7 @@ let run_taint_analysis
   let timer = Timer.start () in
   let maximum_overrides = TaintConfiguration.maximum_overrides_to_analyze taint_configuration in
   let skip_overrides_targets = Registry.skip_overrides initial_models in
+  let analyze_all_overrides_targets = Registry.analyze_all_overrides initial_models in
   let ( {
           Interprocedural.OverrideGraph.override_graph_heap;
           override_graph_shared_memory;
@@ -510,8 +511,9 @@ let run_taint_analysis
     Cache.override_graph
       ~skip_overrides_targets
       ~maximum_overrides
+      ~analyze_all_overrides_targets
       cache
-      (fun ~skip_overrides_targets ~maximum_overrides () ->
+      (fun ~skip_overrides_targets ~maximum_overrides ~analyze_all_overrides_targets () ->
         Interprocedural.OverrideGraph.build_whole_program_overrides
           ~static_analysis_configuration
           ~scheduler
@@ -519,6 +521,7 @@ let run_taint_analysis
           ~include_unit_tests:false
           ~skip_overrides_targets
           ~maximum_overrides
+          ~analyze_all_overrides_targets
           ~qualifiers)
   in
   let override_graph_shared_memory_read_only =
@@ -608,6 +611,7 @@ let run_taint_analysis
       ~attribute_targets
       ~skip_analysis_targets
       ~skip_overrides_targets
+      ~analyze_all_overrides_targets
       ~skipped_overrides
       ~override_graph_shared_memory
       ~initial_callables
