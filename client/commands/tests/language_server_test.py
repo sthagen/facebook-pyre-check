@@ -174,34 +174,6 @@ class BlockingPyreLanguageServer(pyre_language_server.PyreLanguageServerApi):
         raise NotImplementedError()
 
 
-class SourceCodeContextTest(testslide.TestCase):
-    def test_character_at_position(self) -> None:
-        self.assertEqual(
-            pyre_language_server.SourceCodeContext.character_at_position(
-                "", lsp.LspPosition(line=0, character=1)
-            ),
-            None,
-        )
-        self.assertEqual(
-            pyre_language_server.SourceCodeContext.character_at_position(
-                " ", lsp.LspPosition(line=1, character=0)
-            ),
-            None,
-        )
-        self.assertEqual(
-            pyre_language_server.SourceCodeContext.character_at_position(
-                " ", lsp.LspPosition(line=0, character=0)
-            ),
-            " ",
-        )
-        self.assertEqual(
-            pyre_language_server.SourceCodeContext.character_at_position(
-                "\nt", lsp.LspPosition(line=1, character=0)
-            ),
-            "t",
-        )
-
-
 class ReadLspRequestTest(testslide.TestCase):
     @setup.async_test
     async def test_read_lsp_request_success(self) -> None:
@@ -1847,6 +1819,7 @@ class HoverTest(ApiTestCase):
                     )
                 },
                 querier=querier,
+                index_querier=querier,
                 server_options=server_setup.create_server_options(
                     language_server_features=features.LanguageServerFeatures(
                         telemetry=telemetry
@@ -1919,6 +1892,7 @@ class HoverTest(ApiTestCase):
                     )
                 },
                 querier=querier,
+                index_querier=querier,
                 server_options=server_setup.create_server_options(
                     language_server_features=features.LanguageServerFeatures(
                         unsaved_changes=features.UnsavedChangesAvailability.ENABLED,
@@ -2037,6 +2011,7 @@ class DefinitionTest(ApiTestCase):
                     )
                 },
                 querier=querier,
+                index_querier=querier,
                 server_options=server_setup.create_server_options(
                     language_server_features=features.LanguageServerFeatures(
                         telemetry=telemetry
@@ -2116,6 +2091,7 @@ class DefinitionTest(ApiTestCase):
                     )
                 },
                 querier=querier,
+                index_querier=querier,
                 server_options=server_setup.create_server_options(
                     language_server_features=features.LanguageServerFeatures(
                         unsaved_changes=features.UnsavedChangesAvailability.ENABLED,
@@ -2194,6 +2170,7 @@ class DefinitionTest(ApiTestCase):
                 )
             },
             querier=querier,
+            index_querier=querier,
             server_options=server_setup.create_server_options(
                 language_server_features=features.LanguageServerFeatures(
                     definition=features.DefinitionAvailability.SHADOW,
@@ -2253,6 +2230,7 @@ class DefinitionTest(ApiTestCase):
                 )
             },
             querier=querier,
+            index_querier=querier,
         )
         api = setup.api
         output_writer = setup.output_writer
@@ -2299,6 +2277,7 @@ class DefinitionTest(ApiTestCase):
                 )
             },
             querier=querier,
+            index_querier=querier,
             server_options=server_setup.create_server_options(
                 language_server_features=features.LanguageServerFeatures(
                     definition=features.DefinitionAvailability.SHADOW,
@@ -2373,6 +2352,7 @@ class ReferencesTest(ApiTestCase):
                 )
             },
             querier=querier,
+            index_querier=querier,
         )
         api = setup.api
         output_writer = setup.output_writer
@@ -2418,6 +2398,7 @@ class ReferencesTest(ApiTestCase):
                 )
             },
             querier=querier,
+            index_querier=querier,
         )
         api = setup.api
         output_writer = setup.output_writer
@@ -2493,3 +2474,268 @@ class DocumentSymbolsTest(ApiTestCase):
                     )
                 ],
             )
+
+
+class RenameSymbolTest(ApiTestCase):
+    def setUp(self) -> None:
+        self.maxDiff = None
+
+    @setup.async_test
+    async def test_rename_symbol_request(self) -> None:
+        test_code = """
+foo(10)
+foo(20)
+"""
+        tracked_path = Path("/global/root/path/to/foo.py")
+        lsp_line = 1
+        daemon_line = lsp_line + 1
+        test_uri = "file://" + str(tracked_path)
+        test_range1 = lsp.LspRange(
+            start=lsp.LspPosition(line=1, character=0),
+            end=lsp.LspPosition(line=1, character=3),
+        )
+        test_range2 = lsp.LspRange(
+            start=lsp.LspPosition(line=2, character=0),
+            end=lsp.LspPosition(line=2, character=3),
+        )
+        test_text = "test"
+        local_reference_response = [
+            lsp.LspLocation(
+                uri=test_uri,
+                range=test_range1,
+            )
+        ]
+        global_reference_response = [
+            lsp.LspLocation(
+                uri=test_uri,
+                range=test_range2,
+            )
+        ]
+        workspace_edit_response = {
+            "changes": {
+                test_uri: [
+                    lsp.TextEdit(
+                        range=test_range1,
+                        new_text=test_text,
+                    ),
+                    lsp.TextEdit(
+                        range=test_range2,
+                        new_text=test_text,
+                    ),
+                ],
+            }
+        }
+        querier = server_setup.MockDaemonQuerier(
+            mock_references_response=local_reference_response,
+        )
+        index_querier = server_setup.MockDaemonQuerier(
+            mock_references_response=global_reference_response,
+        )
+        setup = server_setup.create_pyre_language_server_api_setup(
+            opened_documents={tracked_path: state.OpenedDocumentState(code=test_code)},
+            querier=querier,
+            index_querier=index_querier,
+        )
+        api = setup.api
+        output_writer = setup.output_writer
+        await api.process_rename_request(
+            lsp.RenameParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(tracked_path).unparse(),
+                ),
+                position=lsp.LspPosition(line=lsp_line, character=2),
+                new_name=test_text,
+            ),
+            request_id=server_setup.DEFAULT_REQUEST_ID,
+        )
+        self.assertEqual(
+            querier.requests,
+            [
+                {
+                    "path": tracked_path,
+                    "position": lsp.PyrePosition(line=daemon_line, character=2),
+                }
+            ],
+        )
+        self._assert_output_messages(
+            output_writer,
+            [
+                self._expect_success_message(
+                    result=lsp.WorkspaceEdit.cached_schema().dump(
+                        workspace_edit_response
+                    ),
+                )
+            ],
+        )
+
+    @setup.async_test
+    async def test_rename_symbol_request_dedupes_references(self) -> None:
+        test_code = """
+foo()
+"""
+        tracked_path = Path("/global/root/path/to/foo.py")
+        lsp_line = 1
+        daemon_line = lsp_line + 1
+        test_uri = "file://" + str(tracked_path)
+        test_range = lsp.LspRange(
+            start=lsp.LspPosition(line=1, character=0),
+            end=lsp.LspPosition(line=1, character=3),
+        )
+        test_text = "test"
+        reference_response = [
+            lsp.LspLocation(
+                uri=test_uri,
+                range=test_range,
+            )
+        ]
+        workspace_edit_response = {
+            "changes": {
+                test_uri: [
+                    lsp.TextEdit(
+                        range=test_range,
+                        new_text=test_text,
+                    ),
+                ],
+            }
+        }
+        querier = server_setup.MockDaemonQuerier(
+            mock_references_response=reference_response,
+        )
+        index_querier = server_setup.MockDaemonQuerier(
+            mock_references_response=reference_response,
+        )
+        setup = server_setup.create_pyre_language_server_api_setup(
+            opened_documents={tracked_path: state.OpenedDocumentState(code=test_code)},
+            querier=querier,
+            index_querier=index_querier,
+        )
+        api = setup.api
+        output_writer = setup.output_writer
+        await api.process_rename_request(
+            lsp.RenameParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(tracked_path).unparse(),
+                ),
+                position=lsp.LspPosition(line=lsp_line, character=2),
+                new_name=test_text,
+            ),
+            request_id=server_setup.DEFAULT_REQUEST_ID,
+        )
+        self.assertEqual(
+            querier.requests,
+            [
+                {
+                    "path": tracked_path,
+                    "position": lsp.PyrePosition(line=daemon_line, character=2),
+                }
+            ],
+        )
+        self._assert_output_messages(
+            output_writer,
+            [
+                self._expect_success_message(
+                    result=lsp.WorkspaceEdit.cached_schema().dump(
+                        workspace_edit_response
+                    ),
+                )
+            ],
+        )
+
+    @setup.async_test
+    async def test_rename_symbol_filters_incorrect_references(self) -> None:
+        local_test_code = """
+def foo(x:int) -> None:
+    print(x)
+
+foo(10)
+"""
+        local_test_range_1 = lsp.LspRange(
+            start=lsp.LspPosition(line=1, character=4),
+            end=lsp.LspPosition(line=1, character=7),
+        )
+        local_test_range_2 = lsp.LspRange(
+            start=lsp.LspPosition(line=4, character=0),
+            end=lsp.LspPosition(line=4, character=3),
+        )
+        test_text = "test"
+        querier = server_setup.MockDaemonQuerier(
+            mock_references_response=[
+                lsp.LspLocation(
+                    uri="file:///global/root/path/to/foo.py",
+                    range=local_test_range_1,
+                ),
+                lsp.LspLocation(
+                    uri="file:///global/root/path/to/foo.py",
+                    range=local_test_range_2,
+                ),
+            ],
+        )
+        index_querier = server_setup.MockDaemonQuerier(
+            mock_references_response=[
+                lsp.LspLocation(
+                    uri="file:///global/root/path/to/bar.py",
+                    range=lsp.LspRange(
+                        start=lsp.LspPosition(line=0, character=0),
+                        end=lsp.LspPosition(line=0, character=3),
+                    ),
+                )
+            ],
+        )
+        setup = server_setup.create_pyre_language_server_api_setup(
+            opened_documents={
+                Path("/global/root/path/to/foo.py"): state.OpenedDocumentState(
+                    code=local_test_code
+                ),
+                Path("/global/root/path/to/bar.py"): state.OpenedDocumentState(
+                    code="bar"
+                ),
+            },
+            querier=querier,
+            index_querier=index_querier,
+        )
+        api = setup.api
+        output_writer = setup.output_writer
+        await api.process_rename_request(
+            lsp.RenameParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(
+                        Path("/global/root/path/to/foo.py")
+                    ).unparse(),
+                ),
+                position=lsp.LspPosition(line=4, character=2),
+                new_name=test_text,
+            ),
+            request_id=server_setup.DEFAULT_REQUEST_ID,
+        )
+        self.assertEqual(
+            querier.requests,
+            [
+                {
+                    "path": Path("/global/root/path/to/foo.py"),
+                    "position": lsp.PyrePosition(line=5, character=2),
+                }
+            ],
+        )
+
+        expected = server_setup.success_response_json(
+            result=lsp.WorkspaceEdit.cached_schema().dump(
+                {
+                    "changes": {
+                        "file:///global/root/path/to/foo.py": [
+                            lsp.TextEdit(
+                                range=local_test_range_2,
+                                new_text=test_text,
+                            ),
+                            lsp.TextEdit(
+                                range=local_test_range_1,
+                                new_text=test_text,
+                            ),
+                        ],
+                    }
+                }
+            ),
+        )
+        actual = server_setup.extract_json_from_json_rpc_message(
+            output_writer.items()[0]
+        )
+        self._assert_json_equal(actual, expected)

@@ -20,9 +20,10 @@ import dataclasses
 import json
 import logging
 import random
+from collections import defaultdict
 from pathlib import Path
 from typing import (
-    ClassVar,
+    DefaultDict,
     Dict,
     Generic,
     List,
@@ -36,13 +37,15 @@ from typing import (
 from .. import background_tasks, identifiers, json_rpc, log, timer
 
 from ..language_server import connections, daemon_connection, features, protocol as lsp
-from . import commands, daemon_querier, find_symbols, server_state as state
+from . import commands, daemon_querier, find_symbols, libcst_util, server_state as state
 
 from .daemon_querier import DaemonQuerierSource
 
 from .daemon_query import DaemonQueryFailure
 
 from .server_state import OpenedDocumentState
+
+from .source_code_context import SourceCodeContext
 
 if TYPE_CHECKING:
     from .. import type_error_handler
@@ -94,49 +97,6 @@ async def _wait_for_exit(
 
 def daemon_failure_string(operation: str, type_string: str, error_message: str) -> str:
     return f"For {operation} request, encountered failure response of type: {type_string}, error_message: {error_message}"
-
-
-@dataclasses.dataclass(frozen=True)
-class SourceCodeContext:
-
-    MAX_LINES_BEFORE_OR_AFTER: ClassVar[int] = 2500
-
-    @staticmethod
-    def from_source_and_position(
-        source: str,
-        position: lsp.LspPosition,
-        max_lines_before_or_after: int = MAX_LINES_BEFORE_OR_AFTER,
-    ) -> Optional[str]:
-        lines = source.splitlines()
-        line_number = position.line
-
-        if line_number >= len(lines):
-            return None
-
-        full_document_contents = source.splitlines()
-        lower_line_number = max(position.line - max_lines_before_or_after, 0)
-        higher_line_number = min(
-            position.line + max_lines_before_or_after + 1,
-            len(full_document_contents),
-        )
-        return "\n".join(full_document_contents[lower_line_number:higher_line_number])
-
-    @staticmethod
-    def character_at_position(
-        source: str,
-        position: lsp.LspPosition,
-    ) -> Optional[str]:
-        lines = source.splitlines()
-
-        if (
-            position.line >= len(lines)
-            or position.line < 0
-            or position.character < 0
-            or position.character >= len(lines[position.line])
-        ):
-            return None
-
-        return lines[position.line][position.character]
 
 
 QueryResultType = TypeVar("QueryResultType")
@@ -675,7 +635,8 @@ class PyreLanguageServer(PyreLanguageServerApi):
         hover_timer = timer.Timer()
 
         await self.update_overlay_if_needed(document_path)
-        result = await self.querier.get_hover(
+        # TODO Bring out the state logic and use regular querier
+        result = await self.index_querier.get_hover(
             path=document_path,
             position=parameters.position.to_pyre_position(),
         )
@@ -738,7 +699,8 @@ class PyreLanguageServer(PyreLanguageServerApi):
         overall_timer = timer.Timer()
         overlay_update_duration = await self.update_overlay_if_needed(document_path)
         query_timer = timer.Timer()
-        raw_result = await self.querier.get_definition_locations(
+        # TODO Bring out the state logic and use regular querier
+        raw_result = await self.index_querier.get_definition_locations(
             path=document_path,
             position=position.to_pyre_position(),
         )
@@ -994,7 +956,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
             )
             return
 
-        reference_locations = await self.querier.get_reference_locations(
+        reference_locations = await self.index_querier.get_reference_locations(
             path=document_path,
             position=parameters.position.to_pyre_position(),
         )
@@ -1092,7 +1054,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
         daemon_status_before = self.server_state.status_tracker.get_status()
         request_timer = timer.Timer()
 
-        call_hierarchy_items = await self.querier.get_call_hierarchy_from_item(
+        call_hierarchy_items = await self.index_querier.get_call_hierarchy_from_item(
             path=document_path,
             call_hierarchy_item=parameters.item,
             relation_direction=lsp.PyreCallHierarchyRelationDirection.PARENT,
@@ -1165,7 +1127,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
         daemon_status_before = self.server_state.status_tracker.get_status()
         request_timer = timer.Timer()
 
-        call_hierarchy_items = await self.querier.get_call_hierarchy_from_item(
+        call_hierarchy_items = await self.index_querier.get_call_hierarchy_from_item(
             path=document_path,
             call_hierarchy_item=parameters.item,
             relation_direction=lsp.PyreCallHierarchyRelationDirection.CHILD,
@@ -1222,6 +1184,66 @@ class PyreLanguageServer(PyreLanguageServerApi):
             activity_key,
         )
 
+    def filter_references(
+        self,
+        document_path: Path,
+        position: lsp.PyrePosition,
+        references: List[lsp.LspLocation],
+    ) -> List[lsp.LspLocation]:
+        """
+        Removes extra/erroneous references by:
+        1. Deduping references with identical LspRange
+            a. References from an index will overlap with references locally calculated.
+        2. Filtering out references that don't point to the same symbol
+            a. References from an index can be stale and mispoint.
+        """
+        deduped_references = list(set(references))
+        code_text = self.server_state.opened_documents[document_path].code
+        global_root = (
+            self.server_state.server_options.start_arguments.base_arguments.global_root
+        )
+        symbol_range = libcst_util.find_symbol_range(
+            document_path,
+            Path(global_root),
+            code_text,
+            position,
+        )
+        LOG.debug(f"symbol_range: {symbol_range}")
+        text_at_range = SourceCodeContext.text_at_range(code_text, symbol_range)
+        LOG.debug(f"text_at_range: {text_at_range}")
+        filtered_references = []
+        for reference in deduped_references:
+            destination_filepath = Path(lsp.DocumentUri.parse(reference.uri).path)
+            if destination_filepath in self.server_state.opened_documents:
+                code_text = self.server_state.opened_documents[
+                    destination_filepath
+                ].code
+            else:
+                # Annoying workaround to handle files that are not opened yet.
+                # Daemon fetches it by reading, whereas the LS reads in code from
+                # didChange/didOpen requests. For files we didn't receive requests
+                # for, we need to open the file and read it ourselves.
+                # @lint-ignore FIXIT1
+                with open(destination_filepath, "r") as f:
+                    code_text = f.read()
+                    self.server_state.opened_documents[
+                        destination_filepath
+                    ] = OpenedDocumentState(
+                        code=code_text,
+                        is_dirty=False,
+                        pyre_code_updated=True,
+                    )
+            text_to_replace = SourceCodeContext.text_at_range(
+                code_text, reference.range
+            )
+            if text_to_replace == text_at_range:
+                filtered_references.append(reference)
+            else:
+                LOG.info(
+                    f"Filtering out reference {reference} because it doesn't match text at symbol range: {text_to_replace}"
+                )
+        return filtered_references
+
     async def process_rename_request(
         self,
         parameters: lsp.RenameParameters,
@@ -1237,27 +1259,64 @@ class PyreLanguageServer(PyreLanguageServerApi):
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
-        rename_edits = await self.querier.get_rename(
-            document_path,
-            parameters.position.to_pyre_position(),
-            parameters.new_name,
+
+        references: List[lsp.LspLocation] = []
+        references_responses = await asyncio.gather(
+            self.querier.get_reference_locations(
+                document_path, parameters.position.to_pyre_position()
+            ),
+            self.index_querier.get_reference_locations(
+                document_path, parameters.position.to_pyre_position()
+            ),
         )
-        error_message = None
-        if isinstance(rename_edits, DaemonQueryFailure):
+
+        local_references = references_responses[0]
+        local_references_error_message = None
+        local_references_count = 0
+        if isinstance(local_references, DaemonQueryFailure):
             LOG.info(
                 daemon_failure_string(
-                    "rename",
-                    str(type(rename_edits)),
-                    rename_edits.error_message,
+                    "querier.get_reference_locations",
+                    str(type(local_references)),
+                    local_references.error_message,
                 )
             )
-            error_message = rename_edits.error_message
+            local_references_error_message = local_references.error_message
+        else:
+            LOG.info(f"Local references: {local_references}")
+            references.extend(local_references)
+            local_references_count = len(local_references)
 
-        raw_response = (
-            None
-            if rename_edits is None
-            else lsp.WorkspaceEdit.cached_schema().dump(rename_edits)
+        global_references = references_responses[1]
+        global_references_error_message = None
+        global_references_count = 0
+        if isinstance(global_references, DaemonQueryFailure):
+            LOG.info(
+                daemon_failure_string(
+                    "index_querier.get_reference_locations",
+                    str(type(global_references)),
+                    global_references.error_message,
+                )
+            )
+            global_references_error_message = global_references.error_message
+        else:
+            LOG.info(f"Global references: {global_references}")
+            references.extend(global_references)
+            global_references_count = len(global_references)
+
+        deduped_references = self.filter_references(
+            document_path, parameters.position.to_pyre_position(), references
         )
+
+        changes: DefaultDict[str, List[lsp.TextEdit]] = defaultdict(list)
+        for reference in deduped_references:
+            changes[reference.uri].append(
+                lsp.TextEdit(reference.range, parameters.new_name)
+            )
+
+        rename_edits = lsp.WorkspaceEdit(changes=changes)
+
+        raw_response = lsp.WorkspaceEdit.cached_schema().dump(rename_edits)
         LOG.info(f"Rename response: {raw_response}")
 
         await lsp.write_json_rpc(
@@ -1272,12 +1331,14 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 "operation": "rename",
                 "filepath": str(document_path),
                 "non_empty": rename_edits is not None,
+                "local_references_count": local_references_count,
+                "global_references_count": global_references_count,
                 "response": raw_response,
                 "duration_ms": request_timer.stop_in_millisecond(),
                 "server_state_open_documents_count": len(
                     self.server_state.opened_documents
                 ),
-                "error_message": error_message,
+                "error_message": f"local:{local_references_error_message}, global:{global_references_error_message}",
                 **daemon_status_before.as_telemetry_dict(),
             },
             activity_key,
