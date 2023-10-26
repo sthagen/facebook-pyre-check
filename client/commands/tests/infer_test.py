@@ -439,7 +439,7 @@ class ModuleAnnotationTest(testslide.TestCase):
             infer_output=infer.RawInferOutputForPath(qualifier=default_qualifier),
             options=default_options,
             expected=infer.ModuleAnnotations(
-                path=default_path, options=default_options
+                qualifier=default_qualifier, path=default_path, options=default_options
             ),
         )
 
@@ -467,6 +467,7 @@ class ModuleAnnotationTest(testslide.TestCase):
             ),
             options=default_options,
             expected=infer.ModuleAnnotations(
+                qualifier=default_qualifier,
                 path=default_path,
                 options=default_options,
                 functions=[
@@ -513,6 +514,7 @@ class ModuleAnnotationTest(testslide.TestCase):
             ),
             options=default_options,
             expected=infer.ModuleAnnotations(
+                qualifier=default_qualifier,
                 path=default_path,
                 options=default_options,
                 globals_=[
@@ -561,6 +563,7 @@ class ModuleAnnotationTest(testslide.TestCase):
             ),
             options=default_options,
             expected=infer.ModuleAnnotations(
+                qualifier=default_qualifier,
                 path=default_path,
                 options=default_options,
             ),
@@ -586,6 +589,7 @@ class ModuleAnnotationTest(testslide.TestCase):
             ),
             options=annotate_attribute_options,
             expected=infer.ModuleAnnotations(
+                qualifier=default_qualifier,
                 path=default_path,
                 options=annotate_attribute_options,
                 attributes=[
@@ -721,6 +725,7 @@ class ModuleAnnotationTest(testslide.TestCase):
     def test_module_annotation_stubs_path(self) -> None:
         self.assertEqual(
             infer.ModuleAnnotations(
+                qualifier="derp",
                 path="derp.py",
                 options=infer.StubGenerationOptions(),
             ).stubs_path(Path("/root")),
@@ -1307,9 +1312,6 @@ class StubGenerationTest(testslide.TestCase):
         )
 
     def test_stubs_attributes__full_path_but_does_not_match_qualifier(self) -> None:
-        """TODO(T164419913): If the path differs from the qualifier, we
-        spuriously consider the class to be "nested" and ignore it
-        completely."""
         self._assert_stubs(
             {
                 "attributes": [
@@ -1317,6 +1319,27 @@ class StubGenerationTest(testslide.TestCase):
                         "annotation": "int",
                         "name": "some_attribute",
                         "parent": "foo.bar.test.Foo",
+                    }
+                ],
+            },
+            """\
+            class Foo:
+                some_attribute: int = ...
+            """,
+            annotate_attributes=True,
+            root="/root",
+            test_path="/root/extra_module/foo/bar/test.py",
+            qualifier="foo.bar.test",
+        )
+
+    def test_stubs_attributes__nested_class_is_ignored(self) -> None:
+        self._assert_stubs(
+            {
+                "attributes": [
+                    {
+                        "annotation": "int",
+                        "name": "some_attribute",
+                        "parent": "foo.bar.test.Foo.MyNestedClass",
                     }
                 ],
             },

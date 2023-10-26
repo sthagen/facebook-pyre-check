@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, TypeVar, Union
 
@@ -43,6 +44,7 @@ from ..libcst_vendored_visitors import ApplyTypeAnnotationsVisitor
 from . import commands, start
 
 LOG: logging.Logger = logging.getLogger(__name__)
+MAX_NESTED_CLASS_STRING_LENGTH: int = 1000
 
 
 @dataclasses.dataclass(frozen=True)
@@ -463,6 +465,7 @@ class AttributeAnnotation(FieldAnnotation):
 
 @dataclasses.dataclass(frozen=True)
 class ModuleAnnotations:
+    qualifier: str
     path: str
     options: StubGenerationOptions
     globals_: List[GlobalAnnotation] = dataclasses.field(default_factory=list)
@@ -487,6 +490,7 @@ class ModuleAnnotations:
             )
 
         return ModuleAnnotations(
+            qualifier=infer_output.qualifier,
             path=path,
             globals_=[
                 GlobalAnnotation(
@@ -556,12 +560,6 @@ class ModuleAnnotations:
     def _indent(stub: str) -> str:
         return "    " + stub.replace("\n", "\n    ")
 
-    def _relativize(self, parent: str) -> Sequence[str]:
-        path = (
-            str(self.path).split(".", 1)[0].replace("/", ".").replace(".__init__", "")
-        )
-        return parent.replace(path, "", 1).strip(".").split(".")
-
     @property
     def classes(self) -> Dict[str, List[Union[AttributeAnnotation, MethodAnnotation]]]:
         """
@@ -575,16 +573,21 @@ class ModuleAnnotations:
         ```
         """
         classes: Dict[str, List[Union[AttributeAnnotation, MethodAnnotation]]] = {}
-        nested_class_count = 0
+        nested_classes = set()
         for annotation in [*self.attributes, *self.methods]:
-            parent = self._relativize(annotation.parent)
-            if len(parent) == 1:
-                classes.setdefault(parent[0], []).append(annotation)
+            relative_parent_class = annotation.parent.removeprefix(self.qualifier + ".")
+            if "." in relative_parent_class:
+                nested_classes.add(relative_parent_class)
             else:
-                nested_class_count += 1
-        if nested_class_count > 0:
+                classes.setdefault(relative_parent_class, []).append(annotation)
+        if len(nested_classes) > 0:
+            nested_classes_string = textwrap.shorten(
+                ", ".join(sorted(nested_classes)),
+                width=MAX_NESTED_CLASS_STRING_LENGTH,
+                placeholder="...",
+            )
             LOG.warning(
-                f"In file {self.path}, ignored {nested_class_count} nested classes"
+                f"In file {self.path}, ignored {len(nested_classes)} nested classes: {nested_classes_string}"
             )
         return classes
 
