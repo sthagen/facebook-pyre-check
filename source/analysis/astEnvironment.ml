@@ -38,73 +38,226 @@ module ParserError = struct
   [@@deriving sexp, compare, hash]
 end
 
-let create_source ~typecheck_flags ~module_path statements =
-  Source.create_from_module_path
-    ~collect_format_strings_with_ignores:Visit.collect_format_strings_with_ignores
-    ~typecheck_flags
-    ~module_path
-    statements
+module IncomingDataComputation = struct
+  module Queries = struct
+    type t = { get_raw_code: ModulePath.t -> (string, string) Result.t }
+  end
+
+  let create_source ~typecheck_flags ~module_path statements =
+    Source.create_from_module_path
+      ~collect_format_strings_with_ignores:Visit.collect_format_strings_with_ignores
+      ~typecheck_flags
+      ~module_path
+      statements
 
 
-let wildcard_exports_of ({ Source.module_path = { ModulePath.is_stub; _ }; _ } as source) =
-  let open Expression in
-  let open UnannotatedGlobal in
-  let extract_dunder_all = function
-    | {
-        Collector.Result.name = "__all__";
-        unannotated_global =
-          SimpleAssign { value = { Node.value = Expression.(List names | Tuple names); _ }; _ };
-      } ->
-        let to_identifier = function
-          | { Node.value = Expression.Constant (Constant.String { value = name; _ }); _ } ->
-              Some name
-          | _ -> None
-        in
-        Some (List.filter_map ~f:to_identifier names)
-    | _ -> None
-  in
-  let unannotated_globals = Collector.from_source source in
-  match List.find_map unannotated_globals ~f:extract_dunder_all with
-  | Some names -> names |> List.dedup_and_sort ~compare:Identifier.compare
-  | _ ->
-      let unannotated_globals =
-        (* Stubs have a slightly different rule with re-export *)
-        let filter_unaliased_import = function
-          | {
-              Collector.Result.unannotated_global =
-                Imported
-                  (ImportEntry.Module { implicit_alias; _ } | ImportEntry.Name { implicit_alias; _ });
-              _;
-            } ->
-              not implicit_alias
-          | _ -> true
-        in
-        if is_stub then
-          List.filter unannotated_globals ~f:filter_unaliased_import
-        else
-          unannotated_globals
+  let create_parse_error
+      ~configuration
+      ~typecheck_flags
+      ~module_path
+      ~line
+      ~column
+      ~end_line
+      ~end_column
+      ~message
+      ()
+    =
+    let is_suppressed =
+      let { Source.TypecheckFlags.local_mode; ignore_codes; _ } = typecheck_flags in
+      match Source.mode ~configuration ~local_mode with
+      | Source.Declare -> true
+      | _ ->
+          (* NOTE: The number needs to be updated when the error code changes. *)
+          List.exists ignore_codes ~f:(Int.equal 404)
+    in
+    let location =
+      (* CPython set line/column number to -1 in some exceptional cases. *)
+      let replace_invalid_position number = if number <= 0 then 1 else number in
+      let start =
+        { Location.line = replace_invalid_position line; column = replace_invalid_position column }
       in
-      List.map unannotated_globals ~f:(fun { Collector.Result.name; _ } -> name)
-      |> List.filter ~f:(fun name -> not (String.is_prefix name ~prefix:"_"))
-      |> List.dedup_and_sort ~compare:Identifier.compare
+      let stop =
+        (* Work around CPython bug where the end location sometimes precedes start location. *)
+        if [%compare: int * int] (line, column) (end_line, end_column) > 0 then
+          start
+        else
+          {
+            Location.line = replace_invalid_position end_line;
+            column = replace_invalid_position end_column;
+          }
+      in
+      { Location.start; stop }
+    in
+    ParserError.{ location; message; is_suppressed; module_path }
 
 
-module ReadOnly = struct
-  type t = {
-    module_tracker: ModuleTracker.ReadOnly.t;
-    get_raw_source:
-      ?dependency:SharedMemoryKeys.DependencyKey.registered ->
-      Reference.t ->
-      (Source.t, ParserError.t) Result.t option;
-  }
+  let parse_raw_code_with_cpython
+      ~configuration:({ Configuration.Analysis.enable_type_comments; _ } as configuration)
+      ({ ModulePath.qualifier; _ } as module_path)
+      raw_code
+    =
+    let parse context =
+      let typecheck_flags =
+        Source.TypecheckFlags.parse ~qualifier (String.split raw_code ~on:'\n')
+      in
+      match
+        PyreNewParser.parse_module ~enable_type_comment:enable_type_comments ~context raw_code
+      with
+      | Ok statements -> Ok (create_source ~typecheck_flags ~module_path statements)
+      | Error { PyreNewParser.Error.line; column; end_line; end_column; message } ->
+          Error
+            (create_parse_error
+               ~configuration
+               ~typecheck_flags
+               ~module_path
+               ~line
+               ~column
+               ~end_line
+               ~end_column
+               ~message
+               ())
+    in
+    PyreNewParser.with_context parse
 
-  let module_tracker { module_tracker; _ } = module_tracker
 
-  let controls environment = module_tracker environment |> ModuleTracker.ReadOnly.controls
+  let parse_raw_code_with_errpy ~configuration ({ ModulePath.qualifier; _ } as module_path) raw_code
+    =
+    let timer = Timer.start () in
+    let log_errpy_ok ~recovered_count =
+      let integers = ["recovered_count", recovered_count] in
+      let normals =
+        match recovered_count with
+        | 0 -> []
+        | _ -> (
+            match Int.equal (Random.int 100) 0 with
+            | false -> []
+            | true ->
+                (*so as to avoid a torrent of data we only log 1/100 of the sources where there is
+                  error recovery for the purposes of error recovery quality management *)
+                ["raw_code", raw_code])
+      in
+      Statistics.errpy_call ~flush:false ~name:"ok" ~timer ~integers ~normals ()
+    in
+    let log_errpy_error ~error_string =
+      Statistics.errpy_call
+        ~flush:true
+        ~name:"error"
+        ~timer
+        ~integers:[]
+        ~normals:["raw_code", raw_code; "error", error_string]
+        ()
+    in
+    let typecheck_flags = Source.TypecheckFlags.parse ~qualifier (String.split raw_code ~on:'\n') in
+    match PyreErrpyParser.parse_module raw_code with
+    | Ok statements ->
+        log_errpy_ok ~recovered_count:0;
+        Ok (create_source ~typecheck_flags ~module_path statements)
+    | Error parserError -> (
+        match parserError with
+        | Recoverable recoverable ->
+            log_errpy_ok ~recovered_count:(List.length recoverable.errors);
+            Ok (create_source ~typecheck_flags ~module_path recoverable.recovered_ast)
+        | Unrecoverable error_string ->
+            log_errpy_error ~error_string;
+            Error
+              (create_parse_error
+                 ~configuration
+                 ~typecheck_flags
+                 ~module_path
+                 ~line:1
+                 ~column:1
+                 ~end_line:1
+                 ~end_column:1
+                 ~message:error_string
+                 ()))
 
-  let get_raw_source { get_raw_source; _ } = get_raw_source
 
-  let expand_wildcard_imports ?dependency environment source =
+  let load_and_parse ~controls Queries.{ get_raw_code; _ } module_path =
+    let configuration = EnvironmentControls.configuration controls in
+    let parse_raw_code =
+      match configuration with
+      | { use_errpy_parser = false; _ } -> parse_raw_code_with_cpython
+      | _ -> parse_raw_code_with_errpy
+    in
+    let post_process_source source =
+      let EnvironmentControls.PythonVersionInfo.{ major_version; minor_version; micro_version } =
+        EnvironmentControls.python_version_info controls
+      in
+      Preprocessing.replace_version_specific_code
+        ~major_version
+        ~minor_version
+        ~micro_version
+        source
+      |> Preprocessing.preprocess_phase0
+    in
+    match get_raw_code module_path with
+    | Ok raw_code ->
+        parse_raw_code ~configuration module_path raw_code |> Result.map ~f:post_process_source
+    | Error message ->
+        Error
+          ParserError.
+            {
+              location =
+                {
+                  Location.start = { Location.line = 1; column = 1 };
+                  stop = { Location.line = 1; column = 1 };
+                };
+              message;
+              is_suppressed = false;
+              module_path;
+            }
+end
+
+module OutgoingDataComputation = struct
+  module Queries = struct
+    type t = { get_raw_source: Reference.t -> (Source.t, ParserError.t) Result.t option }
+  end
+
+  let wildcard_exports_of ({ Source.module_path = { ModulePath.is_stub; _ }; _ } as source) =
+    let open Expression in
+    let open UnannotatedGlobal in
+    let extract_dunder_all = function
+      | {
+          Collector.Result.name = "__all__";
+          unannotated_global =
+            SimpleAssign { value = { Node.value = Expression.(List names | Tuple names); _ }; _ };
+        } ->
+          let to_identifier = function
+            | { Node.value = Expression.Constant (Constant.String { value = name; _ }); _ } ->
+                Some name
+            | _ -> None
+          in
+          Some (List.filter_map ~f:to_identifier names)
+      | _ -> None
+    in
+    let unannotated_globals = Collector.from_source source in
+    match List.find_map unannotated_globals ~f:extract_dunder_all with
+    | Some names -> names |> List.dedup_and_sort ~compare:Identifier.compare
+    | _ ->
+        let unannotated_globals =
+          (* Stubs have a slightly different rule with re-export *)
+          let filter_unaliased_import = function
+            | {
+                Collector.Result.unannotated_global =
+                  Imported
+                    ( ImportEntry.Module { implicit_alias; _ }
+                    | ImportEntry.Name { implicit_alias; _ } );
+                _;
+              } ->
+                not implicit_alias
+            | _ -> true
+          in
+          if is_stub then
+            List.filter unannotated_globals ~f:filter_unaliased_import
+          else
+            unannotated_globals
+        in
+        List.map unannotated_globals ~f:(fun { Collector.Result.name; _ } -> name)
+        |> List.filter ~f:(fun name -> not (String.is_prefix name ~prefix:"_"))
+        |> List.dedup_and_sort ~compare:Identifier.compare
+
+
+  let expand_wildcard_imports Queries.{ get_raw_source; _ } source =
     let open Statement in
     let module Transform = Transform.MakeStatementTransformer (struct
       include Transform.Identity
@@ -137,7 +290,7 @@ module ReadOnly = struct
                 match Hash_set.strict_add visited_modules qualifier with
                 | Error _ -> ()
                 | Ok () -> (
-                    match get_raw_source environment ?dependency qualifier with
+                    match get_raw_source qualifier with
                     | None
                     | Some (Result.Error _) ->
                         ()
@@ -181,17 +334,17 @@ module ReadOnly = struct
     Transform.transform () source |> Transform.source
 
 
-  let get_processed_source environment ?dependency qualifier =
+  let get_processed_source (Queries.{ get_raw_source; _ } as queries) qualifier =
     let preprocessing = Preprocessing.preprocess_phase1 in
     (* Preprocessing a module depends on the module itself is implicitly assumed in `update`. No
        need to explicitly record the dependency. *)
-    get_raw_source environment ?dependency:None qualifier
+    get_raw_source qualifier
     >>| function
     | Result.Ok source ->
-        expand_wildcard_imports ?dependency environment source
+        expand_wildcard_imports queries source
         |> preprocessing
         |> DecoratorPreprocessing.preprocess_source ~get_source:(fun qualifier ->
-               get_raw_source ?dependency environment qualifier >>= Result.ok)
+               get_raw_source qualifier >>= Result.ok)
     | Result.Error
         {
           ParserError.module_path =
@@ -202,7 +355,39 @@ module ReadOnly = struct
         let fallback_source = ["import typing"; "def __getattr__(name: str) -> typing.Any: ..."] in
         let typecheck_flags = Source.TypecheckFlags.parse ~qualifier fallback_source in
         let statements = Parser.parse_exn ~relative fallback_source in
-        create_source ~typecheck_flags ~module_path statements |> preprocessing
+        IncomingDataComputation.create_source ~typecheck_flags ~module_path statements
+        |> preprocessing
+end
+
+module ReadOnly = struct
+  type t = {
+    module_tracker: ModuleTracker.ReadOnly.t;
+    get_raw_source:
+      ?dependency:SharedMemoryKeys.DependencyKey.registered ->
+      Reference.t ->
+      (Source.t, ParserError.t) Result.t option;
+  }
+
+  let module_tracker { module_tracker; _ } = module_tracker
+
+  let controls environment = module_tracker environment |> ModuleTracker.ReadOnly.controls
+
+  let get_raw_source { get_raw_source; _ } = get_raw_source
+
+  let get_processed_source environment ?dependency qualifier =
+    (* The fact that preprocessing a module depends on the module itself is implicitly assumed in
+       `update`. No need to explicitly record the dependency. But we do need to record all other
+       modules used *)
+    let get_raw_source_and_maybe_track qualifier_to_load =
+      let maybe_dependency =
+        if Reference.equal qualifier_to_load qualifier then None else dependency
+      in
+      get_raw_source environment ?dependency:maybe_dependency qualifier_to_load
+    in
+    let queries =
+      OutgoingDataComputation.Queries.{ get_raw_source = get_raw_source_and_maybe_track }
+    in
+    OutgoingDataComputation.get_processed_source queries qualifier
 end
 
 module UpdateResult = struct
@@ -266,199 +451,17 @@ module FromReadOnlyUpstream = struct
 
   let create module_tracker = { module_tracker; raw_sources = RawSources.create () }
 
-  type parse_result =
-    | Success of Source.t
-    | Error of {
-        location: Location.t;
-        message: string;
-        is_suppressed: bool;
-      }
-
-  let create_parse_result
-      ~configuration
-      ~typecheck_flags
-      ~line
-      ~column
-      ~end_line
-      ~end_column
-      ~message
-      ()
-    =
-    let is_suppressed =
-      let { Source.TypecheckFlags.local_mode; ignore_codes; _ } = typecheck_flags in
-      match Source.mode ~configuration ~local_mode with
-      | Source.Declare -> true
-      | _ ->
-          (* NOTE: The number needs to be updated when the error code changes. *)
-          List.exists ignore_codes ~f:(Int.equal 404)
-    in
-    let location =
-      (* CPython set line/column number to -1 in some exceptional cases. *)
-      let replace_invalid_position number = if number <= 0 then 1 else number in
-      let start =
-        { Location.line = replace_invalid_position line; column = replace_invalid_position column }
-      in
-      let stop =
-        (* Work around CPython bug where the end location sometimes precedes start location. *)
-        if [%compare: int * int] (line, column) (end_line, end_column) > 0 then
-          start
-        else
-          {
-            Location.line = replace_invalid_position end_line;
-            column = replace_invalid_position end_column;
-          }
-      in
-      { Location.start; stop }
-    in
-    Error { location; message; is_suppressed }
-
-
-  let parse_source_with_cpython
-      ~configuration:({ Configuration.Analysis.enable_type_comments; _ } as configuration)
-      ~context
-      ~module_tracker
-      ({ ModulePath.qualifier; _ } as module_path)
-    =
-    let parse raw_code =
-      let typecheck_flags =
-        Source.TypecheckFlags.parse ~qualifier (String.split raw_code ~on:'\n')
-      in
-      match
-        PyreNewParser.parse_module ~enable_type_comment:enable_type_comments ~context raw_code
-      with
-      | Ok statements -> Success (create_source ~typecheck_flags ~module_path statements)
-      | Error { PyreNewParser.Error.line; column; end_line; end_column; message } ->
-          create_parse_result
-            ~configuration
-            ~typecheck_flags
-            ~line
-            ~column
-            ~end_line
-            ~end_column
-            ~message
-            ()
-    in
-    match ModuleTracker.ReadOnly.get_raw_code module_tracker module_path with
-    | Ok raw_code -> parse raw_code
-    | Error message ->
-        Error
-          {
-            location =
-              {
-                Location.start = { Location.line = 1; column = 1 };
-                stop = { Location.line = 1; column = 1 };
-              };
-            message;
-            is_suppressed = false;
-          }
-
-
-  let parse_source_with_errpy
-      ~configuration
-      ~module_tracker
-      ({ ModulePath.qualifier; _ } as module_path)
-    =
-    let timer = Timer.start () in
-
-    let parse raw_code =
-      let log_errpy_ok ~recovered_count =
-        let integers = ["recovered_count", recovered_count] in
-        let normals =
-          match recovered_count with
-          | 0 -> []
-          | _ -> (
-              match Int.equal (Random.int 100) 0 with
-              | false -> []
-              | true ->
-                  (*so as to avoid a torrent of data we only log 1/100 of the sources where there is
-                    error recovery for the purposes of error recovery quality management *)
-                  ["raw_code", raw_code])
-        in
-        Statistics.errpy_call ~flush:false ~name:"ok" ~timer ~integers ~normals ()
-      in
-
-      let log_errpy_error ~error_string =
-        Statistics.errpy_call
-          ~flush:true
-          ~name:"error"
-          ~timer
-          ~integers:[]
-          ~normals:["raw_code", raw_code; "error", error_string]
-          ()
-      in
-
-      let typecheck_flags =
-        Source.TypecheckFlags.parse ~qualifier (String.split raw_code ~on:'\n')
-      in
-      match PyreErrpyParser.parse_module raw_code with
-      | Ok statements ->
-          log_errpy_ok ~recovered_count:0;
-          Success (create_source ~typecheck_flags ~module_path statements)
-      | Error parserError -> (
-          match parserError with
-          | Recoverable recoverable ->
-              log_errpy_ok ~recovered_count:(List.length recoverable.errors);
-              Success (create_source ~typecheck_flags ~module_path recoverable.recovered_ast)
-          | Unrecoverable error_string ->
-              log_errpy_error ~error_string;
-              create_parse_result
-                ~configuration
-                ~typecheck_flags
-                ~line:1
-                ~column:1
-                ~end_line:1
-                ~end_column:1
-                ~message:error_string
-                ())
-    in
-    match ModuleTracker.ReadOnly.get_raw_code module_tracker module_path with
-    | Ok raw_code -> parse raw_code
-    | Error message ->
-        Error
-          {
-            location =
-              {
-                Location.start = { Location.line = 1; column = 1 };
-                stop = { Location.line = 1; column = 1 };
-              };
-            message;
-            is_suppressed = false;
-          }
-
-
   let load_raw_source ~ast_environment:{ raw_sources; module_tracker; _ } module_path =
     let controls = ModuleTracker.ReadOnly.controls module_tracker in
-    let configuration = EnvironmentControls.configuration controls in
-    let augment_parser_output from_parser =
-      match from_parser with
-      | Success source ->
-          let source =
-            let EnvironmentControls.PythonVersionInfo.
-                  { major_version; minor_version; micro_version }
-              =
-              EnvironmentControls.python_version_info controls
-            in
-            Preprocessing.replace_version_specific_code
-              ~major_version
-              ~minor_version
-              ~micro_version
-              source
-            |> Preprocessing.preprocess_phase0
-          in
-          RawSources.add_parsed_source raw_sources source
-      | Error { location; message; is_suppressed } ->
-          RawSources.add_unparsed_source
-            raw_sources
-            { ParserError.module_path; location; message; is_suppressed }
-    in
-    (match configuration with
-    | { use_errpy_parser = false; _ } ->
-        let do_parse context =
-          parse_source_with_cpython ~configuration ~context ~module_tracker module_path
-        in
-        PyreNewParser.with_context do_parse
-    | _ -> parse_source_with_errpy ~configuration ~module_tracker module_path)
-    |> augment_parser_output
+    let get_raw_code = ModuleTracker.ReadOnly.get_raw_code module_tracker in
+    match
+      IncomingDataComputation.load_and_parse
+        ~controls
+        IncomingDataComputation.Queries.{ get_raw_code }
+        module_path
+    with
+    | Ok source -> RawSources.add_parsed_source raw_sources source
+    | Error parser_error -> RawSources.add_unparsed_source raw_sources parser_error
 
 
   let load_raw_sources ~scheduler ~ast_environment module_paths =
