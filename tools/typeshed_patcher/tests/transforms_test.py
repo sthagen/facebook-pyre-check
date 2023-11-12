@@ -17,9 +17,9 @@ class PatchTransformsTest(testslide.TestCase):
         patch: patch_specs.Patch,
         expected_code: str,
     ) -> None:
-        actual_output = transforms.apply_patch(
+        actual_output = transforms.apply_patches_in_sequence(
             code=textwrap.dedent(original_code),
-            patch=patch,
+            patches=[patch],
         )
         try:
             self.assertEqual(
@@ -225,6 +225,54 @@ class PatchTransformsTest(testslide.TestCase):
             ),
         )
 
+    def test_add_under_import_header(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                import foo, bar
+                if condition:
+                    from baz import Baz
+                if condition1:
+                    import qux1 as quux
+                elif condition2:
+                    import qux2 as quux
+                else:
+                    import qux3 as quux
+                x: int
+                import this_is_out_of_order
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.AddAction(
+                    content=textwrap.dedent(
+                        """
+                        from typing import TypeVar
+                        T = TypeVar('T')
+                        """
+                    ),
+                    position=patch_specs.AddPosition.TOP_OF_SCOPE,
+                ),
+            ),
+            expected_code=(
+                """
+                import foo, bar
+                if condition:
+                    from baz import Baz
+                if condition1:
+                    import qux1 as quux
+                elif condition2:
+                    import qux2 as quux
+                else:
+                    import qux3 as quux
+                from typing import TypeVar
+                T = TypeVar('T')
+                x: int
+                import this_is_out_of_order
+                """
+            ),
+        )
+
     def test_delete__ann_assign(self) -> None:
         self.assert_transform(
             original_code=(
@@ -244,6 +292,57 @@ class PatchTransformsTest(testslide.TestCase):
                 """
                 x: int
                 z: float
+                """
+            ),
+        )
+
+    def test_delete__if_block(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                y: str
+                if condition0:
+                    def f(x: int) -> int: ...
+                elif condition1:
+                    def f(x: str) -> str: ...
+                else:
+                    def f(x: float) -> float: ...
+                z: float
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.DeleteAction(
+                    name="f",
+                ),
+            ),
+            expected_code=(
+                """
+                y: str
+                z: float
+                """
+            ),
+        )
+
+    def test_delete__typealias(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                from foo import Foo
+                Baz = Foo
+                x: int
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.DeleteAction(
+                    name="Baz",
+                ),
+            ),
+            expected_code=(
+                """
+                from foo import Foo
+                x: int
                 """
             ),
         )
