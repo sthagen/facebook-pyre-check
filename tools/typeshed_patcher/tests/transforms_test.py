@@ -7,19 +7,19 @@ import textwrap
 
 import testslide
 
-from .. import patch, transforms
+from .. import patch_specs, transforms
 
 
 class PatchTransformsTest(testslide.TestCase):
     def assert_transform(
         self,
         original_code: str,
-        transform: transforms.PatchTransform,
+        patch: patch_specs.Patch,
         expected_code: str,
     ) -> None:
-        actual_output = transforms.run_transform(
+        actual_output = transforms.apply_patch(
             code=textwrap.dedent(original_code),
-            transform=transform,
+            patch=patch,
         )
         try:
             self.assertEqual(
@@ -40,15 +40,17 @@ class PatchTransformsTest(testslide.TestCase):
                 b: str
                 """
             ),
-            transform=transforms.AddTransform(
-                parent=patch.QualifiedName.from_string(""),
-                content=textwrap.dedent(
-                    """
-                    from foo import Bar
-                    a: Bar
-                    """
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.AddAction(
+                    content=textwrap.dedent(
+                        """
+                        from foo import Bar
+                        a: Bar
+                        """
+                    ),
+                    position=patch_specs.AddPosition.TOP_OF_SCOPE,
                 ),
-                add_position=patch.AddPosition.TOP_OF_SCOPE,
             ),
             expected_code=(
                 """
@@ -66,15 +68,17 @@ class PatchTransformsTest(testslide.TestCase):
                 b: str
                 """
             ),
-            transform=transforms.AddTransform(
-                parent=patch.QualifiedName.from_string(""),
-                content=textwrap.dedent(
-                    """
-                    def f(x: int) -> int: ...
-                    y: float
-                    """
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.AddAction(
+                    content=textwrap.dedent(
+                        """
+                        def f(x: int) -> int: ...
+                        y: float
+                        """
+                    ),
+                    position=patch_specs.AddPosition.BOTTOM_OF_SCOPE,
                 ),
-                add_position=patch.AddPosition.BOTTOM_OF_SCOPE,
             ),
             expected_code=(
                 """
@@ -93,15 +97,17 @@ class PatchTransformsTest(testslide.TestCase):
                     b: int
                 """
             ),
-            transform=transforms.AddTransform(
-                parent=patch.QualifiedName.from_string("MyClass"),
-                content=textwrap.dedent(
-                    """
-                    a: float
-                    def f(self, x: int) -> int: ...
-                    """
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string("MyClass"),
+                action=patch_specs.AddAction(
+                    content=textwrap.dedent(
+                        """
+                        a: float
+                        def f(self, x: int) -> int: ...
+                        """
+                    ),
+                    position=patch_specs.AddPosition.TOP_OF_SCOPE,
                 ),
-                add_position=patch.AddPosition.TOP_OF_SCOPE,
             ),
             expected_code=(
                 """
@@ -121,15 +127,17 @@ class PatchTransformsTest(testslide.TestCase):
                     b: int
                 """
             ),
-            transform=transforms.AddTransform(
-                parent=patch.QualifiedName.from_string("MyClass"),
-                content=textwrap.dedent(
-                    """
-                    a: float
-                    def f(self, x: int) -> int: ...
-                    """
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string("MyClass"),
+                action=patch_specs.AddAction(
+                    content=textwrap.dedent(
+                        """
+                        a: float
+                        def f(self, x: int) -> int: ...
+                        """
+                    ),
+                    position=patch_specs.AddPosition.BOTTOM_OF_SCOPE,
                 ),
-                add_position=patch.AddPosition.BOTTOM_OF_SCOPE,
             ),
             expected_code=(
                 """
@@ -150,15 +158,17 @@ class PatchTransformsTest(testslide.TestCase):
                 class MyClass: b: int
                 """
             ),
-            transform=transforms.AddTransform(
-                parent=patch.QualifiedName.from_string("MyClass"),
-                content=textwrap.dedent(
-                    """
-                    a: float
-                    def f(self, x: int) -> int: ...
-                    """
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string("MyClass"),
+                action=patch_specs.AddAction(
+                    content=textwrap.dedent(
+                        """
+                        a: float
+                        def f(self, x: int) -> int: ...
+                        """
+                    ),
+                    position=patch_specs.AddPosition.BOTTOM_OF_SCOPE,
                 ),
-                add_position=patch.AddPosition.BOTTOM_OF_SCOPE,
             ),
             expected_code=(
                 """
@@ -188,14 +198,16 @@ class PatchTransformsTest(testslide.TestCase):
                         b: int
                 """
             ),
-            transform=transforms.AddTransform(
-                parent=patch.QualifiedName.from_string("OuterClass1.InnerClass1"),
-                content=textwrap.dedent(
-                    """
-                    def f(self, x: int) -> int: ...
-                    """
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string("OuterClass1.InnerClass1"),
+                action=patch_specs.AddAction(
+                    content=textwrap.dedent(
+                        """
+                        def f(self, x: int) -> int: ...
+                        """
+                    ),
+                    position=patch_specs.AddPosition.BOTTOM_OF_SCOPE,
                 ),
-                add_position=patch.AddPosition.BOTTOM_OF_SCOPE,
             ),
             expected_code=(
                 """
@@ -209,6 +221,255 @@ class PatchTransformsTest(testslide.TestCase):
                         def f(self, x: int) -> int: ...
                     class InnerClass2:
                         b: int
+                """
+            ),
+        )
+
+    def test_delete__ann_assign(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                x: int
+                y: str
+                z: float
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.DeleteAction(
+                    name="y",
+                ),
+            ),
+            expected_code=(
+                """
+                x: int
+                z: float
+                """
+            ),
+        )
+
+    def test_delete__class(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                class A: pass
+                @classdecorator
+                class B: pass
+                class C: pass
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.DeleteAction(
+                    name="B",
+                ),
+            ),
+            expected_code=(
+                """
+                class A: pass
+                class C: pass
+                """
+            ),
+        )
+
+    def test_delete__function(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                def f(x: int) -> int: ...
+                def g(x: int) -> int: ...
+                def h(x: int) -> int: ...
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.DeleteAction(
+                    name="g",
+                ),
+            ),
+            expected_code=(
+                """
+                def f(x: int) -> int: ...
+                def h(x: int) -> int: ...
+                """
+            ),
+        )
+
+    def test_delete__overloads(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                def f(x: int) -> int: ...
+                @overload
+                def g(x: int) -> int: ...
+                @overload
+                def g(x: int) -> int: ...
+                def g(object) -> object: ...
+                def h(x: int) -> int: ...
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.DeleteAction(
+                    name="g",
+                ),
+            ),
+            expected_code=(
+                """
+                def f(x: int) -> int: ...
+                def h(x: int) -> int: ...
+                """
+            ),
+        )
+
+    def test_delete__in_nested_class(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                class OuterClass0:
+                    class InnerClass1:
+                        x: int
+                class OuterClass1:
+                    class InnerClass0:
+                        x: int
+                    class InnerClass1:
+                        x: int
+                    class InnerClass2:
+                        x: int
+                class OuterClass2:
+                    class InnerClass1:
+                        x: int
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string("OuterClass1.InnerClass1"),
+                action=patch_specs.DeleteAction(
+                    name="x",
+                ),
+            ),
+            expected_code=(
+                """
+                class OuterClass0:
+                    class InnerClass1:
+                        x: int
+                class OuterClass1:
+                    class InnerClass0:
+                        x: int
+                    class InnerClass1:
+                        pass
+                    class InnerClass2:
+                        x: int
+                class OuterClass2:
+                    class InnerClass1:
+                        x: int
+                """
+            ),
+        )
+
+    def test_replace__ann_assign(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                x: int
+                y: str
+                z: float
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.ReplaceAction(
+                    name="y",
+                    content=textwrap.dedent(
+                        """
+                        w: str
+                        """
+                    ),
+                ),
+            ),
+            expected_code=(
+                """
+                x: int
+                w: str
+                z: float
+                """
+            ),
+        )
+
+    def test_replace__function_with_overloads(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                def f(x: int) -> int: ...
+                @overload
+                def g(x: int) -> int: ...
+                @overload
+                def g(x: float) -> float: ...
+                def h(x: int) -> int: ...
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string(""),
+                action=patch_specs.ReplaceAction(
+                    name="g",
+                    content=textwrap.dedent(
+                        """
+                        T = TypeVar('T')
+                        def g(x: T) -> T: ...
+                        """
+                    ),
+                ),
+            ),
+            expected_code=(
+                """
+                def f(x: int) -> int: ...
+                T = TypeVar('T')
+                def g(x: T) -> T: ...
+                def h(x: int) -> int: ...
+                """
+            ),
+        )
+
+    def test_replace__nested_class(self) -> None:
+        self.assert_transform(
+            original_code=(
+                """
+                class OuterClass0:
+                    class InnerClass1:
+                        x: int
+                class OuterClass1:
+                    class InnerClass0:
+                        x: int
+                    class InnerClass1:
+                        x: int
+                    class InnerClass2:
+                        x: int
+                class OuterClass2:
+                    class InnerClass1:
+                        x: int
+                """
+            ),
+            patch=patch_specs.Patch(
+                parent=patch_specs.QualifiedName.from_string("OuterClass1.InnerClass1"),
+                action=patch_specs.ReplaceAction(
+                    name="x",
+                    content="y: float",
+                ),
+            ),
+            expected_code=(
+                """
+                class OuterClass0:
+                    class InnerClass1:
+                        x: int
+                class OuterClass1:
+                    class InnerClass0:
+                        x: int
+                    class InnerClass1:
+                        y: float
+                    class InnerClass2:
+                        x: int
+                class OuterClass2:
+                    class InnerClass1:
+                        x: int
                 """
             ),
         )

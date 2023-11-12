@@ -4,7 +4,10 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+Defines an abstract interface representing a typeshed that allows
+us to use different "backings" (e.g. in-memory for tests or raw
+data pulled from github vs a local directory where we have one)
+in most of our patching code.
 """
 
 
@@ -44,7 +47,7 @@ class Typeshed(abc.ABC):
         raise NotImplementedError()
 
 
-def _write_to_files(typeshed: Typeshed, root: pathlib.Path) -> None:
+def _write_to_directory(typeshed: Typeshed, root: pathlib.Path) -> None:
     for path in typeshed.all_files():
         content = typeshed.get_file_content(path)
         if content is None:
@@ -58,11 +61,11 @@ def _write_to_files(typeshed: Typeshed, root: pathlib.Path) -> None:
 def _create_temporary_typeshed_directory(typeshed: Typeshed) -> Iterator[pathlib.Path]:
     with tempfile.TemporaryDirectory() as temporary_root:
         temporary_root_path = pathlib.Path(temporary_root)
-        _write_to_files(typeshed, temporary_root_path)
+        _write_to_directory(typeshed, temporary_root_path)
         yield temporary_root_path
 
 
-def write_to_files(typeshed: Typeshed, target: pathlib.Path) -> None:
+def write_to_directory(typeshed: Typeshed, target: pathlib.Path) -> None:
     """
     Write the given `Typeshed` into a directory rooted at `target` on the filesystem.
 
@@ -111,13 +114,13 @@ class MemoryBackedTypeshed(Typeshed):
         return self.contents.get(path, None)
 
 
-class FileBackedTypeshed(Typeshed):
+class DirectoryBackedTypeshed(Typeshed):
     """
     A typeshed backed up by a directory that lives on the filesystem.
 
     For simplicity, we assume that files in this directory remain unchanged. If
     the assumption does not hold, e.g. when files are added/removed/changed after
-    the creation of a `FileBackedTypeshed` object, the behaviors of its methods
+    the creation of a `DirectoryBacked` object, the behaviors of its methods
     become undefined.
     """
 
@@ -168,8 +171,8 @@ class ZipBackedTypeshed(Typeshed):
 
 class PatchedTypeshed(Typeshed):
     """
-    A typeshed backed up by another `Typeshed` object and a set of patches that
-    overwrite file contents in the base `Typeshed` object.
+    A typeshed backed up by another `Typeshed` object and a set of patch results
+    that overwrite file contents in the base `Typeshed` object.
 
     Patches are specified as a dictionary from paths to either a `str` or `None`.
     When the value is a string, it serves as the new content for the corresponding
@@ -182,14 +185,18 @@ class PatchedTypeshed(Typeshed):
     removed_files: Set[pathlib.Path]
 
     def __init__(
-        self, base: Typeshed, patches: Dict[pathlib.Path, Optional[str]]
+        self,
+        base: Typeshed,
+        patch_results: Mapping[pathlib.Path, Optional[str]],
     ) -> None:
         self.base = base
         self.updated_files = {
-            path: content for path, content in patches.items() if content is not None
+            path: content
+            for path, content in patch_results.items()
+            if content is not None
         }
         self.removed_files = {
-            path for path, content in patches.items() if content is None
+            path for path, content in patch_results.items() if content is None
         }
 
     def all_files(self) -> Iterable[pathlib.Path]:
