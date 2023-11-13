@@ -113,7 +113,7 @@ content = '''
 @overload
 def lower(self: LiteralString) -> LiteralString: ...
 @overload
-def lower(self: ReadOnly[Self]) -> str: ...  # type: ignore [misc]
+def lower(self: ReadOnly[Self]) -> str: ...  # type: ignore[misc]
 '''
 
 [["stdlib/builtins.pyi"]]
@@ -475,3 +475,29 @@ def __hash__(self) -> int: ...
 action = "replace"
 parent = "DataclassInstance"
 name = "__dataclass_fields__"
+content = '''
+...
+'''
+
+
+# For some reason we haven't figured out, the indirection in
+# typeshed for os.path confuses Pyre.
+
+[["stdlib/os/__init__.pyi"]]
+action = "delete"
+name = "_path"
+
+[["stdlib/os/__init__.pyi"]]
+action = "replace"
+name = "path"
+content = '''
+from . import path
+'''
+
+
+[["stdlib/urllib/parse.pyi"]]
+action = "replace"
+name = "unquote_plus"
+content='''
+def unquote_plus(string: ReadOnly[str], encoding: str = "utf-8", errors: str = "replace") -> str: ...
+'''
