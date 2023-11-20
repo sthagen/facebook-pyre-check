@@ -14,11 +14,40 @@ in most of our patching code.
 import abc
 import contextlib
 import pathlib
-import shutil
 import tempfile
-import zipfile
 
 from typing import Dict, Iterable, Iterator, Mapping, Optional, Set
+
+
+def _write_content_map_to_directory(
+    content_map: Dict[pathlib.Path, str],
+    root: pathlib.Path,
+) -> None:
+    """
+    Write a map of relative_path: content to a root directly.
+    """
+    for path, content in content_map.items():
+        full_path = root / path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content)
+
+
+def write_content_map_to_directory(
+    content_map: Dict[pathlib.Path, str],
+    target: pathlib.Path,
+) -> None:
+    """
+    Write the given `Typeshed` into a directory rooted at `target` on the filesystem.
+
+    The `target` directory is assumed to be nonexistent before this function gets
+    invoked.
+    """
+    if target.exists():
+        raise ValueError(f"Cannot write to file that already exists: `{target}`")
+    with tempfile.TemporaryDirectory() as temporary_root_str:
+        temporary_root = pathlib.Path(temporary_root_str)
+        _write_content_map_to_directory(content_map, temporary_root)
+        temporary_root.rename(target)
 
 
 class Typeshed(abc.ABC):
@@ -47,52 +76,30 @@ class Typeshed(abc.ABC):
         raise NotImplementedError()
 
 
-def _write_to_directory(typeshed: Typeshed, root: pathlib.Path) -> None:
-    for path in typeshed.all_files():
-        content = typeshed.get_file_content(path)
-        if content is None:
-            continue
-        full_path = root / path
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content)
+def write_to_directory(
+    typeshed: Typeshed,
+    target: pathlib.Path,
+) -> None:
+    """
+    Return a directory of relative paths to contents of files in the typeshed.
+    Paths are all relative to typeshed root.
+    """
+    return write_content_map_to_directory(
+        {
+            path: content
+            for path in typeshed.all_files()
+            if (content := typeshed.get_file_content(path)) is not None
+        },
+        target=target,
+    )
 
 
 @contextlib.contextmanager
 def _create_temporary_typeshed_directory(typeshed: Typeshed) -> Iterator[pathlib.Path]:
     with tempfile.TemporaryDirectory() as temporary_root:
         temporary_root_path = pathlib.Path(temporary_root)
-        _write_to_directory(typeshed, temporary_root_path)
+        write_to_directory(typeshed, temporary_root_path)
         yield temporary_root_path
-
-
-def write_to_directory(typeshed: Typeshed, target: pathlib.Path) -> None:
-    """
-    Write the given `Typeshed` into a directory rooted at `target` on the filesystem.
-
-    The `target` directory is assumed to be nonexistent before this function gets
-    invoked.
-    """
-    if target.exists():
-        raise ValueError(f"Cannot write to file that already exists: `{target}`")
-    with _create_temporary_typeshed_directory(typeshed) as temporary_root:
-        temporary_root.rename(target)
-
-
-def write_to_zip(typeshed: Typeshed, target: pathlib.Path) -> None:
-    """
-    Write the given `Typeshed` into a zip file `target`.
-
-    File at `target` path is assumed to be nonexistent before this function gets
-    invoked. The `target` path is also assumed to have `.zip` as its suffix.
-    """
-    if target.exists():
-        raise ValueError(f"Cannot write to file that already exists: `{target}`")
-    if target.suffix != ".zip":
-        raise ValueError(f"Cannot write to `{target}` as zip file: wrong suffix.")
-    with _create_temporary_typeshed_directory(typeshed) as temporary_root:
-        shutil.make_archive(
-            str(target.with_suffix("")), format="zip", root_dir=temporary_root
-        )
 
 
 class MemoryBackedTypeshed(Typeshed):
@@ -138,35 +145,6 @@ class DirectoryBackedTypeshed(Typeshed):
 
     def get_file_content(self, path: pathlib.Path) -> Optional[str]:
         return (self.root / path).read_text() if path in self.files else None
-
-
-class ZipBackedTypeshed(Typeshed):
-    """
-    A typeshed backed up by a zipball that lives on the filesystem.
-
-    For simplicity, we assume that this zipfile remains unchanged. If the assumption
-    does not hold, e.g. when this file gets added/removed/changed after the creation of
-    the corresponding `ZipBackedTypeshed` object, the behaviors of its methods become
-    undefined.
-    """
-
-    zip_file: zipfile.ZipFile
-
-    def __init__(self, zip_file_path: pathlib.Path) -> None:
-        self.zip_file = zipfile.ZipFile(zip_file_path)
-
-    def all_files(self) -> Iterable[pathlib.Path]:
-        return [
-            pathlib.Path(zip_info.filename)
-            for zip_info in self.zip_file.infolist()
-            if not zip_info.is_dir()
-        ]
-
-    def get_file_content(self, path: pathlib.Path) -> Optional[str]:
-        try:
-            return self.zip_file.read(str(path)).decode("utf-8")
-        except (KeyError, ValueError):
-            return None
 
 
 class PatchedTypeshed(Typeshed):

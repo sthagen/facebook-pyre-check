@@ -15,6 +15,7 @@ import dataclasses
 import difflib
 import pathlib
 import shutil
+import sys
 
 from . import patch_specs, transforms, typeshed
 
@@ -32,8 +33,8 @@ def compute_diff_view(
     diff_lines = difflib.context_diff(
         as_diff_lines(original_code),
         as_diff_lines(patched_code),
-        fromfile="original {path}",
-        tofile="patched {path}",
+        fromfile=f"original {path}",
+        tofile=f"patched {path}",
     )
     return "".join(diff_lines)
 
@@ -77,11 +78,10 @@ def load_file_patch_from_toml(
 
 
 def patch_one_file_entrypoint(
-    source: pathlib.Path,
-    stub_path: pathlib.Path,
+    source_root: pathlib.Path,
+    relative_path: pathlib.Path,
     patch_specs_toml: pathlib.Path,
-    target: pathlib.Path | None,
-    overwrite: bool,
+    show_diff: bool,
 ) -> None:
     """
     Plumbing around `patch_one_file` to make patching a single file, viewing the diff,
@@ -91,28 +91,15 @@ def patch_one_file_entrypoint(
     we'll just pull a typeshed and apply all patches at once. But this function should
     make it much easier to rapidly iterate on patches for a single stub file.
     """
-    original_typeshed = typeshed.DirectoryBackedTypeshed(source)
-    file_patch = load_file_patch_from_toml(patch_specs_toml, stub_path)
+    original_typeshed = typeshed.DirectoryBackedTypeshed(source_root)
+    file_patch = load_file_patch_from_toml(patch_specs_toml, relative_path)
     patched_code, diff_view = patch_one_file(
         original_typeshed=original_typeshed,
         file_patch=file_patch,
     )
-    print("Successfully applied patch!")
-    print("Diff of original vs patched content:")
-    print(diff_view)
-    if target is not None:
-        if target.exists():
-            if overwrite and not target.is_dir():
-                target.unlink()
-            else:
-                raise RuntimeError(
-                    f"Refusing to overwrite existing file at {target}. "
-                    "Use --overwrite to overwrite a file, remove an existing directory"
-                )
-
-        with open(target, "w") as f:
-            f.write(patched_code)
-        print(f"Wrote output to {target}")
+    if show_diff:
+        sys.stderr.write(f"Diff of original content vs patch:\n{diff_view}\n")
+    sys.stdout.write(patched_code)
 
 
 @dataclasses.dataclass
@@ -121,7 +108,7 @@ class PatchResult:
     # This is an unexpected hack - Typshed isn't really modeling a typeshed
     # per-se, just a directory of files. It's convenient to use the same code
     # for storing and dumping the diffs from patching.
-    patch_diffs: typeshed.Typeshed
+    patch_diffs: dict[pathlib.Path, str]
 
 
 def patch_typeshed(
@@ -135,7 +122,7 @@ def patch_typeshed(
     patch_results = {
         path: patched_code for path, (patched_code, _) in patch_outputs.items()
     }
-    patch_diff_views = {
+    patch_diffs = {
         path: patched_code for path, (patched_code, _) in patch_outputs.items()
     }
     return PatchResult(
@@ -143,9 +130,7 @@ def patch_typeshed(
             base=original_typeshed,
             patch_results=patch_results,
         ),
-        patch_diffs=typeshed.MemoryBackedTypeshed(
-            contents=patch_diff_views,
-        ),
+        patch_diffs=patch_diffs,
     )
 
 
@@ -177,5 +162,5 @@ def patch_typeshed_directory(
     print(f"Wrote patched typeshed to {target}")
     if diffs_directory is not None:
         handle_overwrite_directory(diffs_directory)
-        typeshed.write_to_directory(result.patch_diffs, diffs_directory)
+        typeshed.write_content_map_to_directory(result.patch_diffs, diffs_directory)
         print(f"Wrote diffs of all patched stubs to {diffs_directory}")
