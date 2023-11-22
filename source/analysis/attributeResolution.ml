@@ -219,21 +219,21 @@ let create_uninstantiated_method ?(accessed_via_metaclass = false) callable =
 module UninstantiatedAttributeTable = struct
   type element = UninstantiatedAnnotation.t AnnotatedAttribute.t [@@deriving compare]
 
-  type table = (string, element) Caml.Hashtbl.t
+  type table = (string, element) Stdlib.Hashtbl.t
 
   type t = {
     attributes: table;
     names: string list ref;
   }
 
-  let create () = { attributes = Caml.Hashtbl.create 15; names = ref [] }
+  let create () = { attributes = Stdlib.Hashtbl.create 15; names = ref [] }
 
   let add { attributes; names } attribute =
     let name = AnnotatedAttribute.name attribute in
-    if Caml.Hashtbl.mem attributes name then
+    if Stdlib.Hashtbl.mem attributes name then
       ()
     else (
-      Caml.Hashtbl.add attributes name attribute;
+      Stdlib.Hashtbl.add attributes name attribute;
       names := name :: !names)
 
 
@@ -243,16 +243,16 @@ module UninstantiatedAttributeTable = struct
       | NotInitialized -> true
       | _ -> false
     in
-    match Caml.Hashtbl.find_opt attributes name with
+    match Stdlib.Hashtbl.find_opt attributes name with
     | Some attribute when is_uninitialized attribute ->
         AnnotatedAttribute.with_initialized ~initialized:OnlyOnInstance attribute
-        |> Caml.Hashtbl.replace attributes name
+        |> Stdlib.Hashtbl.replace attributes name
     | _ -> ()
 
 
-  let lookup_name { attributes; _ } = Caml.Hashtbl.find_opt attributes
+  let lookup_name { attributes; _ } = Stdlib.Hashtbl.find_opt attributes
 
-  let to_list { attributes; names } = List.rev_map !names ~f:(Caml.Hashtbl.find attributes)
+  let to_list { attributes; names } = List.rev_map !names ~f:(Stdlib.Hashtbl.find attributes)
 
   let names { names; _ } = !names
 
@@ -1906,7 +1906,7 @@ module SignatureSelection = struct
         List.find parameters ~f:(function
             | RecordParameter.Keywords _ -> true
             | _ -> false)
-        >>= Type.Callable.Parameter.Map.find parameter_argument_mapping
+        >>= Map.find parameter_argument_mapping
         >>| List.is_empty
         >>| not
         |> Option.value ~default:false
@@ -2291,9 +2291,7 @@ module SignatureSelection = struct
       in
       List.fold ~init:(Int.Set.empty, 0) ~f:count_unique annotation
     in
-    let position_rank =
-      Int.Set.min_elt positions >>| Int.neg |> Option.value ~default:Int.min_value
-    in
+    let position_rank = Set.min_elt positions >>| Int.neg |> Option.value ~default:Int.min_value in
     {
       signature_match with
       ranks = { arity = arity_rank; annotation = annotation_rank; position = position_rank };
@@ -2819,7 +2817,7 @@ class base class_metadata_environment dependency =
           |> List.filter_map ~f:name_annotation_pair
           (* Pick the overriding attribute. *)
           |> Identifier.Map.of_alist_reduce ~f:(fun first _ -> first)
-          |> Identifier.Map.to_alist
+          |> Map.to_alist
         in
         let parameters =
           let keyword_only_parameter (name, annotation) =

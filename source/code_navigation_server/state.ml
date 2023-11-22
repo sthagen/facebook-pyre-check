@@ -20,7 +20,7 @@ module Client = struct
     }
 
     let to_string { client_id; source_path } =
-      Caml.Format.sprintf "%s:%s" client_id (string_of_source_path source_path)
+      Stdlib.Format.sprintf "%s:%s" client_id (string_of_source_path source_path)
   end
 
   module Single = struct
@@ -109,4 +109,5 @@ type t = {
   environment: Analysis.OverlaidEnvironment.t;
   build_system: BuildSystem.t;
   client_states: Client.t;
+  build_failure: Server.ServerState.BuildFailure.t;
 }
