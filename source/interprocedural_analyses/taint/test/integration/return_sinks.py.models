@@ -25,6 +25,38 @@
 {
   "kind": "model",
   "data": {
+    "callable": "return_sinks.propagate_returned_sink_to_arg",
+    "sinks": [
+      {
+        "port": "formal(arg)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "propagated-return-sink" } ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
+            "call": {
+              "position": {
+                "filename": "return_sinks.py",
+                "line": 30,
+                "start": 28,
+                "end": 31
+              },
+              "resolves_to": [ "return_sinks.sink_on_return_and_tito" ],
+              "port": "formal(arg)"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "return_sinks.sink_on_return",
     "sinks": [
       {
@@ -39,6 +71,31 @@
   "data": {
     "callable": "return_sinks.sink_on_return_and_tito",
     "sinks": [
+      {
+        "port": "formal(arg)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "return_sinks.sink_on_return_and_tito",
+                    "port": "leaf:return"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [ { "always-via": "propagated-return-sink" } ],
+            "origin": {
+              "filename": "return_sinks.py",
+              "line": 25,
+              "start": 4,
+              "end": 14
+            }
+          }
+        ]
+      },
       {
         "port": "result",
         "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]

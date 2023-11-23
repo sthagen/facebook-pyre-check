@@ -11,13 +11,14 @@ transforms on upstream typeshed stub files.
 from __future__ import annotations
 
 import dataclasses
-
 import difflib
+import logging
 import pathlib
-import shutil
 import sys
 
 from . import patch_specs, transforms, typeshed
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 def compute_diff_view(
@@ -135,32 +136,19 @@ def patch_typeshed(
 
 
 def patch_typeshed_directory(
-    source: pathlib.Path,
+    source_root: pathlib.Path,
     patch_specs_toml: pathlib.Path,
-    target: pathlib.Path,
+    destination_root: pathlib.Path,
     diffs_directory: pathlib.Path | None,
-    overwrite: bool,
 ) -> None:
-    def handle_overwrite_directory(directory: pathlib.Path) -> None:
-        if directory.exists():
-            if overwrite:
-                shutil.rmtree(directory)
-            else:
-                raise RuntimeError(
-                    f"Refusing to overwrite existing {directory}. "
-                    "Use --overwrite to overwrite a directory, remove any existing file"
-                )
-
     file_patches = patch_specs.FilePatch.from_toml_path(patch_specs_toml)
-    original_typeshed = typeshed.DirectoryBackedTypeshed(source)
+    original_typeshed = typeshed.DirectoryBackedTypeshed(source_root)
     result = patch_typeshed(
         original_typeshed=original_typeshed,
         file_patches=file_patches,
     )
-    handle_overwrite_directory(target)
-    typeshed.write_to_directory(result.patched_typeshed, target)
-    print(f"Wrote patched typeshed to {target}")
+    typeshed.write_to_directory(result.patched_typeshed, destination_root)
+    logger.info(f"Wrote patched typeshed to {destination_root}")
     if diffs_directory is not None:
-        handle_overwrite_directory(diffs_directory)
         typeshed.write_content_map_to_directory(result.patch_diffs, diffs_directory)
-        print(f"Wrote diffs of all patched stubs to {diffs_directory}")
+        logger.info(f"Wrote diffs of all patched stubs to {diffs_directory}")
