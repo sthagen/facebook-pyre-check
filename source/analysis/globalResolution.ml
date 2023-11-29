@@ -212,8 +212,6 @@ let is_invariance_mismatch resolution ~left ~right =
 
 
 let global ({ dependency; _ } as resolution) reference =
-  (* TODO (T41143153): We might want to properly support this by unifying attribute lookup logic for
-     module and for class *)
   match Reference.last reference with
   | "__doc__"
   | "__file__"
@@ -327,8 +325,6 @@ let is_typed_dictionary ~resolution:({ dependency; _ } as resolution) annotation
   |> Option.value ~default:false
 
 
-let resolved_type = WeakenMutableLiterals.resolved_type
-
 let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~expression =
   let comparator =
     AttributeResolution.ReadOnly.constraints_solution_exists
@@ -344,7 +340,7 @@ let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~ex
       ~resolved:left
       ~expected:right
       ~comparator
-    |> resolved_type
+    |> WeakenMutableLiterals.resolved_type
   in
   comparator ~get_typed_dictionary_override:(fun _ -> None) ~left ~right
 
@@ -418,14 +414,14 @@ let successors ~resolution:({ dependency; _ } as resolution) =
 
 let immediate_parents ~resolution = ClassHierarchy.immediate_parents (class_hierarchy resolution)
 
-let attributes
+let uninstantiated_attributes
     ~resolution:({ dependency; _ } as resolution)
     ?(transitive = false)
     ?(accessed_through_class = false)
     ?(include_generated_attributes = true)
     name
   =
-  AttributeResolution.ReadOnly.all_attributes
+  AttributeResolution.ReadOnly.uninstantiated_attributes
     (attribute_resolution resolution)
     ~transitive
     ~accessed_through_class
@@ -637,8 +633,8 @@ let attribute_names
     ?dependency
 
 
-let global_location ({ dependency; _ } as resolution) =
-  AnnotatedGlobalEnvironment.ReadOnly.get_global_location
+let location_of_global ({ dependency; _ } as resolution) =
+  AnnotatedGlobalEnvironment.ReadOnly.location_of_global
     (annotated_global_environment resolution)
     ?dependency
 

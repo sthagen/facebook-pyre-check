@@ -5,7 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* Type.t is the core representation of the Python static type system for Pyre. It includes Pyre's
+   representation of basic types, parametric types and type parameters, literals, and a number of
+   other types. *)
 
 open Core
 open Ast
@@ -2834,27 +2836,31 @@ let exists annotation ~predicate =
   fst (ExistsTransform.visit false annotation)
 
 
-let instantiate ?(widen = false) ?(visit_children_before = false) annotation ~constraints =
-  let module InstantiateTransform = Transform.Make (struct
+(* Apply a `type_map` that replaces some types with other types recursively. Use cases of this
+   include applying constraint solver results for type variables and replacing types coming from
+   empty stubs with `Any`. The `visit_children_before` flag controls whether we apply the mapping to
+   inner types before attempting to map a complex type. If it is false, we'll try both before and
+   after mapping inner types (preferring the before case if both produce results). *)
+let apply_type_map ?(visit_children_before = false) annotation ~type_map =
+  let module ApplyTypeMapTransform = Transform.Make (struct
     type state = unit
 
     let visit_children_before _ annotation =
-      visit_children_before || constraints annotation |> Option.is_none
+      visit_children_before || type_map annotation |> Option.is_none
 
 
     let visit_children_after = false
 
     let visit _ annotation =
       let transformed_annotation =
-        match constraints annotation with
-        | Some Bottom when widen -> Top
+        match type_map annotation with
         | Some replacement -> replacement
         | None -> annotation
       in
       { Transform.transformed_annotation; new_state = () }
   end)
   in
-  snd (InstantiateTransform.visit () annotation)
+  snd (ApplyTypeMapTransform.visit () annotation)
 
 
 let contains_callable annotation = exists annotation ~predicate:is_callable
@@ -3328,8 +3334,8 @@ module RecursiveType = struct
   (* We assume that recursive alias names are unique. So, we don't need to worry about accidentally
      renaming a nested recursive type here. *)
   let unfold_recursive_type { name; body } =
-    instantiate
-      ~constraints:(function
+    apply_type_map
+      ~type_map:(function
         | Primitive primitive_name when Identifier.equal primitive_name name ->
             Some (RecursiveType { name; body })
         | _ -> None)
@@ -3337,8 +3343,8 @@ module RecursiveType = struct
 
 
   let body_with_replaced_name ~new_name { name; body } =
-    instantiate
-      ~constraints:(function
+    apply_type_map
+      ~type_map:(function
         | Primitive primitive_name when Identifier.equal primitive_name name ->
             Some (Primitive new_name)
         | _ -> None)
@@ -3346,7 +3352,7 @@ module RecursiveType = struct
 
 
   let replace_references_with_recursive_type ~recursive_type:{ name; body } =
-    instantiate ~constraints:(function
+    apply_type_map ~type_map:(function
         | Primitive primitive_name when Identifier.equal primitive_name name ->
             Some (RecursiveType { name; body })
         | _ -> None)
@@ -3741,7 +3747,7 @@ module ReadOnly = struct
 
   let is_readonly type_ = unpack_readonly type_ |> Option.is_some
 
-  let strip_readonly type_ = instantiate type_ ~constraints:unpack_readonly
+  let strip_readonly type_ = apply_type_map type_ ~type_map:unpack_readonly
 
   let contains_readonly type_ = exists type_ ~predicate:is_readonly
 
@@ -4568,7 +4574,7 @@ let single_parameter = function
 
 
 let weaken_literals annotation =
-  let constraints = function
+  let type_map = function
     | Literal (Integer _) -> Some integer
     | Literal (String _) -> Some string
     | Literal (Bytes _) -> Some bytes
@@ -4576,7 +4582,7 @@ let weaken_literals annotation =
     | Literal (EnumerationMember { enumeration_type; _ }) -> Some enumeration_type
     | _ -> None
   in
-  instantiate ~constraints annotation
+  apply_type_map ~type_map annotation
 
 
 (* Weaken specific literal to arbitrary literal before weakening to `str`. *)
@@ -5545,10 +5551,7 @@ end = struct
       include Variable
 
       let replace_all operation =
-        instantiate
-          ~visit_children_before:true
-          ~constraints:(Variable.local_replace operation)
-          ~widen:false
+        apply_type_map ~visit_children_before:true ~type_map:(Variable.local_replace operation)
 
 
       let map operation =

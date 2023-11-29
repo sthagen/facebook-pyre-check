@@ -5,7 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* Annotation.t is a wrapper around Type.t that adds to the core type system a notion of mutability
+   so that we can model final attributes. *)
 
 open Core
 
@@ -123,11 +124,6 @@ let is_final { mutability; _ } =
 
 let transform_types ~f { annotation; mutability } =
   { annotation = f annotation; mutability = Mutability.transform_types ~f mutability }
-
-
-let instantiate annotation ~constraints =
-  let instantiate = Type.instantiate ~constraints in
-  transform_types ~f:instantiate annotation
 
 
 let dequalify dequalify_map annotation =

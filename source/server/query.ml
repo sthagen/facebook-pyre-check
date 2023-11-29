@@ -5,7 +5,19 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* This module implements the backend of the Pyre query API, which powers
+ * various use cases that ask a running server to do things, including:
+ * - saved state dumping
+ * - various endpoints for pysa tools to get type information
+ * - experimental integrations with linters
+ * - IDE features like coverage in the `pyre persistent` language server
+ *
+ * Processing a query (which comes to a running daemon by way of a request from
+ * the client) works as follows:
+ * - Parse the query (which is a string of pseudo-python) into a Request.t
+ * - Pass the request to process_request_exn
+ * - Return a json representation of the resulting Response.t
+ *)
 
 open Core
 open Ast
@@ -470,11 +482,11 @@ let rec process_request_exn ~type_environment ~build_system request =
       in
       let annotation =
         if unknown_is_top then
-          let constraints = function
+          let type_map = function
             | Type.Primitive "unknown" -> Some Type.Top
             | _ -> None
           in
-          Type.instantiate annotation ~constraints
+          Type.apply_type_map annotation ~type_map
         else
           annotation
       in
@@ -615,7 +627,7 @@ let rec process_request_exn ~type_environment ~build_system request =
         |> Type.split
         |> fst
         |> Type.primitive_name
-        >>= GlobalResolution.attributes ~resolution:global_resolution
+        >>= GlobalResolution.uninstantiated_attributes ~resolution:global_resolution
         >>| List.map ~f:to_attribute
         >>| (fun attributes -> Single (Base.FoundAttributes attributes))
         |> Option.value

@@ -154,8 +154,6 @@ val annotation_parser
   t ->
   AnnotatedCallable.annotation_parser
 
-val resolved_type : WeakenMutableLiterals.weakened_type -> Type.t
-
 val resolve_mutable_literals
   :  t ->
   resolve:(Expression.expression Node.t -> Type.t) ->
@@ -186,7 +184,7 @@ val is_transitive_successor
   successor:string ->
   bool
 
-val attributes
+val uninstantiated_attributes
   :  resolution:t ->
   ?transitive:bool ->
   ?accessed_through_class:bool ->
@@ -259,7 +257,7 @@ val attribute_details
   Type.Primitive.t ->
   AttributeResolution.AttributeDetail.t list option
 
-val global_location : t -> Reference.t -> Location.WithModule.t option
+val location_of_global : t -> Reference.t -> Location.WithModule.t option
 
 val class_exists : t -> Type.Primitive.t -> bool
 
