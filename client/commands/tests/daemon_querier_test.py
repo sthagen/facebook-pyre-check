@@ -11,8 +11,6 @@ from unittest.mock import CallableMixin, patch
 
 import testslide
 
-from ... import backend_arguments
-
 from ...language_server import (
     connections,
     daemon_connection,
@@ -33,18 +31,18 @@ from ...language_server.features import (
     TypeCoverageAvailability,
 )
 from ...tests import setup
-from .. import server_state as state, start
+from .. import server_state as state
 from ..daemon_querier import (
     CodeNavigationDaemonQuerier,
     DaemonQuerierSource,
+    DaemonQueryFailure,
     FailableDaemonQuerier,
     GetDefinitionLocationsResponse,
     GetHoverResponse,
     PersistentDaemonQuerier,
     RemoteIndexBackedQuerier,
 )
-from ..daemon_query import DaemonQueryFailure
-from ..daemon_query_failer import AbstractDaemonQueryFailer
+from ..daemon_query_failer import AbstractDaemonQueryFailer, DaemonFailerFailure
 
 from ..server_state import ConnectionStatus
 
@@ -645,10 +643,12 @@ class DaemonQuerierTest(testslide.TestCase):
         )
         self.assertEqual(
             response,
-            GetDefinitionLocationsResponse(
-                source=DaemonQuerierSource.PYRE_EXCEPTION_FALLBACK_GLEAN_INDEXER,
-                data=[],
-                original_error_message=_DaemonQuerier_Failure_Message,
+            DaemonQueryFailure(
+                fallback_result=GetDefinitionLocationsResponse(
+                    source=DaemonQuerierSource.GLEAN_INDEXER, data=[]
+                ),
+                error_message=_DaemonQuerier_Failure_Message,
+                error_source=None,
             ),
         )
 
@@ -681,7 +681,7 @@ class MockDaemonQueryFailer(AbstractDaemonQueryFailer):
         self.query_failures = []
         self.query_connection_failures = []
 
-    def query_failure(self, path: str) -> Optional[DaemonQueryFailure]:
+    def query_failure(self, path: str) -> Optional[DaemonFailerFailure]:
         self.query_failures.append(path)
         return None
 
