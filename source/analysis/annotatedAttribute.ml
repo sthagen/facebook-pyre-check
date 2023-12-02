@@ -19,6 +19,37 @@
 open Core
 open Ast
 
+module UninstantiatedAnnotation = struct
+  type property_annotation = {
+    self: Type.t option;
+    value: Type.t option;
+  }
+  [@@deriving compare, show, sexp]
+
+  type kind =
+    | Attribute of Type.t
+    | Property of {
+        getter: property_annotation;
+        setter: property_annotation option;
+      }
+  [@@deriving compare, show, sexp]
+
+  type t = {
+    accessed_via_metaclass: bool;
+    kind: kind;
+  }
+  [@@deriving compare, show, sexp]
+end
+
+module InstantiatedAnnotation = struct
+  type t = {
+    annotation: Type.t;
+    original_annotation: Type.t;
+    uninstantiated_annotation: Type.t option;
+  }
+  [@@deriving eq, show, compare, sexp]
+end
+
 (* Note: the read_only and visibility flags here are related to `Final` attributes, they are not
    directly related to `ReadOnly` types (although the two do interact) *)
 type read_only =
@@ -76,14 +107,9 @@ type 'a t = {
 }
 [@@deriving eq, show, compare, sexp]
 
-type instantiated_annotation = {
-  annotation: Type.t;
-  original_annotation: Type.t;
-  uninstantiated_annotation: Type.t option;
-}
-[@@deriving eq, show, compare, sexp]
+type uninstantiated = UninstantiatedAnnotation.t t [@@deriving show, compare, sexp]
 
-type instantiated = instantiated_annotation t [@@deriving eq, show, compare, sexp]
+type instantiated = InstantiatedAnnotation.t t [@@deriving eq, show, compare, sexp]
 
 let create
     ~abstract
@@ -102,7 +128,7 @@ let create
     ~problem
   =
   {
-    payload = { annotation; original_annotation; uninstantiated_annotation };
+    payload = InstantiatedAnnotation.{ annotation; original_annotation; uninstantiated_annotation };
     abstract;
     async_property;
     class_variable;
@@ -148,7 +174,13 @@ let create_uninstantiated
 
 
 let annotation
-    { payload = { annotation; original_annotation; _ }; async_property; defined; visibility; _ }
+    {
+      payload = InstantiatedAnnotation.{ annotation; original_annotation; _ };
+      async_property;
+      defined;
+      visibility;
+      _;
+    }
   =
   let annotation, original =
     if async_property then
@@ -205,7 +237,7 @@ let abstract { abstract; _ } = abstract
 
 let async_property { async_property; _ } = async_property
 
-let static { payload = { uninstantiated_annotation; _ }; _ } =
+let static { payload = InstantiatedAnnotation.{ uninstantiated_annotation; _ }; _ } =
   match uninstantiated_annotation with
   | Some (Type.Parametric { name = "typing.StaticMethod"; _ }) -> true
   | _ -> false
@@ -239,7 +271,10 @@ let is_final { visibility; _ } =
 
 
 let instantiate attribute ~annotation ~original_annotation ~uninstantiated_annotation =
-  { attribute with payload = { annotation; original_annotation; uninstantiated_annotation } }
+  {
+    attribute with
+    payload = InstantiatedAnnotation.{ annotation; original_annotation; uninstantiated_annotation };
+  }
 
 
 let with_initialized attribute ~initialized = { attribute with initialized }
