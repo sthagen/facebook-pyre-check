@@ -193,6 +193,8 @@ module CallInfoIntervals = struct
     receiver_interval: ClassIntervalSet.t;
     (* Whether this call site is a call on `self` *)
     is_self_call: bool;
+    (* Whether this call site is a call on `cls` *)
+    is_cls_call: bool;
   }
 
   (* If we are not sure if a call is on `self`, then we should treat it as a call not on `self`,
@@ -202,17 +204,22 @@ module CallInfoIntervals = struct
       caller_interval = ClassIntervalSet.top;
       receiver_interval = ClassIntervalSet.top;
       is_self_call = false;
+      is_cls_call = false;
     }
 
 
-  let is_top { caller_interval; receiver_interval; is_self_call } =
+  let is_top { caller_interval; receiver_interval; is_self_call; is_cls_call } =
     ClassIntervalSet.is_top caller_interval
     && ClassIntervalSet.is_top receiver_interval
-    && not is_self_call
+    && (not is_self_call)
+    && not is_cls_call
 
 
-  let to_json { caller_interval; receiver_interval; is_self_call } =
-    let list = ["is_self_call", `Bool is_self_call] in
+  let to_json { caller_interval; receiver_interval; is_self_call; is_cls_call } =
+    let list =
+      (* We want SAPP to treat calls to `self` and `cls` in the same way *)
+      ["is_self_call", `Bool (is_self_call || is_cls_call)]
+    in
     let intervals_to_list intervals =
       let intervals = ClassIntervalSet.to_list intervals in
       List.map intervals ~f:(fun interval ->
@@ -247,18 +254,20 @@ module CallInfoIntervals = struct
         caller_interval = ClassIntervalSet.bottom;
         receiver_interval = ClassIntervalSet.bottom;
         is_self_call = true;
+        is_cls_call = true;
       }
 
 
-    let pp formatter { caller_interval; receiver_interval; is_self_call } =
+    let pp formatter { caller_interval; receiver_interval; is_self_call; is_cls_call } =
       Format.fprintf
         formatter
-        "@[[caller_interval: %a receiver_interval: %a is_self_call: %b]@]"
+        "@[[caller_interval: %a receiver_interval: %a is_self_call: %b is_cls_call: %b]@]"
         ClassIntervalSet.pp
         caller_interval
         ClassIntervalSet.pp
         receiver_interval
         is_self_call
+        is_cls_call
 
 
     let show = Format.asprintf "%a" pp
@@ -269,17 +278,20 @@ module CallInfoIntervals = struct
             caller_interval = caller_interval_left;
             receiver_interval = receiver_interval_left;
             is_self_call = is_self_call_left;
+            is_cls_call = is_cls_call_left;
           }
         ~right:
           {
             caller_interval = caller_interval_right;
             receiver_interval = receiver_interval_right;
             is_self_call = is_self_call_right;
+            is_cls_call = is_cls_call_right;
           }
       =
       ClassIntervalSet.less_or_equal ~left:caller_interval_left ~right:caller_interval_right
       && ClassIntervalSet.less_or_equal ~left:receiver_interval_left ~right:receiver_interval_right
-      && not ((not is_self_call_left) && is_self_call_right)
+      && (not ((not is_self_call_left) && is_self_call_right))
+      && not ((not is_cls_call_left) && is_cls_call_right)
 
 
     let join
@@ -287,11 +299,13 @@ module CallInfoIntervals = struct
           caller_interval = caller_interval_left;
           receiver_interval = receiver_interval_left;
           is_self_call = is_self_call_left;
+          is_cls_call = is_cls_call_left;
         }
         {
           caller_interval = caller_interval_right;
           receiver_interval = receiver_interval_right;
           is_self_call = is_self_call_right;
+          is_cls_call = is_cls_call_right;
         }
       =
       {
@@ -299,6 +313,7 @@ module CallInfoIntervals = struct
         receiver_interval = ClassIntervalSet.join receiver_interval_left receiver_interval_right;
         (* The result of joining two calls is a call on `self` iff. both calls are on `self`. *)
         is_self_call = is_self_call_left && is_self_call_right;
+        is_cls_call = is_cls_call_left && is_cls_call_right;
       }
 
 
@@ -307,11 +322,13 @@ module CallInfoIntervals = struct
           caller_interval = caller_interval_left;
           receiver_interval = receiver_interval_left;
           is_self_call = is_self_call_left;
+          is_cls_call = is_cls_call_left;
         }
         {
           caller_interval = caller_interval_right;
           receiver_interval = receiver_interval_right;
           is_self_call = is_self_call_right;
+          is_cls_call = is_cls_call_right;
         }
       =
       {
@@ -320,6 +337,7 @@ module CallInfoIntervals = struct
         (* The result of meeting two calls is a call on `self` iff. one of the calls is on
            `self`. *)
         is_self_call = is_self_call_left || is_self_call_right;
+        is_cls_call = is_cls_call_left || is_cls_call_right;
       }
   end)
 end
@@ -553,9 +571,9 @@ module type TAINT_DOMAIN = sig
     port:AccessPath.Root.t ->
     path:AccessPath.Path.t ->
     element:t ->
-    is_self_call:bool ->
-    caller_class_interval:ClassIntervalSet.t ->
-    receiver_class_interval:ClassIntervalSet.t ->
+    is_class_method:bool ->
+    is_static_method:bool ->
+    call_info_intervals:CallInfoIntervals.t ->
     t
 
   (* Return the taint with only essential elements. *)
@@ -1108,6 +1126,65 @@ end = struct
         taint
 
 
+  let apply_class_interval
+      ~is_static_method
+      ~is_class_method
+      ~call_info_intervals:
+        ({ CallInfoIntervals.is_self_call; is_cls_call; caller_interval; receiver_interval } as
+        call_info_intervals)
+      local_taint
+    =
+    let { CallInfoIntervals.caller_interval = callee_class_interval; _ } =
+      LocalTaintDomain.get LocalTaintDomain.Slots.CallInfoIntervals local_taint
+    in
+    let intersect left right =
+      let new_interval = ClassIntervalSet.meet left right in
+      let should_propagate =
+        (* Propagate if the intersection is not empty, and there exists a descendant relation
+           between left and right. The latter is useful under multi-inheritance. For example, see
+           function `multi_inheritance_no_issue_one_hop` under
+           `source/interprocedural_analyses/taint/test/integration/class_interval.py`. *)
+        (not (ClassIntervalSet.is_empty new_interval))
+        && (ClassIntervalSet.equal left new_interval || ClassIntervalSet.equal right new_interval)
+      in
+      new_interval, should_propagate
+    in
+    if is_static_method then
+      (* Case A: Call static methods. The taint is unconditionally propagated from the call, which
+         is the same treatment as a function call. *)
+      LocalTaintDomain.update
+        LocalTaintDomain.Slots.CallInfoIntervals
+        call_info_intervals
+        local_taint
+    else (* Case B: Call non-static methods. *)
+      let new_interval, should_propagate =
+        (* Decide if the taint can be propagated from the call. *)
+        intersect callee_class_interval receiver_interval
+      in
+      if not should_propagate then
+        LocalTaintDomain.bottom
+      else if is_self_call || (is_cls_call && is_class_method) then
+        (* Case B.1: Call instance methods via `self`, or class methods via `cls`. *)
+        let new_interval, should_propagate =
+          (* Then impose the caller's interval, because the call chain so far is still on the same
+             object (i.e., `self` or `cls`). *)
+          intersect new_interval caller_interval
+        in
+        if not should_propagate then
+          LocalTaintDomain.bottom
+        else
+          LocalTaintDomain.update
+            LocalTaintDomain.Slots.CallInfoIntervals
+            { call_info_intervals with caller_interval = new_interval }
+            local_taint
+      else (* Case B.2: Call instance methods on any other objects. *)
+        LocalTaintDomain.update
+          LocalTaintDomain.Slots.CallInfoIntervals
+          (* Reset the interval to be the caller's interval. *)
+          call_info_intervals
+          local_taint
+
+
   let apply_call
       ~resolution
       ~location
@@ -1116,9 +1193,9 @@ end = struct
       ~port
       ~path
       ~element:taint
-      ~is_self_call
-      ~caller_class_interval
-      ~receiver_class_interval
+      ~is_class_method
+      ~is_static_method
+      ~call_info_intervals
     =
     let callees =
       match callee with
@@ -1191,56 +1268,11 @@ end = struct
         | Some (Target.Function _) ->
             LocalTaintDomain.update
               LocalTaintDomain.Slots.CallInfoIntervals
-              {
-                CallInfoIntervals.caller_interval = caller_class_interval;
-                receiver_interval = receiver_class_interval;
-                is_self_call;
-              }
+              call_info_intervals
               local_taint
         | Some (Target.Method _)
         | Some (Target.Override _) ->
-            let { CallInfoIntervals.caller_interval = callee_class_interval; _ } =
-              LocalTaintDomain.get LocalTaintDomain.Slots.CallInfoIntervals local_taint
-            in
-            let intersect left right =
-              let new_interval = ClassIntervalSet.meet left right in
-              let should_propagate =
-                (* Propagate if the intersection is not empty, and there exists a descendant
-                   relation between left and right *)
-                (not (ClassIntervalSet.is_empty new_interval))
-                && (ClassIntervalSet.equal left new_interval
-                   || ClassIntervalSet.equal right new_interval)
-              in
-              new_interval, should_propagate
-            in
-            if is_self_call then
-              let new_interval, should_propagate =
-                intersect callee_class_interval caller_class_interval
-              in
-              if not should_propagate then
-                LocalTaintDomain.bottom
-              else
-                LocalTaintDomain.update
-                  LocalTaintDomain.Slots.CallInfoIntervals
-                  {
-                    CallInfoIntervals.caller_interval = new_interval;
-                    receiver_interval = receiver_class_interval;
-                    is_self_call;
-                  }
-                  local_taint
-            else
-              let _, should_propagate = intersect callee_class_interval receiver_class_interval in
-              if not should_propagate then
-                LocalTaintDomain.bottom
-              else
-                LocalTaintDomain.update
-                  LocalTaintDomain.Slots.CallInfoIntervals
-                  {
-                    CallInfoIntervals.caller_interval = caller_class_interval;
-                    receiver_interval = receiver_class_interval;
-                    is_self_call;
-                  }
-                  local_taint
+            apply_class_interval ~is_static_method ~is_class_method ~call_info_intervals local_taint
       in
       match call_info with
       | CallInfo.Origin _
@@ -1388,9 +1420,9 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
       ~callee
       ~arguments
       ~port
-      ~is_self_call
-      ~caller_class_interval
-      ~receiver_class_interval
+      ~is_class_method
+      ~is_static_method
+      ~call_info_intervals
       taint_tree
     =
     let transform_path (path, tip) =
@@ -1403,9 +1435,9 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
           ~port
           ~path
           ~element:tip
-          ~is_self_call
-          ~caller_class_interval
-          ~receiver_class_interval )
+          ~is_class_method
+          ~is_static_method
+          ~call_info_intervals )
     in
     transform Path Map ~f:transform_path taint_tree
 

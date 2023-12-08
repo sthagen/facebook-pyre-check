@@ -39,9 +39,9 @@ let test_partition_call_map context =
       ~port:AccessPath.Root.LocalResult
       ~path:[Abstract.TreeDomain.Label.create_name_index "a"]
       ~element:taint
-      ~is_self_call:false
-      ~caller_class_interval:Interprocedural.ClassIntervalSet.top
-      ~receiver_class_interval:Interprocedural.ClassIntervalSet.top
+      ~is_class_method:false
+      ~is_static_method:false
+      ~call_info_intervals:Domains.CallInfoIntervals.top
   in
   let call_taint2 =
     ForwardTaint.apply_call
@@ -52,9 +52,9 @@ let test_partition_call_map context =
       ~port:AccessPath.Root.LocalResult
       ~path:[Abstract.TreeDomain.Label.create_name_index "a"]
       ~element:taint
-      ~is_self_call:false
-      ~caller_class_interval:Interprocedural.ClassIntervalSet.top
-      ~receiver_class_interval:Interprocedural.ClassIntervalSet.top
+      ~is_class_method:false
+      ~is_static_method:false
+      ~call_info_intervals:Domains.CallInfoIntervals.top
   in
   let joined = ForwardTaint.join call_taint1 call_taint2 in
   assert_equal
