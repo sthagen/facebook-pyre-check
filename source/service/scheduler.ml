@@ -126,9 +126,10 @@ let with_scheduler ~configuration ~should_log_exception ~f =
   match scheduler with
   | SequentialScheduler -> f SequentialScheduler
   | ParallelScheduler _ ->
-      let wrapped_f scheduler =
+      let wrapped_f () =
         try f scheduler with
         | exn ->
+            let wrapped_exn = Exception.wrap exn in
             if should_log_exception exn then
               (* The backtrace is lost if the exception is caught at the top level, because of Lwt.
                * Let's print the exception here to ease debugging. *)
@@ -136,9 +137,9 @@ let with_scheduler ~configuration ~should_log_exception ~f =
                 "Failure inside parallel with_scheduler operation."
                 exn
                 (Worker.exception_backtrace exn);
-            raise exn
+            Exception.reraise wrapped_exn
       in
-      Exn.protectx ~f:wrapped_f scheduler ~finally:(fun _ -> destroy scheduler)
+      Exception.protect ~f:wrapped_f ~finally:(fun () -> destroy scheduler)
 
 
 let run_process process =

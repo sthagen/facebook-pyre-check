@@ -16,6 +16,20 @@
   (ocamlopt_flags (-O3))))
 
 (library
+  (name exception)
+  (modules exception)
+  (public_name pyrelib.exception)
+  (preprocess
+  (pps
+   ppx_deriving.eq
+   ppx_deriving.show
+   ppx_deriving_yojson
+   ppx_hash
+   ppx_compare
+   ppx_sexp_conv))
+  (libraries core))
+
+(library
  (name version)
  (modules version)
  (public_name pyrelib.version)
@@ -55,7 +69,7 @@
    ppx_hash
    ppx_compare
    ppx_sexp_conv))
- (libraries core unix))
+ (libraries core unix pyrelib.exception))
 
 (library
  (name recognized)
@@ -191,7 +205,7 @@
  (name alarm)
  (modules alarm)
  (public_name pyrelib.alarm)
- (libraries unix pyrelib.log pyrelib.statistics))
+ (libraries unix pyrelib.exception pyrelib.log pyrelib.statistics))
 
 (library
  (name pyrePath)
@@ -364,6 +378,7 @@
  (libraries
   core
   ppx_deriving
+  pyrelib.exception
   pyrelib.pyre
   pyrelib.path
   pyrelib.search_path
@@ -428,7 +443,7 @@
    ppx_hash
    ppx_compare
    ppx_sexp_conv))
- (libraries cmdliner core pyrelib))
+ (libraries cmdliner core pyrelib pyrelib.exception))
 
 (alias
  (name DEFAULT)

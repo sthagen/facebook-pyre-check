@@ -11,8 +11,9 @@ open Core
 
 let parse_json message =
   try Result.Ok (Yojson.Safe.from_string message) with
-  | Yojson.Json_error message ->
-      let message = Format.sprintf "Cannot parse JSON. %s" message in
+  | Yojson.Json_error message as exn ->
+      let exn = Exception.wrap exn in
+      let message = Format.sprintf "Cannot parse JSON. %s: %s" message (Exception.to_string exn) in
       Result.Error message
 
 
@@ -99,7 +100,7 @@ let handle_connection ~server _client_address (input_channel, output_channel) =
                 handle_subscription ~server ~input_channel ~output_channel subscription))
   in
   let on_uncaught_exception exn =
-    Log.warning "Uncaught exception: %s" (Exn.to_string exn);
+    Log.warning "Uncaught exception: %s" (Exception.exn_to_string exn);
     Statistics.log_exception exn ~fatal:true ~origin:"code-navigation";
     Server.Stop.(stop_waiting_server (Reason.UncaughtException exn))
   in
