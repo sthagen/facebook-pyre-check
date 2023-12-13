@@ -62,6 +62,18 @@ let ast_environment resolution =
 
 let module_tracker resolution = ast_environment resolution |> AstEnvironment.ReadOnly.module_tracker
 
+(* Note that both of the path lookups are not dependency tracked! It turns out they are only used
+   for special things like error messages where it winds up not mattering, but this is a very sharp
+   edge in our incremental system. *)
+
+let lookup_module_path resolution =
+  ModuleTracker.ReadOnly.lookup_module_path (module_tracker resolution)
+
+
+let lookup_relative_path resolution =
+  ModuleTracker.ReadOnly.lookup_relative_path (module_tracker resolution)
+
+
 let class_hierarchy ({ dependency; _ } as resolution) =
   ClassHierarchyEnvironment.ReadOnly.class_hierarchy
     ?dependency
@@ -83,14 +95,30 @@ let is_protocol ({ dependency; _ } as resolution) annotation =
     annotation
 
 
-let class_summary ({ dependency; _ } as resolution) =
+let first_matching_class_decorator ({ dependency; _ } as resolution) =
+  UnannotatedGlobalEnvironment.ReadOnly.first_matching_class_decorator
+    (unannotated_global_environment resolution)
+    ?dependency
+
+
+let get_processed_source ({ dependency; _ } as resolution) qualifier =
+  AstEnvironment.ReadOnly.get_processed_source (ast_environment resolution) ?dependency qualifier
+
+
+let get_class_summary ({ dependency; _ } as resolution) =
   UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
     (unannotated_global_environment resolution)
     ?dependency
 
 
-let define_body ({ dependency; _ } as resolution) =
+let get_define_body ({ dependency; _ } as resolution) =
   UnannotatedGlobalEnvironment.ReadOnly.get_define_body
+    ?dependency
+    (unannotated_global_environment resolution)
+
+
+let get_define_names ({ dependency; _ } as resolution) =
+  UnannotatedGlobalEnvironment.ReadOnly.get_define_names
     ?dependency
     (unannotated_global_environment resolution)
 
@@ -99,6 +127,12 @@ let function_definition ({ dependency; _ } as resolution) =
   UnannotatedGlobalEnvironment.ReadOnly.get_function_definition
     ?dependency
     (unannotated_global_environment resolution)
+
+
+let parse_annotation_without_validating_type_parameters ({ dependency; _ } as resolution) =
+  AliasEnvironment.ReadOnly.parse_annotation_without_validating_type_parameters
+    ?dependency
+    (alias_environment resolution)
 
 
 let class_metadata ({ dependency; _ } as resolution) =
@@ -345,16 +379,16 @@ let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~ex
   comparator ~get_typed_dictionary_override:(fun _ -> None) ~left ~right
 
 
-let is_transitive_successor
+let has_transitive_successor
     ?(placeholder_subclass_extends_all = true)
     resolution
-    ~predecessor
     ~successor
+    predecessor
   =
-  ClassSuccessorMetadataEnvironment.ReadOnly.is_transitive_successor
+  ClassSuccessorMetadataEnvironment.ReadOnly.has_transitive_successor
     ~placeholder_subclass_extends_all
     (class_metadata_environment resolution)
-    ~target:successor
+    ~successor
     predecessor
 
 
@@ -367,11 +401,11 @@ let source_is_unit_test resolution ~source =
   let is_unittest () =
     let is_unittest_class { Node.value = { Class.name; _ }; _ } =
       try
-        is_transitive_successor
+        has_transitive_successor
           ~placeholder_subclass_extends_all:false
           resolution
-          ~predecessor:(Reference.show name)
           ~successor:"unittest.case.TestCase"
+          (Reference.show name)
       with
       | ClassHierarchy.Untracked _ -> false
     in

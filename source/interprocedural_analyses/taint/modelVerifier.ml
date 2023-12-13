@@ -31,7 +31,6 @@ module ClassDefinitionsCache = DefinitionsCache (struct
 end)
 
 let containing_source ~resolution reference =
-  let ast_environment = GlobalResolution.ast_environment resolution in
   let rec qualifier ~found ~lead ~tail =
     match tail with
     | head :: (_ :: _ as tail) ->
@@ -43,7 +42,7 @@ let containing_source ~resolution reference =
     | _ -> found
   in
   qualifier ~found:Reference.empty ~lead:Reference.empty ~tail:(Reference.as_list reference)
-  |> AstEnvironment.ReadOnly.get_processed_source ast_environment
+  |> GlobalResolution.get_processed_source resolution
 
 
 let class_summaries ~resolution reference =
@@ -383,7 +382,7 @@ let verify_global ~path ~location ~resolution ~name =
       let class_summary =
         Reference.prefix name
         >>| Reference.show
-        >>= GlobalResolution.class_summary resolution
+        >>= GlobalResolution.get_class_summary resolution
         >>| Node.value
       in
       match class_summary, global with

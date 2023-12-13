@@ -556,7 +556,7 @@ let rec process_request_exn ~type_environment ~build_system request =
             (Interprocedural.FetchCallables.get_stubs initial_callables)
         in
         Taint.ModelQueryExecution.generate_models_from_queries
-          ~resolution:global_resolution
+          ~environment:(TypeEnvironment.ReadOnly.global_environment type_environment)
           ~scheduler
           ~class_hierarchy_graph
           ~source_sink_filter:None
@@ -797,7 +797,7 @@ let rec process_request_exn ~type_environment ~build_system request =
         Single (Base.ExpressionLevelCoverageResponse results)
     | GlobalLeaks { qualifiers; parse_errors } ->
         let lookup =
-          let module_tracker = GlobalResolution.module_tracker global_resolution in
+          let module_tracker = TypeEnvironment.ReadOnly.module_tracker type_environment in
           PathLookup.instantiate_path_with_build_system ~build_system ~module_tracker
         in
         let find_leak_errors_for_qualifier qualifier =
@@ -1005,7 +1005,7 @@ let rec process_request_exn ~type_environment ~build_system request =
                 ~should_log_exception:(fun _ -> true)
                 ~f:load_all_modules;
               UnannotatedGlobalEnvironment.ReadOnly.all_classes
-                (GlobalResolution.unannotated_global_environment global_resolution)
+                (TypeEnvironment.ReadOnly.unannotated_global_environment type_environment)
               |> List.map ~f:Reference.create
           | _ ->
               List.filter class_names ~f:(fun class_name ->

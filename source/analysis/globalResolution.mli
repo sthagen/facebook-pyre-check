@@ -15,7 +15,19 @@ val create
   AnnotatedGlobalEnvironment.ReadOnly.t ->
   t
 
+val lookup_module_path : t -> Ast.Reference.t -> Ast.ModulePath.t option
+
+val lookup_relative_path : t -> Ast.Reference.t -> string option
+
+val first_matching_class_decorator
+  :  t ->
+  names:string list ->
+  ClassSummary.t Node.t ->
+  Ast.Statement.Decorator.t option
+
 val resolve_literal : t -> Expression.t -> Type.t
+
+val get_processed_source : t -> Reference.t -> Source.t option
 
 val parse_annotation
   :  t ->
@@ -23,11 +35,20 @@ val parse_annotation
   Expression.t ->
   Type.t
 
-val class_summary : t -> Type.Primitive.t -> ClassSummary.t Node.t option
+val get_class_summary : t -> Type.Primitive.t -> ClassSummary.t Node.t option
 
-val define_body : t -> Reference.t -> Define.t Node.t option
+val get_define_body : t -> Reference.t -> Define.t Node.t option
+
+val get_define_names : t -> Reference.t -> Reference.t list
 
 val function_definition : t -> Reference.t -> FunctionDefinition.t option
+
+val parse_annotation_without_validating_type_parameters
+  :  t ->
+  ?modify_aliases:(?replace_unbound_parameters_with_any:bool -> Type.alias -> Type.alias) ->
+  ?allow_untracked:bool ->
+  Expression.t ->
+  Type.t
 
 val source_is_unit_test : t -> source:Ast.Source.t -> bool
 
@@ -68,20 +89,6 @@ val legacy_resolve_exports : t -> Reference.t -> Reference.t
 
 val resolve_exports : t -> ?from:Reference.t -> Reference.t -> ResolvedReference.t option
 
-val ast_environment : t -> AstEnvironment.ReadOnly.t
-
-val annotated_global_environment : t -> AnnotatedGlobalEnvironment.ReadOnly.t
-
-val class_metadata_environment : t -> ClassSuccessorMetadataEnvironment.ReadOnly.t
-
-val class_hierarchy_environment : t -> ClassHierarchyEnvironment.ReadOnly.t
-
-val alias_environment : t -> AliasEnvironment.ReadOnly.t
-
-val empty_stub_environment : t -> EmptyStubEnvironment.ReadOnly.t
-
-val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
-
 val aliases
   :  t ->
   ?replace_unbound_parameters_with_any:bool ->
@@ -91,8 +98,6 @@ val aliases
 val base_is_from_placeholder_stub : t -> Expression.t -> bool
 
 val module_exists : t -> Reference.t -> bool
-
-val module_tracker : t -> ModuleTracker.ReadOnly.t
 
 val get_module_metadata : t -> Reference.t -> Module.t option
 
@@ -173,11 +178,11 @@ val is_consistent_with
   expression:Ast.Expression.t option ->
   bool
 
-val is_transitive_successor
+val has_transitive_successor
   :  ?placeholder_subclass_extends_all:bool ->
   t ->
-  predecessor:string ->
-  successor:string ->
+  successor:Type.Primitive.t ->
+  Type.Primitive.t ->
   bool
 
 val uninstantiated_attributes

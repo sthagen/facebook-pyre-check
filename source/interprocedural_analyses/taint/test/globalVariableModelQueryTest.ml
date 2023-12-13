@@ -73,7 +73,7 @@ let test_find_globals context =
     let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
       ScratchProject.build_type_environment project
     in
-    let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
+    let environment = TypeEnvironment.ReadOnly.global_environment type_environment in
     let is_uninteresting_global name =
       not
         (List.exists uninteresting_globals_prefix ~f:(fun exclude_prefix ->
@@ -83,13 +83,12 @@ let test_find_globals context =
       {
         VariableWithType.name;
         type_annotation =
-          ModelQueryExecution.GlobalVariableQueryExecutor.get_type_annotation
-            ~resolution:global_resolution
-            name;
+          ModelQueryExecution.GlobalVariableQueryExecutor.get_type_annotation ~environment name;
       }
     in
     let actual =
-      ModelQueryExecution.GlobalVariableQueryExecutor.get_globals ~resolution:global_resolution
+      ModelQueryExecution.GlobalVariableQueryExecutor.get_globals
+        ~environment:(TypeEnvironment.ReadOnly.global_environment type_environment)
       |> List.map ~f:Target.object_name
       |> List.filter ~f:is_uninteresting_global
       |> List.map ~f:add_type_annotation

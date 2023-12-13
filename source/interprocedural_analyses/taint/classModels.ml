@@ -161,7 +161,7 @@ let infer ~environment ~user_models =
     | None -> existing_state
   in
   let get_attributes_in_alphabetical_order class_name =
-    GlobalResolution.class_summary global_resolution class_name
+    GlobalResolution.get_class_summary global_resolution class_name
     >>| Node.value
     >>| ClassSummary.attributes ~include_generated_attributes:false ~in_test:false
     |> Option.value ~default:Identifier.SerializableMap.empty
@@ -292,7 +292,7 @@ let infer ~environment ~user_models =
     then
       compute_dataclass_models class_name
     else if
-      CallResolution.is_transitive_successor_ignoring_untracked
+      CallResolution.has_transitive_successor_ignoring_untracked
         global_resolution
         ~reflexive:false
         ~predecessor:class_name
@@ -300,12 +300,12 @@ let infer ~environment ~user_models =
     then
       compute_named_tuple_models class_name
     else if
-      CallResolution.is_transitive_successor_ignoring_untracked
+      CallResolution.has_transitive_successor_ignoring_untracked
         global_resolution
         ~reflexive:false
         ~predecessor:class_name
         ~successor:"TypedDictionary"
-      || CallResolution.is_transitive_successor_ignoring_untracked
+      || CallResolution.has_transitive_successor_ignoring_untracked
            global_resolution
            ~reflexive:false
            ~predecessor:class_name
@@ -316,13 +316,12 @@ let infer ~environment ~user_models =
       []
   in
   let inferred_models class_name =
-    GlobalResolution.class_summary global_resolution class_name
+    GlobalResolution.get_class_summary global_resolution class_name
     >>| compute_models class_name
     |> Option.value ~default:[]
   in
   let all_classes =
-    TypeEnvironment.ReadOnly.global_resolution environment
-    |> GlobalResolution.unannotated_global_environment
+    TypeEnvironment.ReadOnly.unannotated_global_environment environment
     |> UnannotatedGlobalEnvironment.ReadOnly.all_classes
   in
   let models =

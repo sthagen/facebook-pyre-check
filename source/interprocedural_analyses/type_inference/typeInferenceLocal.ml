@@ -140,9 +140,7 @@ module State (Context : Context) = struct
           let error_to_string error =
             let error =
               let lookup reference =
-                ModuleTracker.ReadOnly.lookup_relative_path
-                  (GlobalResolution.module_tracker global_resolution)
-                  reference
+                GlobalResolution.lookup_relative_path global_resolution reference
               in
               Error.instantiate ~show_error_traces:true ~lookup error
             in
@@ -1175,12 +1173,10 @@ let should_analyze_define
     ~global_resolution
     { Node.value = { Define.signature = { return_annotation; parameters; _ }; _ } as define; _ }
   =
-  let alias_environment = GlobalResolution.alias_environment global_resolution in
   let is_missing_or_invalid maybe_expression =
     let resolve_type expression =
       expression
-      |> AliasEnvironment.ReadOnly.parse_annotation_without_validating_type_parameters
-           alias_environment
+      |> GlobalResolution.parse_annotation_without_validating_type_parameters global_resolution
     in
     maybe_expression >>| resolve_type >>| Type.is_untyped |> Option.value ~default:true
   in
