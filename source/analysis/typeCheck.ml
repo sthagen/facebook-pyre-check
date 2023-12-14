@@ -844,7 +844,7 @@ module State (Context : Context) = struct
         let errors =
           if
             (not (GlobalResolution.module_exists global_resolution reference))
-            && not (GlobalResolution.is_suppressed_module global_resolution reference)
+            && not (GlobalResolution.is_from_empty_stub global_resolution reference)
           then
             match Reference.prefix reference with
             | Some qualifier when not (Reference.is_empty qualifier) ->
@@ -938,6 +938,7 @@ module State (Context : Context) = struct
         && (not
               (GlobalResolution.constraints_solution_exists
                  global_resolution
+                 ~get_typed_dictionary_override:(fun _ -> None)
                  ~left:actual
                  ~right:return_annotation))
         && (not (Define.is_abstract_method define))
@@ -2033,7 +2034,8 @@ module State (Context : Context) = struct
           Resolution.parent resolution
           >>| Reference.show
           >>= fun class_name ->
-          GlobalResolution.class_metadata global_resolution class_name >>= superclass ~class_name
+          GlobalResolution.get_class_metadata global_resolution class_name
+          >>= superclass ~class_name
         in
         match resolved_superclass with
         | Some superclass ->
@@ -4022,7 +4024,7 @@ module State (Context : Context) = struct
     | Expression.Name (Name.Identifier _)
       when delocalize target
            |> Expression.show
-           |> GlobalResolution.aliases global_resolution
+           |> GlobalResolution.get_alias global_resolution
            |> Option.is_some ->
         (* The statement has been recognized as a type alias definition instead of an actual value
            assignment. *)
@@ -4334,6 +4336,7 @@ module State (Context : Context) = struct
                           && (not
                                 (GlobalResolution.constraints_solution_exists
                                    global_resolution
+                                   ~get_typed_dictionary_override:(fun _ -> None)
                                    ~left:resolved
                                    ~right:expected))
                           && not is_valid_enumeration_assignment
@@ -5263,13 +5266,13 @@ module State (Context : Context) = struct
                   match GlobalResolution.module_exists global_resolution name with
                   | true -> None
                   | false -> (
-                      match GlobalResolution.is_suppressed_module global_resolution name with
+                      match GlobalResolution.is_from_empty_stub global_resolution name with
                       | true -> None
                       | false -> Some (Error.UndefinedModule name)))
           | Some { Node.value = from; _ } -> (
               match GlobalResolution.get_module_metadata global_resolution from with
               | None ->
-                  if GlobalResolution.is_suppressed_module global_resolution from then
+                  if GlobalResolution.is_from_empty_stub global_resolution from then
                     []
                   else
                     [Error.UndefinedModule from]
@@ -5295,7 +5298,7 @@ module State (Context : Context) = struct
                                   (Reference.combine from name_reference)
                                 || (* The current module is descendant of a placeholder-stub
                                       module. *)
-                                GlobalResolution.is_suppressed_module global_resolution from
+                                GlobalResolution.is_from_empty_stub global_resolution from
                               then
                                 None
                               else
@@ -5671,6 +5674,7 @@ module State (Context : Context) = struct
             || GlobalResolution.less_or_equal global_resolution ~left:default ~right:annotation
             || GlobalResolution.constraints_solution_exists
                  global_resolution
+                 ~get_typed_dictionary_override:(fun _ -> None)
                  ~left:default
                  ~right:annotation
           then
@@ -5784,6 +5788,7 @@ module State (Context : Context) = struct
                           let compatible =
                             GlobalResolution.constraints_solution_exists
                               global_resolution
+                              ~get_typed_dictionary_override:(fun _ -> None)
                               ~left:resolved
                               ~right:annotation
                           in
@@ -6358,6 +6363,7 @@ module State (Context : Context) = struct
                             let expected = Type.Variable.mark_all_variables_as_bound expected in
                             GlobalResolution.constraints_solution_exists
                               global_resolution
+                              ~get_typed_dictionary_override:(fun _ -> None)
                               ~left:expected
                               ~right:actual
                           in
@@ -6863,7 +6869,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                 let { ClassSummary.name; _ } = definition in
                 let class_name = Reference.show name in
                 let is_protocol_or_abstract class_name =
-                  match GlobalResolution.class_metadata global_resolution class_name with
+                  match GlobalResolution.get_class_metadata global_resolution class_name with
                   | Some { is_protocol; is_abstract; _ } when is_protocol || is_abstract ->
                       `Fst { class_name; is_abstract; is_protocol }
                   | Some { is_protocol; is_abstract; _ } ->
@@ -6955,7 +6961,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
           | { Node.value = Name name; _ } ->
               name_to_reference name
               >>| Reference.show
-              >>= GlobalResolution.class_metadata global_resolution
+              >>= GlobalResolution.get_class_metadata global_resolution
               >>| add_error
               |> Option.value ~default:errors
           | _ -> errors
@@ -7145,7 +7151,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
       in
       let name = Reference.prefix name >>| Reference.show |> Option.value ~default:"" in
       match
-        GlobalResolution.class_metadata global_resolution name
+        GlobalResolution.get_class_metadata global_resolution name
         >>| check_inconsistent_mro ~class_name:name
       with
       | None -> errors
@@ -7720,6 +7726,6 @@ let check_define_by_name
     ~event_name:"type check"
     ~callable:(Reference.show name)
     (fun () ->
-      GlobalResolution.function_definition global_resolution name
+      GlobalResolution.get_function_definition global_resolution name
       >>| check_function_definition ~type_check_controls ~call_graph_builder ~resolution ~name)
     ()
