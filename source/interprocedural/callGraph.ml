@@ -1822,9 +1822,7 @@ let resolve_callee_ignoring_decorators ~resolution ~call_indexer ~return_type ca
                 Some (element, contain_class_method signatures, static)
             | _ -> None
           in
-          let parent_classes_in_mro =
-            GlobalResolution.successors ~resolution:global_resolution class_name
-          in
+          let parent_classes_in_mro = GlobalResolution.successors global_resolution class_name in
           match List.find_map (class_name :: parent_classes_in_mro) ~f:find_attribute with
           | Some (base_class, is_class_method, is_static_method) ->
               Some
@@ -1959,8 +1957,8 @@ let resolve_attribute_access_global_targets
                 |> fst
                 |> Type.primitive_name
                 >>= GlobalResolution.attribute_from_class_name
+                      global_resolution
                       ~transitive:true
-                      ~resolution:global_resolution
                       ~name:attribute
                       ~instantiated:annotation
               in

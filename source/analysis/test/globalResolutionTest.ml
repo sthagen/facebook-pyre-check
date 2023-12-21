@@ -38,7 +38,7 @@ let test_superclasses context =
     |> ScratchProject.build_global_resolution
   in
   let assert_successors target expected =
-    let actual = GlobalResolution.successors ~resolution target in
+    let actual = GlobalResolution.successors resolution target in
     assert_equal
       ~printer:(List.fold ~init:"" ~f:(fun sofar next -> sofar ^ Type.Primitive.show next ^ " "))
       ~cmp:(List.equal Type.Primitive.equal)
@@ -564,12 +564,12 @@ let test_all_attributes context =
       ~cmp:attribute_list_equal
       ~printer:print_attributes
       ~pp_diff:(diff ~print)
-      (GlobalResolution.uninstantiated_attributes ~resolution definition
+      (GlobalResolution.uninstantiated_attributes resolution definition
       |> (fun a -> Option.value_exn a)
       |> List.map
            ~f:
              (GlobalResolution.instantiate_attribute
-                ~resolution
+                resolution
                 ~accessed_through_class:false
                 ~accessed_through_readonly:false))
       attributes
@@ -689,11 +689,11 @@ let test_attribute_from_class_name context =
     =
     let actual_attribute =
       GlobalResolution.attribute_from_class_name
+        resolution
         parent
         ~transitive:true
         ~accessed_through_class
         ~accessed_through_readonly
-        ~resolution
         ~name:attribute_name
         ~instantiated
     in
@@ -1305,7 +1305,7 @@ let test_typed_dictionary_attributes context =
     let resolution = Resolution.global_resolution resolution in
     let attributes =
       GlobalResolution.uninstantiated_attributes
-        ~resolution
+        resolution
         ~accessed_through_class:true
         ~transitive:true
         ~include_generated_attributes:true
@@ -1398,7 +1398,7 @@ let test_constraints context =
     in
     let resolution = GlobalResolution.create global_environment in
     let constraints =
-      GlobalResolution.constraints ~target ~resolution ?parameters ~instantiated ()
+      GlobalResolution.constraints ~target resolution ?parameters ~instantiated ()
     in
     let expected =
       List.map expected ~f:(fun (variable, value) -> Type.Variable.UnaryPair (variable, value))
@@ -1656,7 +1656,7 @@ let test_metaclasses context =
       ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
     in
     let resolution = GlobalResolution.create global_environment in
-    assert_equal (Some (Type.Primitive metaclass)) (GlobalResolution.metaclass ~resolution target)
+    assert_equal (Some (Type.Primitive metaclass)) (GlobalResolution.metaclass resolution target)
   in
   assert_metaclass ~source:{|
        class C:
@@ -1813,7 +1813,7 @@ let test_overrides context =
     |> ScratchProject.build_global_resolution
   in
   let assert_overrides ~class_name ~method_name ~expected_override =
-    let overrides = GlobalResolution.overrides ~resolution ~name:method_name class_name in
+    let overrides = GlobalResolution.overrides resolution ~name:method_name class_name in
     let print_attribute attribute =
       AnnotatedAttribute.sexp_of_instantiated attribute |> Sexp.to_string_hum
     in
@@ -2047,7 +2047,7 @@ let test_type_of_iteration_value context =
   in
   let assert_type_of_iteration_value ~annotation ~expected =
     let type_ = parse_annotation annotation in
-    let actual = GlobalResolution.type_of_iteration_value ~global_resolution type_ in
+    let actual = GlobalResolution.type_of_iteration_value global_resolution type_ in
     assert_equal
       ~cmp:[%equal: Type.t option]
       ~printer:(function
@@ -2080,7 +2080,7 @@ let test_type_of_generator_send_and_return context =
   let assert_type_of_generator_send_and_return ~annotation ~expected_send ~expected_return =
     let type_ = parse_annotation annotation in
     let actual_send, actual_return =
-      GlobalResolution.type_of_generator_send_and_return ~global_resolution type_
+      GlobalResolution.type_of_generator_send_and_return global_resolution type_
     in
     assert_equal ~cmp:[%equal: Type.t] ~printer:Type.show expected_send actual_send;
     assert_equal ~cmp:[%equal: Type.t] ~printer:Type.show expected_return actual_return;
@@ -2115,24 +2115,24 @@ let test_refine context =
   in
   assert_equal
     (GlobalResolution.refine
-       ~global_resolution
+       global_resolution
        (Annotation.create_immutable Type.float)
        Type.integer)
     (Annotation.create_immutable ~original:(Some Type.float) Type.integer);
   assert_equal
     (GlobalResolution.refine
-       ~global_resolution
+       global_resolution
        (Annotation.create_immutable Type.integer)
        Type.float)
     (Annotation.create_immutable Type.integer);
   assert_equal
     (GlobalResolution.refine
-       ~global_resolution
+       global_resolution
        (Annotation.create_immutable Type.integer)
        Type.Bottom)
     (Annotation.create_immutable Type.integer);
   assert_equal
-    (GlobalResolution.refine ~global_resolution (Annotation.create_immutable Type.integer) Type.Top)
+    (GlobalResolution.refine global_resolution (Annotation.create_immutable Type.integer) Type.Top)
     (Annotation.create_immutable ~original:(Some Type.integer) Type.Top);
   ()
 

@@ -275,7 +275,7 @@ let errors_from_not_found
                           (Binary { operator_name; left_operand; right_operand }) )
                   | _ -> default_location_and_error)
               | Some (Type.Primitive _ as annotation), Some method_name ->
-                  GlobalResolution.get_typed_dictionary ~resolution:global_resolution annotation
+                  GlobalResolution.get_typed_dictionary global_resolution annotation
                   >>= typed_dictionary_error ~mismatch ~method_name ~position
                   >>| (fun kind -> mismatch_location, kind)
                   |> Option.value ~default:default_location_and_error
@@ -458,7 +458,7 @@ module State (Context : Context) = struct
       let is_untracked_name class_name =
         match class_name with
         | "..." -> false
-        | _ -> not (GlobalResolution.is_tracked resolution class_name)
+        | _ -> not (GlobalResolution.class_hierarchy_contains_class resolution class_name)
       in
       let untracked =
         List.filter (Type.elements annotation) ~f:is_untracked_name
@@ -483,7 +483,7 @@ module State (Context : Context) = struct
         | Type.Literal
             (Type.EnumerationMember
               { enumeration_type = Type.Primitive enumeration_name; member_name })
-          when not (GlobalResolution.is_tracked resolution enumeration_name) ->
+          when not (GlobalResolution.class_hierarchy_contains_class resolution enumeration_name) ->
             emit_error
               ~errors
               ~location
@@ -730,7 +730,7 @@ module State (Context : Context) = struct
     let global_resolution = Resolution.global_resolution resolution in
     match
       GlobalResolution.resolve_define
-        ~resolution:global_resolution
+        global_resolution
         ~implementation:(Some signature)
         ~overloads:[]
     with
@@ -1108,7 +1108,7 @@ module State (Context : Context) = struct
             in
             let parameter =
               new_resolved
-              |> GlobalResolution.type_of_iteration_value ~global_resolution
+              |> GlobalResolution.type_of_iteration_value global_resolution
               |> Option.value ~default:Type.Any
             in
             {
@@ -1178,12 +1178,12 @@ module State (Context : Context) = struct
           let name = attribute in
           match
             GlobalResolution.attribute_from_class_name
+              global_resolution
               class_name
               ~transitive:true
               ~accessed_through_class
               ~accessed_through_readonly
               ~special_method:special
-              ~resolution:global_resolution
               ~name
               ~instantiated
           with
@@ -1424,7 +1424,7 @@ module State (Context : Context) = struct
         unpack_callable_and_self_argument
           ~signature_select:
             (GlobalResolution.signature_select
-               ~global_resolution
+               global_resolution
                ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution))
           ~global_resolution
       in
@@ -1546,8 +1546,8 @@ module State (Context : Context) = struct
                         callable_data with
                         selected_return_annotation =
                           GlobalResolution.signature_select
+                            (Resolution.global_resolution resolution)
                             ~arguments
-                            ~global_resolution:(Resolution.global_resolution resolution)
                             ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution)
                             ~callable
                             ~self_argument;
@@ -1567,9 +1567,9 @@ module State (Context : Context) = struct
                   | class_name ->
                       let abstract_methods =
                         GlobalResolution.uninstantiated_attributes
+                          global_resolution
                           ~transitive:true
                           class_name
-                          ~resolution:global_resolution
                         >>| List.filter ~f:AnnotatedAttribute.abstract
                         |> Option.value ~default:[]
                         |> List.map ~f:AnnotatedAttribute.name
@@ -1815,7 +1815,7 @@ module State (Context : Context) = struct
               let arguments = List.rev reversed_arguments in
               let selected_return_annotation =
                 GlobalResolution.signature_select
-                  ~global_resolution
+                  global_resolution
                   ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution)
                   ~arguments
                   ~callable
@@ -1860,7 +1860,7 @@ module State (Context : Context) = struct
                   callable_data) ->
                   let selected_return_annotation =
                     GlobalResolution.signature_select
-                      ~global_resolution
+                      global_resolution
                       ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution)
                       ~arguments
                       ~callable
@@ -2545,10 +2545,10 @@ module State (Context : Context) = struct
               name
             =
             GlobalResolution.attribute_from_class_name
+              global_resolution
               ~transitive:true
               ~accessed_through_class
               class_name
-              ~resolution:global_resolution
               ~special_method
               ~name
               ~instantiated
@@ -3189,7 +3189,7 @@ module State (Context : Context) = struct
                     | _ -> (
                         match
                           GlobalResolution.type_of_iteration_value
-                            ~global_resolution
+                            global_resolution
                             resolved_element
                         with
                         | Some element_type ->
@@ -3285,7 +3285,7 @@ module State (Context : Context) = struct
         in
         let send_type, _ =
           return_annotation ~global_resolution
-          |> GlobalResolution.type_of_generator_send_and_return ~global_resolution
+          |> GlobalResolution.type_of_generator_send_and_return global_resolution
         in
         { resolution; errors; resolved = send_type; resolved_annotation = None; base = None }
     | Expression.YieldFrom yielded_from ->
@@ -3294,11 +3294,11 @@ module State (Context : Context) = struct
         in
         let yield_type =
           resolved
-          |> GlobalResolution.type_of_iteration_value ~global_resolution
+          |> GlobalResolution.type_of_iteration_value global_resolution
           |> Option.value ~default:Type.Any
         in
         let send_type, subgenerator_return_type =
-          GlobalResolution.type_of_generator_send_and_return ~global_resolution resolved
+          GlobalResolution.type_of_generator_send_and_return global_resolution resolved
         in
         let actual =
           if define_signature.async then
@@ -3402,7 +3402,7 @@ module State (Context : Context) = struct
               |> fst
               |> Type.primitive_name
               >>= GlobalResolution.attribute_from_class_name
-                    ~resolution:global_resolution
+                    global_resolution
                     ~name:attribute
                     ~instantiated:parent
                     ~transitive:true
@@ -3433,7 +3433,7 @@ module State (Context : Context) = struct
           let attribute_from_parent parent =
             let get_attribute =
               GlobalResolution.attribute_from_class_name
-                ~resolution:global_resolution
+                global_resolution
                 ~name:attribute
                 ~instantiated:parent
                 ~transitive:true
@@ -3729,9 +3729,7 @@ module State (Context : Context) = struct
             | Type.Parametric { name = "type"; parameters = [Single typed_dictionary] } ->
                 if
                   Type.is_any typed_dictionary
-                  || GlobalResolution.is_typed_dictionary
-                       ~resolution:global_resolution
-                       typed_dictionary
+                  || GlobalResolution.is_typed_dictionary global_resolution typed_dictionary
                 then
                   Value resolution
                 else
@@ -3772,11 +3770,7 @@ module State (Context : Context) = struct
         | Some existing_annotation -> (
             match Annotation.annotation existing_annotation with
             | Type.Parametric { name = "type"; parameters = [Single typed_dictionary] } ->
-                if
-                  GlobalResolution.is_typed_dictionary
-                    ~resolution:global_resolution
-                    typed_dictionary
-                then
+                if GlobalResolution.is_typed_dictionary global_resolution typed_dictionary then
                   Unreachable
                 else
                   Value resolution
@@ -4201,7 +4195,7 @@ module State (Context : Context) = struct
             | _ ->
                 (not (NamedTuple.is_named_tuple ~global_resolution ~annotation))
                 && Option.is_some
-                     (GlobalResolution.type_of_iteration_value ~global_resolution annotation)
+                     (GlobalResolution.type_of_iteration_value global_resolution annotation)
           in
           match target_value with
           | Expression.Name name -> (
@@ -4236,7 +4230,7 @@ module State (Context : Context) = struct
                       let attribute =
                         parent_class_name
                         >>= GlobalResolution.attribute_from_class_name
-                              ~resolution:global_resolution
+                              global_resolution
                               ~name:attribute
                               ~instantiated:parent
                               ~transitive:true
@@ -4282,10 +4276,10 @@ module State (Context : Context) = struct
                     match Type.class_data_for_attribute_lookup parent with
                     | Some [{ instantiated; class_name; _ }] ->
                         GlobalResolution.attribute_from_class_name
+                          global_resolution
                           class_name
                           ~accessed_through_class:false
                           ~transitive:true
-                          ~resolution:global_resolution
                           ~name:"__getattr__"
                           ~instantiated
                     | _ -> None
@@ -4409,7 +4403,7 @@ module State (Context : Context) = struct
                             let is_meta_typed_dictionary =
                               Type.is_meta parent
                               && GlobalResolution.is_typed_dictionary
-                                   ~resolution:global_resolution
+                                   global_resolution
                                    (Type.single_parameter parent)
                             in
                             let is_getattr_returning_any_defined =
@@ -4627,9 +4621,7 @@ module State (Context : Context) = struct
                     (* [Movie.items: int] would raise an error because [Mapping] also has
                        [items]. *)
                     && (not
-                          (GlobalResolution.is_typed_dictionary
-                             ~resolution:global_resolution
-                             parent_annotation))
+                          (GlobalResolution.is_typed_dictionary global_resolution parent_annotation))
                     && not (Type.equal parent_annotation (Primitive attribute_parent))
                   in
                   let parent_class =
@@ -4713,7 +4705,7 @@ module State (Context : Context) = struct
                       let reference = Reference.create attribute in
                       let attribute =
                         GlobalResolution.attribute_from_class_name
-                          ~resolution:global_resolution
+                          global_resolution
                           ~name:attribute
                           ~instantiated
                           ~accessed_through_class
@@ -4792,7 +4784,7 @@ module State (Context : Context) = struct
                           if
                             insufficiently_annotated
                             && GlobalResolution.is_typed_dictionary
-                                 ~resolution:global_resolution
+                                 global_resolution
                                  (Type.Primitive class_name)
                           then
                             ( emit_error
@@ -4838,7 +4830,7 @@ module State (Context : Context) = struct
                   in
                   let is_not_local = is_global && not (Define.is_toplevel Context.define.value) in
                   let refine_annotation annotation refined =
-                    GlobalResolution.refine ~global_resolution annotation refined
+                    GlobalResolution.refine global_resolution annotation refined
                   in
                   let annotation =
                     (* Do not refine targets explicitly annotated as 'Any' to allow for escape
@@ -5436,8 +5428,8 @@ module State (Context : Context) = struct
           | { Ast.Statement.Define.signature = { parent = Some parent; _ }; _ } -> (
               let possibly_overridden_attribute =
                 GlobalResolution.overrides
+                  global_resolution
                   (Reference.show parent)
-                  ~resolution:global_resolution
                   ~name:(StatementDefine.unqualified_name define)
               in
               match possibly_overridden_attribute with
@@ -6002,9 +5994,7 @@ module State (Context : Context) = struct
       let is_current_class_typed_dictionary =
         current_class_name
         >>| (fun class_name ->
-              GlobalResolution.is_typed_dictionary
-                ~resolution:global_resolution
-                (Primitive class_name))
+              GlobalResolution.is_typed_dictionary global_resolution (Primitive class_name))
         |> Option.value ~default:false
       in
       if Define.is_class_toplevel define then
@@ -6020,9 +6010,7 @@ module State (Context : Context) = struct
               if
                 is_current_class_typed_dictionary
                 && not
-                     (GlobalResolution.is_typed_dictionary
-                        ~resolution:global_resolution
-                        (Primitive base_name)
+                     (GlobalResolution.is_typed_dictionary global_resolution (Primitive base_name)
                      || Type.TypedDictionary.is_builtin_typed_dictionary_class base_name)
               then
                 emit_error
@@ -6062,9 +6050,7 @@ module State (Context : Context) = struct
           let superclass_pairs_with_same_field_name =
             let field_name_to_successor_fields_map =
               let get_typed_dictionary_fields class_name =
-                GlobalResolution.get_typed_dictionary
-                  ~resolution:global_resolution
-                  (Type.Primitive class_name)
+                GlobalResolution.get_typed_dictionary global_resolution (Type.Primitive class_name)
                 >>| (fun { fields; _ } -> fields)
                 |> Option.value ~default:[]
               in
@@ -6075,7 +6061,7 @@ module State (Context : Context) = struct
               in
               let base_classes =
                 current_class_name
-                >>| GlobalResolution.immediate_parents ~resolution:global_resolution
+                >>| GlobalResolution.immediate_parents global_resolution
                 |> Option.value ~default:[]
               in
               List.concat_map base_classes ~f:get_successor_map_entries
@@ -6162,7 +6148,7 @@ module State (Context : Context) = struct
       let init_subclass_parent =
         let find_init_subclass parent_class =
           GlobalResolution.attribute_from_class_name
-            ~resolution:global_resolution
+            global_resolution
             ~transitive:false
             ~accessed_through_class:true
             ~name:"__init_subclass__"
@@ -6177,7 +6163,7 @@ module State (Context : Context) = struct
         in
         parent
         >>| Reference.show
-        >>| GlobalResolution.successors ~resolution:global_resolution
+        >>| GlobalResolution.successors global_resolution
         >>= List.find_map ~f:find_init_subclass
       in
       match init_subclass_parent with
@@ -6239,8 +6225,8 @@ module State (Context : Context) = struct
             match define with
             | { Ast.Statement.Define.signature = { parent = Some parent; decorators; _ }; _ } -> (
                 GlobalResolution.overrides
+                  global_resolution
                   (Reference.show parent)
-                  ~resolution:global_resolution
                   ~name:(StatementDefine.unqualified_name define)
                 >>| fun overridden_attribute ->
                 let errors =
@@ -6777,7 +6763,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
           GlobalResolution.uninstantiated_attributes
             ~transitive:false
             ~include_generated_attributes:true
-            ~resolution:global_resolution
+            global_resolution
             (Reference.show (ClassSummary.name definition))
           >>| List.filter ~f:(fun attribute -> AnnotatedAttribute.is_private attribute)
           >>| List.map ~f:(fun attribute ->
@@ -6803,7 +6789,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
         && (not (ClassSummary.is_abstract definition))
         && not
              (GlobalResolution.is_typed_dictionary
-                ~resolution:global_resolution
+                global_resolution
                 (Type.Primitive (Reference.show (ClassSummary.name definition))))
       then
         let unimplemented_errors =
@@ -6812,7 +6798,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
               let attributes =
                 GlobalResolution.uninstantiated_attributes
                   ~include_generated_attributes:true
-                  ~resolution:global_resolution
+                  global_resolution
                   class_name
                 |> Option.value ~default:[]
               in
@@ -6824,7 +6810,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
               let add_to_map sofar attribute =
                 let annotation =
                   GlobalResolution.instantiate_attribute
-                    ~resolution:global_resolution
+                    global_resolution
                     ~accessed_through_class:false
                     ~accessed_through_readonly:false
                     ?instantiated:None
@@ -6843,9 +6829,9 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
             let remove_initialized { class_name; _ } attribute_map =
               let attributes =
                 GlobalResolution.uninstantiated_attributes
+                  global_resolution
                   ~transitive:true
                   ~include_generated_attributes:true
-                  ~resolution:global_resolution
                   class_name
                 |> Option.value ~default:[]
               in
@@ -6876,7 +6862,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                       `Snd { class_name; is_abstract; is_protocol }
                   | None -> `Trd ()
                 in
-                GlobalResolution.successors class_name ~resolution:global_resolution
+                GlobalResolution.successors global_resolution class_name
                 |> List.partition3_map ~f:is_protocol_or_abstract
               in
               let name_and_metadata =
@@ -6981,9 +6967,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
         let override_errors_for_typed_dictionary class_name =
           let open Type.Record.TypedDictionary in
           let get_typed_dictionary_fields class_name =
-            GlobalResolution.get_typed_dictionary
-              ~resolution:global_resolution
-              (Type.Primitive class_name)
+            GlobalResolution.get_typed_dictionary global_resolution (Type.Primitive class_name)
             >>| (fun typed_dictionary -> typed_dictionary.fields)
             |> Option.value ~default:[]
           in
@@ -6993,7 +6977,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
               |> List.map ~f:(fun (field : Type.t typed_dictionary_field) ->
                      field.name, (successor_name, field))
             in
-            GlobalResolution.successors ~resolution:global_resolution class_name
+            GlobalResolution.successors global_resolution class_name
             |> List.concat_map ~f:get_successor_map_entries
             |> Map.of_alist_multi (module String)
           in
@@ -7046,16 +7030,12 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
         in
         let override_errors =
           let class_name = ClassSummary.name class_summary |> Reference.show in
-          if
-            GlobalResolution.is_typed_dictionary
-              ~resolution:global_resolution
-              (Type.Primitive class_name)
-          then
+          if GlobalResolution.is_typed_dictionary global_resolution (Type.Primitive class_name) then
             override_errors_for_typed_dictionary class_name
           else
             GlobalResolution.uninstantiated_attributes
+              global_resolution
               ~include_generated_attributes:false
-              ~resolution:global_resolution
               class_name
             >>| List.filter_map ~f:(fun attribute ->
                     (* `accessed_through_class` is true here because it is ture in
@@ -7064,9 +7044,9 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                        TODO(T146994981) we should check for both attribute access patterns. *)
                     let annotation =
                       GlobalResolution.instantiate_attribute
+                        global_resolution
                         ~accessed_through_class:true
                         ~accessed_through_readonly:false
-                        ~resolution:global_resolution
                         ?instantiated:None
                         attribute
                       |> AnnotatedAttribute.annotation
@@ -7129,7 +7109,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                              ~kind
                              ~define:Context.define)
                     in
-                    GlobalResolution.overrides ~resolution:global_resolution ~name class_name
+                    GlobalResolution.overrides global_resolution ~name class_name
                     >>| check_override
                     |> Option.value ~default:None)
             |> Option.value ~default:[]
@@ -7428,7 +7408,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
           Reference.prefix name
           >>| Reference.show
           >>= GlobalResolution.attribute_from_class_name
-                ~resolution:global_resolution
+                global_resolution
                 ~name:(Reference.last name)
                 ~instantiated:Top
         in

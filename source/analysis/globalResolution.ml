@@ -198,7 +198,7 @@ let has_transitive_successor
     predecessor
 
 
-let successors ~resolution:({ dependency; _ } as resolution) =
+let successors ({ dependency; _ } as resolution) =
   ClassSuccessorMetadataEnvironment.ReadOnly.successors
     ?dependency
     (class_metadata_environment resolution)
@@ -210,7 +210,7 @@ let get_class_metadata ({ dependency; _ } as resolution) =
     (class_metadata_environment resolution)
 
 
-let is_class_typed_dictionary ~resolution:({ dependency; _ } as resolution) =
+let is_class_typed_dictionary ({ dependency; _ } as resolution) =
   ClassSuccessorMetadataEnvironment.ReadOnly.is_class_typed_dictionary
     (class_metadata_environment resolution)
     ?dependency
@@ -232,7 +232,7 @@ let attribute ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.attribute (attribute_resolution resolution) ?dependency
 
 
-let get_typed_dictionary ~resolution:({ dependency; _ } as resolution) =
+let get_typed_dictionary ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.get_typed_dictionary (attribute_resolution resolution) ?dependency
 
 
@@ -242,12 +242,12 @@ let constraints_solution_exists ({ dependency; _ } as resolution) =
     (attribute_resolution resolution)
 
 
-let constraints ~resolution:({ dependency; _ } as resolution) =
+let constraints ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.constraints ?dependency (attribute_resolution resolution)
 
 
 let uninstantiated_attributes
-    ~resolution:({ dependency; _ } as resolution)
+    ({ dependency; _ } as resolution)
     ?(transitive = false)
     ?(accessed_through_class = false)
     ?(include_generated_attributes = true)
@@ -263,7 +263,7 @@ let uninstantiated_attributes
 
 
 let attribute_details
-    ~resolution:({ dependency; _ } as resolution)
+    ({ dependency; _ } as resolution)
     ?(transitive = false)
     ?(accessed_through_class = false)
     ?(include_generated_attributes = true)
@@ -278,14 +278,14 @@ let attribute_details
     ?dependency
 
 
-let instantiate_attribute ~resolution:({ dependency; _ } as resolution) ?instantiated =
+let instantiate_attribute ({ dependency; _ } as resolution) ?instantiated =
   AttributeResolution.ReadOnly.instantiate_attribute
     (attribute_resolution resolution)
     ?dependency
     ?instantiated
 
 
-let metaclass ~resolution:({ dependency; _ } as resolution) =
+let metaclass ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.metaclass ?dependency (attribute_resolution resolution)
 
 
@@ -295,11 +295,11 @@ let resolve_mutable_literals ({ dependency; _ } as resolution) =
     (attribute_resolution resolution)
 
 
-let resolve_define ~resolution:({ dependency; _ } as resolution) =
+let resolve_define ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.resolve_define ?dependency (attribute_resolution resolution)
 
 
-let signature_select ~global_resolution:({ dependency; _ } as resolution) =
+let signature_select ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.signature_select ?dependency (attribute_resolution resolution)
 
 
@@ -314,7 +314,7 @@ let resolve_literal ({ dependency; _ } as resolution) =
 
 
 let attribute_names
-    ~resolution:({ dependency; _ } as resolution)
+    ({ dependency; _ } as resolution)
     ?(transitive = false)
     ?(accessed_through_class = false)
     ?(include_generated_attributes = true)
@@ -336,17 +336,12 @@ let location_of_global ({ dependency; _ } as resolution) =
     ?dependency
 
 
-let is_tracked resolution = ClassHierarchy.contains (class_hierarchy resolution)
+(* Note: the only difference between this and class_exists is that when running a no-deamon-query,
+   this function will always return `true` which causes Pyre to keep more type information when it
+   cannot find the relevant source code. *)
+let class_hierarchy_contains_class resolution = ClassHierarchy.contains (class_hierarchy resolution)
 
-let contains_untracked resolution annotation =
-  List.exists
-    ~f:(fun annotation -> not (is_tracked resolution annotation))
-    (Type.elements annotation)
-
-
-let immediate_parents ~resolution = ClassHierarchy.immediate_parents (class_hierarchy resolution)
-
-let is_instantiated resolution = ClassHierarchy.is_instantiated (class_hierarchy resolution)
+let immediate_parents resolution = ClassHierarchy.immediate_parents (class_hierarchy resolution)
 
 let base_is_from_placeholder_stub resolution =
   AnnotatedBases.base_is_from_placeholder_stub
@@ -374,8 +369,6 @@ let less_or_equal_either_way resolution type0 type1 =
   less_or_equal resolution ~left:type0 ~right:type1
   || less_or_equal resolution ~left:type1 ~right:type0
 
-
-let is_compatible_with resolution = full_order resolution |> TypeOrder.is_compatible_with
 
 let is_invariance_mismatch resolution ~left ~right =
   match left, right with
@@ -412,7 +405,7 @@ let is_invariance_mismatch resolution ~left ~right =
 
 
 let attribute_from_class_name
-    ~resolution
+    resolution
     ?(transitive = false)
     ?(accessed_through_class = false)
     ?(accessed_through_readonly = false)
@@ -472,7 +465,7 @@ let attribute_from_annotation ?special_method resolution ~parent:annotation ~nam
   | Some [] -> None
   | Some [{ instantiated; accessed_through_class; class_name; accessed_through_readonly }] ->
       attribute_from_class_name
-        ~resolution
+        resolution
         ~transitive:true
         ~instantiated
         ~accessed_through_class
@@ -484,9 +477,9 @@ let attribute_from_annotation ?special_method resolution ~parent:annotation ~nam
   | Some (_ :: _) -> None
 
 
-let is_typed_dictionary ~resolution annotation =
+let is_typed_dictionary resolution annotation =
   Type.primitive_name annotation
-  >>| is_class_typed_dictionary ~resolution
+  >>| is_class_typed_dictionary resolution
   |> Option.value ~default:false
 
 
@@ -495,7 +488,7 @@ let is_consistent_with resolution ~resolve left right ~expression =
   let left =
     WeakenMutableLiterals.weaken_mutable_literals
       ~resolve
-      ~get_typed_dictionary:(get_typed_dictionary ~resolution)
+      ~get_typed_dictionary:(get_typed_dictionary resolution)
       ~expression
       ~resolved:left
       ~expected:right
@@ -586,17 +579,17 @@ let extract_type_parameters resolution ~source ~target =
         List.map unaries ~f:(fun unary -> Type.Parameter.Single (Type.Variable unary))
         |> Type.parametric target
       in
-      ConstraintsSet.add
+      TypeOrder.OrderedConstraintsSet.add
         ConstraintsSet.empty
         ~new_constraint:(LessOrEqual { left = source; right = solve_against })
-        ~global_resolution:resolution
+        ~order:(full_order resolution)
       |> ConstraintsSet.solve ~global_resolution:resolution
       >>= fun solution ->
       List.map unaries ~f:(ConstraintsSet.Solution.instantiate_single_variable solution)
       |> Option.all
 
 
-let type_of_iteration_value ~global_resolution iterator_type =
+let type_of_iteration_value global_resolution iterator_type =
   match
     extract_type_parameters global_resolution ~target:"typing.Iterable" ~source:iterator_type
   with
@@ -606,7 +599,7 @@ let type_of_iteration_value ~global_resolution iterator_type =
 
 (* Determine the appropriate type for `yield` expressions in a generator function, based on the
    return annotation. *)
-let type_of_generator_send_and_return ~global_resolution generator_type =
+let type_of_generator_send_and_return global_resolution generator_type =
   (* First match against Generator *)
   match
     extract_type_parameters global_resolution ~target:"typing.Generator" ~source:generator_type
@@ -644,21 +637,21 @@ let annotation_parser ?(allow_invalid_type_parameters = false) resolution =
   }
 
 
-let overrides class_name ~resolution ~name =
+let overrides resolution class_name ~name =
   let find_override parent =
     attribute_from_class_name
+      resolution
       ~transitive:false
       ~accessed_through_class:true
       ~name
       parent
-      ~resolution
       ~instantiated:(Type.Primitive class_name)
     >>= fun attribute -> Option.some_if (AnnotatedAttribute.defined attribute) attribute
   in
-  successors class_name ~resolution |> List.find_map ~f:find_override
+  successors resolution class_name |> List.find_map ~f:find_override
 
 
-let refine ~global_resolution annotation refined_type =
+let refine global_resolution annotation refined_type =
   let solve_less_or_equal ~left ~right =
     ConstraintsSet.add
       ConstraintsSet.empty

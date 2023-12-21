@@ -68,7 +68,7 @@ val parse_as_parameter_specification_instance_annotation
   keywords_parameter_annotation:Expression.t ->
   Type.Variable.Variadic.Parameters.t option
 
-val immediate_parents : resolution:t -> Type.Primitive.t -> string list
+val immediate_parents : t -> Type.Primitive.t -> string list
 
 val type_parameters_as_variables
   :  ?default:Type.Variable.t list option ->
@@ -83,7 +83,7 @@ val has_transitive_successor
   Type.Primitive.t ->
   bool
 
-val successors : resolution:t -> Type.Primitive.t -> string list
+val successors : t -> Type.Primitive.t -> string list
 
 val get_class_metadata
   :  t ->
@@ -100,10 +100,7 @@ val parse_annotation
 
 val global : t -> Reference.t -> AttributeResolution.Global.t option
 
-val get_typed_dictionary
-  :  resolution:t ->
-  Type.t ->
-  Type.t Type.Record.TypedDictionary.record option
+val get_typed_dictionary : t -> Type.t -> Type.t Type.Record.TypedDictionary.record option
 
 val constraints_solution_exists
   :  t ->
@@ -113,7 +110,7 @@ val constraints_solution_exists
   bool
 
 val constraints
-  :  resolution:t ->
+  :  t ->
   target:Type.Primitive.t ->
   ?parameters:Type.Parameter.t list ->
   instantiated:Type.t ->
@@ -121,7 +118,7 @@ val constraints
   ConstraintsSet.Solution.t
 
 val uninstantiated_attributes
-  :  resolution:t ->
+  :  t ->
   ?transitive:bool ->
   ?accessed_through_class:bool ->
   ?include_generated_attributes:bool ->
@@ -129,7 +126,7 @@ val uninstantiated_attributes
   AnnotatedAttribute.uninstantiated list option
 
 val attribute_details
-  :  resolution:t ->
+  :  t ->
   ?transitive:bool ->
   ?accessed_through_class:bool ->
   ?include_generated_attributes:bool ->
@@ -137,14 +134,14 @@ val attribute_details
   AttributeResolution.AttributeDetail.t list option
 
 val instantiate_attribute
-  :  resolution:t ->
+  :  t ->
   ?instantiated:Type.t ->
   accessed_through_class:bool ->
   accessed_through_readonly:bool ->
   AnnotatedAttribute.uninstantiated ->
   AnnotatedAttribute.instantiated
 
-val metaclass : resolution:t -> Type.Primitive.t -> Type.t option
+val metaclass : t -> Type.Primitive.t -> Type.t option
 
 val resolve_mutable_literals
   :  t ->
@@ -155,13 +152,13 @@ val resolve_mutable_literals
   WeakenMutableLiterals.weakened_type
 
 val resolve_define
-  :  resolution:t ->
+  :  t ->
   implementation:Define.Signature.t option ->
   overloads:Define.Signature.t list ->
   AttributeResolution.resolved_define
 
 val signature_select
-  :  global_resolution:t ->
+  :  t ->
   resolve_with_locals:
     (locals:(Reference.t * Annotation.t) list -> Expression.expression Node.t -> Type.t) ->
   arguments:Type.t AttributeResolution.Argument.t list ->
@@ -177,7 +174,7 @@ val check_invalid_type_parameters
 val resolve_literal : t -> Expression.t -> Type.t
 
 val attribute_names
-  :  resolution:t ->
+  :  t ->
   ?transitive:bool ->
   ?accessed_through_class:bool ->
   ?include_generated_attributes:bool ->
@@ -187,13 +184,9 @@ val attribute_names
 
 val location_of_global : t -> Reference.t -> Location.WithModule.t option
 
-val is_tracked : t -> Type.Primitive.t -> bool
-
-val contains_untracked : t -> Type.t -> bool
+val class_hierarchy_contains_class : t -> Type.Primitive.t -> bool
 
 val class_hierarchy : t -> (module ClassHierarchy.Handler)
-
-val is_instantiated : t -> Type.t -> bool
 
 val base_is_from_placeholder_stub : t -> Expression.t -> bool
 
@@ -209,13 +202,10 @@ val widen : t -> widening_threshold:int -> previous:Type.t -> next:Type.t -> ite
 
 val less_or_equal_either_way : t -> Type.t -> Type.t -> bool
 
-(* Only for use in monkey check. *)
-val is_compatible_with : t -> left:Type.t -> right:Type.t -> bool
-
 val is_invariance_mismatch : t -> left:Type.t -> right:Type.t -> bool
 
 val attribute_from_class_name
-  :  resolution:t ->
+  :  t ->
   ?transitive:bool ->
   ?accessed_through_class:bool ->
   ?accessed_through_readonly:bool ->
@@ -232,7 +222,7 @@ val attribute_from_annotation
   name:string ->
   AnnotatedAttribute.instantiated option
 
-val is_typed_dictionary : resolution:t -> Type.t -> bool
+val is_typed_dictionary : t -> Type.t -> bool
 
 val is_consistent_with
   :  t ->
@@ -244,38 +234,18 @@ val is_consistent_with
 
 val source_is_unit_test : t -> source:Ast.Source.t -> bool
 
-module ConstraintsSet : sig
-  val add
-    :  ConstraintsSet.t ->
-    new_constraint:ConstraintsSet.kind ->
-    global_resolution:t ->
-    ConstraintsSet.t
-
-  val solve : ConstraintsSet.t -> global_resolution:t -> ConstraintsSet.Solution.t option
-
-  type order = ConstraintsSet.order
-
-  module Solution : sig
-    type t = ConstraintsSet.Solution.t
-  end
-end
-
 (* If the given type is a subtype of generic type `AsName[X]`, return X *)
 val extract_type_parameters : t -> source:Type.t -> target:string -> Type.t list option
 
-val type_of_iteration_value : global_resolution:t -> Type.t -> Type.t option
+val type_of_iteration_value : t -> Type.t -> Type.t option
 
-val type_of_generator_send_and_return : global_resolution:t -> Type.t -> Type.t * Type.t
+val type_of_generator_send_and_return : t -> Type.t -> Type.t * Type.t
 
 val annotation_parser
   :  ?allow_invalid_type_parameters:bool ->
   t ->
   AnnotatedCallable.annotation_parser
 
-val overrides
-  :  Type.Primitive.t ->
-  resolution:t ->
-  name:Identifier.t ->
-  AnnotatedAttribute.instantiated option
+val overrides : t -> Type.Primitive.t -> name:Identifier.t -> AnnotatedAttribute.instantiated option
 
-val refine : global_resolution:t -> Annotation.t -> Type.t -> Annotation.t
+val refine : t -> Annotation.t -> Type.t -> Annotation.t
