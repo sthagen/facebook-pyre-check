@@ -66,12 +66,12 @@ let module_tracker resolution = ast_environment resolution |> AstEnvironment.Rea
    for special things like error messages where it winds up not mattering, but this is a very sharp
    edge in our incremental system. *)
 
-let lookup_module_path resolution =
-  ModuleTracker.ReadOnly.lookup_module_path (module_tracker resolution)
+let module_path_of_qualifier resolution =
+  ModuleTracker.ReadOnly.module_path_of_qualifier (module_tracker resolution)
 
 
-let lookup_relative_path resolution =
-  ModuleTracker.ReadOnly.lookup_relative_path (module_tracker resolution)
+let relative_path_of_qualifier resolution =
+  ModuleTracker.ReadOnly.relative_path_of_qualifier (module_tracker resolution)
 
 
 let get_processed_source ({ dependency; _ } as resolution) qualifier =

@@ -46,8 +46,8 @@ type message = string
 
 module ReadOnly = struct
   type t = {
-    lookup_module_path: Reference.t -> ModulePath.t option;
-    is_module_tracked: Reference.t -> bool;
+    module_path_of_qualifier: Reference.t -> ModulePath.t option;
+    is_qualifier_tracked: Reference.t -> bool;
     get_raw_code: ModulePath.t -> (raw_code, message) Result.t;
     module_paths: unit -> ModulePath.t list;
     all_module_paths: unit -> ModulePath.t list;
@@ -56,29 +56,30 @@ module ReadOnly = struct
 
   let controls { controls; _ } = controls ()
 
-  let lookup_module_path { lookup_module_path; _ } = lookup_module_path
+  let module_path_of_qualifier { module_path_of_qualifier; _ } = module_path_of_qualifier
 
   let module_paths { module_paths; _ } = module_paths ()
 
   let all_module_paths { all_module_paths; _ } = all_module_paths ()
 
-  let is_module_tracked { is_module_tracked; _ } = is_module_tracked
+  let is_qualifier_tracked { is_qualifier_tracked; _ } = is_qualifier_tracked
 
-  let lookup_full_path tracker qualifier =
+  let artifact_path_of_qualifier tracker qualifier =
     let configuration = controls tracker |> EnvironmentControls.configuration in
-    lookup_module_path tracker qualifier |> Option.map ~f:(ModulePath.full_path ~configuration)
+    module_path_of_qualifier tracker qualifier
+    |> Option.map ~f:(ModulePath.full_path ~configuration)
 
 
-  let lookup_relative_path tracker qualifier =
-    lookup_module_path tracker qualifier |> Option.map ~f:ModulePath.relative
+  let relative_path_of_qualifier tracker qualifier =
+    module_path_of_qualifier tracker qualifier |> Option.map ~f:ModulePath.relative
 
 
-  let lookup_path tracker path =
+  let module_path_of_artifact_path tracker path =
     let configuration = controls tracker |> EnvironmentControls.configuration in
     let open Option in
     ModulePath.create ~configuration path
     >>= fun { ModulePath.raw; qualifier; _ } ->
-    lookup_module_path tracker qualifier
+    module_path_of_qualifier tracker qualifier
     >>= fun ({ ModulePath.raw = tracked_raw; _ } as module_path) ->
     Option.some_if (ModulePath.Raw.equal raw tracked_raw) module_path
 
@@ -832,12 +833,12 @@ module Layouts = struct
       updates
 
 
-    let lookup_module_path { explicit_modules = { find; _ }; _ } ~qualifier =
+    let module_path_of_qualifier { explicit_modules = { find; _ }; _ } ~qualifier =
       find qualifier >>= ExplicitModules.Value.module_path
 
 
     let is_explicit_module layouts ~qualifier =
-      lookup_module_path layouts ~qualifier |> Option.is_some
+      module_path_of_qualifier layouts ~qualifier |> Option.is_some
 
 
     let is_implicit_module { implicit_modules = { find; _ }; _ } ~qualifier =
@@ -846,7 +847,7 @@ module Layouts = struct
       |> Option.value ~default:false
 
 
-    let is_module_tracked layouts ~qualifier =
+    let is_qualifier_tracked layouts ~qualifier =
       is_explicit_module layouts ~qualifier || is_implicit_module layouts ~qualifier
 
 
@@ -1021,13 +1022,15 @@ module Base = struct
   end
 
   let read_only { layouts; controls; get_raw_code; _ } =
-    let lookup_module_path qualifier = Layouts.Api.lookup_module_path layouts ~qualifier in
-    let is_module_tracked qualifier = Layouts.Api.is_module_tracked layouts ~qualifier in
+    let module_path_of_qualifier qualifier =
+      Layouts.Api.module_path_of_qualifier layouts ~qualifier
+    in
+    let is_qualifier_tracked qualifier = Layouts.Api.is_qualifier_tracked layouts ~qualifier in
     let module_paths () = Layouts.Api.module_paths layouts in
     let all_module_paths () = Layouts.Api.all_module_paths layouts in
     {
-      ReadOnly.lookup_module_path;
-      is_module_tracked;
+      ReadOnly.module_path_of_qualifier;
+      is_qualifier_tracked;
       get_raw_code;
       module_paths;
       all_module_paths;

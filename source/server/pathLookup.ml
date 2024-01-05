@@ -10,7 +10,7 @@
 open Base
 
 let module_of_path ~module_tracker path =
-  match Analysis.ModuleTracker.ReadOnly.lookup_path module_tracker path with
+  match Analysis.ModuleTracker.ReadOnly.module_path_of_artifact_path module_tracker path with
   | Some { Ast.ModulePath.qualifier; _ } -> Some qualifier
   | None -> None
 
@@ -27,7 +27,7 @@ let modules_of_source_path_with_build_system ~build_system ~module_tracker path 
 
 
 let instantiate_path ~lookup_source ~module_tracker qualifier =
-  match Analysis.ModuleTracker.ReadOnly.lookup_full_path module_tracker qualifier with
+  match Analysis.ModuleTracker.ReadOnly.artifact_path_of_qualifier module_tracker qualifier with
   | None -> None
   | Some analysis_path ->
       let path =

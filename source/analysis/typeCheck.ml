@@ -381,7 +381,7 @@ module State (Context : Context) = struct
             let instantiated =
               Error.instantiate
                 ~show_error_traces:true
-                ~lookup:(GlobalResolution.lookup_relative_path global_resolution)
+                ~lookup:(GlobalResolution.relative_path_of_qualifier global_resolution)
                 error
             in
             Format.asprintf
@@ -754,7 +754,7 @@ module State (Context : Context) = struct
   let instantiate_path ~global_resolution location =
     let location = Location.with_module ~module_reference:Context.qualifier location in
     Location.WithModule.instantiate
-      ~lookup:(GlobalResolution.lookup_relative_path global_resolution)
+      ~lookup:(GlobalResolution.relative_path_of_qualifier global_resolution)
       location
 
 
@@ -824,7 +824,7 @@ module State (Context : Context) = struct
     >>= GlobalResolution.get_class_summary global_resolution
     >>| Node.value
     >>= fun { ClassSummary.qualifier; _ } ->
-    GlobalResolution.lookup_module_path global_resolution qualifier
+    GlobalResolution.module_path_of_qualifier global_resolution qualifier
 
 
   let forward_reference ~resolution ~location ~errors reference =
@@ -850,7 +850,7 @@ module State (Context : Context) = struct
             | Some qualifier when not (Reference.is_empty qualifier) ->
                 if GlobalResolution.module_exists global_resolution qualifier then
                   let origin =
-                    match GlobalResolution.lookup_module_path global_resolution qualifier with
+                    match GlobalResolution.module_path_of_qualifier global_resolution qualifier with
                     | Some module_path -> Error.ExplicitModule module_path
                     | None -> Error.ImplicitModule qualifier
                   in
@@ -5296,7 +5296,7 @@ module State (Context : Context) = struct
                               else
                                 let origin_module =
                                   match
-                                    GlobalResolution.lookup_module_path global_resolution from
+                                    GlobalResolution.module_path_of_qualifier global_resolution from
                                   with
                                   | Some source_path -> Error.ExplicitModule source_path
                                   | None -> Error.ImplicitModule from
