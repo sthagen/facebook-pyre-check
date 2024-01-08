@@ -25,163 +25,11 @@
 
 open Ast
 open Core
-open Pyre
-open PyreParser
-
-module OutgoingDataComputation = struct
-  module Queries = struct
-    type t = { get_raw_source: Reference.t -> (Source.t, Parsing.ParserError.t) Result.t option }
-  end
-
-  let wildcard_exports_of ({ Source.module_path; _ } as source) =
-    let open Expression in
-    let open UnannotatedGlobal in
-    let extract_dunder_all = function
-      | {
-          Collector.Result.name = "__all__";
-          unannotated_global =
-            SimpleAssign { value = { Node.value = Expression.(List names | Tuple names); _ }; _ };
-        } ->
-          let to_identifier = function
-            | { Node.value = Expression.Constant (Constant.String { value = name; _ }); _ } ->
-                Some name
-            | _ -> None
-          in
-          Some (List.filter_map ~f:to_identifier names)
-      | _ -> None
-    in
-    let unannotated_globals = Collector.from_source source in
-    match List.find_map unannotated_globals ~f:extract_dunder_all with
-    | Some names -> names |> List.dedup_and_sort ~compare:Identifier.compare
-    | _ ->
-        let unannotated_globals =
-          (* Stubs have a slightly different rule with re-export *)
-          let filter_unaliased_import = function
-            | {
-                Collector.Result.unannotated_global =
-                  Imported
-                    ( ImportEntry.Module { implicit_alias; _ }
-                    | ImportEntry.Name { implicit_alias; _ } );
-                _;
-              } ->
-                not implicit_alias
-            | _ -> true
-          in
-          if ModulePath.is_stub module_path then
-            List.filter unannotated_globals ~f:filter_unaliased_import
-          else
-            unannotated_globals
-        in
-        List.map unannotated_globals ~f:(fun { Collector.Result.name; _ } -> name)
-        |> List.filter ~f:(fun name -> not (String.is_prefix name ~prefix:"_"))
-        |> List.dedup_and_sort ~compare:Identifier.compare
-
-
-  let expand_wildcard_imports Queries.{ get_raw_source; _ } source =
-    let open Statement in
-    let module Transform = Transform.MakeStatementTransformer (struct
-      include Transform.Identity
-
-      type t = unit
-
-      let get_transitive_exports qualifier =
-        let module Visitor = Visit.MakeStatementVisitor (struct
-          type t = Reference.t list
-
-          let visit_children _ = false
-
-          let statement _ collected_imports { Node.value; _ } =
-            match value with
-            | Statement.Import { Import.from = Some from; imports }
-              when List.exists imports ~f:(fun { Node.value = { Import.name; _ }; _ } ->
-                       String.equal (Reference.show name) "*") ->
-                Node.value from :: collected_imports
-            | _ -> collected_imports
-        end)
-        in
-        let visited_modules = Reference.Hash_set.create () in
-        let transitive_exports = Identifier.Hash_set.create () in
-        let worklist = Queue.of_list [qualifier] in
-        let rec search_wildcard_imports () =
-          match Queue.dequeue worklist with
-          | None -> ()
-          | Some qualifier ->
-              let _ =
-                match Hash_set.strict_add visited_modules qualifier with
-                | Error _ -> ()
-                | Ok () -> (
-                    match get_raw_source qualifier with
-                    | None
-                    | Some (Result.Error _) ->
-                        ()
-                    | Some (Result.Ok source) ->
-                        wildcard_exports_of source |> List.iter ~f:(Hash_set.add transitive_exports);
-                        Visitor.visit [] source |> Queue.enqueue_all worklist)
-              in
-              search_wildcard_imports ()
-        in
-        search_wildcard_imports ();
-        Hash_set.to_list transitive_exports |> List.sort ~compare:Identifier.compare
-
-
-      let statement state ({ Node.value; _ } as statement) =
-        match value with
-        | Statement.Import { Import.from = Some from; imports } -> (
-            let starred_import =
-              List.find imports ~f:(fun { Node.value = { Import.name; _ }; _ } ->
-                  String.equal (Reference.show name) "*")
-            in
-            match starred_import with
-            | Some _ ->
-                let expanded_import =
-                  match get_transitive_exports (Node.value from) with
-                  | [] -> []
-                  | exports ->
-                      List.map exports ~f:(fun name ->
-                          {
-                            Node.value = { Import.name = Reference.create name; alias = Some name };
-                            location = Location.any;
-                          })
-                      |> (fun expanded ->
-                           Statement.Import { Import.from = Some from; imports = expanded })
-                      |> fun value -> [{ statement with Node.value }]
-                in
-                state, expanded_import
-            | None -> state, [statement])
-        | _ -> state, [statement]
-    end)
-    in
-    Transform.transform () source |> Transform.source
-
-
-  let get_processed_source (Queries.{ get_raw_source; _ } as queries) qualifier =
-    (* Preprocessing a module depends on the module itself is implicitly assumed in `update`. No
-       need to explicitly record the dependency. *)
-    get_raw_source qualifier
-    >>| function
-    | Result.Ok source ->
-        expand_wildcard_imports queries source
-        |> Preprocessing.preprocess_after_wildcards
-        |> DecoratorPreprocessing.preprocess_source ~get_source:(fun qualifier ->
-               get_raw_source qualifier >>= Result.ok)
-    | Result.Error
-        {
-          Parsing.ParserError.module_path =
-            { ModulePath.raw = { relative; _ }; qualifier; _ } as module_path;
-          _;
-        } ->
-        (* Files that have parser errors fall back into getattr-any. *)
-        let fallback_source = ["import typing"; "def __getattr__(name: str) -> typing.Any: ..."] in
-        let typecheck_flags = Source.TypecheckFlags.parse ~qualifier fallback_source in
-        let statements = Parser.parse_exn ~relative fallback_source in
-        Parsing.create_source ~typecheck_flags ~module_path statements
-        |> Preprocessing.preprocess_after_wildcards
-end
 
 module ReadOnly = struct
   type t = {
     module_tracker: ModuleTracker.ReadOnly.t;
-    get_raw_source:
+    raw_source_of_qualifier:
       ?dependency:SharedMemoryKeys.DependencyKey.registered ->
       Reference.t ->
       (Source.t, Parsing.ParserError.t) Result.t option;
@@ -191,22 +39,21 @@ module ReadOnly = struct
 
   let controls environment = module_tracker environment |> ModuleTracker.ReadOnly.controls
 
-  let get_raw_source { get_raw_source; _ } = get_raw_source
+  let raw_source_of_qualifier { raw_source_of_qualifier; _ } = raw_source_of_qualifier
 
-  let get_processed_source environment ?dependency qualifier =
+  let processed_source_of_qualifier environment ?dependency qualifier =
     (* The fact that preprocessing a module depends on the module itself is implicitly assumed in
        `update`. No need to explicitly record the dependency. But we do need to record all other
        modules used *)
-    let get_raw_source_and_maybe_track qualifier_to_load =
+    let raw_source_of_qualifier_and_maybe_track qualifier_to_load =
       let maybe_dependency =
         if Reference.equal qualifier_to_load qualifier then None else dependency
       in
-      get_raw_source environment ?dependency:maybe_dependency qualifier_to_load
+      raw_source_of_qualifier environment ?dependency:maybe_dependency qualifier_to_load
     in
-    let queries =
-      OutgoingDataComputation.Queries.{ get_raw_source = get_raw_source_and_maybe_track }
-    in
-    OutgoingDataComputation.get_processed_source queries qualifier
+    AstProcessing.processed_source_of_qualifier
+      ~raw_source_of_qualifier:raw_source_of_qualifier_and_maybe_track
+      qualifier
 end
 
 module UpdateResult = struct
@@ -271,17 +118,17 @@ module FromReadOnlyUpstream = struct
 
   let create module_tracker = { module_tracker; raw_sources = RawSources.create () }
 
-  let load_raw_source ~ast_environment:{ raw_sources; module_tracker; _ } module_path =
+  let source_of_module_path ~ast_environment:{ raw_sources; module_tracker; _ } module_path =
     match
       let controls = ModuleTracker.ReadOnly.controls module_tracker in
-      let get_raw_code = ModuleTracker.ReadOnly.get_raw_code module_tracker in
-      Parsing.load_and_parse ~controls ~get_raw_code module_path
+      let code_of_module_path = ModuleTracker.ReadOnly.code_of_module_path module_tracker in
+      Parsing.load_and_parse ~controls ~code_of_module_path module_path
     with
     | Ok source -> RawSources.add_parsed_source raw_sources source
     | Error parser_error -> RawSources.add_unparsed_source raw_sources parser_error
 
 
-  let load_raw_sources ~scheduler ~ast_environment module_paths =
+  let source_of_module_paths ~scheduler ~ast_environment module_paths =
     (* Note: We don't need SharedMemoryKeys.DependencyKey.Registry.collected_iter here; the
        collection handles *registering* dependencies but not detecting triggered dependencies, and
        this is the upstream-most part of the dependency DAG *)
@@ -293,14 +140,14 @@ module FromReadOnlyUpstream = struct
            ~minimum_chunk_size:100
            ~preferred_chunks_per_worker:5
            ())
-      ~f:(List.iter ~f:(load_raw_source ~ast_environment))
+      ~f:(List.iter ~f:(source_of_module_path ~ast_environment))
       ~inputs:module_paths
 
 
   module LazyRawSources = struct
     let load ~ast_environment:({ module_tracker; raw_sources; _ } as ast_environment) qualifier =
       match ModuleTracker.ReadOnly.module_path_of_qualifier module_tracker qualifier with
-      | Some module_path -> load_raw_source ~ast_environment module_path
+      | Some module_path -> source_of_module_path ~ast_environment module_path
       | None -> RawSources.add raw_sources qualifier None
 
 
@@ -342,14 +189,16 @@ module FromReadOnlyUpstream = struct
        be checked. *)
     let reparse_modules_union_in_project_modules =
       let fold qualifiers { ModulePath.qualifier; _ } = Set.add qualifiers qualifier in
-      List.filter changed_module_paths ~f:ModulePath.is_in_project
+      List.filter changed_module_paths ~f:ModulePath.should_type_check
       |> List.fold ~init:(Reference.Set.of_list reparse_modules) ~f:fold
       |> Set.to_list
     in
     let invalidated_modules_before_preprocessing =
       List.concat [removed_modules; new_implicits; reparse_modules_union_in_project_modules]
     in
-    let update_raw_sources () = load_raw_sources ~scheduler ~ast_environment reparse_module_paths in
+    let update_raw_sources () =
+      source_of_module_paths ~scheduler ~ast_environment reparse_module_paths
+    in
     let _, raw_source_dependencies =
       PyreProfiling.track_duration_and_shared_memory
         "Parse Raw Sources"
@@ -389,7 +238,7 @@ module FromReadOnlyUpstream = struct
   let remove_sources { raw_sources; _ } = RawSources.remove_sources raw_sources
 
   let read_only ({ module_tracker; _ } as ast_environment) =
-    { ReadOnly.module_tracker; get_raw_source = LazyRawSources.get ~ast_environment }
+    { ReadOnly.module_tracker; raw_source_of_qualifier = LazyRawSources.get ~ast_environment }
 
 
   let controls { module_tracker; _ } = ModuleTracker.ReadOnly.controls module_tracker
@@ -473,13 +322,13 @@ module Overlay = struct
 
   let read_only { module_tracker = overlay_tracker; parent; from_read_only_upstream } =
     let this_read_only = FromReadOnlyUpstream.read_only from_read_only_upstream in
-    let get_raw_source ?dependency qualifier =
+    let raw_source_of_qualifier ?dependency qualifier =
       if ModuleTracker.Overlay.owns_qualifier overlay_tracker qualifier then
-        ReadOnly.get_raw_source this_read_only ?dependency qualifier
+        ReadOnly.raw_source_of_qualifier this_read_only ?dependency qualifier
       else
-        ReadOnly.get_raw_source parent ?dependency qualifier
+        ReadOnly.raw_source_of_qualifier parent ?dependency qualifier
     in
-    { this_read_only with get_raw_source }
+    { this_read_only with raw_source_of_qualifier }
 end
 
 include Base

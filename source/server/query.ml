@@ -536,7 +536,7 @@ let rec process_request_exn ~type_environment ~build_system request =
     in
     let setup_and_execute_model_queries model_queries =
       let scheduler_wrapper scheduler =
-        let qualifiers = ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
+        let qualifiers = ModuleTracker.ReadOnly.explicit_qualifiers module_tracker in
         let initial_callables =
           Interprocedural.FetchCallables.from_qualifiers
             ~scheduler
@@ -590,12 +590,12 @@ let rec process_request_exn ~type_environment ~build_system request =
               Option.value ~default:[] old_callees |> fun old_callees -> Some (old_callees @ callees))
         in
         let ast_environment = TypeEnvironment.ReadOnly.ast_environment type_environment in
-        AstEnvironment.ReadOnly.get_processed_source ast_environment module_qualifier
+        AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment module_qualifier
         >>| Preprocessing.defines ~include_toplevels:false ~include_stubs:false ~include_nested:true
         >>| List.fold_left ~init:callgraph_map ~f:callees
         |> Option.value ~default:callgraph_map
       in
-      let qualifiers = ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
+      let qualifiers = ModuleTracker.ReadOnly.explicit_qualifiers module_tracker in
       List.fold_left qualifiers ~f:get_callgraph ~init:Reference.Map.empty
     in
     match request with
@@ -675,7 +675,7 @@ let rec process_request_exn ~type_environment ~build_system request =
           let defines =
             let ast_environment = TypeEnvironment.ReadOnly.ast_environment type_environment in
             module_name
-            >>= AstEnvironment.ReadOnly.get_processed_source ast_environment
+            >>= AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment
             >>| Analysis.FunctionDefinition.collect_defines
             >>| List.map ~f:snd
             >>| List.concat_map ~f:Analysis.FunctionDefinition.all_bodies
@@ -727,7 +727,7 @@ let rec process_request_exn ~type_environment ~build_system request =
         Single
           (Base.TypecheckedPaths
              (ModuleTracker.ReadOnly.module_paths module_tracker
-             |> List.filter ~f:(fun { ModulePath.is_external; _ } -> not is_external)
+             |> List.filter ~f:ModulePath.should_type_check
              |> List.map ~f:(fun { ModulePath.qualifier; _ } ->
                     PathLookup.instantiate_path_with_build_system
                       ~build_system
@@ -998,7 +998,7 @@ let rec process_request_exn ~type_environment ~build_system request =
                        ~preferred_chunks_per_worker:5
                        ())
                   ~f:load_modules
-                  ~inputs:(ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker)
+                  ~inputs:(ModuleTracker.ReadOnly.explicit_qualifiers module_tracker)
               in
               Scheduler.with_scheduler
                 ~configuration
@@ -1020,8 +1020,8 @@ let rec process_request_exn ~type_environment ~build_system request =
           match
             LocationBasedLookupProcessor.get_module_path ~build_system ~type_environment path
           with
-          | Result.Ok { Ast.ModulePath.is_external; _ } ->
-              { Base.path; is_typechecked = not is_external }
+          | Result.Ok module_path ->
+              { Base.path; is_typechecked = ModulePath.should_type_check module_path }
           | Result.Error _ -> { Base.path; is_typechecked = false }
         in
         Single (Base.IsTypechecked (List.map paths ~f:get_is_typechecked))

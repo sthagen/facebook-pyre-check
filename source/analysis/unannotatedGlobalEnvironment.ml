@@ -101,12 +101,12 @@ module ModuleComponents = struct
     List.map classes ~f:definition_to_summary
 
 
-  let function_definitions_of_source ({ Source.module_path = { is_external; _ }; _ } as source) =
-    match is_external with
-    | true ->
+  let function_definitions_of_source ({ Source.module_path; _ } as source) =
+    match ModulePath.should_type_check module_path with
+    | false ->
         (* Do not collect function bodies for external sources as they won't get type checked *)
         []
-    | false -> FunctionDefinition.collect_defines source
+    | true -> FunctionDefinition.collect_defines source
 
 
   let unannotated_globals_of_source
@@ -173,12 +173,12 @@ module IncomingDataComputation = struct
   module Queries = struct
     type t = {
       is_qualifier_tracked: Ast.Reference.t -> bool;
-      get_processed_source: Ast.Reference.t -> Ast.Source.t option;
+      processed_source_of_qualifier: Ast.Reference.t -> Ast.Source.t option;
     }
   end
 
-  let module_components Queries.{ is_qualifier_tracked; get_processed_source } qualifier =
-    match get_processed_source qualifier with
+  let module_components Queries.{ is_qualifier_tracked; processed_source_of_qualifier } qualifier =
+    match processed_source_of_qualifier qualifier with
     | Some source -> Some (ModuleComponents.of_source source)
     | None ->
         if is_qualifier_tracked qualifier then
@@ -985,16 +985,16 @@ module FromReadOnlyUpstream = struct
       AstEnvironment.ReadOnly.module_tracker ast_environment
       |> ModuleTracker.ReadOnly.is_qualifier_tracked
     in
-    let get_processed_source qualifier =
+    let processed_source_of_qualifier qualifier =
       let dependency =
         if track_dependencies then
           Some (WildcardImport qualifier |> SharedMemoryKeys.DependencyKey.Registry.register)
         else
           None
       in
-      AstEnvironment.ReadOnly.get_processed_source ast_environment ?dependency qualifier
+      AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment ?dependency qualifier
     in
-    IncomingDataComputation.Queries.{ is_qualifier_tracked; get_processed_source }
+    IncomingDataComputation.Queries.{ is_qualifier_tracked; processed_source_of_qualifier }
 
 
   let cold_start environment =
@@ -1066,11 +1066,11 @@ module FromReadOnlyUpstream = struct
     in
     (* Define the bulk key reads - these tell us what's been loaded thus far *)
     let all_classes () =
-      ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker
+      ModuleTracker.ReadOnly.explicit_qualifiers module_tracker
       |> KeyTracker.get_class_keys key_tracker
     in
     let all_unannotated_globals () =
-      ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker
+      ModuleTracker.ReadOnly.explicit_qualifiers module_tracker
       |> KeyTracker.get_unannotated_global_keys key_tracker
     in
     OutgoingDataComputation.Queries.
