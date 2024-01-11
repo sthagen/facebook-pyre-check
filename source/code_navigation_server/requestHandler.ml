@@ -5,7 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* The RequestHandler module provides event handling to power the code navigation backend server.
+   Requests coming from either the LSP or the file watcher are dispatched to the build system and/or
+   analyzer from this module *)
 
 open Base
 open Analysis
@@ -55,7 +57,7 @@ let get_modules ~module_tracker ~build_system path =
   let modules =
     let source_path = PyrePath.create_absolute path |> SourcePath.create in
     match
-      Server.PathLookup.modules_of_source_path
+      Server.PathLookup.qualifiers_of_source_path
         source_path
         ~module_tracker
         ~lookup_artifact:(BuildSystem.lookup_artifact build_system)
@@ -63,7 +65,7 @@ let get_modules ~module_tracker ~build_system path =
     (* In case there's no build system artifacts for this source, lookup the module as if it's built
        by a no-op build system (using normal source path mapping) *)
     | [] ->
-        Server.PathLookup.modules_of_source_path
+        Server.PathLookup.qualifiers_of_source_path
           source_path
           ~module_tracker
           ~lookup_artifact:BuildSystem.default_lookup_artifact
@@ -135,7 +137,7 @@ let get_location_of_definition_for_module ~overlay ~build_system ~position modul
   let module_tracker = TypeEnvironment.ReadOnly.module_tracker type_environment in
   LocationBasedLookup.location_of_definition ~type_environment ~module_reference position
   >>= fun { Ast.Location.WithModule.module_reference; start; stop } ->
-  Server.PathLookup.instantiate_path
+  Server.PathLookup.absolute_source_path_of_qualifier
     ~lookup_source:(BuildSystem.lookup_source build_system)
     ~module_tracker
     module_reference
@@ -477,7 +479,7 @@ let handle_local_update_in_overlay ~path ~content ~subscriptions ~build_system ~
           | None -> ModuleTracker.Overlay.CodeUpdate.ResetCode
         in
         let to_update module_name =
-          ModuleTracker.ReadOnly.artifact_path_of_qualifier module_tracker module_name
+          ModuleTracker.ReadOnly.ArtifactPaths.artifact_path_of_qualifier module_tracker module_name
           |> Option.map ~f:(fun artifact_path -> artifact_path, code_update)
         in
         List.filter_map modules ~f:to_update
