@@ -693,6 +693,22 @@ let test_check_callable_class_decorators context =
     {|
       import typing
       T = typing.TypeVar("T")
+      R = typing.TypeVar("R")
+      P = typing.ParamSpec("P")
+      def my_decorator(f: typing.Callable[P, R]) -> typing.Callable[P, R]: ...
+
+      @my_decorator
+      def foo(x: T) -> T: ...
+    |}
+    [
+      "Invalid decoration [56]: Pyre doesn't yet support decorators with ParamSpec applied to \
+       generic functions Please add # pyre-ignore[56] to `test.my_decorator`.";
+    ];
+
+  assert_type_errors
+    {|
+      import typing
+      T = typing.TypeVar("T")
       class synchronize:
         @typing.overload
         def __call__(
