@@ -820,6 +820,62 @@ let test_call_graph_of_define context =
       ]
     ();
   assert_call_graph_of_define
+    ~source:
+      {|
+      from abc import abstractclassmethod
+      from typing import TypeVar, Generic
+      TInput = TypeVar("TInput")
+      class C(Generic[TInput]):
+        @abstractclassmethod
+        def f(cls):
+          raise NotImplementedError()
+        @classmethod
+        def g(cls):
+          cls.f()
+      |}
+    ~define_name:"test.C.g"
+    ~expected:
+      [
+        ( "11:4-11:11",
+          LocationCallees.Singleton
+            (* TODO(T174935624): We would like to get this call resolved. *)
+            (ExpressionCallees.from_call (CallCallees.create ~unresolved:true ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+      from abc import abstractmethod
+      class A:
+        def f(self):
+            return self.g()
+
+        @abstractmethod
+        def g(self):
+            pass
+
+      class B(A):
+        def g(self):
+            pass
+      |}
+    ~define_name:"test.A.f"
+    ~expected:
+      [
+        ( "5:13-5:21",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_receiver:true
+                        ~receiver_class:"test.A"
+                        (Target.Override { class_name = "test.A"; method_name = "g"; kind = Normal });
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
     ~source:{|
         def foo():
           1 > 2
@@ -1572,7 +1628,10 @@ let test_call_graph_of_define context =
     |}
     ~define_name:"test.foo"
     ~expected:
-      ["12:2-12:5", LocationCallees.Singleton (ExpressionCallees.from_call CallCallees.unresolved)]
+      [
+        ( "12:2-12:5",
+          LocationCallees.Singleton (ExpressionCallees.from_call (CallCallees.unresolved ())) );
+      ]
     ();
 
   assert_call_graph_of_define
@@ -2130,7 +2189,8 @@ let test_call_graph_of_define context =
                  global_targets = [];
                  is_attribute = false;
                }) );
-        "8:9-8:22", LocationCallees.Singleton (ExpressionCallees.from_call CallCallees.unresolved);
+        ( "8:9-8:22",
+          LocationCallees.Singleton (ExpressionCallees.from_call (CallCallees.unresolved ())) );
       ]
     ();
   assert_call_graph_of_define
