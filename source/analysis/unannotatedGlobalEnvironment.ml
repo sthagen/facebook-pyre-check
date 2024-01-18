@@ -191,8 +191,6 @@ module OutgoingDataComputation = struct
   module Queries = struct
     type t = {
       class_exists: string -> bool;
-      all_classes: unit -> Type.Primitive.t list;
-      all_unannotated_globals: unit -> Reference.t list;
       get_define_names: Reference.t -> Reference.t list;
       get_class_summary: string -> ClassSummary.t Node.t option;
       get_unannotated_global: Reference.t -> UnannotatedGlobal.t option;
@@ -201,10 +199,6 @@ module OutgoingDataComputation = struct
       module_exists: Reference.t -> bool;
     }
   end
-
-  let all_classes Queries.{ all_classes; _ } = all_classes ()
-
-  let all_unannotated_globals Queries.{ all_unannotated_globals; _ } = all_unannotated_globals ()
 
   let get_define_names Queries.{ get_define_names; _ } = get_define_names
 
@@ -428,6 +422,8 @@ module ReadOnly = struct
   type t = {
     ast_environment: AstEnvironment.ReadOnly.t;
     get_queries: dependency:DependencyKey.registered option -> OutgoingDataComputation.Queries.t;
+    class_names_of_qualifiers__untracked: Reference.t list -> Type.Primitive.t list;
+    unannotated_global_names_of_qualifiers__untracked: Reference.t list -> Reference.t list;
   }
 
   let get_queries ?dependency { get_queries; _ } = get_queries ~dependency
@@ -437,14 +433,6 @@ module ReadOnly = struct
   let controls { ast_environment; _ } = AstEnvironment.ReadOnly.controls ast_environment
 
   let unannotated_global_environment = Fn.id
-
-  let all_classes { get_queries; _ } =
-    get_queries ~dependency:None |> OutgoingDataComputation.all_classes
-
-
-  let all_unannotated_globals { get_queries; _ } =
-    get_queries ~dependency:None |> OutgoingDataComputation.all_unannotated_globals
-
 
   let get_define_names { get_queries; _ } ?dependency =
     get_queries ~dependency |> OutgoingDataComputation.get_define_names
@@ -496,6 +484,28 @@ module ReadOnly = struct
 
   let exists_matching_class_decorator { get_queries; _ } ?dependency =
     get_queries ~dependency |> OutgoingDataComputation.exists_matching_class_decorator
+
+
+  (* These functions are not dependency tracked and should only be used:
+   * - in bulk queries (e.g. to help with Pysa analysis)
+   * - for debugging and testing
+   *
+   * They cannot be used in some contexts, e.g. a lazy environment for
+   * powering IDEs.
+   *)
+  module GlobalApis = struct
+    let all_classes { class_names_of_qualifiers__untracked; _ } ~global_module_paths_api =
+      GlobalModulePathsApi.explicit_qualifiers global_module_paths_api
+      |> class_names_of_qualifiers__untracked
+
+
+    let all_unannotated_globals
+        { unannotated_global_names_of_qualifiers__untracked; _ }
+        ~global_module_paths_api
+      =
+      GlobalModulePathsApi.explicit_qualifiers global_module_paths_api
+      |> unannotated_global_names_of_qualifiers__untracked
+  end
 end
 
 module UpdateResult = struct
@@ -1020,13 +1030,12 @@ module FromReadOnlyUpstream = struct
   let outgoing_queries
       ~dependency
       ({
-         ast_environment;
-         key_tracker;
          module_table;
          define_names;
          class_summary_table;
          function_definition_table;
          unannotated_global_table;
+         _;
        } as environment)
     =
     let loader = LazyLoader.{ environment; queries = incoming_queries environment } in
@@ -1043,7 +1052,6 @@ module FromReadOnlyUpstream = struct
       FunctionDefinitionTable.create ~loader function_definition_table
     in
     let unannotated_global_table = UnannotatedGlobalTable.create ~loader unannotated_global_table in
-    let module_tracker = AstEnvironment.ReadOnly.module_tracker ast_environment in
     (* Define the basic getters and existence checks *)
     let get_module_metadata qualifier =
       let qualifier =
@@ -1076,15 +1084,6 @@ module FromReadOnlyUpstream = struct
     let get_define_names qualifier =
       DefineNames.get define_names ?dependency qualifier |> Option.value ~default:[]
     in
-    (* Define the bulk key reads - these tell us what's been loaded thus far *)
-    let all_classes () =
-      ModuleTracker.ReadOnly.explicit_qualifiers module_tracker
-      |> KeyTracker.get_class_keys key_tracker
-    in
-    let all_unannotated_globals () =
-      ModuleTracker.ReadOnly.explicit_qualifiers module_tracker
-      |> KeyTracker.get_unannotated_global_keys key_tracker
-    in
     OutgoingDataComputation.Queries.
       {
         get_module_metadata;
@@ -1094,13 +1093,21 @@ module FromReadOnlyUpstream = struct
         get_function_definition;
         get_unannotated_global;
         get_define_names;
-        all_classes;
-        all_unannotated_globals;
       }
 
 
-  let read_only ({ ast_environment; _ } as environment) =
-    { ReadOnly.ast_environment; get_queries = outgoing_queries environment }
+  let read_only ({ ast_environment; key_tracker; _ } as environment) =
+    (* Define the bulk key reads - these tell us what's been loaded thus far *)
+    let class_names_of_qualifiers__untracked = KeyTracker.get_class_keys key_tracker in
+    let unannotated_global_names_of_qualifiers__untracked =
+      KeyTracker.get_unannotated_global_keys key_tracker
+    in
+    {
+      ReadOnly.ast_environment;
+      get_queries = outgoing_queries environment;
+      class_names_of_qualifiers__untracked;
+      unannotated_global_names_of_qualifiers__untracked;
+    }
 
 
   let update ({ key_tracker; define_names; _ } as environment) ~scheduler upstream =
@@ -1294,9 +1301,6 @@ module Overlay = struct
       FromReadOnlyUpstream.read_only from_read_only_upstream |> ReadOnly.get_queries ?dependency
     in
     let parent_queries = ReadOnly.get_queries ?dependency parent in
-    let OutgoingDataComputation.Queries.{ all_classes; all_unannotated_globals; _ } =
-      parent_queries
-    in
     let if_owns ~owns ~f key =
       if owns key then
         f this_queries key
@@ -1323,15 +1327,13 @@ module Overlay = struct
           if_owns ~owns:owns_reference ~f:OutgoingDataComputation.get_function_definition;
         get_unannotated_global =
           if_owns ~owns:owns_reference ~f:OutgoingDataComputation.get_unannotated_global;
-        all_classes;
-        all_unannotated_globals;
       }
 
 
-  let read_only ({ from_read_only_upstream; _ } as environment) =
+  let read_only ({ parent; from_read_only_upstream; _ } as environment) =
     let { FromReadOnlyUpstream.ast_environment; _ } = from_read_only_upstream in
     let get_queries ~dependency = outgoing_queries ?dependency environment in
-    { ReadOnly.ast_environment; get_queries }
+    { parent with ast_environment; get_queries }
 end
 
 include Base

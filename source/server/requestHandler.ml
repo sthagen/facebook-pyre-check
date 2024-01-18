@@ -63,13 +63,18 @@ let instantiate_and_create_type_errors_response_for_modules
 let instantiate_and_create_type_errors_response_for_all
     ?build_failure
     ~build_system
-    errors_environment
+    overlaid_environment
   =
+  let errors_environment = OverlaidEnvironment.root overlaid_environment in
+  let type_check_qualifiers =
+    OverlaidEnvironment.global_module_paths_api overlaid_environment
+    |> GlobalModulePathsApi.type_check_qualifiers
+  in
   instantiate_and_create_type_errors_response_for_modules
     errors_environment
     ~build_system
     ?build_failure
-    ~modules:(ErrorsEnvironment.ReadOnly.type_check_qualifiers errors_environment)
+    ~modules:type_check_qualifiers
 
 
 let process_display_type_error_request
@@ -83,11 +88,15 @@ let process_display_type_error_request
     |> Option.value ~default:(OverlaidEnvironment.root overlaid_environment)
   in
   let modules =
-    let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker errors_environment in
     match paths with
-    | [] -> ModuleTracker.ReadOnly.type_check_qualifiers module_tracker
+    | [] ->
+        let global_module_paths_api =
+          OverlaidEnvironment.global_module_paths_api overlaid_environment
+        in
+        GlobalModulePathsApi.type_check_qualifiers global_module_paths_api
     | _ ->
         let get_module_for_source_path path =
+          let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker errors_environment in
           PyrePath.create_absolute path
           |> SourcePath.create
           |> PathLookup.qualifiers_of_source_path_with_build_system ~build_system ~module_tracker
@@ -183,9 +192,7 @@ let process_successful_rebuild
     type_error_subscriptions
     ~response:
       (lazy
-        (instantiate_and_create_type_errors_response_for_all
-           ~build_system
-           (OverlaidEnvironment.root overlaid_environment)))
+        (instantiate_and_create_type_errors_response_for_all ~build_system overlaid_environment))
   >>= fun () ->
   Subscription.batch_send
     status_change_subscriptions
