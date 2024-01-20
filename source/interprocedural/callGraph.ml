@@ -442,7 +442,7 @@ module CallCallees = struct
 
 
   (* When `debug` is true, log the reason for creating `unresolved`. *)
-  let unresolved ?(debug = false) ?(reason = None) () =
+  let unresolved ?(debug = false) ?reason () =
     let () =
       match reason with
       | Some reason when debug ->
@@ -459,8 +459,9 @@ module CallCallees = struct
     }
 
 
-  let default_to_unresolved ?(debug = false) ?(reason = None) =
-    Option.value ~default:(unresolved ~debug ~reason ())
+  let default_to_unresolved ?(debug = false) ?reason = function
+    | Some value -> value
+    | None -> unresolved ~debug ?reason ()
 
 
   let is_partially_resolved = function
@@ -1156,6 +1157,10 @@ let rec is_all_names = function
   | _ -> false
 
 
+let class_method_decorators = ["classmethod"; "abstractclassmethod"; "abc.abstractclassmethod"]
+
+let static_method_decorators = ["staticmethod"; "abstractstaticmethod"; "abc.abstractstaticmethod"]
+
 module CalleeKind = struct
   type t =
     | Method of {
@@ -1185,8 +1190,8 @@ module CalleeKind = struct
       match get_define ~resolution (callee |> Expression.show |> Reference.create) with
       | Some define_body ->
           let define = Node.value define_body in
-          ( Ast.Statement.Define.has_decorator define "staticmethod",
-            Ast.Statement.Define.has_decorator define "classmethod" )
+          ( List.exists static_method_decorators ~f:(Ast.Statement.Define.has_decorator define),
+            List.exists class_method_decorators ~f:(Ast.Statement.Define.has_decorator define) )
       | None -> false, false
     in
     match callee_type with
@@ -1402,7 +1407,7 @@ let rec resolve_callees_from_type
   | Type.Callable { kind = Anonymous; _ } ->
       CallCallees.unresolved
         ~debug
-        ~reason:(Some (Format.asprintf "%s has kind `Anonymous`" callable_type_string))
+        ~reason:(Format.asprintf "%s has kind `Anonymous`" callable_type_string)
         ()
   | Type.Parametric { name = "BoundMethod"; parameters = [Single callable; Single receiver_type] }
     ->
@@ -1443,8 +1448,7 @@ let rec resolve_callees_from_type
       |> CallCallees.default_to_unresolved
            ~debug
            ~reason:
-             (Some
-                (Format.asprintf "Failed to resolve construct callees from %s" callable_type_string))
+             (Format.asprintf "Failed to resolve construct callees from %s" callable_type_string)
   | callable_type -> (
       (* Handle callable classes. `typing.Type` interacts specially with __call__, so we choose to
          ignore it for now to make sure our constructor logic via `cls()` still works. *)
@@ -1459,10 +1463,9 @@ let rec resolve_callees_from_type
           CallCallees.unresolved
             ~debug
             ~reason:
-              (Some
-                 (Format.asprintf
-                    "Resolved `Any` or `Top` when treating %s as callable class"
-                    callable_type_string))
+              (Format.asprintf
+                 "Resolved `Any` or `Top` when treating %s as callable class"
+                 callable_type_string)
             ()
       (* Callable protocol. *)
       | Type.Callable { kind = Anonymous; _ } as resolved_dunder_call ->
@@ -1497,8 +1500,7 @@ let rec resolve_callees_from_type
                   ())
           |> CallCallees.default_to_unresolved
                ~debug
-               ~reason:
-                 (Some (Format.asprintf "Failed to resolve protocol from %s" callable_type_string))
+               ~reason:(Format.asprintf "Failed to resolve protocol from %s" callable_type_string)
       | annotation ->
           if not dunder_call then
             resolve_callees_from_type
@@ -1514,10 +1516,9 @@ let rec resolve_callees_from_type
             CallCallees.unresolved
               ~debug
               ~reason:
-                (Some
-                   (Format.asprintf
-                      "Failed to resolve %s as callable class, protocol, or a non dunder call."
-                      callable_type_string))
+                (Format.asprintf
+                   "Failed to resolve %s as callable class, protocol, or a non dunder call."
+                   callable_type_string)
               ())
 
 
@@ -1807,7 +1808,8 @@ let resolve_callee_ignoring_decorators ~resolution ~call_indexer ~return_type ca
   in
   let contain_class_method signatures =
     signatures
-    |> List.exists ~f:(fun signature -> Define.Signature.has_decorator signature "classmethod")
+    |> List.exists ~f:(fun signature ->
+           List.exists class_method_decorators ~f:(Define.Signature.has_decorator signature))
   in
   match Node.value callee with
   | Expression.Name name when is_all_names (Node.value callee) -> (
@@ -1856,8 +1858,14 @@ let resolve_callee_ignoring_decorators ~resolution ~call_indexer ~return_type ca
       (* Resolve `base.attribute` by looking up the type of `base` or the types of its parent
          classes in the Method Resolution Order. *)
       match CallResolution.resolve_ignoring_errors ~resolution base with
+      (* Classes. *)
       | Type.Primitive class_name
-      | Type.Parametric { name = "type"; parameters = [Single (Type.Primitive class_name)] } -> (
+      (* Types of classes. *)
+      | Type.Parametric { name = "type"; parameters = [Single (Type.Primitive class_name)] }
+      (* Types of classes that are parametric, such as `class C(Generic[T])` where `T` is a type
+         variable. *)
+      | Type.Parametric
+          { name = "type"; parameters = [Single (Type.Parametric { name = class_name; _ })] } -> (
           let find_attribute element =
             match
               GlobalResolution.get_class_summary global_resolution element
@@ -2176,12 +2184,11 @@ struct
         |> CallCallees.default_to_unresolved
              ~debug:Context.debug
              ~reason:
-               (Some
-                  (Format.asprintf
-                     "Bypassed decorators to resolve callees (using global resolution): Failed to \
-                      resolve callee %a"
-                     Expression.pp
-                     callee))
+               (Format.asprintf
+                  "Bypassed decorators to resolve callees (using global resolution): Failed to \
+                   resolve callee %a"
+                  Expression.pp
+                  callee)
 
 
   let resolve_callees
