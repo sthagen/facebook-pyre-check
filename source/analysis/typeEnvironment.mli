@@ -16,11 +16,11 @@ module TypeEnvironmentReadOnly : sig
 
   val global_resolution : t -> GlobalResolution.t
 
+  val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
+
   val ast_environment : t -> AstEnvironment.ReadOnly.t
 
   val module_tracker : t -> ModuleTracker.ReadOnly.t
-
-  val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
 
   val get_errors
     :  t ->
@@ -49,6 +49,10 @@ val ast_environment : t -> AstEnvironment.t
 val module_tracker : t -> ModuleTracker.t
 
 val global_module_paths_api : t -> GlobalModulePathsApi.t
+
+val collect_definitions : scheduler:Scheduler.t -> t -> Ast.Reference.t list -> Ast.Reference.t list
+
+val populate_for_definitions : scheduler:Scheduler.t -> t -> Ast.Reference.t list -> unit
 
 val populate_for_modules : scheduler:Scheduler.t -> t -> Ast.Reference.t list -> unit
 

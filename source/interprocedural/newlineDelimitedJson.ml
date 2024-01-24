@@ -28,11 +28,15 @@ module Kind = struct
     | Model
     | Issue
     | CallGraph
+    | Module
+    | Function
 
   let show = function
     | Model -> "model"
     | Issue -> "issue"
     | CallGraph -> "call_graph"
+    | Module -> "module"
+    | Function -> "function"
 end
 
 module Line = struct

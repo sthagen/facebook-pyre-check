@@ -117,8 +117,8 @@ module GlobalLocationTable = Environment.EnvironmentTable.WithCache (struct
 
   let equal_value = Option.equal [%compare.equal: Location.WithModule.t]
 
-  let overlay_owns_key module_tracker_overlay =
-    ModuleTracker.Overlay.owns_reference module_tracker_overlay
+  let overlay_owns_key unannotated_global_environment_overlay =
+    UnannotatedGlobalEnvironment.Overlay.owns_reference unannotated_global_environment_overlay
 end)
 
 include GlobalLocationTable
@@ -144,3 +144,6 @@ end
 
 module UpdateResult = GlobalLocationTable.UpdateResult
 module AnnotatedReadOnly = ReadOnly
+
+let ast_environment environment =
+  unannotated_global_environment environment |> UnannotatedGlobalEnvironment.ast_environment

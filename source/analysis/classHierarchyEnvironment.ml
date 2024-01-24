@@ -315,8 +315,9 @@ module Edges = Environment.EnvironmentTable.WithCache (struct
 
   let show_key = Fn.id
 
-  let overlay_owns_key module_tracker_overlay index =
-    key_to_trigger index |> ModuleTracker.Overlay.owns_identifier module_tracker_overlay
+  let overlay_owns_key unannotated_global_environment_overlay index =
+    key_to_trigger index
+    |> UnannotatedGlobalEnvironment.Overlay.owns_identifier unannotated_global_environment_overlay
 
 
   let equal_value = [%compare.equal: ClassHierarchy.Edges.t option]
@@ -372,7 +373,7 @@ let store { edges } = Edges.store edges
 
 let load controls = { edges = Edges.load controls }
 
-let ast_environment { edges } = Edges.ast_environment edges
+let unannotated_global_environment { edges } = Edges.unannotated_global_environment edges
 
 let read_only { edges } = Edges.read_only edges
 

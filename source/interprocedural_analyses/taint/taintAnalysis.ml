@@ -132,8 +132,98 @@ let parse_decorator_preprocessing_configuration
   }
 
 
+let resolve_module_path
+    ~build_system
+    ~module_tracker
+    ~static_analysis_configuration:
+      { Configuration.StaticAnalysis.configuration = { local_root; _ }; repository_root; _ }
+    qualifier
+  =
+  match
+    Server.PathLookup.absolute_source_path_of_qualifier_with_build_system
+      ~build_system
+      ~module_tracker
+      qualifier
+  with
+  | None -> None
+  | Some path ->
+      let root = Option.value repository_root ~default:local_root in
+      let path = PyrePath.create_absolute path in
+      Some
+        {
+          Interprocedural.RepositoryPath.filename = PyrePath.get_relative_to_root ~root ~path;
+          path;
+        }
+
+
+let write_modules_to_file
+    ~static_analysis_configuration:
+      ({ Configuration.StaticAnalysis.configuration = { local_root; _ }; _ } as
+      static_analysis_configuration)
+    ~type_environment
+    ~build_system
+    ~path
+    qualifiers
+  =
+  Log.info "Writing modules to `%s`" (PyrePath.absolute path);
+  let module_tracker =
+    type_environment
+    |> Analysis.TypeEnvironment.read_only
+    |> Analysis.TypeEnvironment.ReadOnly.module_tracker
+  in
+  let to_json_lines qualifier =
+    let path =
+      resolve_module_path ~build_system ~module_tracker ~static_analysis_configuration qualifier
+      |> function
+      | Some { path; _ } -> `String (PyrePath.absolute path)
+      | None -> `Null
+    in
+    [
+      {
+        Interprocedural.NewlineDelimitedJson.Line.kind = CallGraph;
+        data = `Assoc ["name", `String (Ast.Reference.show qualifier); "path", path];
+      };
+    ]
+  in
+  Interprocedural.NewlineDelimitedJson.write_file
+    ~path
+    ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+    ~to_json_lines
+    qualifiers
+
+
+let write_functions_to_file
+    ~static_analysis_configuration:
+      { Configuration.StaticAnalysis.configuration = { local_root; _ }; _ }
+    ~path
+    definitions
+  =
+  Log.info "Writing functions to `%s`" (PyrePath.absolute path);
+  let to_json_lines definition =
+    [
+      {
+        Interprocedural.NewlineDelimitedJson.Line.kind = Function;
+        data = `Assoc ["name", `String (Ast.Reference.show definition)];
+      };
+    ]
+  in
+  Interprocedural.NewlineDelimitedJson.write_file
+    ~path
+    ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+    ~to_json_lines
+    definitions
+
+
 (** Perform a full type check and build a type environment. *)
-let type_check ~scheduler ~configuration ~decorator_configuration ~cache =
+let type_check
+    ~scheduler
+    ~static_analysis_configuration:
+      ({ Configuration.StaticAnalysis.configuration; save_results_to; _ } as
+      static_analysis_configuration)
+    ~build_system
+    ~decorator_configuration
+    ~cache
+  =
   Cache.type_environment cache (fun () ->
       Log.info "Starting type checking...";
       let configuration =
@@ -153,8 +243,39 @@ let type_check ~scheduler ~configuration ~decorator_configuration ~cache =
       in
       Log.info "Found %d modules" (List.length qualifiers);
       let () =
-        Analysis.TypeEnvironment.populate_for_modules ~scheduler type_environment qualifiers
+        match save_results_to with
+        | Some directory ->
+            write_modules_to_file
+              ~static_analysis_configuration
+              ~type_environment
+              ~build_system
+              ~path:(PyrePath.append directory ~element:"modules.json")
+              qualifiers
+        | None -> ()
       in
+      PyreProfiling.track_shared_memory_usage ~name:"Before legacy type check" ();
+      let definitions =
+        Analysis.TypeEnvironment.collect_definitions ~scheduler type_environment qualifiers
+      in
+      Log.info "Found %d functions" (List.length definitions);
+      let () =
+        match save_results_to with
+        | Some directory ->
+            write_functions_to_file
+              ~static_analysis_configuration
+              ~path:(PyrePath.append directory ~element:"functions.json")
+              definitions
+        | None -> ()
+      in
+      let () =
+        Analysis.TypeEnvironment.populate_for_definitions ~scheduler type_environment definitions
+      in
+      Statistics.event
+        ~section:`Memory
+        ~name:"shared memory size post-typecheck"
+        ~integers:["size", Memory.heap_size ()]
+        ();
+      PyreProfiling.track_shared_memory_usage ~name:"After legacy type check" ();
       type_environment)
 
 
@@ -353,30 +474,6 @@ let compact_ocaml_heap ~name =
   Statistics.performance ~name ~phase_name:name ~timer ()
 
 
-let resolve_module_path
-    ~build_system
-    ~module_tracker
-    ~static_analysis_configuration:
-      { Configuration.StaticAnalysis.configuration = { local_root; _ }; repository_root; _ }
-    qualifier
-  =
-  match
-    Server.PathLookup.absolute_source_path_of_qualifier_with_build_system
-      ~build_system
-      ~module_tracker
-      qualifier
-  with
-  | None -> None
-  | Some path ->
-      let root = Option.value repository_root ~default:local_root in
-      let path = PyrePath.create_absolute path in
-      Some
-        {
-          Interprocedural.RepositoryPath.filename = PyrePath.get_relative_to_root ~root ~path;
-          path;
-        }
-
-
 let run_taint_analysis
     ~static_analysis_configuration:
       ({
@@ -413,7 +510,14 @@ let run_taint_analysis
   in
 
   (* We should NOT store anything in memory before calling `Cache.try_load` *)
-  let environment, cache = type_check ~scheduler ~configuration ~decorator_configuration ~cache in
+  let environment, cache =
+    type_check
+      ~scheduler
+      ~static_analysis_configuration
+      ~build_system
+      ~decorator_configuration
+      ~cache
+  in
 
   if compact_ocaml_heap_flag then
     compact_ocaml_heap ~name:"after type check";

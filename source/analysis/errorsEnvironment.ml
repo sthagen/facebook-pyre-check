@@ -61,8 +61,8 @@ module QualifierErrorsTable = Environment.EnvironmentTable.WithCache (struct
 
   let show_key = Reference.show
 
-  let overlay_owns_key module_tracker_overlay =
-    ModuleTracker.Overlay.owns_qualifier module_tracker_overlay
+  let overlay_owns_key unannotated_global_environment_overlay =
+    UnannotatedGlobalEnvironment.Overlay.owns_qualifier unannotated_global_environment_overlay
 
 
   let lazy_incremental = false
@@ -104,6 +104,10 @@ module ReadOnly = struct
 end
 
 let type_environment = Unsafe.upstream
+
+let ast_environment environment =
+  unannotated_global_environment environment |> UnannotatedGlobalEnvironment.ast_environment
+
 
 let module_tracker environment = ast_environment environment |> AstEnvironment.module_tracker
 
