@@ -461,7 +461,7 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
     let configuration =
       TypeEnvironment.ReadOnly.controls type_environment |> EnvironmentControls.configuration
     in
-    let module_tracker = TypeEnvironment.ReadOnly.module_tracker type_environment in
+    let source_code_api = TypeEnvironment.ReadOnly.get_untracked_source_code_api type_environment in
     let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
     let order = GlobalResolution.class_hierarchy global_resolution in
     let resolution =
@@ -590,8 +590,7 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
           Map.change callgraph_map (Reference.delocalize caller) ~f:(fun old_callees ->
               Option.value ~default:[] old_callees |> fun old_callees -> Some (old_callees @ callees))
         in
-        let ast_environment = TypeEnvironment.ReadOnly.ast_environment type_environment in
-        AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment module_qualifier
+        SourceCodeApi.processed_source_of_qualifier source_code_api module_qualifier
         >>| Preprocessing.defines ~include_toplevels:false ~include_stubs:false ~include_nested:true
         >>| List.fold_left ~init:callgraph_map ~f:callees
         |> Option.value ~default:callgraph_map
@@ -648,7 +647,7 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
     | CalleesWithLocation caller ->
         let instantiate =
           Location.WithModule.instantiate
-            ~lookup:(ModuleTracker.ReadOnly.relative_path_of_qualifier module_tracker)
+            ~lookup:(SourceCodeApi.relative_path_of_qualifier source_code_api)
         in
         let callees =
           (* We don't yet support a syntax for fetching property setters. *)
@@ -660,7 +659,7 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
     | Defines module_or_class_names ->
         let defines_of_module module_or_class_name =
           let module_name, filter_define =
-            if ModuleTracker.ReadOnly.is_qualifier_tracked module_tracker module_or_class_name then
+            if SourceCodeApi.is_qualifier_tracked source_code_api module_or_class_name then
               Some module_or_class_name, fun _ -> false
             else
               let filter
@@ -669,7 +668,7 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
                 not (Option.equal Reference.equal parent (Some module_or_class_name))
               in
               let rec find_module_name current_reference =
-                if ModuleTracker.ReadOnly.is_qualifier_tracked module_tracker current_reference then
+                if SourceCodeApi.is_qualifier_tracked source_code_api current_reference then
                   Some current_reference
                 else
                   Reference.prefix current_reference >>= find_module_name
@@ -677,9 +676,11 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
               find_module_name module_or_class_name, filter
           in
           let defines =
-            let ast_environment = TypeEnvironment.ReadOnly.ast_environment type_environment in
+            let source_code_api =
+              TypeEnvironment.ReadOnly.get_untracked_source_code_api type_environment
+            in
             module_name
-            >>= AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment
+            >>= SourceCodeApi.processed_source_of_qualifier source_code_api
             >>| Analysis.FunctionDefinition.collect_defines
             >>| List.map ~f:snd
             >>| List.concat_map ~f:Analysis.FunctionDefinition.all_bodies
@@ -719,7 +720,7 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
               ~lookup:
                 (PathLookup.absolute_source_path_of_qualifier_with_build_system
                    ~build_system
-                   ~module_tracker)
+                   ~source_code_api)
           in
           List.map
             ~f:(fun { Callgraph.callee; locations } ->
@@ -738,7 +739,7 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
              |> List.map ~f:(fun { ModulePath.qualifier; _ } ->
                     PathLookup.absolute_source_path_of_qualifier_with_build_system
                       ~build_system
-                      ~module_tracker
+                      ~source_code_api
                       qualifier)
              |> List.filter ~f:Option.is_some
              |> List.map ~f:(function
@@ -804,10 +805,9 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
         Single (Base.ExpressionLevelCoverageResponse results)
     | GlobalLeaks { qualifiers; parse_errors } ->
         let lookup =
-          let module_tracker = TypeEnvironment.ReadOnly.module_tracker type_environment in
           PathLookup.absolute_source_path_of_qualifier_with_build_system
             ~build_system
-            ~module_tracker
+            ~source_code_api
         in
         let find_leak_errors_for_qualifier qualifier =
           Analysis.GlobalLeakCheck.check_qualifier ~type_environment qualifier
@@ -925,15 +925,16 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
         Single
           (Base.FoundModules
              (SourcePath.create path
-             |> PathLookup.qualifiers_of_source_path_with_build_system ~build_system ~module_tracker
-             ))
+             |> PathLookup.qualifiers_of_source_path_with_build_system
+                  ~build_system
+                  ~source_code_api))
     | LessOrEqual (left, right) ->
         let left = parse_and_validate left in
         let right = parse_and_validate right in
         GlobalResolution.less_or_equal global_resolution ~left ~right
         |> fun response -> Single (Base.Boolean response)
     | PathOfModule module_name ->
-        ModuleTracker.ReadOnly.module_path_of_qualifier module_tracker module_name
+        SourceCodeApi.module_path_of_qualifier source_code_api module_name
         >>= (fun source_path ->
               let path =
                 ModulePath.full_path ~configuration source_path
