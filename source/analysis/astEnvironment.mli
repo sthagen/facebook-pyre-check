@@ -26,29 +26,12 @@ module ReadOnly : sig
 
   val module_tracker : t -> ModuleTracker.ReadOnly.t
 
-  val get_tracked_source_code_api
-    :  t ->
-    dependency:SharedMemoryKeys.DependencyKey.registered ->
-    SourceCodeApi.t
-
-  val get_untracked_source_code_api : t -> SourceCodeApi.t
-end
-
-module UpdateResult : sig
-  type t = {
-    triggered_dependencies: SharedMemoryKeys.DependencyKey.RegisteredSet.t;
-    invalidated_modules: Reference.t list;
-    module_updates: ModuleTracker.IncrementalUpdate.t list;
-  }
-
-  val triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t
-
-  val invalidated_modules : t -> Reference.t list
-
-  val module_updates : t -> ModuleTracker.IncrementalUpdate.t list
+  val as_source_code_incremental_read_only : t -> SourceCodeIncrementalApi.ReadOnly.t
 end
 
 type t
+
+val global_module_paths_api : t -> GlobalModulePathsApi.t
 
 val module_tracker : t -> ModuleTracker.t
 
@@ -62,7 +45,11 @@ val load : EnvironmentControls.t -> t
 
 val store : t -> unit
 
-val update : scheduler:Scheduler.t -> t -> ArtifactPath.Event.t list -> UpdateResult.t
+val update
+  :  scheduler:Scheduler.t ->
+  t ->
+  ArtifactPath.Event.t list ->
+  SourceCodeIncrementalApi.UpdateResult.t
 
 val clear_memory_for_tests : scheduler:Scheduler.t -> t -> unit
 
@@ -79,8 +66,8 @@ module Overlay : sig
 
   val update_overlaid_code
     :  t ->
-    code_updates:(ArtifactPath.t * ModuleTracker.Overlay.CodeUpdate.t) list ->
-    UpdateResult.t
+    code_updates:SourceCodeIncrementalApi.Overlay.CodeUpdates.t ->
+    SourceCodeIncrementalApi.UpdateResult.t
 
   val read_only : t -> ReadOnly.t
 end

@@ -120,7 +120,7 @@ module UpdateResult : sig
 
   val invalidated_modules : t -> Reference.t list
 
-  val module_updates : t -> ModuleTracker.IncrementalUpdate.t list
+  val module_updates : t -> SourceCodeIncrementalApi.UpdateResult.ModuleUpdate.t list
 
   val all_triggered_dependencies : t -> DependencyKey.RegisteredSet.t list
 
@@ -134,6 +134,8 @@ val create : EnvironmentControls.t -> t
 (* This handle to self is needed to fulfill the (recursive) interface used in the Environment.ml
    functor *)
 val unannotated_global_environment : t -> t
+
+val global_module_paths_api : t -> GlobalModulePathsApi.t
 
 val ast_environment : t -> AstEnvironment.t
 
@@ -167,7 +169,7 @@ module Overlay : sig
 
   val update_overlaid_code
     :  t ->
-    code_updates:(ArtifactPath.t * ModuleTracker.Overlay.CodeUpdate.t) list ->
+    code_updates:SourceCodeIncrementalApi.Overlay.CodeUpdates.t ->
     UpdateResult.t
 
   val propagate_parent_update : t -> UpdateResult.t -> UpdateResult.t

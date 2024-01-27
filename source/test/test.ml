@@ -3113,7 +3113,10 @@ module ScratchProject = struct
            but it cuts down on RAM use. Skip it if we are testing the lazy module tracker; we don't
            need to clean up in that case, and the cleanup relies on APIs that are only available
            using nonlazy module tracking *)
-        let ast_environment = ErrorsEnvironment.ast_environment errors_environment in
+        let ast_environment =
+          ErrorsEnvironment.unannotated_global_environment errors_environment
+          |> UnannotatedGlobalEnvironment.ast_environment
+        in
         AstEnvironment.clear_memory_for_tests ~scheduler:(mock_scheduler ()) ast_environment;
         let set_up_shared_memory _ = () in
         let tear_down_shared_memory () _ =
@@ -3177,12 +3180,18 @@ module ScratchProject = struct
       errors_environment |> ErrorsEnvironment.type_environment
 
 
-    let ast_environment { errors_environment; _ } =
-      ErrorsEnvironment.ast_environment errors_environment
+    (* The names of these hooks are specific because it is important that tests of layers above
+       AstEnvironment shouldn't be trying to access the raw environment; we've designed our system
+       to allow alternative implementations of the bottom layers, so in general it is incorrect to
+       assume there is an underlying AstEnvironment or ModuleTracker. *)
+    module AssumeBackedByAstEnvironment = struct
+      let ast_environment { errors_environment; _ } =
+        ErrorsEnvironment.unannotated_global_environment errors_environment
+        |> UnannotatedGlobalEnvironment.ast_environment
 
 
-    let module_tracker { errors_environment; _ } =
-      ErrorsEnvironment.ast_environment errors_environment |> AstEnvironment.module_tracker
+      let module_tracker project = ast_environment project |> AstEnvironment.module_tracker
+    end
   end
 
   let errors_environment { errors_environment; _ } =
@@ -3308,7 +3317,7 @@ let assert_errors
 
   let descriptions =
     let errors =
-      let sources, environment =
+      let sources, type_environment, source_code_api =
         let project =
           let external_sources =
             List.map other_sources ~f:(fun { handle; source } -> handle, source)
@@ -3328,21 +3337,22 @@ let assert_errors
         let { ScratchProject.BuiltGlobalEnvironment.sources; _ } =
           ScratchProject.build_global_environment project
         in
-        let type_environment = ScratchProject.ReadWrite.type_environment project in
-        sources, type_environment
+        let errors_environment = ScratchProject.ReadWrite.errors_environment project in
+        ( sources,
+          ErrorsEnvironment.type_environment errors_environment,
+          ErrorsEnvironment.read_only errors_environment
+          |> ErrorsEnvironment.ReadOnly.get_untracked_source_code_api )
       in
       let source =
         List.find_exn sources ~f:(fun { Source.module_path; _ } ->
             String.equal handle (ModulePath.relative module_path))
       in
-      check ~environment ~source
+      check ~environment:type_environment ~source
       |> List.map
            ~f:
              (AnalysisError.instantiate
                 ~show_error_traces
-                ~lookup:
-                  (ModuleTracker.ReadOnly.relative_path_of_qualifier
-                     (TypeEnvironment.module_tracker environment |> ModuleTracker.read_only)))
+                ~lookup:(SourceCodeApi.relative_path_of_qualifier source_code_api))
     in
     let errors_with_any_location =
       List.filter_map errors ~f:(fun error ->
