@@ -10,13 +10,22 @@ module ReadOnly : sig
 
   val controls : t -> EnvironmentControls.t
 
-  val module_path_of_qualifier : t -> Ast.Reference.t -> Ast.ModulePath.t option
-
-  val relative_path_of_qualifier : t -> Ast.Reference.t -> string option
-
-  val is_qualifier_tracked : t -> Ast.Reference.t -> bool
+  val look_up_qualifier : t -> Ast.Reference.t -> SourceCodeApi.ModuleLookup.t
 
   val code_of_module_path : t -> Ast.ModulePath.t -> Parsing.LoadResult.t
+end
+
+module Overlay : sig
+  type t
+
+  val owns_qualifier : t -> Ast.Reference.t -> bool
+
+  val update_overlaid_code
+    :  t ->
+    code_updates:SourceCodeIncrementalApi.Overlay.CodeUpdates.t ->
+    SourceCodeIncrementalApi.UpdateResult.ModuleUpdate.t list
+
+  val read_only : t -> ReadOnly.t
 end
 
 type t
@@ -41,21 +50,10 @@ module Serializer : sig
   val from_stored_layouts : controls:EnvironmentControls.t -> unit -> t
 end
 
-val global_module_paths_api : t -> GlobalModulePathsApi.t
-
 val read_only : t -> ReadOnly.t
 
-module Overlay : sig
-  type t
+val overlay : t -> Overlay.t
 
-  val create : ReadOnly.t -> t
-
-  val owns_qualifier : t -> Ast.Reference.t -> bool
-
-  val update_overlaid_code
-    :  t ->
-    code_updates:SourceCodeIncrementalApi.Overlay.CodeUpdates.t ->
-    SourceCodeIncrementalApi.UpdateResult.ModuleUpdate.t list
-
-  val read_only : t -> ReadOnly.t
+module AssumeGlobalModuleListing : sig
+  val global_module_paths_api : t -> GlobalModulePathsApi.t
 end

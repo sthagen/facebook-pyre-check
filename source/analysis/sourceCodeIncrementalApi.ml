@@ -58,10 +58,6 @@ module UpdateResult = struct
   let module_updates { module_updates; _ } = module_updates
 end
 
-(* TODO(T175599570) Fill this out *)
-module Base = struct end
-
-(* TODO(T175599570) Fill this out *)
 module Overlay = struct
   module CodeUpdate = struct
     type t =
@@ -72,5 +68,44 @@ module Overlay = struct
 
   module CodeUpdates = struct
     type t = (ArtifactPath.t * CodeUpdate.t) list
+  end
+
+  type t = {
+    read_only: ReadOnly.t;
+    owns_qualifier: Ast.Reference.t -> bool;
+    update_overlaid_code: code_updates:CodeUpdates.t -> UpdateResult.t;
+  }
+
+  let create ~read_only ~owns_qualifier ~update_overlaid_code =
+    { read_only; owns_qualifier; update_overlaid_code }
+
+
+  let read_only { read_only; _ } = read_only
+
+  let owns_qualifier { owns_qualifier; _ } = owns_qualifier
+
+  let update_overlaid_code { update_overlaid_code; _ } = update_overlaid_code
+end
+
+module Base = struct
+  type t = {
+    read_only: ReadOnly.t;
+    overlay: unit -> Overlay.t;
+    update: scheduler:Scheduler.t -> ArtifactPath.Event.t list -> UpdateResult.t;
+    global_module_paths_api: GlobalModulePathsApi.t;
+  }
+
+  let create ~read_only ~overlay ~update ~global_module_paths_api =
+    { read_only; overlay; update; global_module_paths_api }
+
+
+  let read_only { read_only; _ } = read_only
+
+  let overlay { overlay; _ } = overlay ()
+
+  let update { update; _ } = update
+
+  module AssumeGlobalModuleListing = struct
+    let global_module_paths_api { global_module_paths_api; _ } = global_module_paths_api
   end
 end

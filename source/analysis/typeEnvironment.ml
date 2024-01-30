@@ -93,12 +93,13 @@ end)
 
 include CheckResultsTable
 
-let global_environment = CheckResultsTable.Unsafe.upstream
+let global_environment = CheckResultsTable.AssumeDownstreamNeverNeedsUpdates.upstream
 
-let global_module_paths_api type_environment =
-  unannotated_global_environment type_environment
-  |> UnannotatedGlobalEnvironment.global_module_paths_api
-
+module AssumeGlobalModuleListing = struct
+  let global_module_paths_api type_environment =
+    unannotated_global_environment type_environment
+    |> UnannotatedGlobalEnvironment.AssumeGlobalModuleListing.global_module_paths_api
+end
 
 let populate_for_definitions ~scheduler environment defines =
   let timer = Timer.start () in
@@ -229,20 +230,22 @@ end
    before loading / after storing. These functions only handle serializing and deserializing the
    non-SharedMemory data *)
 
-let store environment =
-  CheckResultsTable.store environment;
-  SharedMemoryKeys.DependencyKey.Registry.store ()
+module AssumeAstEnvironment = struct
+  let store environment =
+    CheckResultsTable.AssumeAstEnvironment.store environment;
+    SharedMemoryKeys.DependencyKey.Registry.store ()
 
 
-let load configuration =
-  (* Loading the dependency keys needs to happen exactly once in the environment stack; we do it
-     here, at the very top. *)
-  SharedMemoryKeys.DependencyKey.Registry.load ();
-  CheckResultsTable.load configuration
+  let load configuration =
+    (* Loading the dependency keys needs to happen exactly once in the environment stack; we do it
+       here, at the very top. *)
+    SharedMemoryKeys.DependencyKey.Registry.load ();
+    CheckResultsTable.AssumeAstEnvironment.load configuration
 
 
-let store_without_dependency_keys = CheckResultsTable.store
+  let store_without_dependency_keys = CheckResultsTable.AssumeAstEnvironment.store
 
-let load_without_dependency_keys = CheckResultsTable.load
+  let load_without_dependency_keys = CheckResultsTable.AssumeAstEnvironment.load
+end
 
 module TypeEnvironmentReadOnly = ReadOnly

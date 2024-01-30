@@ -127,38 +127,8 @@ module UpdateResult : sig
   val unannotated_global_environment_update_result : t -> t
 end
 
-type t
-
-val create : EnvironmentControls.t -> t
-
-(* This handle to self is needed to fulfill the (recursive) interface used in the Environment.ml
-   functor *)
-val unannotated_global_environment : t -> t
-
-val global_module_paths_api : t -> GlobalModulePathsApi.t
-
-val controls : t -> EnvironmentControls.t
-
-val read_only : t -> ReadOnly.t
-
-val update_this_and_all_preceding_environments
-  :  t ->
-  scheduler:Scheduler.t ->
-  ArtifactPath.Event.t list ->
-  UpdateResult.t
-
-module UnsafeAssumeClassic : sig
-  val ast_environment : t -> AstEnvironment.t
-end
-
-val store : t -> unit
-
-val load : EnvironmentControls.t -> t
-
 module Overlay : sig
   type t
-
-  val create : ReadOnly.t -> t
 
   (* This handle to self is needed to fulfill the recursive interface of the Environment functor *)
   val unannotated_global_environment : t -> t
@@ -177,4 +147,36 @@ module Overlay : sig
   val propagate_parent_update : t -> UpdateResult.t -> UpdateResult.t
 
   val read_only : t -> ReadOnly.t
+end
+
+type t
+
+val create : EnvironmentControls.t -> t
+
+(* This handle to self is needed to fulfill the (recursive) interface used in the Environment.ml
+   functor *)
+val unannotated_global_environment : t -> t
+
+val controls : t -> EnvironmentControls.t
+
+val read_only : t -> ReadOnly.t
+
+val overlay : t -> Overlay.t
+
+val update_this_and_all_preceding_environments
+  :  t ->
+  scheduler:Scheduler.t ->
+  ArtifactPath.Event.t list ->
+  UpdateResult.t
+
+module AssumeGlobalModuleListing : sig
+  val global_module_paths_api : t -> GlobalModulePathsApi.t
+end
+
+module AssumeAstEnvironment : sig
+  val ast_environment : t -> AstEnvironment.t
+
+  val store : t -> unit
+
+  val load : EnvironmentControls.t -> t
 end

@@ -106,11 +106,9 @@ module PreviousEnvironment = struct
       ArtifactPath.Event.t list ->
       UpdateResult.t
 
-    module AssumeAstEnvironment : sig
-      val store : t -> unit
+    val store : t -> unit
 
-      val load : EnvironmentControls.t -> t
-    end
+    val load : EnvironmentControls.t -> t
   end
 end
 
@@ -308,11 +306,9 @@ module EnvironmentTable = struct
       ArtifactPath.Event.t list ->
       UpdateResult.t
 
-    module AssumeAstEnvironment : sig
-      val store : t -> unit
+    val store : t -> unit
 
-      val load : EnvironmentControls.t -> t
-    end
+    val load : EnvironmentControls.t -> t
 
     module AssumeDownstreamNeverNeedsUpdates : sig
       val upstream : t -> In.PreviousEnvironment.t
@@ -668,14 +664,9 @@ module EnvironmentTable = struct
          run after storing / before loading These functions only handle serializing and
          deserializing the non-SharedMemory data *)
 
-      module AssumeAstEnvironment = struct
-        let store { upstream_environment; _ } =
-          In.PreviousEnvironment.AssumeAstEnvironment.store upstream_environment
+      let store { upstream_environment; _ } = In.PreviousEnvironment.store upstream_environment
 
-
-        let load controls =
-          In.PreviousEnvironment.AssumeAstEnvironment.load controls |> from_upstream_environment
-      end
+      let load controls = In.PreviousEnvironment.load controls |> from_upstream_environment
     end
 
     include Base

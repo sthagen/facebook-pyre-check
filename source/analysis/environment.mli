@@ -37,28 +37,8 @@ module PreviousEnvironment : sig
 
     module UpdateResult : UpdateResult.S
 
-    type t
-
-    val create : EnvironmentControls.t -> t
-
-    val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.t
-
-    val read_only : t -> ReadOnly.t
-
-    val update_this_and_all_preceding_environments
-      :  t ->
-      scheduler:Scheduler.t ->
-      ArtifactPath.Event.t list ->
-      UpdateResult.t
-
-    val store : t -> unit
-
-    val load : EnvironmentControls.t -> t
-
     module Overlay : sig
       type t
-
-      val create : ReadOnly.t -> t
 
       val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.Overlay.t
 
@@ -71,6 +51,28 @@ module PreviousEnvironment : sig
 
       val read_only : t -> ReadOnly.t
     end
+
+    type t
+
+    val create : EnvironmentControls.t -> t
+
+    val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.t
+
+    val read_only : t -> ReadOnly.t
+
+    val overlay : t -> Overlay.t
+
+    val update_this_and_all_preceding_environments
+      :  t ->
+      scheduler:Scheduler.t ->
+      ArtifactPath.Event.t list ->
+      UpdateResult.t
+
+    module AssumeAstEnvironment : sig
+      val store : t -> unit
+
+      val load : EnvironmentControls.t -> t
+    end
   end
 end
 
@@ -78,6 +80,10 @@ module type S = sig
   include PreviousEnvironment.S
 
   module PreviousEnvironment : PreviousEnvironment.S
+
+  module AssumeDownstreamNeverNeedsUpdates : sig
+    val upstream : t -> PreviousEnvironment.t
+  end
 
   module Testing : sig
     module ReadOnly : sig
@@ -157,8 +163,6 @@ module EnvironmentTable : sig
     module Overlay : sig
       type t
 
-      val create : ReadOnly.t -> t
-
       val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.Overlay.t
 
       val update_overlaid_code
@@ -179,17 +183,21 @@ module EnvironmentTable : sig
 
     val read_only : t -> ReadOnly.t
 
+    val overlay : t -> Overlay.t
+
     val update_this_and_all_preceding_environments
       :  t ->
       scheduler:Scheduler.t ->
       ArtifactPath.Event.t list ->
       UpdateResult.t
 
-    val store : t -> unit
+    module AssumeAstEnvironment : sig
+      val store : t -> unit
 
-    val load : EnvironmentControls.t -> t
+      val load : EnvironmentControls.t -> t
+    end
 
-    module Unsafe : sig
+    module AssumeDownstreamNeverNeedsUpdates : sig
       val upstream : t -> In.PreviousEnvironment.t
     end
 

@@ -12,6 +12,40 @@ open Test
 open OUnit2
 open Pyre
 
+module ReadWriteHelpers = struct
+  let read_only environment =
+    AstEnvironment.as_source_code_incremental environment |> SourceCodeIncrementalApi.Base.read_only
+
+
+  let overlay environment =
+    AstEnvironment.as_source_code_incremental environment |> SourceCodeIncrementalApi.Base.overlay
+
+
+  let update environment =
+    AstEnvironment.as_source_code_incremental environment |> SourceCodeIncrementalApi.Base.update
+end
+
+module ReadOnlyHelpers = struct
+  let source_of_qualifier_tracked read_only ~dependency =
+    SourceCodeIncrementalApi.ReadOnly.get_tracked_api ~dependency read_only
+    |> SourceCodeApi.source_of_qualifier
+
+
+  let parse_result_of_qualifier_tracked read_only ~dependency =
+    SourceCodeIncrementalApi.ReadOnly.get_tracked_api ~dependency read_only
+    |> SourceCodeApi.parse_result_of_qualifier
+
+
+  let source_of_qualifier_untracked read_only =
+    SourceCodeIncrementalApi.ReadOnly.get_untracked_api read_only
+    |> SourceCodeApi.source_of_qualifier
+
+
+  let parse_result_of_qualifier_untracked read_only =
+    SourceCodeIncrementalApi.ReadOnly.get_untracked_api read_only
+    |> SourceCodeApi.parse_result_of_qualifier
+end
+
 let test_basic context =
   let handle_a = "a.py" in
   let source_a = trim_extra_indentation {|
@@ -40,19 +74,20 @@ let test_basic context =
   in
   let { Configuration.Analysis.local_root; _ } = configuration in
   let assert_module_path ~module_tracker ~expected reference =
-    match ModuleTracker.ReadOnly.module_path_of_qualifier module_tracker reference with
-    | None ->
-        let message =
-          Format.asprintf "Cannot find reference %a in the AST environment" Reference.pp reference
-        in
-        assert_failure message
-    | Some module_path ->
+    match ModuleTracker.ReadOnly.look_up_qualifier module_tracker reference with
+    | SourceCodeApi.ModuleLookup.Explicit module_path ->
         let actual = ModulePath.full_path ~configuration module_path in
         assert_equal
           ~cmp:[%compare.equal: ArtifactPath.t]
           ~printer:ArtifactPath.show
           expected
           actual
+    | SourceCodeApi.ModuleLookup.Implicit
+    | SourceCodeApi.ModuleLookup.NotFound ->
+        let message =
+          Format.asprintf "Cannot find reference %a in the AST environment" Reference.pp reference
+        in
+        assert_failure message
   in
   assert_module_path
     !&"a"
@@ -66,7 +101,7 @@ let test_basic context =
 
 
 let test_parse_stubs_modules_list context =
-  let ast_environment =
+  let read_only =
     let stub_content = "def f()->int: ...\n" in
     let source_content = "def f()->int:\n    return 1\n" in
     ScratchProject.setup
@@ -82,13 +117,11 @@ let test_parse_stubs_modules_list context =
         "2and3/modd.py", source_content;
       ]
     |> ScratchProject.ReadWrite.AssumeBackedByAstEnvironment.ast_environment
-    |> AstEnvironment.read_only
+    |> ReadWriteHelpers.read_only
   in
   let assert_function_matches_name ~qualifier ?(is_stub = false) define =
     let name =
-      match
-        Analysis.AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment qualifier
-      with
+      match ReadOnlyHelpers.source_of_qualifier_untracked read_only qualifier with
       | Some
           {
             Source.statements =
@@ -117,7 +150,7 @@ let test_parse_stubs_modules_list context =
 
 
 let test_parse_source context =
-  let ast_environment, global_module_paths_api =
+  let read_only, global_module_paths_api =
     let project =
       ScratchProject.setup
         ~context
@@ -125,21 +158,19 @@ let test_parse_source context =
         ["x.py", "def foo()->int:\n    return 1\n"]
     in
     ( ScratchProject.ReadWrite.AssumeBackedByAstEnvironment.ast_environment project
-      |> AstEnvironment.read_only,
+      |> ReadWriteHelpers.read_only,
       ScratchProject.global_module_paths_api project )
   in
   let sources =
     List.filter_map
       (GlobalModulePathsApi.type_check_qualifiers global_module_paths_api)
-      ~f:(AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment)
+      ~f:(ReadOnlyHelpers.source_of_qualifier_untracked read_only)
   in
   let handles =
     List.map sources ~f:(fun { Source.module_path; _ } -> ModulePath.relative module_path)
   in
   assert_equal handles ["x.py"];
-  let source =
-    Analysis.AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment !&"x"
-  in
+  let source = ReadOnlyHelpers.source_of_qualifier_untracked read_only !&"x" in
   assert_equal (Option.is_some source) true;
   let { Source.module_path; statements; _ } = Option.value_exn source in
   assert_equal (ModulePath.relative module_path) "x.py";
@@ -193,15 +224,15 @@ let test_parse_sources context =
     in
     let type_check_qualifiers =
       AstEnvironment.module_tracker ast_environment
-      |> ModuleTracker.global_module_paths_api
+      |> ModuleTracker.AssumeGlobalModuleListing.global_module_paths_api
       |> GlobalModulePathsApi.type_check_qualifiers
     in
     let sources =
       List.filter_map
         type_check_qualifiers
         ~f:
-          (AstEnvironment.ReadOnly.processed_source_of_qualifier
-             (AstEnvironment.read_only ast_environment))
+          (ReadOnlyHelpers.source_of_qualifier_untracked
+             (ReadWriteHelpers.read_only ast_environment))
     in
     let sorted_handles =
       List.map sources ~f:(fun { Source.module_path; _ } -> ModulePath.relative module_path)
@@ -212,15 +243,15 @@ let test_parse_sources context =
   (* Load a raw source with a dependency and verify that it appears in `triggered_dependencies`
      after an update. *)
   let dependency = SharedMemoryKeys.TypeCheckDefine (Reference.create "foo") in
-  AstEnvironment.ReadOnly.raw_source_of_qualifier
-    (AstEnvironment.read_only ast_environment)
+  ReadOnlyHelpers.parse_result_of_qualifier_tracked
+    (ReadWriteHelpers.read_only ast_environment)
     ~dependency:(SharedMemoryKeys.DependencyKey.Registry.register dependency)
     (Reference.create "c")
   |> ignore;
   let triggered_dependencies =
     (* Re-write the file, otherwise RawSources won't trigger dependencies *)
     write_file ~content:"def foo() -> int: ...  # pyre-ignore" local_root "c.py";
-    AstEnvironment.update
+    ReadWriteHelpers.update
       ~scheduler:(mock_scheduler ())
       ast_environment
       [
@@ -250,7 +281,7 @@ let test_parse_sources context =
     write_file local_root "new_local.py";
     write_file stub_root "new_stub.pyi";
     let invalidated_modules =
-      AstEnvironment.update
+      ReadWriteHelpers.update
         ~scheduler:(mock_scheduler ())
         ast_environment
         [
@@ -265,8 +296,8 @@ let test_parse_sources context =
       List.filter_map
         invalidated_modules
         ~f:
-          (AstEnvironment.ReadOnly.processed_source_of_qualifier
-             (AstEnvironment.read_only ast_environment))
+          (ReadOnlyHelpers.source_of_qualifier_untracked
+             (ReadWriteHelpers.read_only ast_environment))
     in
     List.map sources ~f:(fun { Source.module_path; _ } -> ModulePath.relative module_path)
   in
@@ -625,17 +656,17 @@ let test_ast_change _ =
 let test_parse_repository context =
   let assert_repository_parses_to repository ~expected =
     let actual =
-      let ast_environment, global_module_paths_api =
+      let read_only, global_module_paths_api =
         let project = ScratchProject.setup ~context ~include_typeshed_stubs:false repository in
 
         ( ScratchProject.ReadWrite.AssumeBackedByAstEnvironment.ast_environment project
-          |> AstEnvironment.read_only,
+          |> ReadWriteHelpers.read_only,
           ScratchProject.global_module_paths_api project )
       in
       let sources =
         List.filter_map
           (GlobalModulePathsApi.type_check_qualifiers global_module_paths_api)
-          ~f:(AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment)
+          ~f:(ReadOnlyHelpers.source_of_qualifier_untracked read_only)
       in
       List.map sources ~f:(fun ({ Source.module_path; _ } as source) ->
           ModulePath.relative module_path, source)
@@ -740,15 +771,15 @@ module IncrementalTest = struct
     in
     let configuration = ScratchProject.configuration_of project in
     let () =
-      let ast_environment =
+      let read_only =
         ScratchProject.ReadWrite.AssumeBackedByAstEnvironment.ast_environment project
-        |> AstEnvironment.read_only
+        |> ReadWriteHelpers.read_only
       in
       (if force_load_external_sources then
          (* If we don't do this, external sources are ignored due to lazy loading *)
          let load_source { handle; _ } =
            let qualifier = ModulePath.qualifier_from_relative_path handle in
-           let _ = AstEnvironment.ReadOnly.raw_source_of_qualifier ast_environment qualifier in
+           let _ = ReadOnlyHelpers.parse_result_of_qualifier_untracked read_only qualifier in
            ()
          in
          List.iter external_setups ~f:load_source);
@@ -760,11 +791,7 @@ module IncrementalTest = struct
                let dependency =
                  SharedMemoryKeys.DependencyKey.Registry.register (WildcardImport qualifier)
                in
-               AstEnvironment.ReadOnly.processed_source_of_qualifier
-                 ast_environment
-                 ~dependency
-                 qualifier
-               |> ignore)
+               ReadOnlyHelpers.source_of_qualifier_tracked read_only ~dependency qualifier |> ignore)
     in
     (* Update filesystem *)
     (* Compute the dependencies *)
@@ -1047,12 +1074,10 @@ let test_parser_update context =
 let make_overlay_testing_functions ~context ~test_sources =
   let project = ScratchProject.setup ~context test_sources in
   let local_root = ScratchProject.local_root_of project in
-  let parent_read_only =
-    ScratchProject.ReadWrite.AssumeBackedByAstEnvironment.ast_environment project
-    |> AstEnvironment.read_only
-  in
-  let overlay_environment = AstEnvironment.Overlay.create parent_read_only in
-  let read_only = AstEnvironment.Overlay.read_only overlay_environment in
+  let parent = ScratchProject.ReadWrite.AssumeBackedByAstEnvironment.ast_environment project in
+  let parent_read_only = ReadWriteHelpers.read_only parent in
+  let overlay_environment = ReadWriteHelpers.overlay parent in
+  let read_only = SourceCodeIncrementalApi.Overlay.read_only overlay_environment in
   let source_of_module_paths qualifier =
     let unpack_result = function
       (* Getting good failure errors here is important because it is easy to mess up indentation *)
@@ -1061,8 +1086,8 @@ let make_overlay_testing_functions ~context ~test_sources =
           failwith ("Loading source failed with message: " ^ message)
       | None -> failwith "Loading source produced None"
     in
-    ( AstEnvironment.ReadOnly.raw_source_of_qualifier parent_read_only qualifier |> unpack_result,
-      AstEnvironment.ReadOnly.raw_source_of_qualifier read_only qualifier |> unpack_result )
+    ( ReadOnlyHelpers.parse_result_of_qualifier_untracked parent_read_only qualifier |> unpack_result,
+      ReadOnlyHelpers.parse_result_of_qualifier_untracked read_only qualifier |> unpack_result )
   in
   let assert_not_overlaid qualifier =
     let from_parent, from_overlay = source_of_module_paths qualifier in
@@ -1082,7 +1107,7 @@ let make_overlay_testing_functions ~context ~test_sources =
             SourceCodeIncrementalApi.Overlay.CodeUpdate.NewCode (trim_extra_indentation code) );
         ]
       in
-      AstEnvironment.Overlay.update_overlaid_code overlay_environment ~code_updates
+      SourceCodeIncrementalApi.Overlay.update_overlaid_code overlay_environment ~code_updates
       |> SourceCodeIncrementalApi.UpdateResult.invalidated_modules
       |> List.sort ~compare:Reference.compare
     in
@@ -1140,7 +1165,7 @@ let test_overlay context =
      trigger dependencies, because lazy loading means dependencies are not registered until they are
      used. *)
   let () =
-    AstEnvironment.ReadOnly.processed_source_of_qualifier
+    ReadOnlyHelpers.source_of_qualifier_tracked
       read_only
       ~dependency:
         (SharedMemoryKeys.DependencyKey.Registry.register (WildcardImport !&"depends_on_module"))

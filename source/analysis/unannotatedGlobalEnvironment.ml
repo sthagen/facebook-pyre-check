@@ -173,12 +173,12 @@ module IncomingDataComputation = struct
   module Queries = struct
     type t = {
       is_qualifier_tracked: Ast.Reference.t -> bool;
-      processed_source_of_qualifier: Ast.Reference.t -> Ast.Source.t option;
+      source_of_qualifier: Ast.Reference.t -> Ast.Source.t option;
     }
   end
 
-  let module_components Queries.{ is_qualifier_tracked; processed_source_of_qualifier } qualifier =
-    match processed_source_of_qualifier qualifier with
+  let module_components Queries.{ is_qualifier_tracked; source_of_qualifier } qualifier =
+    match source_of_qualifier qualifier with
     | Some source -> Some (ModuleComponents.of_source source)
     | None ->
         if is_qualifier_tracked qualifier then
@@ -420,7 +420,7 @@ end
 
 module ReadOnly = struct
   type t = {
-    ast_environment: AstEnvironment.ReadOnly.t;
+    source_code_incremental_read_only: SourceCodeIncrementalApi.ReadOnly.t;
     get_queries: dependency:DependencyKey.registered option -> OutgoingDataComputation.Queries.t;
     class_names_of_qualifiers__untracked: Reference.t list -> Type.Primitive.t list;
     unannotated_global_names_of_qualifiers__untracked: Reference.t list -> Reference.t list;
@@ -428,24 +428,22 @@ module ReadOnly = struct
 
   let get_queries ?dependency { get_queries; _ } = get_queries ~dependency
 
-  let ast_environment { ast_environment; _ } = ast_environment
+  let source_code_incremental_read_only { source_code_incremental_read_only; _ } =
+    source_code_incremental_read_only
+
 
   let get_untracked_source_code_api environment =
-    ast_environment environment
-    |> AstEnvironment.ReadOnly.as_source_code_incremental_read_only
+    source_code_incremental_read_only environment
     |> SourceCodeIncrementalApi.ReadOnly.get_untracked_api
 
 
   let get_tracked_source_code_api environment =
-    ast_environment environment
-    |> AstEnvironment.ReadOnly.as_source_code_incremental_read_only
+    source_code_incremental_read_only environment
     |> SourceCodeIncrementalApi.ReadOnly.get_tracked_api
 
 
   let controls environment =
-    ast_environment environment
-    |> AstEnvironment.ReadOnly.as_source_code_incremental_read_only
-    |> SourceCodeIncrementalApi.ReadOnly.controls
+    source_code_incremental_read_only environment |> SourceCodeIncrementalApi.ReadOnly.controls
 
 
   let unannotated_global_environment = Fn.id
@@ -774,10 +772,10 @@ module FromReadOnlyUpstream = struct
       class_summary_table: ClassSummaryTable.t;
       function_definition_table: FunctionDefinitionTable.t;
       unannotated_global_table: UnannotatedGlobalTable.t;
-      ast_environment: AstEnvironment.ReadOnly.t;
+      source_code_incremental_read_only: SourceCodeIncrementalApi.ReadOnly.t;
     }
 
-    let create ast_environment =
+    let create source_code_incremental_read_only =
       {
         key_tracker = KeyTracker.create ();
         module_table = ModuleTable.create ();
@@ -785,11 +783,12 @@ module FromReadOnlyUpstream = struct
         class_summary_table = ClassSummaryTable.create ();
         function_definition_table = FunctionDefinitionTable.create ();
         unannotated_global_table = UnannotatedGlobalTable.create ();
-        ast_environment;
+        source_code_incremental_read_only;
       }
 
 
-    let controls { ast_environment; _ } = AstEnvironment.ReadOnly.controls ast_environment
+    let controls { source_code_incremental_read_only; _ } =
+      SourceCodeIncrementalApi.ReadOnly.controls source_code_incremental_read_only
   end
 
   include ReadWrite
@@ -1017,24 +1016,23 @@ module FromReadOnlyUpstream = struct
     end
   end
 
-  let incoming_queries { ast_environment; _ } =
-    let track_dependencies =
-      AstEnvironment.ReadOnly.controls ast_environment |> EnvironmentControls.track_dependencies
-    in
+  let incoming_queries { source_code_incremental_read_only; _ } =
     let is_qualifier_tracked =
-      AstEnvironment.ReadOnly.module_tracker ast_environment
-      |> ModuleTracker.ReadOnly.is_qualifier_tracked
+      SourceCodeIncrementalApi.ReadOnly.get_untracked_api source_code_incremental_read_only
+      |> SourceCodeApi.is_qualifier_tracked
     in
-    let processed_source_of_qualifier qualifier =
+    let source_of_qualifier qualifier =
       let dependency =
-        if track_dependencies then
-          Some (WildcardImport qualifier |> SharedMemoryKeys.DependencyKey.Registry.register)
-        else
-          None
+        WildcardImport qualifier |> SharedMemoryKeys.DependencyKey.Registry.register
       in
-      AstEnvironment.ReadOnly.processed_source_of_qualifier ast_environment ?dependency qualifier
+      let source_code_api =
+        SourceCodeIncrementalApi.ReadOnly.get_tracked_api
+          source_code_incremental_read_only
+          ~dependency
+      in
+      SourceCodeApi.source_of_qualifier source_code_api qualifier
     in
-    IncomingDataComputation.Queries.{ is_qualifier_tracked; processed_source_of_qualifier }
+    IncomingDataComputation.Queries.{ is_qualifier_tracked; source_of_qualifier }
 
 
   let cold_start environment =
@@ -1114,14 +1112,14 @@ module FromReadOnlyUpstream = struct
       }
 
 
-  let read_only ({ ast_environment; key_tracker; _ } as environment) =
+  let read_only ({ source_code_incremental_read_only; key_tracker; _ } as environment) =
     (* Define the bulk key reads - these tell us what's been loaded thus far *)
     let class_names_of_qualifiers__untracked = KeyTracker.get_class_keys key_tracker in
     let unannotated_global_names_of_qualifiers__untracked =
       KeyTracker.get_unannotated_global_keys key_tracker
     in
     {
-      ReadOnly.ast_environment;
+      ReadOnly.source_code_incremental_read_only;
       get_queries = outgoing_queries environment;
       class_names_of_qualifiers__untracked;
       unannotated_global_names_of_qualifiers__untracked;
@@ -1213,83 +1211,17 @@ module FromReadOnlyUpstream = struct
     { UpdateResult.triggered_dependencies; upstream }
 end
 
-module Base = struct
-  type t = {
-    ast_environment: AstEnvironment.t;
-    from_read_only_upstream: FromReadOnlyUpstream.t;
-  }
-
-  let create controls =
-    let ast_environment = AstEnvironment.create controls in
-    let from_read_only_upstream =
-      AstEnvironment.read_only ast_environment |> FromReadOnlyUpstream.create
-    in
-    FromReadOnlyUpstream.cold_start from_read_only_upstream;
-    { ast_environment; from_read_only_upstream }
-
-
-  let update_this_and_all_preceding_environments
-      { ast_environment; from_read_only_upstream }
-      ~scheduler
-      events
-    =
-    let update_result = AstEnvironment.update ~scheduler ast_environment events in
-    FromReadOnlyUpstream.update from_read_only_upstream ~scheduler update_result
-
-
-  let read_only { from_read_only_upstream; _ } =
-    FromReadOnlyUpstream.read_only from_read_only_upstream
-
-
-  let controls { from_read_only_upstream; _ } =
-    FromReadOnlyUpstream.controls from_read_only_upstream
-
-
-  let unannotated_global_environment = Fn.id
-
-  let global_module_paths_api { ast_environment; _ } =
-    AstEnvironment.global_module_paths_api ast_environment
-
-
-  module UnsafeAssumeClassic = struct
-    let ast_environment { ast_environment; _ } = ast_environment
-  end
-
-  (* All SharedMemory tables are populated and stored in separate, imperative steps that must be run
-     before loading / after storing. These functions only handle serializing and deserializing the
-     non-SharedMemory data *)
-  let load controls =
-    let ast_environment = AstEnvironment.load controls in
-    let from_read_only_upstream =
-      AstEnvironment.read_only ast_environment |> FromReadOnlyUpstream.create
-    in
-    { ast_environment; from_read_only_upstream }
-
-
-  let store { ast_environment; _ } = AstEnvironment.store ast_environment
-end
-
 module Overlay = struct
   type t = {
     parent: ReadOnly.t;
-    ast_environment: AstEnvironment.Overlay.t;
+    source_code_incremental_overlay: SourceCodeIncrementalApi.Overlay.t;
     from_read_only_upstream: FromReadOnlyUpstream.t;
   }
 
-  let create parent =
-    let ast_environment = ReadOnly.ast_environment parent |> AstEnvironment.Overlay.create in
-    let from_read_only_upstream =
-      AstEnvironment.Overlay.read_only ast_environment |> FromReadOnlyUpstream.create
-    in
-    { parent; ast_environment; from_read_only_upstream }
-
-
-  let module_tracker { ast_environment; _ } = AstEnvironment.Overlay.module_tracker ast_environment
-
   let unannotated_global_environment = Fn.id
 
-  let owns_qualifier environment =
-    module_tracker environment |> ModuleTracker.Overlay.owns_qualifier
+  let owns_qualifier { source_code_incremental_overlay; _ } =
+    SourceCodeIncrementalApi.Overlay.owns_qualifier source_code_incremental_overlay
 
 
   let owns_reference environment reference =
@@ -1299,11 +1231,15 @@ module Overlay = struct
 
   let owns_identifier environment name = Reference.create name |> owns_reference environment
 
-  let consume_upstream_update ({ from_read_only_upstream; _ } as environment) update_result =
+  let consume_upstream_update
+      { from_read_only_upstream; source_code_incremental_overlay; _ }
+      update_result
+    =
     let filtered_update_result =
       let filtered_invalidated_modules =
         SourceCodeIncrementalApi.UpdateResult.invalidated_modules update_result
-        |> List.filter ~f:(module_tracker environment |> ModuleTracker.Overlay.owns_qualifier)
+        |> List.filter
+             ~f:(SourceCodeIncrementalApi.Overlay.owns_qualifier source_code_incremental_overlay)
       in
       {
         update_result with
@@ -1316,8 +1252,10 @@ module Overlay = struct
       filtered_update_result
 
 
-  let update_overlaid_code ({ ast_environment; _ } as environment) ~code_updates =
-    AstEnvironment.Overlay.update_overlaid_code ast_environment ~code_updates
+  let update_overlaid_code ({ source_code_incremental_overlay; _ } as environment) ~code_updates =
+    SourceCodeIncrementalApi.Overlay.update_overlaid_code
+      source_code_incremental_overlay
+      ~code_updates
     |> consume_upstream_update environment
 
 
@@ -1367,9 +1305,96 @@ module Overlay = struct
 
 
   let read_only ({ parent; from_read_only_upstream; _ } as environment) =
-    let { FromReadOnlyUpstream.ast_environment; _ } = from_read_only_upstream in
+    let { FromReadOnlyUpstream.source_code_incremental_read_only; _ } = from_read_only_upstream in
     let get_queries ~dependency = outgoing_queries ?dependency environment in
-    { parent with ast_environment; get_queries }
+    { parent with source_code_incremental_read_only; get_queries }
+end
+
+module Base = struct
+  type t = {
+    source_code_incremental_base: SourceCodeIncrementalApi.Base.t;
+    from_read_only_upstream: FromReadOnlyUpstream.t;
+    maybe_ast_environment: AstEnvironment.t option;
+  }
+
+  let construct ~source_code_incremental_base ~maybe_ast_environment =
+    let from_read_only_upstream =
+      SourceCodeIncrementalApi.Base.read_only source_code_incremental_base
+      |> FromReadOnlyUpstream.create
+    in
+    FromReadOnlyUpstream.cold_start from_read_only_upstream;
+    { source_code_incremental_base; from_read_only_upstream; maybe_ast_environment }
+
+
+  let construct_from_ast_environment ast_environment =
+    let source_code_incremental_base = AstEnvironment.as_source_code_incremental ast_environment in
+    construct ~source_code_incremental_base ~maybe_ast_environment:(Some ast_environment)
+
+
+  let create controls = AstEnvironment.create controls |> construct_from_ast_environment
+
+  let update_this_and_all_preceding_environments
+      { source_code_incremental_base; from_read_only_upstream; _ }
+      ~scheduler
+      events
+    =
+    let update_result =
+      SourceCodeIncrementalApi.Base.update ~scheduler source_code_incremental_base events
+    in
+    FromReadOnlyUpstream.update from_read_only_upstream ~scheduler update_result
+
+
+  let read_only { from_read_only_upstream; _ } =
+    FromReadOnlyUpstream.read_only from_read_only_upstream
+
+
+  let overlay ({ source_code_incremental_base; _ } as environment) =
+    let source_code_incremental_overlay =
+      SourceCodeIncrementalApi.Base.overlay source_code_incremental_base
+    in
+    let from_read_only_upstream =
+      SourceCodeIncrementalApi.Overlay.read_only source_code_incremental_overlay
+      |> FromReadOnlyUpstream.create
+    in
+    {
+      Overlay.parent = read_only environment;
+      source_code_incremental_overlay;
+      from_read_only_upstream;
+    }
+
+
+  let controls { from_read_only_upstream; _ } =
+    FromReadOnlyUpstream.controls from_read_only_upstream
+
+
+  let unannotated_global_environment = Fn.id
+
+  module AssumeGlobalModuleListing = struct
+    let global_module_paths_api { source_code_incremental_base; _ } =
+      SourceCodeIncrementalApi.Base.AssumeGlobalModuleListing.global_module_paths_api
+        source_code_incremental_base
+  end
+
+  module AssumeAstEnvironment = struct
+    let ast_environment { maybe_ast_environment; _ } =
+      Option.value_exn
+        maybe_ast_environment
+        ~message:"This environment is not backed by an AstEnvironment"
+
+
+    (* All SharedMemory tables are populated and stored in separate, imperative steps that must be
+       run before loading / after storing. These functions only handle serializing and deserializing
+       the non-SharedMemory data *)
+    let load controls =
+      let ast_environment = AstEnvironment.load controls in
+      construct_from_ast_environment ast_environment
+
+
+    let store { maybe_ast_environment; _ } =
+      match maybe_ast_environment with
+      | Some ast_environment -> AstEnvironment.store ast_environment
+      | None -> failwith "Cannot store environment not backed by AstEnvironment"
+  end
 end
 
 include Base

@@ -18,29 +18,46 @@
 
 open Core
 
+module ModuleLookup = struct
+  type t =
+    | NotFound
+    | Implicit
+    | Explicit of Ast.ModulePath.t
+end
+
 type t = {
   controls: EnvironmentControls.t;
-  module_path_of_qualifier: Ast.Reference.t -> Ast.ModulePath.t option;
-  raw_source_of_qualifier: Ast.Reference.t -> Parsing.ParseResult.t option;
+  look_up_qualifier: Ast.Reference.t -> ModuleLookup.t;
+  parse_result_of_qualifier: Ast.Reference.t -> Parsing.ParseResult.t option;
 }
 
-let create ~controls ~module_path_of_qualifier ~raw_source_of_qualifier =
-  { controls; module_path_of_qualifier; raw_source_of_qualifier }
+let create ~controls ~look_up_qualifier ~parse_result_of_qualifier =
+  { controls; look_up_qualifier; parse_result_of_qualifier }
 
 
 let controls { controls; _ } = controls
 
-let module_path_of_qualifier { module_path_of_qualifier; _ } = module_path_of_qualifier
-
-let relative_path_of_qualifier { module_path_of_qualifier; _ } qualifier =
-  module_path_of_qualifier qualifier |> Option.map ~f:Ast.ModulePath.relative
-
-
-let is_qualifier_tracked { module_path_of_qualifier; _ } qualifier =
-  module_path_of_qualifier qualifier |> Option.is_some
+let is_qualifier_tracked { look_up_qualifier; _ } qualifier =
+  match look_up_qualifier qualifier with
+  | ModuleLookup.NotFound -> false
+  | ModuleLookup.Implicit
+  | ModuleLookup.Explicit _ ->
+      true
 
 
-let raw_source_of_qualifier { raw_source_of_qualifier; _ } = raw_source_of_qualifier
+let module_path_of_qualifier { look_up_qualifier; _ } qualifier =
+  match look_up_qualifier qualifier with
+  | ModuleLookup.Explicit module_path -> Some module_path
+  | ModuleLookup.NotFound
+  | ModuleLookup.Implicit ->
+      None
 
-let processed_source_of_qualifier api =
-  AstProcessing.processed_source_of_qualifier ~raw_source_of_qualifier:(raw_source_of_qualifier api)
+
+let relative_path_of_qualifier api qualifier =
+  module_path_of_qualifier api qualifier |> Option.map ~f:Ast.ModulePath.relative
+
+
+let parse_result_of_qualifier { parse_result_of_qualifier; _ } = parse_result_of_qualifier
+
+let source_of_qualifier { parse_result_of_qualifier; _ } =
+  AstProcessing.source_of_qualifier ~parse_result_of_qualifier

@@ -876,7 +876,7 @@ let assert_update
         |> List.length
         |> assert_equal ~printer expected_number_of_names
     | `GetRawSource (qualifier, dependency) ->
-        SourceCodeApi.raw_source_of_qualifier
+        SourceCodeApi.parse_result_of_qualifier
           (UnannotatedGlobalEnvironment.ReadOnly.get_tracked_source_code_api read_only ~dependency)
           qualifier
         |> ignore
@@ -2609,12 +2609,12 @@ let create_overlay_test_data ~context ?(updatable = false) sources =
       sources
       ~context
   in
-  let parent =
-    ScratchProject.errors_environment project
-    |> ErrorsEnvironment.Testing.ReadOnly.unannotated_global_environment
+  let read_write_parent =
+    ScratchProject.ReadWrite.errors_environment project
+    |> ErrorsEnvironment.AssumeDownstreamNeverNeedsUpdates.unannotated_global_environment
   in
-  let environment = UnannotatedGlobalEnvironment.Overlay.create parent in
-  project, parent, environment
+  let environment = UnannotatedGlobalEnvironment.overlay read_write_parent in
+  project, UnannotatedGlobalEnvironment.read_only read_write_parent, environment
 
 
 let create_overlay_test_functions ~project ~parent ~environment =
