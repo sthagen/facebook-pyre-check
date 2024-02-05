@@ -15,13 +15,11 @@ of builds.
 import argparse
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from enum import Enum
 from pathlib import Path
 from subprocess import CalledProcessError
-from tempfile import mkdtemp
 from typing import Dict, List, Mapping, NamedTuple, Tuple, Optional, Type
 
 
@@ -50,10 +48,6 @@ DEPENDENCIES = [
 ]
 
 
-class OCamlbuildAlreadyInstalled(Exception):
-    pass
-
-
 class OldOpam(Exception):
     pass
 
@@ -69,14 +63,14 @@ class BuildType(Enum):
 
 def detect_opam_version() -> Tuple[int]:
     LOG.info(["opam", "--version"])
-    version = subprocess.check_output(["opam", "--version"], universal_newlines=True)
+    version = subprocess.check_output(["opam", "--version"], universal_newlines=True).strip()
 
     try:
-        version_semver = version.strip().split('~')[0]
+        version_semver = version.split('~')[0]
         version = tuple(map(int, version_semver.split(".")))
-    except ValueError:
-        LOG.error("Failed to parse output of `opam --version`: `{}`", version.strip())
-        raise OpamVersionParseError
+    except ValueError as error:
+        message = f"Failed to parse output of `opam --version`: `{version}`"
+        raise OpamVersionParseError(message) from error
 
     LOG.info(f"Found opam version {'.'.join(map(str, version))}")
 
@@ -131,32 +125,14 @@ class Setup(NamedTuple):
         return os.environ
 
     def produce_dune_file(
-        self, pyre_directory: Path, build_type: Optional[BuildType] = None
+        self, pyre_directory: Path, build_type: BuildType
     ) -> None:
-        if not build_type:
-            if (pyre_directory / "facebook").is_dir():
-                build_type = BuildType.FACEBOOK
-            else:
-                build_type = BuildType.EXTERNAL
+        # lint-ignore: NoUnsafeFilesystemRule
         with open(pyre_directory / "source" / "dune.in") as dune_in:
+            # lint-ignore: NoUnsafeFilesystemRule
             with open(pyre_directory / "source" / "dune", "w") as dune:
                 dune_data = dune_in.read()
                 dune.write(dune_data.replace("%VERSION%", build_type.value))
-
-    def check_if_preinstalled(self) -> None:
-        if self.environment_variables.get(
-            "CHECK_IF_PREINSTALLED"
-        ) != "false" and shutil.which("ocamlc"):
-            ocamlc_location = self.run(["ocamlc", "-where"])
-            test_ocamlbuild_location = Path(ocamlc_location) / "ocamlbuild"
-            if test_ocamlbuild_location.is_dir():
-                LOG.error(
-                    "OCamlbuild will refuse to install since it is already "
-                    + f"present at {test_ocamlbuild_location}."
-                )
-                LOG.error("If you want to bypass this safety check, run:")
-                LOG.error("CHECK_IF_PREINSTALLED=false ./scripts/setup.sh")
-                raise OCamlbuildAlreadyInstalled
 
     def already_initialized(self) -> bool:
         return Path(self.opam_root.as_posix()).is_dir()
@@ -185,7 +161,7 @@ class Setup(NamedTuple):
             if not line.startswith(":"):
                 environment_variable, quoted_value = line.split(";")[0].split("=")
                 value = quoted_value[1:-1]
-                LOG.info(f'{environment_variable}="{value}"')
+                LOG.info(f'{environment_variable}="{value}"')  # noqa: B907
                 opam_environment_variables[environment_variable] = value
         return opam_environment_variables
 
@@ -200,8 +176,6 @@ class Setup(NamedTuple):
         )
 
     def initialize_opam_switch(self) -> Mapping[str, str]:
-        self.check_if_preinstalled()
-
         self.run(
             self.opam_command()
             + [
@@ -285,7 +259,7 @@ class Setup(NamedTuple):
         *,
         run_tests: bool = False,
         run_clean: bool = False,
-        build_type_override: Optional[BuildType] = None,
+        build_type: BuildType,
         rust_path: Optional[Path] = None,
     ) -> None:
         opam_environment_variables: Mapping[
@@ -299,7 +273,7 @@ class Setup(NamedTuple):
                 add_environment_variables=opam_environment_variables,
             )
 
-        self.produce_dune_file(pyre_directory, build_type_override)
+        self.produce_dune_file(pyre_directory, build_type)
         if run_clean:
             # Note: we do not run `make clean` because we want the result of the
             # explicit `produce_dune_file` to remain.
@@ -351,21 +325,24 @@ class Setup(NamedTuple):
             return output
 
 
-def _make_opam_root(local: bool, temporary_root: bool, default: Optional[Path]) -> Path:
+def _make_opam_root(local: bool) -> Path:
     home = Path.home()
     home_opam = home / ".opam"
-    if local:
-        if not home_opam.is_dir():
-            local_opam = home / "local" / "opam"
-            local_opam.parent.mkdir(parents=True, exist_ok=True)
-            local_opam.symlink_to(home_opam, target_is_directory=True)
-        return home_opam
-    if temporary_root:
-        return Path(mkdtemp())
-    return default or home_opam
+    if local and not home_opam.is_dir():
+        local_opam = home / "local" / "opam"
+        local_opam.parent.mkdir(parents=True, exist_ok=True)
+        local_opam.symlink_to(home_opam, target_is_directory=True)
+    return home_opam
+
+def _infer_build_type_from_filesystem(pyre_directory: Path) -> BuildType:
+    if (pyre_directory / "facebook").is_dir():
+        return BuildType.FACEBOOK
+    else:
+        return BuildType.EXTERNAL
 
 
 def setup(runner_type: Type[Setup]) -> None:
+    # lint-ignore: NoCustomLogRule
     logging.basicConfig(
         level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s"
     )
@@ -375,10 +352,7 @@ def setup(runner_type: Type[Setup]) -> None:
     parser.add_argument("--pyre-directory", type=Path)
 
     parser.add_argument("--local", action="store_true")
-    parser.add_argument("--temporary_root", action="store_true")
-    parser.add_argument("--opam-root", type=Path)
     parser.add_argument("--configure", action="store_true")
-    parser.add_argument("--environment-only", action="store_true")
     parser.add_argument("--release", action="store_true")
     parser.add_argument("--build-type", type=BuildType)
     parser.add_argument("--no-tests", action="store_true")
@@ -390,17 +364,13 @@ def setup(runner_type: Type[Setup]) -> None:
     if not pyre_directory:
         pyre_directory = Path(__file__).parent.parent.absolute()
 
-    opam_root = _make_opam_root(parsed.local, parsed.temporary_root, parsed.opam_root)
+    opam_root = _make_opam_root(parsed.local)
 
     runner = runner_type(
         opam_root=opam_root, opam_version=detect_opam_version(), release=parsed.release
     )
     if parsed.configure:
         runner.produce_dune_file(pyre_directory, parsed.build_type)
-    elif parsed.environment_only:
-        runner.produce_dune_file(pyre_directory, parsed.build_type)
-        runner.initialize_opam_switch()
-        LOG.info("Environment built successfully, stopping here as requested.")
     else:
         if not runner.already_initialized():
             runner.initialize_opam_switch()
@@ -409,7 +379,7 @@ def setup(runner_type: Type[Setup]) -> None:
         runner.full_setup(
             pyre_directory,
             run_tests=not parsed.no_tests,
-            build_type_override=parsed.build_type,
+            build_type=parsed.build_type or _infer_build_type_from_filesystem(pyre_directory),
             rust_path=parsed.rust_path,
         )
 
