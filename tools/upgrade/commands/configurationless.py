@@ -4,10 +4,12 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import json
 import logging
 import re
 import subprocess
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Collection, List, Optional, Set
 
@@ -24,21 +26,21 @@ class ConfigurationlessOptions:
     global_configuration: Configuration
     local_configuration: Configuration
 
-    @property
+    @cached_property
     def ignore_all_errors_prefixes(self) -> Collection[Path]:
         return (
             self.global_configuration.get_ignore_path_prefixes()
             | self.local_configuration.get_ignore_path_prefixes()
         )
 
-    @property
+    @cached_property
     def exclude_patterns(self) -> Collection[re.Pattern[str]]:
         return (
             self.global_configuration.get_exclude_as_patterns()
             | self.local_configuration.get_exclude_as_patterns()
         )
 
-    @property
+    @cached_property
     def default_global_mode(self) -> filesystem.LocalMode:
         global_is_strict = (
             self.global_configuration.strict
@@ -51,7 +53,7 @@ class ConfigurationlessOptions:
             else filesystem.LocalMode.UNSAFE
         )
 
-    @property
+    @cached_property
     def default_local_mode(self) -> filesystem.LocalMode:
         default_project_strictness_setting = self.local_configuration.strict
 
@@ -61,6 +63,18 @@ class ConfigurationlessOptions:
             return filesystem.LocalMode.STRICT
         else:
             return filesystem.LocalMode.UNSAFE
+
+    def __str__(self) -> str:
+        local_path = str(self.local_configuration.get_path())
+        global_path = str(self.global_configuration.get_path())
+        return f"ConfigurationlessOptions(local={local_path}, global={global_path})"
+
+    def no_changes_to_make(self) -> bool:
+        return (
+            self.default_global_mode == self.default_local_mode
+            and len(self.ignore_all_errors_prefixes) == 0
+            and len(self.exclude_patterns) == 0
+        )
 
 
 class Configurationless(Command):
@@ -153,27 +167,28 @@ class Configurationless(Command):
         buck_command = [
             "buck2",
             "bxl",
-            "prelude//python/sourcedb/query.bxl:query",
+            "prelude//python/sourcedb/filter.bxl:filter",
             "--",
             *targets,
         ]
 
         LOG.info(f"Finding included targets with buck2 command: `{buck_command}`")
 
-        result = subprocess.check_output(
+        raw_result = subprocess.check_output(
             buck_command,
             text=True,
             cwd=self._path,
-            shell=True,
         )
+        LOG.info(f"Found targets:\n{raw_result}")
+        result = json.loads(raw_result)
 
-        return set(result.split("\n"))
+        return set(result)
 
     def _get_files_to_process_from_applicable_targets(
         self, applicable_targets: Collection[str], buck_root: Path
     ) -> Collection[Path]:
         formatted_targets = " ".join([f"{target!r}" for target in applicable_targets])
-        buck_command = ["buck2", "uquery", f'"inputs( set( {formatted_targets} ) )"']
+        buck_command = ["buck2", "uquery", f"inputs( set( {formatted_targets} ) )"]
 
         LOG.info(f"Finding included files with buck2 command: `{buck_command}`")
 
@@ -181,8 +196,9 @@ class Configurationless(Command):
             buck_command,
             text=True,
             cwd=self._path,
-            shell=True,
-        )
+        ).strip()
+
+        LOG.info(f"Found files:\n`{result}`")
 
         return {(buck_root / file.strip()).absolute() for file in result.split("\n")}
 
@@ -201,8 +217,7 @@ class Configurationless(Command):
         return {
             file
             for file in files
-            if file.is_relative_to(self._path)
-            and any(file.match(pattern) for pattern in self._includes)
+            if any(file.match(pattern) for pattern in self._includes)
         }
 
     def _get_files_to_migrate_from_source_directories(
@@ -230,6 +245,7 @@ class Configurationless(Command):
             raise ValueError(
                 "Could not find `targets` or `source_directories` keys in local configuration"
             )
+        LOG.info(f"Found {len(files)} files to migrate")
         return files
 
     def get_options(
@@ -259,6 +275,9 @@ class Configurationless(Command):
 
     def run(self) -> None:
         options = self.get_options()
+        if options.no_changes_to_make():
+            return
+
         files_to_migrate = self.get_files_to_migrate(options.local_configuration)
 
         for file in files_to_migrate:
