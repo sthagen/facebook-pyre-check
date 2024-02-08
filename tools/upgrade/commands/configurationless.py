@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -129,7 +130,6 @@ class Configurationless(Command):
             exclude_pattern.search(str(file)) is not None
             for exclude_pattern in options.exclude_patterns
         ):
-            # TODO(T174803521): implement `EXCLUDE` LocalMode and return here
             return None
         elif any(
             file.is_relative_to(ignore_prefix)
@@ -188,19 +188,30 @@ class Configurationless(Command):
         self, applicable_targets: Collection[str], buck_root: Path
     ) -> Collection[Path]:
         formatted_targets = " ".join([f"{target!r}" for target in applicable_targets])
-        buck_command = ["buck2", "uquery", f"inputs( set( {formatted_targets} ) )"]
+        arguments = f"inputs( set( {formatted_targets} ) )"
 
-        LOG.info(f"Finding included files with buck2 command: `{buck_command}`")
+        with tempfile.NamedTemporaryFile("w+", prefix="pyre_configurationless") as file:
+            file.write(arguments)
 
-        result = subprocess.check_output(
-            buck_command,
-            text=True,
-            cwd=self._path,
-        ).strip()
+            buck_command = [
+                "buck2",
+                "uquery",
+                f"@{file.name}",
+            ]
 
-        LOG.info(f"Found files:\n`{result}`")
+            LOG.info(f"Finding included files with buck2 command: `{buck_command}`")
 
-        return {(buck_root / file.strip()).absolute() for file in result.split("\n")}
+            result = subprocess.check_output(
+                buck_command,
+                text=True,
+                cwd=self._path,
+            ).strip()
+
+            LOG.info(f"Found files:\n`{result}`")
+
+            return {
+                (buck_root / file.strip()).absolute() for file in result.split("\n")
+            }
 
     def _get_files_to_migrate_from_targets(
         self, configuration_targets: List[str]
