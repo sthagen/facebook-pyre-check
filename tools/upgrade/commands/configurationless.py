@@ -192,6 +192,7 @@ class Configurationless(Command):
 
         with tempfile.NamedTemporaryFile("w+", prefix="pyre_configurationless") as file:
             file.write(arguments)
+            file.flush()
 
             buck_command = [
                 "buck2",
@@ -295,6 +296,9 @@ class Configurationless(Command):
             file_mode = self.get_file_mode_to_apply(file, options)
             if file_mode is not None:
                 filesystem.add_local_mode(str(file), file_mode)
+
+        options.local_configuration.original_contents["migration_status"] = "mode"
+        options.local_configuration.write()
 
         self._repository.commit_changes(
             commit=self._commit,
