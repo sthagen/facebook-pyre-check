@@ -14,6 +14,7 @@ module SourceCodeApi = Analysis.SourceCodeApi
 module ModuleTracker = Analysis.ModuleTracker
 module GlobalModulePathsApi = Analysis.GlobalModulePathsApi
 module SourceCodeIncrementalApi = Analysis.SourceCodeIncrementalApi
+module ArtifactPaths = Analysis.ArtifactPaths
 
 module ReadOnlyHelpers = struct
   let is_qualifier_tracked tracker qualifier =
@@ -45,7 +46,7 @@ let create_file path = File.create path ~content:content_on_disk |> File.write
 
 let create_module_path ~configuration root relative =
   let path = Test.relative_artifact_path ~root ~relative in
-  ModulePath.create ~configuration path
+  ArtifactPaths.module_path_of_artifact_path ~configuration path
 
 
 let create_module_path_exn ~configuration root relative =
@@ -123,7 +124,7 @@ let assert_module_path
      } as module_path)
   =
   let expected_path = Test.relative_artifact_path ~root:search_root ~relative in
-  let actual_path = ModulePath.full_path ~configuration module_path in
+  let actual_path = ArtifactPaths.artifact_path_of_module_path ~configuration module_path in
   assert_equal
     ~cmp:[%compare.equal: ArtifactPath.t]
     ~printer:ArtifactPath.show
@@ -153,13 +154,13 @@ let assert_no_module_path ~configuration root relative =
       assert_failure message
 
 
-let assert_same_module_less
+let assert_has_precedence
     ~configuration
-    ({ ModulePath.qualifier = left_qualifier; _ } as left)
-    ({ ModulePath.qualifier = right_qualifier; _ } as right)
+    ({ ModulePath.qualifier = left_qualifier; raw = left_raw; _ } as left)
+    ({ ModulePath.qualifier = right_qualifier; raw = right_raw; _ } as right)
   =
   assert_equal ~cmp:Reference.equal ~printer:Reference.show left_qualifier right_qualifier;
-  let compare_result = ModulePath.same_module_compare ~configuration left right in
+  let compare_result = ModulePath.Raw.priority_aware_compare ~configuration left_raw right_raw in
   let message =
     Format.asprintf
       "\'%a\' is supposed to be less than \'%a\'"
@@ -196,7 +197,7 @@ let test_module_path_create context =
   in
   let create_exn = create_module_path_exn ~configuration in
   let assert_module_path = assert_module_path ~configuration in
-  let assert_same_module_less = assert_same_module_less ~configuration in
+  let assert_has_precedence = assert_has_precedence ~configuration in
   let assert_no_module_path = assert_no_module_path ~configuration in
   (* Creation test *)
   let local_a = create_exn local_root "a.py" in
@@ -248,20 +249,20 @@ let test_module_path_create context =
   let extension_third = create_exn local_root "dir/a.third" in
   let extension_py = create_exn local_root "dir/a.py" in
   (* Comparison test *)
-  assert_same_module_less external_a local_a;
-  assert_same_module_less external_bstub local_b;
-  assert_same_module_less external_binit local_b;
-  assert_same_module_less external_bstub external_binit;
-  assert_same_module_less local_cstub local_c;
-  assert_same_module_less external_cstub external_c;
-  assert_same_module_less external_cstub local_cstub;
-  assert_same_module_less external_cstub local_c;
-  assert_same_module_less local_cstub external_c;
-  assert_same_module_less external_c local_c;
-  assert_same_module_less local_dinit local_d;
-  assert_same_module_less extension_first extension_second;
-  assert_same_module_less extension_first extension_third;
-  assert_same_module_less extension_py extension_first;
+  assert_has_precedence external_a local_a;
+  assert_has_precedence external_bstub local_b;
+  assert_has_precedence external_binit local_b;
+  assert_has_precedence external_bstub external_binit;
+  assert_has_precedence local_cstub local_c;
+  assert_has_precedence external_cstub external_c;
+  assert_has_precedence external_cstub local_cstub;
+  assert_has_precedence external_cstub local_c;
+  assert_has_precedence local_cstub external_c;
+  assert_has_precedence external_c local_c;
+  assert_has_precedence local_dinit local_d;
+  assert_has_precedence extension_first extension_second;
+  assert_has_precedence extension_first extension_third;
+  assert_has_precedence extension_py extension_first;
   ()
 
 
@@ -288,11 +289,11 @@ let test_module_path_search_path_subdirectory context =
   let module_path_a = create_module_path_exn ~configuration local_root "a.py" in
   assert_path
     (Test.relative_artifact_path ~root:local_root ~relative:"a.py")
-    (ModulePath.full_path ~configuration module_path_a);
+    (ArtifactPaths.artifact_path_of_module_path ~configuration module_path_a);
   let module_path_b = create_module_path_exn ~configuration search_subdirectory "c.py" in
   assert_path
     (Test.relative_artifact_path ~root:search_subdirectory ~relative:"c.py")
-    (ModulePath.full_path ~configuration module_path_b)
+    (ArtifactPaths.artifact_path_of_module_path ~configuration module_path_b)
 
 
 let test_module_path_exclude context =
@@ -660,7 +661,7 @@ let test_module_path_overlapping2 context =
   in
   let create_exn = create_module_path_exn ~configuration in
   let assert_module_path = assert_module_path ~configuration in
-  let assert_same_module_less = assert_same_module_less ~configuration in
+  let assert_has_precedence = assert_has_precedence ~configuration in
   assert_module_path
     (create_exn local_root "a.py")
     ~search_root:local_root
@@ -697,11 +698,11 @@ let test_module_path_overlapping2 context =
     ~relative:"c.pyi"
     ~should_type_check:true;
 
-  assert_same_module_less (create_exn stubs_root "a.pyi") (create_exn venv_root "a.pyi");
-  assert_same_module_less (create_exn stubs_root "a.pyi") (create_exn local_root "a.py");
-  assert_same_module_less (create_exn venv_root "a.pyi") (create_exn local_root "a.py");
-  assert_same_module_less (create_exn venv_root "b.pyi") (create_exn local_root "b.pyi");
-  assert_same_module_less (create_exn local_root "c.pyi") (create_exn venv_root "c.py")
+  assert_has_precedence (create_exn stubs_root "a.pyi") (create_exn venv_root "a.pyi");
+  assert_has_precedence (create_exn stubs_root "a.pyi") (create_exn local_root "a.py");
+  assert_has_precedence (create_exn venv_root "a.pyi") (create_exn local_root "a.py");
+  assert_has_precedence (create_exn venv_root "b.pyi") (create_exn local_root "b.pyi");
+  assert_has_precedence (create_exn local_root "c.pyi") (create_exn venv_root "c.py")
 
 
 let run_lazy_and_nonlazy ~f = List.iter [true; false] ~f
@@ -2025,6 +2026,32 @@ let test_overlay_code_hiding context =
   ()
 
 
+let test_extension_suffix _ =
+  let root = PyrePath.create_absolute "/root" in
+  let assert_qualifier_equal ~configuration ~path expected =
+    let actual_qualifier =
+      match
+        ArtifactPaths.module_path_of_artifact_path
+          ~configuration
+          (Test.relative_artifact_path ~root ~relative:path)
+      with
+      | Some { ModulePath.qualifier; _ } -> qualifier
+      | None -> Reference.create "<UNEXPECTED_NONE>"
+    in
+    assert_equal ~printer:Reference.show (Reference.create expected) actual_qualifier
+  in
+  let configuration =
+    Configuration.Analysis.create
+      ~extensions:
+        [{ Configuration.Extension.suffix = ".cinc"; include_suffix_in_module_qualifier = true }]
+      ~source_paths:[SearchPath.Root root]
+      ()
+  in
+  assert_qualifier_equal ~configuration ~path:"test.py" "test";
+  assert_qualifier_equal ~configuration ~path:"test.pyi" "test";
+  assert_qualifier_equal ~configuration ~path:"test.cinc" "test.cinc"
+
+
 let () =
   "environment"
   >::: [
@@ -2053,5 +2080,6 @@ let () =
          "invalidate_lazy_tracker_cache__add" >:: test_invalidate_lazy_tracker_cache__add;
          "overlay_basic" >:: test_overlay_basic;
          "overlay_code_hiding" >:: test_overlay_code_hiding;
+         "extension_suffix" >:: test_extension_suffix;
        ]
   |> Test.run

@@ -5,10 +5,4 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-module Check = CheckCommand
-
-module Testing = struct
-  module Manifest = Manifest
-  module Sourcedb = Sourcedb
-  module CheckCommandInput = CheckCommandInput
-end
+(* Blank to catch unused tests *)

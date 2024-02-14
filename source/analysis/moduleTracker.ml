@@ -72,7 +72,7 @@ end
 module Overlay = struct
   type t = {
     parent: ReadOnly.t;
-    overlaid_code: string ModulePath.Table.t;
+    overlaid_code: string Hashtbl.M(ModulePath).t;
     overlaid_qualifiers: Reference.Hash_set.t;
   }
 
@@ -83,7 +83,7 @@ module Overlay = struct
   let from_read_only parent =
     {
       parent;
-      overlaid_code = ModulePath.Table.create ();
+      overlaid_code = Hashtbl.create (module ModulePath);
       overlaid_qualifiers = Reference.Hash_set.create ();
     }
 
@@ -103,7 +103,8 @@ module Overlay = struct
     in
     let process_code_update (artifact_path, code_update) =
       let configuration = ReadOnly.controls parent |> EnvironmentControls.configuration in
-      ModulePath.create ~configuration artifact_path >>| add_or_update_code ~code_update
+      ArtifactPaths.module_path_of_artifact_path ~configuration artifact_path
+      >>| add_or_update_code ~code_update
     in
     List.filter_map code_updates ~f:process_code_update
 
@@ -116,6 +117,20 @@ module Overlay = struct
     in
     { parent with code_of_module_path }
 end
+
+module RawModulePathSet = Stdlib.Set.Make (ModulePath.Raw)
+
+(* NOTE: This comparator is expected to operate on module paths that share the same qualifier and
+   should_type_check flag. Do NOT use it on aribitrary module paths. *)
+(* TODO: Find a way to avoid having this function to start with, possibly by cachings raw module
+   paths instead of module paths. *)
+let same_module_compare
+    ~configuration
+    { ModulePath.raw = left_raw; _ }
+    { ModulePath.raw = right_raw; _ }
+  =
+  ModulePath.Raw.priority_aware_compare ~configuration left_raw right_raw
+
 
 module ModulePaths = struct
   module Finder = struct
@@ -183,7 +198,7 @@ module ModulePaths = struct
           let file_filter = python_file_filter finder ~visited_paths in
           PyrePath.list ~file_filter ~directory_filter ~root () |> List.map ~f:ArtifactPath.create)
       |> List.concat
-      |> List.filter_map ~f:(ModulePath.create ~configuration)
+      |> List.filter_map ~f:(ArtifactPaths.module_path_of_artifact_path ~configuration)
   end
 
   module LazyFinder = struct
@@ -236,7 +251,7 @@ module ModulePaths = struct
       let module_paths =
         directory_paths ~configuration qualifier
         |> List.concat_map ~f:list_directory
-        |> List.filter_map ~f:(ModulePath.create ~configuration)
+        |> List.filter_map ~f:(ArtifactPaths.module_path_of_artifact_path ~configuration)
       in
       let sort_by_qualifier so_far module_path =
         Reference.Map.Tree.update so_far (ModulePath.qualifier module_path) ~f:(function
@@ -275,7 +290,7 @@ module ModulePaths = struct
                |> Option.value ~default:[])
         |> Stdlib.List.flatten
       in
-      List.sort files ~compare:(ModulePath.same_module_compare ~configuration)
+      List.sort files ~compare:(same_module_compare ~configuration)
 
 
     let find_submodule_paths ~lazy_finder qualifier =
@@ -283,7 +298,7 @@ module ModulePaths = struct
       |> Reference.Map.Tree.data
       |> List.concat
       |> List.map ~f:ModulePath.raw
-      |> ModulePath.Raw.Set.of_list
+      |> RawModulePathSet.of_list
   end
 
   module Update = struct
@@ -292,7 +307,7 @@ module ModulePaths = struct
       | Remove of ModulePath.t
 
     let create ~configuration { ArtifactPath.Event.kind; path } =
-      match ModulePath.create ~configuration path with
+      match ArtifactPaths.module_path_of_artifact_path ~configuration path with
       | None ->
           Log.log ~section:`Server "`%a` not found in search path." ArtifactPath.pp path;
           None
@@ -407,7 +422,7 @@ module ExplicitModules = struct
       let rec insert sofar = function
         | [] -> List.rev_append sofar [to_insert]
         | current_path :: rest as existing -> (
-            match ModulePath.same_module_compare ~configuration to_insert current_path with
+            match same_module_compare ~configuration to_insert current_path with
             | 0 ->
                 (* We have the following precondition for files that are in the same module: *)
                 (* `same_module_compare a b = 0` implies `equal a b` *)
@@ -425,17 +440,20 @@ module ExplicitModules = struct
 
 
     let remove_module_path ~configuration ~to_remove existing_paths =
+      let equal_raw_paths { ModulePath.raw = left; _ } { ModulePath.raw = right; _ } =
+        ModulePath.Raw.equal left right
+      in
       let rec remove sofar = function
         | [] -> existing_paths
         | current_path :: rest -> (
-            match ModulePath.same_module_compare ~configuration to_remove current_path with
+            match same_module_compare ~configuration to_remove current_path with
             | 0 ->
                 let () =
                   (* For removed files, we only check for equality on relative path & priority. *)
                   (* There's a corner case (where an in-project file's symlink gas been removed)
                      that may cause `removed` to have a different `should_type_check` flag, since we
                      cannot follow a deleted symlink. *)
-                  if not (ModulePath.equal_raw_paths to_remove current_path) then
+                  if not (equal_raw_paths to_remove current_path) then
                     fail_on_module_path_invariant
                       ~description:
                         "Module paths that compare with 0 should have same raw path when removing"
@@ -651,14 +669,14 @@ module ImplicitModules = struct
     (* This represents the raw paths of all *explicit* children. We treat a namespace package as
        importable only when it has regular python files as children, i.e. when this set is
        nonempty. *)
-    type t = ModulePath.Raw.Set.t [@@deriving compare]
+    type t = RawModulePathSet.t [@@deriving compare]
 
-    let empty = ModulePath.Raw.Set.empty
+    let empty = RawModulePathSet.empty
 
     let description = "ImplicitModules"
 
     let should_treat_as_importable explicit_children =
-      not (ModulePath.Raw.Set.is_empty explicit_children)
+      not (RawModulePathSet.is_empty explicit_children)
   end
 
   module Update = struct
@@ -701,14 +719,14 @@ module ImplicitModules = struct
                 previous_existence
               else (* Get the previous state and new state *)
                 let previous_explicit_children =
-                  find qualifier |> Option.value ~default:ModulePath.Raw.Set.empty
+                  find qualifier |> Option.value ~default:RawModulePathSet.empty
                 in
                 let next_explicit_children =
                   match module_path_update with
                   | ModulePaths.Update.NewOrChanged _ ->
-                      ModulePath.Raw.Set.add raw_child previous_explicit_children
+                      RawModulePathSet.add raw_child previous_explicit_children
                   | ModulePaths.Update.Remove _ ->
-                      ModulePath.Raw.Set.remove raw_child previous_explicit_children
+                      RawModulePathSet.remove raw_child previous_explicit_children
                 in
                 (* update implicit_modules as a side effect *)
                 let () = set qualifier next_explicit_children in
@@ -745,8 +763,8 @@ module ImplicitModules = struct
           | None -> ()
           | Some (parent_qualifier, raw) ->
               Hashtbl.update implicit_modules parent_qualifier ~f:(function
-                  | None -> ModulePath.Raw.Set.singleton raw
-                  | Some paths -> ModulePath.Raw.Set.add raw paths)
+                  | None -> RawModulePathSet.singleton raw
+                  | Some paths -> RawModulePathSet.add raw paths)
         in
         Hashtbl.iter explicit_modules ~f:(List.iter ~f:process_module_path);
         implicit_modules
@@ -898,7 +916,7 @@ module Layouts = struct
       type nonrec t = t
 
       module Serialized = struct
-        type t = (Reference.t * ModulePath.t list) list * (Reference.t * ModulePath.Raw.Set.t) list
+        type t = (Reference.t * ModulePath.t list) list * (Reference.t * RawModulePathSet.t) list
 
         let prefix = Hack_parallel.Std.Prefix.make ()
 
@@ -979,7 +997,7 @@ module Base = struct
   }
 
   let load_raw_code ~configuration module_path =
-    let path = ModulePath.full_path ~configuration module_path in
+    let path = ArtifactPaths.artifact_path_of_module_path ~configuration module_path in
     try Ok (ArtifactPath.raw path |> File.create |> File.content_exn) with
     | Sys_error error ->
         Error (Format.asprintf "Cannot open file `%a` due to: %s" ArtifactPath.pp path error)
