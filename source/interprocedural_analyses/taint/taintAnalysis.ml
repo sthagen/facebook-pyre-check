@@ -481,30 +481,6 @@ let compact_ocaml_heap ~name =
   Statistics.performance ~name ~phase_name:name ~timer ()
 
 
-let resolve_module_path
-    ~build_system
-    ~source_code_api
-    ~static_analysis_configuration:
-      { Configuration.StaticAnalysis.configuration = { local_root; _ }; repository_root; _ }
-    qualifier
-  =
-  match
-    Server.PathLookup.absolute_source_path_of_qualifier_with_build_system
-      ~build_system
-      ~source_code_api
-      qualifier
-  with
-  | None -> None
-  | Some path ->
-      let root = Option.value repository_root ~default:local_root in
-      let path = PyrePath.create_absolute path in
-      Some
-        {
-          Interprocedural.RepositoryPath.filename = PyrePath.get_relative_to_root ~root ~path;
-          path;
-        }
-
-
 let run_taint_analysis
     ~static_analysis_configuration:
       ({
@@ -824,6 +800,21 @@ let run_taint_analysis
       ~shared_models
   in
 
+  Log.info "Computing file coverage...";
+  let timer = Timer.start () in
+  let file_coverage =
+    FileCoverage.add_files_from_callables
+      ~resolution:(Analysis.TypeEnvironment.ReadOnly.global_resolution read_only_environment)
+      ~resolve_module_path
+      ~callables:callables_to_analyze
+      FileCoverage.empty
+  in
+  Statistics.performance
+    ~name:"Finished computing file coverage"
+    ~phase_name:"Computing file coverage"
+    ~timer
+    ();
+
   let callables =
     Target.Set.of_list (List.rev_append (Registry.targets initial_models) callables_to_analyze)
   in
@@ -884,7 +875,8 @@ let run_taint_analysis
           ~model_verification_errors
           ~fixpoint_state
           ~errors
-          ~cache;
+          ~cache
+          ~file_coverage;
         []
     | _ -> errors
   in
