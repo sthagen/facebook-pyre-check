@@ -9,14 +9,6 @@ open OUnit2
 open Base
 open Buck_commands.Testing
 
-let setup_scratch_directory ~context relatives_and_contents =
-  let root = bracket_tmpdir context |> PyrePath.create_absolute in
-  List.iter relatives_and_contents ~f:(fun (relative, content) ->
-      let file = PyrePath.create_relative ~root ~relative in
-      File.create file ~content |> File.write);
-  root
-
-
 let test_manifest_loading =
   let assert_failure_with_message ~expected actual =
     let message =
@@ -82,7 +74,7 @@ let test_manifest_loading =
     @@ fun context ->
     let relative = "test.manifest" in
     let root =
-      setup_scratch_directory ~context [relative, {|[["foo.py", "src/foo.py", "derp"]]|}]
+      TestHelper.setup_scratch_directory ~context [relative, {|[["foo.py", "src/foo.py", "derp"]]|}]
     in
     assert_manifest
       ~context
@@ -90,7 +82,7 @@ let test_manifest_loading =
       ~expected:[{ Manifest.Item.artifact_path = "foo.py"; source_path = "src/foo.py" }]);
     (Test.labeled_test_case Stdlib.__FUNCTION__ Stdlib.__LINE__
     @@ fun context ->
-    let root = setup_scratch_directory ~context [] in
+    let root = TestHelper.setup_scratch_directory ~context [] in
     let path = PyrePath.create_relative ~root ~relative:"nonexistent" in
     assert_file_read_error (Manifest.load_from_file path));
   ]
@@ -114,22 +106,31 @@ let assert_equal_string_list ~context ~expected actual =
     actual
 
 
-let assert_lookup_source ~context ~expected { Sourcedb.lookup_source; _ } key =
-  let actual = lookup_source key in
+let assert_lookup_source ~context ~expected Sourcedb.{ lookup = { Lookup.get_source; _ }; _ } key =
+  let actual = get_source key in
   assert_equal_string_option ~context ~expected actual
 
 
-let assert_lookup_dependency ~context ~expected { Sourcedb.lookup_dependency; _ } key =
-  let actual = lookup_dependency key in
+let assert_lookup_dependency
+    ~context
+    ~expected
+    Sourcedb.{ lookup = { Lookup.get_dependency; _ }; _ }
+    key
+  =
+  let actual = get_dependency key in
   assert_equal_string_option ~context ~expected actual
 
 
-let assert_all_sources ~context ~expected { Sourcedb.all_sources; _ } =
+let assert_all_sources ~context ~expected Sourcedb.{ listing = { Listing.all_sources; _ }; _ } =
   let actual = all_sources () in
   assert_equal_string_list ~context ~expected actual
 
 
-let assert_all_dependencies ~context ~expected { Sourcedb.all_dependencies; _ } =
+let assert_all_dependencies
+    ~context
+    ~expected
+    Sourcedb.{ listing = { Listing.all_dependencies; _ }; _ }
+  =
   let actual = all_dependencies () in
   assert_equal_string_list ~context ~expected actual
 
@@ -230,21 +231,21 @@ let test_sourcedb_from_argfile =
   [
     (Test.labeled_test_case Stdlib.__FUNCTION__ Stdlib.__LINE__
     @@ fun context ->
-    let root = setup_scratch_directory ~context [] in
+    let root = TestHelper.setup_scratch_directory ~context [] in
     PyrePath.create_relative ~root ~relative:"nonexistent"
     |> CheckCommandInput.create_from_argument_file
     |> assert_file_read_error);
     (Test.labeled_test_case Stdlib.__FUNCTION__ Stdlib.__LINE__
     @@ fun context ->
     let relative = "test.json" in
-    let root = setup_scratch_directory ~context [relative, "derp"] in
+    let root = TestHelper.setup_scratch_directory ~context [relative, "derp"] in
     PyrePath.create_relative ~root ~relative
     |> CheckCommandInput.create_from_argument_file
     |> assert_json_parse_error);
     (Test.labeled_test_case Stdlib.__FUNCTION__ Stdlib.__LINE__
     @@ fun context ->
     let relative = "test.json" in
-    let root = setup_scratch_directory ~context [relative, "[]"] in
+    let root = TestHelper.setup_scratch_directory ~context [relative, "[]"] in
     PyrePath.create_relative ~root ~relative
     |> CheckCommandInput.create_from_argument_file
     |> assert_json_format_error);
