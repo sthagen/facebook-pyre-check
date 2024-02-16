@@ -46,7 +46,6 @@ type missing_annotation = {
   name: Reference.t;
   annotation: Type.t option;
   given_annotation: Type.t option;
-  evidence_locations: Location.WithPath.t list;
   thrown_at_source: bool;
 }
 [@@deriving compare, sexp, show, hash]
@@ -431,10 +430,7 @@ end
 
 module ReadOnly = struct
   type readonlyness_mismatch =
-    | IncompatibleVariableType of {
-        incompatible_type: incompatible_type;
-        declare_location: Location.WithPath.t;
-      }
+    | IncompatibleVariableType of { incompatible_type: incompatible_type }
     | IncompatibleParameterType of {
         keyword_argument_name: Identifier.t option;
         position: int;
@@ -470,8 +466,8 @@ module ReadOnly = struct
         ""
     in
     match kind with
-    | IncompatibleVariableType
-        { incompatible_type = { name; mismatch = { actual; expected; _ }; _ }; _ } ->
+    | IncompatibleVariableType { incompatible_type = { name; mismatch = { actual; expected; _ } } }
+      ->
         let message =
           let pp_type = pp_type ~concise in
           if concise then
@@ -586,20 +582,15 @@ module ReadOnly = struct
   let join ~resolution left right =
     match left, right with
     | ( IncompatibleVariableType
-          ({
-             incompatible_type =
-               { name = left_name; mismatch = left_mismatch; _ } as left_incompatible_type;
-             _;
-           } as left),
+          { incompatible_type = { name = left_name; mismatch = left_mismatch } },
         IncompatibleVariableType
-          { incompatible_type = { name = right_name; mismatch = right_mismatch; _ }; _ } )
+          { incompatible_type = { name = right_name; mismatch = right_mismatch }; _ } )
       when Reference.equal left_name right_name ->
         IncompatibleVariableType
           {
-            left with
             incompatible_type =
               {
-                left_incompatible_type with
+                name = left_name;
                 mismatch = join_mismatch ~resolution left_mismatch right_mismatch;
               };
           }
@@ -723,10 +714,7 @@ and kind =
       is_unimplemented: bool;
       define_location: Location.t;
     }
-  | IncompatibleVariableType of {
-      incompatible_type: incompatible_type;
-      declare_location: Location.WithPath.t;
-    }
+  | IncompatibleVariableType of { incompatible_type: incompatible_type }
   | IncompatibleOverload of incompatible_overload_kind
   | IncompleteType of {
       target: Expression.t;
@@ -1068,13 +1056,9 @@ let weaken_literals kind =
           attribute with
           incompatible_type = { incompatible with mismatch = weaken_mismatch mismatch };
         }
-  | IncompatibleVariableType
-      ({ incompatible_type = { mismatch; _ } as incompatible; _ } as variable) ->
+  | IncompatibleVariableType { incompatible_type = { mismatch; _ } as incompatible; _ } ->
       IncompatibleVariableType
-        {
-          variable with
-          incompatible_type = { incompatible with mismatch = weaken_mismatch mismatch };
-        }
+        { incompatible_type = { incompatible with mismatch = weaken_mismatch mismatch } }
   | InconsistentOverride ({ override = WeakenedPostcondition mismatch; _ } as inconsistent) ->
       InconsistentOverride
         { inconsistent with override = WeakenedPostcondition (weaken_mismatch mismatch) }
@@ -1232,7 +1216,7 @@ let simplify_kind kind =
       IncompatibleReturnType { details with mismatch = simplify_mismatch details.mismatch }
   | IncompatibleVariableType details ->
       IncompatibleVariableType
-        { details with incompatible_type = simplify_incompatible_type details.incompatible_type }
+        { incompatible_type = simplify_incompatible_type details.incompatible_type }
   | _ -> kind
 
 
@@ -2234,23 +2218,7 @@ let rec messages ~concise ~signature location kind =
                   pp_type
                   parent;
               ])
-      | { name; annotation = Some annotation; evidence_locations; given_annotation; _ } -> (
-          let trace =
-            let evidence_string =
-              evidence_locations
-              |> List.map ~f:(fun { Location.WithPath.path; start; _ } ->
-                     Format.asprintf "%s:%a" path Location.pp_position start)
-              |> String.concat ~sep:", "
-            in
-            Format.asprintf
-              "Attribute `%a` declared on line %d, type `%a` deduced from %s."
-              pp_reference
-              name
-              start_line
-              pp_type
-              annotation
-              evidence_string
-          in
+      | { name; annotation = Some annotation; given_annotation; _ } -> (
           match given_annotation with
           | Some given_annotation when Type.is_any given_annotation ->
               [
@@ -2262,7 +2230,6 @@ let rec messages ~concise ~signature location kind =
                   parent
                   pp_type
                   annotation;
-                trace;
               ]
           | Some given_annotation when Type.contains_any given_annotation ->
               [
@@ -2275,7 +2242,6 @@ let rec messages ~concise ~signature location kind =
                   parent
                   pp_type
                   annotation;
-                trace;
               ]
           | _ ->
               [
@@ -2287,7 +2253,6 @@ let rec messages ~concise ~signature location kind =
                   parent
                   pp_type
                   annotation;
-                trace;
               ])
       | { name; annotation = None; _ } ->
           [
@@ -2314,15 +2279,8 @@ let rec messages ~concise ~signature location kind =
         ["Global annotation cannot contain `Any`."]
       else
         ["Global expression must be annotated."]
-  | MissingGlobalAnnotation
-      { name; annotation = Some annotation; evidence_locations; given_annotation; _ }
+  | MissingGlobalAnnotation { name; annotation = Some annotation; given_annotation; _ }
     when Type.is_concrete annotation -> (
-      let evidence_string =
-        evidence_locations
-        |> List.map ~f:(fun { Location.WithPath.path; start; _ } ->
-               Format.asprintf "%s:%a" path Location.pp_position start)
-        |> String.concat ~sep:", "
-      in
       match given_annotation with
       | Some given_annotation when Type.is_any given_annotation ->
           [
@@ -2332,14 +2290,6 @@ let rec messages ~concise ~signature location kind =
               name
               pp_type
               annotation;
-            Format.asprintf
-              "Global variable `%a` declared on line %d, type `%a` deduced from %s."
-              pp_reference
-              name
-              start_line
-              pp_type
-              annotation
-              evidence_string;
           ]
       | Some given_annotation when Type.contains_any given_annotation ->
           [
@@ -2350,14 +2300,6 @@ let rec messages ~concise ~signature location kind =
               name
               pp_type
               annotation;
-            Format.asprintf
-              "Global variable `%a` declared on line %d, type `%a` deduced from %s."
-              pp_reference
-              name
-              start_line
-              pp_type
-              annotation
-              evidence_string;
           ]
       | _ ->
           [
@@ -2367,14 +2309,6 @@ let rec messages ~concise ~signature location kind =
               name
               pp_type
               annotation;
-            Format.asprintf
-              "Global variable `%a` declared on line %d, type `%a` deduced from %s."
-              pp_reference
-              name
-              start_line
-              pp_type
-              annotation
-              evidence_string;
           ])
   | MissingGlobalAnnotation { name; given_annotation; _ } -> (
       match given_annotation with
@@ -2459,26 +2393,11 @@ let rec messages ~concise ~signature location kind =
         ["Return annotation cannot contain `Any`."]
       else
         ["Return type must be annotated."]
-  | MissingReturnAnnotation
-      { annotation = Some annotation; evidence_locations; given_annotation; _ }
+  | MissingReturnAnnotation { annotation = Some annotation; given_annotation; _ }
     when Type.is_concrete annotation -> (
-      let trace =
-        let evidence_string =
-          evidence_locations
-          |> List.map ~f:(Format.asprintf "%a" Location.WithPath.pp_line)
-          |> String.concat ~sep:", "
-        in
-        Format.asprintf
-          "Type `%a` was returned on %s %s, return type should be specified on line %d."
-          pp_type
-          annotation
-          (if List.length evidence_locations > 1 then "lines" else "line")
-          evidence_string
-          start_line
-      in
       match given_annotation with
       | Some given_annotation when Type.is_any given_annotation ->
-          [Format.asprintf "Returning `%a` but type `Any` is specified." pp_type annotation; trace]
+          [Format.asprintf "Returning `%a` but type `Any` is specified." pp_type annotation]
       | Some given_annotation when Type.contains_any given_annotation ->
           [
             Format.asprintf
@@ -2486,13 +2405,8 @@ let rec messages ~concise ~signature location kind =
                `Any`."
               pp_type
               annotation;
-            trace;
           ]
-      | _ ->
-          [
-            Format.asprintf "Returning `%a` but no return type is specified." pp_type annotation;
-            trace;
-          ])
+      | _ -> [Format.asprintf "Returning `%a` but no return type is specified." pp_type annotation])
   | MissingReturnAnnotation { given_annotation; _ } -> (
       match given_annotation with
       | Some given_annotation when Type.is_any given_annotation ->
@@ -3269,10 +3183,6 @@ let join ~resolution left right =
       left with
       annotation = join_annotation_options left.annotation right.annotation;
       given_annotation = join_annotation_options left.given_annotation right.given_annotation;
-      evidence_locations =
-        List.dedup_and_sort
-          ~compare:Location.WithPath.compare
-          (left.evidence_locations @ right.evidence_locations);
       thrown_at_source = left.thrown_at_source || right.thrown_at_source;
     }
   in
@@ -3480,7 +3390,6 @@ let join ~resolution left right =
       when Reference.equal left.incompatible_type.name right.incompatible_type.name ->
         IncompatibleVariableType
           {
-            left with
             incompatible_type =
               {
                 left.incompatible_type with
@@ -4286,13 +4195,9 @@ let dequalify
             parent = dequalify parent;
             incompatible_type = { incompatible_type with mismatch = dequalify_mismatch mismatch };
           }
-    | IncompatibleVariableType ({ incompatible_type = { mismatch; _ }; _ } as variable) ->
+    | IncompatibleVariableType { incompatible_type = { name; mismatch } } ->
         IncompatibleVariableType
-          {
-            variable with
-            incompatible_type =
-              { variable.incompatible_type with mismatch = dequalify_mismatch mismatch };
-          }
+          { incompatible_type = { name; mismatch = dequalify_mismatch mismatch } }
     | InconsistentOverride
         ({ override = StrengthenedPrecondition (Found mismatch); parent; overridden_method; _ } as
         inconsistent_override) ->

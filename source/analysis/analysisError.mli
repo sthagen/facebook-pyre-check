@@ -12,7 +12,6 @@ type missing_annotation = {
   name: Reference.t;
   annotation: Type.t option;
   given_annotation: Type.t option;
-  evidence_locations: Location.WithPath.t list;
   thrown_at_source: bool;
 }
 [@@deriving compare, sexp, show, hash]
@@ -293,10 +292,7 @@ end
 
 module ReadOnly : sig
   type readonlyness_mismatch =
-    | IncompatibleVariableType of {
-        incompatible_type: incompatible_type;
-        declare_location: Location.WithPath.t;
-      }
+    | IncompatibleVariableType of { incompatible_type: incompatible_type }
     | IncompatibleParameterType of {
         keyword_argument_name: Identifier.t option;
         position: int;
@@ -372,10 +368,7 @@ and kind =
       is_unimplemented: bool;
       define_location: Location.t;
     }
-  | IncompatibleVariableType of {
-      incompatible_type: incompatible_type;
-      declare_location: Location.WithPath.t;
-    }
+  | IncompatibleVariableType of { incompatible_type: incompatible_type }
   | IncompatibleOverload of incompatible_overload_kind
   | IncompleteType of {
       target: Expression.t;

@@ -304,13 +304,12 @@ let errors_from_not_found
 
 let incompatible_variable_type_error_kind
     ~global_resolution
-    ~declare_location
     ({ Error.mismatch = { expected; actual; _ }; _ } as incompatible_type)
   =
   if is_readonlyness_mismatch ~global_resolution ~actual ~expected then
-    Error.ReadOnlynessMismatch (IncompatibleVariableType { incompatible_type; declare_location })
+    Error.ReadOnlynessMismatch (IncompatibleVariableType { incompatible_type })
   else
-    Error.IncompatibleVariableType { incompatible_type; declare_location }
+    Error.IncompatibleVariableType { incompatible_type }
 
 
 let rec unpack_callable_and_self_argument ~signature_select ~global_resolution input =
@@ -751,13 +750,6 @@ module State (Context : Context) = struct
     | exception _ -> parent_type
 
 
-  let instantiate_path ~global_resolution location =
-    let location = Location.with_module ~module_reference:Context.qualifier location in
-    Location.WithModule.instantiate
-      ~lookup:(GlobalResolution.relative_path_of_qualifier global_resolution)
-      location
-
-
   let define_signature =
     let { Node.value = { Define.signature; _ }; _ } = Context.define in
     signature
@@ -1004,7 +996,6 @@ module State (Context : Context) = struct
                  name = Reference.create "$return_annotation";
                  annotation = Some actual;
                  given_annotation;
-                 evidence_locations = [instantiate_path ~global_resolution location];
                  thrown_at_source = true;
                })
       else
@@ -2084,7 +2075,20 @@ module State (Context : Context) = struct
         { resolution; errors; resolved = Type.none; resolved_annotation = None; base = None }
     | Call
         {
-          callee = { Node.location; value = Name (Name.Identifier "reveal_type") };
+          callee =
+            {
+              Node.location;
+              value =
+                Name
+                  ( Name.Identifier "reveal_type"
+                  | Name.Identifier "typing.reveal_type"
+                  | Name.Attribute
+                      {
+                        base = { Node.value = Name (Name.Identifier "typing"); _ };
+                        attribute = "reveal_type";
+                        _;
+                      } );
+            };
           arguments = { Call.Argument.value; _ } :: remainder;
         } ->
         (* Special case reveal_type(). *)
@@ -2112,7 +2116,13 @@ module State (Context : Context) = struct
             ~location
             ~kind:(Error.RevealedType { expression = value; annotation; qualify })
         in
-        { resolution; errors; resolved = Type.none; resolved_annotation = None; base = None }
+        {
+          resolution;
+          errors;
+          resolved = Annotation.annotation annotation;
+          resolved_annotation = Some annotation;
+          base = None;
+        }
     | Call
         {
           callee =
@@ -2146,7 +2156,6 @@ module State (Context : Context) = struct
                          Error.name = Reference.create "typing.cast";
                          annotation = None;
                          given_annotation = Some cast_annotation_type;
-                         evidence_locations = [];
                          thrown_at_source = true;
                        };
                      annotation_kind = Annotation;
@@ -2196,7 +2205,6 @@ module State (Context : Context) = struct
                          Error.name = Reference.create "pyre_extensions.safe_cast";
                          annotation = None;
                          given_annotation = Some cast_annotation_type;
-                         evidence_locations = [];
                          thrown_at_source = true;
                        };
                      annotation_kind = Annotation;
@@ -4080,7 +4088,6 @@ module State (Context : Context) = struct
                          Error.name = reference;
                          annotation = None;
                          given_annotation = Some parsed;
-                         evidence_locations = [instantiate_path ~global_resolution target.location];
                          thrown_at_source = true;
                        };
                      annotation_kind;
@@ -4359,7 +4366,6 @@ module State (Context : Context) = struct
                         | None when is_incompatible ->
                             incompatible_variable_type_error_kind
                               ~global_resolution
-                              ~declare_location:(instantiate_path ~global_resolution location)
                               {
                                 Error.name = reference;
                                 mismatch =
@@ -4608,12 +4614,7 @@ module State (Context : Context) = struct
                           thrown_at_source )
                     | _ -> false, false
                   in
-                  let actual_annotation, evidence_locations =
-                    if Type.equal resolved Type.Top then
-                      None, []
-                    else
-                      Some resolved, [instantiate_path ~global_resolution location]
-                  in
+                  let actual_annotation = if Type.is_top resolved then None else Some resolved in
                   let is_illegal_attribute_annotation attribute =
                     let attribute_parent = AnnotatedAttribute.parent attribute in
                     let parent_annotation =
@@ -4652,7 +4653,6 @@ module State (Context : Context) = struct
                                    Error.name = reference;
                                    annotation = actual_annotation;
                                    given_annotation = Option.some_if is_immutable expected;
-                                   evidence_locations;
                                    thrown_at_source;
                                  }),
                           true )
@@ -4668,7 +4668,6 @@ module State (Context : Context) = struct
                                        Error.name = reference;
                                        annotation = actual_annotation;
                                        given_annotation = Option.some_if is_immutable expected;
-                                       evidence_locations;
                                        thrown_at_source = true;
                                      };
                                    annotation_kind = Annotation;
@@ -4694,7 +4693,6 @@ module State (Context : Context) = struct
                                        Error.name = Reference.create ~prefix:reference attribute;
                                        annotation = actual_annotation;
                                        given_annotation = Option.some_if is_immutable expected;
-                                       evidence_locations;
                                        thrown_at_source = true;
                                      };
                                    annotation_kind = Annotation;
@@ -4744,7 +4742,6 @@ module State (Context : Context) = struct
                                            Error.name = reference;
                                            annotation = actual_annotation;
                                            given_annotation = Option.some_if is_immutable expected;
-                                           evidence_locations;
                                            thrown_at_source;
                                          };
                                      }),
@@ -4761,7 +4758,6 @@ module State (Context : Context) = struct
                                            Error.name = reference;
                                            annotation = actual_annotation;
                                            given_annotation = Option.some_if is_immutable expected;
-                                           evidence_locations;
                                            thrown_at_source = true;
                                          };
                                        annotation_kind = Annotation;
@@ -4802,7 +4798,6 @@ module State (Context : Context) = struct
                                            Error.name = reference;
                                            annotation = actual_annotation;
                                            given_annotation = Option.some_if is_immutable expected;
-                                           evidence_locations;
                                            thrown_at_source = true;
                                          };
                                        annotation_kind = Annotation;
@@ -5549,7 +5544,6 @@ module State (Context : Context) = struct
                    annotation = None;
                    given_annotation =
                      Option.some_if (Define.has_return_annotation define) return_annotation;
-                   evidence_locations = [];
                    thrown_at_source = true;
                  })
         else
@@ -5678,7 +5672,6 @@ module State (Context : Context) = struct
           else
             incompatible_variable_type_error_kind
               ~global_resolution
-              ~declare_location:(instantiate_path ~global_resolution location)
               {
                 Error.name = Reference.create name;
                 mismatch =
@@ -5719,7 +5712,6 @@ module State (Context : Context) = struct
                      name = Reference.create name;
                      annotation;
                      given_annotation;
-                     evidence_locations = [];
                      thrown_at_source = true;
                    })
         in
