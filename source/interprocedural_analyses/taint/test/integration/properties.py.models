@@ -689,7 +689,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Ovr{properties.Class.my_property}",
+    "callable": "Overrides{properties.Class.my_property}",
     "sources": [
       {
         "port": "result",
@@ -732,7 +732,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Ovr{properties.DerivedTaintedSetter.my_property@setter}",
+    "callable": "Overrides{properties.DerivedTaintedSetter.my_property@setter}",
     "sinks": [
       {
         "port": "formal(value, position=1)",
@@ -773,7 +773,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Ovr{properties.GrandDerived.my_property@setter}",
+    "callable": "Overrides{properties.GrandDerived.my_property@setter}",
     "tito": [
       {
         "port": "formal(self, position=0)",
@@ -790,7 +790,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Ovr{properties.OtherDerived.my_property}",
+    "callable": "Overrides{properties.OtherDerived.my_property}",
     "sources": [
       {
         "port": "result",
@@ -822,11 +822,26 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Ovr{properties.TaintedGetterAndSetter.my_property@setter}",
+    "callable": "Overrides{properties.TaintedGetterAndSetter.my_property@setter}",
     "sources": [
       {
         "port": "formal(self, position=0)",
-        "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "properties.TaintedGetterAndSetter.my_property@setter",
+                    "port": "leaf:self"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
       },
       {
         "port": "result",
@@ -910,11 +925,26 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Ovr{properties.TaintedGetterAndSetter.my_property}",
+    "callable": "Overrides{properties.TaintedGetterAndSetter.my_property}",
     "sources": [
       {
         "port": "result",
-        "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "properties.TaintedGetterAndSetter.my_property",
+                    "port": "leaf:return"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
       }
     ],
     "sinks": [
@@ -1862,7 +1892,7 @@
               {
                 "leaves": [
                   {
-                    "name": "Ovr{properties.TaintedGetterAndSetter.my_property}",
+                    "name": "properties.TaintedGetterAndSetter.my_property",
                     "port": "leaf:return"
                   }
                 ],
@@ -2051,7 +2081,7 @@
               {
                 "leaves": [
                   {
-                    "name": "Ovr{properties.TaintedGetterAndSetter.my_property}",
+                    "name": "properties.TaintedGetterAndSetter.my_property",
                     "port": "leaf:return"
                   }
                 ],
