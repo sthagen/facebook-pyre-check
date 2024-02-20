@@ -41,3 +41,5 @@ module Registry = Registry
 module Cache = Cache
 module CallModel = CallModel
 module FileCoverage = FileCoverage
+module KindCoverage = KindCoverage
+module RuleCoverage = RuleCoverage
