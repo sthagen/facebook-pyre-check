@@ -6733,3 +6733,51 @@ let callable_name = function
     ->
       Some name
   | _ -> None
+
+
+let equivalent_for_assert_type left right =
+  let canonicalize original_type =
+    let module Canonicalize = Transform.Make (struct
+      type state = unit
+
+      let visit_children_before _ _ = true
+
+      let visit_children_after = false
+
+      let simplify_callable_in_bound_method { Record.Callable.kind; implementation; overloads } =
+        let simplify_parameters = function
+          | _ :: rest -> rest
+          | [] -> []
+        in
+        let simplify_record_parameters = function
+          | Record.Callable.Defined parameters ->
+              Record.Callable.Defined (simplify_parameters parameters)
+          | Record.Callable.ParameterVariadicTypeVariable { head; variable } ->
+              Record.Callable.ParameterVariadicTypeVariable
+                { head = simplify_parameters head; variable }
+          | needs_no_change -> needs_no_change
+        in
+        let simplify_overload { Record.Callable.annotation; parameters } =
+          { Record.Callable.annotation; parameters = simplify_record_parameters parameters }
+        in
+        {
+          Record.Callable.kind;
+          implementation = simplify_overload implementation;
+          overloads = List.map ~f:simplify_overload overloads;
+        }
+
+
+      let visit new_state type_currently_visiting =
+        let transformed_annotation =
+          match type_currently_visiting with
+          | Callable callable -> Callable { callable with kind = Record.Callable.Anonymous }
+          | Parametric { name = "BoundMethod"; parameters = [Single (Callable callable); _] } ->
+              Callable (simplify_callable_in_bound_method callable)
+          | needs_no_changes -> needs_no_changes
+        in
+        { Transform.transformed_annotation; new_state }
+    end)
+    in
+    snd (Canonicalize.visit () original_type)
+  in
+  equal (canonicalize left) (canonicalize right)

@@ -158,6 +158,7 @@ let save_results_to_directory
     ~errors
     ~cache
     ~file_coverage
+    ~rule_coverage
   =
   let timer = Timer.start () in
   let root = local_root |> PyrePath.absolute in
@@ -238,15 +239,23 @@ let save_results_to_directory
     Out_channel.close out_channel
   in
   let save_file_coverage () =
-    FileCoverage.write_to_file
-      ~path:(PyrePath.append result_directory ~element:"file_coverage.txt")
-      file_coverage
+    if not (FileCoverage.is_empty file_coverage) then
+      FileCoverage.write_to_file
+        ~path:(PyrePath.append result_directory ~element:"file_coverage.txt")
+        file_coverage
+  in
+  let save_rule_coverage () =
+    if not (RuleCoverage.is_empty rule_coverage) then
+      RuleCoverage.write_to_file
+        ~path:(PyrePath.append result_directory ~element:"rule_coverage.json")
+        rule_coverage
   in
   remove_existing_models ();
   save_models ();
   save_metadata ();
   save_errors ();
   save_file_coverage ();
+  save_rule_coverage ();
   Log.info "Analysis results were written to `%s`." (PyrePath.absolute result_directory);
   Statistics.performance
     ~name:"Wrote analysis results"
