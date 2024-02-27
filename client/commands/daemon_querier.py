@@ -56,8 +56,8 @@ class DefinitionLocationResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
 
 
 @dataclasses.dataclass(frozen=True)
-class GetDocumentSymbolsResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
-    response: Optional[List[lsp.DocumentSymbolsResponse]]
+class DocumentSymbolsResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
+    response: Optional[List[lsp.DocumentSymbol]]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -179,7 +179,7 @@ class AbstractDaemonQuerier(abc.ABC):
     async def get_document_symbols(
         self,
         path: str,
-    ) -> Union[DaemonQueryFailure, GetDocumentSymbolsResponse]:
+    ) -> Union[DaemonQueryFailure, DocumentSymbolsResponse]:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -286,7 +286,7 @@ class EmptyQuerier(AbstractDaemonQuerier):
     async def get_document_symbols(
         self,
         path: str,
-    ) -> Union[DaemonQueryFailure, GetDocumentSymbolsResponse]:
+    ) -> Union[DaemonQueryFailure, DocumentSymbolsResponse]:
         raise NotImplementedError()
 
     async def get_symbol_search(
@@ -499,7 +499,7 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
     async def get_document_symbols(
         self,
         path: str,
-    ) -> Union[DaemonQueryFailure, GetDocumentSymbolsResponse]:
+    ) -> Union[DaemonQueryFailure, DocumentSymbolsResponse]:
         return DaemonQueryFailure(
             "Document Symbol is not supported in the pyre persistent client. Please use code-navigation. "
         )
@@ -724,7 +724,7 @@ class FailableDaemonQuerier(AbstractDaemonQuerier):
     async def get_document_symbols(
         self,
         path: str,
-    ) -> Union[DaemonQueryFailure, GetDocumentSymbolsResponse]:
+    ) -> Union[DaemonQueryFailure, DocumentSymbolsResponse]:
         return await self.base_querier.get_document_symbols(str(path))
 
     async def get_symbol_search(
@@ -817,8 +817,26 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
     async def get_document_symbols(
         self,
         path: str,
-    ) -> Union[DaemonQueryFailure, GetDocumentSymbolsResponse]:
+    ) -> Union[DaemonQueryFailure, DocumentSymbolsResponse]:
         raise NotImplementedError()
+        document_symbol_request = lsp.DocumentSymbolRequest(
+            path=str(path),
+            client_id=self._get_client_id(),
+        )
+
+        response = await code_navigation_request.async_handle_document_symbol_request(
+            self.socket_path,
+            document_symbol_request,
+        )
+
+        if isinstance(response, code_navigation_request.ErrorResponse):
+            return DaemonQueryFailure(
+                response.message, error_source=response.error_source
+            )
+
+        else:
+            response = response.to_lsp_document_symbol_response()
+            return lsp.DocumentSymbol(response=response)
 
     async def get_symbol_search(
         self,
@@ -976,7 +994,7 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
     async def get_document_symbols(
         self,
         path: str,
-    ) -> Union[DaemonQueryFailure, GetDocumentSymbolsResponse]:
+    ) -> Union[DaemonQueryFailure, DocumentSymbolsResponse]:
         raise NotImplementedError()
 
     async def get_symbol_search(

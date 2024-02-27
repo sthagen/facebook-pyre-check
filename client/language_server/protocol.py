@@ -436,6 +436,7 @@ class ServerCapabilities(json_mixins.CamlCaseAndExcludeJsonMixin):
     rename_provider: Optional[bool] = None
     workspace_symbol_provider: Optional[bool] = None
     inlay_hint_provider: Optional[bool] = None
+    document_formatting_provider: Optional[bool] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -779,7 +780,7 @@ class DocumentSymbolsParameters(json_mixins.CamlCaseAndExcludeJsonMixin):
 
 
 @dataclasses.dataclass(frozen=True)
-class DocumentSymbolsResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
+class DocumentSymbol(json_mixins.CamlCaseAndExcludeJsonMixin):
     """Contains detailed information about a specified symbol."""
 
     name: str
@@ -787,7 +788,22 @@ class DocumentSymbolsResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     kind: SymbolKind
     range: LspRange
     selection_range: LspRange
-    children: List["DocumentSymbolsResponse"]
+    children: List["DocumentSymbol"]
+
+
+@dataclasses.dataclass(frozen=True)
+class DocumentSymbolRequest:
+    path: str
+    client_id: str
+
+    def to_json(self) -> List[object]:
+        return [
+            "DocumentSymbol",
+            {
+                "path": self.path,
+                "client_id": self.client_id,
+            },
+        ]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -857,6 +873,24 @@ class WorkspaceSymbolParameters(json_mixins.CamlCaseAndExcludeJsonMixin):
         parameters: json_rpc.Parameters,
     ) -> "WorkspaceSymbolParameters":
         return _parse_parameters(parameters, target=WorkspaceSymbolParameters)
+
+
+@dataclasses.dataclass(frozen=True)
+class DocumentFormattingParameters(json_mixins.CamlCaseAndExcludeJsonMixin):
+    text_document: TextDocumentIdentifier
+
+    @staticmethod
+    def from_json_rpc_parameters(
+        parameters: json_rpc.Parameters,
+    ) -> "DocumentFormattingParameters":
+        return _parse_parameters(parameters, target=DocumentFormattingParameters)
+
+
+@dataclasses.dataclass(frozen=True)
+class DocumentFormattingResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
+    """describing the modification to the document to be formatted"""
+
+    list_of_edits: Optional[List[TextEdit]]
 
 
 @dataclasses.dataclass(frozen=True)
