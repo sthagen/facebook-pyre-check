@@ -11,6 +11,7 @@ open Core
 open Pyre
 open Taint
 module Target = Interprocedural.Target
+module PyrePysaApi = Analysis.PyrePysaApi
 
 let initialize_configuration
     ~static_analysis_configuration:
@@ -133,18 +134,13 @@ let parse_decorator_preprocessing_configuration
 
 
 let resolve_module_path
-    ~build_system
-    ~source_code_api
+    ~lookup_source
+    ~absolute_source_path_of_qualifier
     ~static_analysis_configuration:
       { Configuration.StaticAnalysis.configuration = { local_root; _ }; repository_root; _ }
     qualifier
   =
-  match
-    Server.PathLookup.absolute_source_path_of_qualifier_with_build_system
-      ~build_system
-      ~source_code_api
-      qualifier
-  with
+  match absolute_source_path_of_qualifier ~lookup_source qualifier with
   | None -> None
   | Some path ->
       let root = Option.value repository_root ~default:local_root in
@@ -160,21 +156,20 @@ let write_modules_to_file
     ~static_analysis_configuration:
       ({ Configuration.StaticAnalysis.configuration = { local_root; _ }; _ } as
       static_analysis_configuration)
-    ~type_environment
-    ~build_system
+    ~lookup_source
+    ~absolute_source_path_of_qualifier
     ~path
     qualifiers
   =
   let timer = Timer.start () in
   Log.info "Writing modules to `%s`" (PyrePath.absolute path);
-  let source_code_api =
-    type_environment
-    |> Analysis.TypeEnvironment.read_only
-    |> Analysis.TypeEnvironment.ReadOnly.get_untracked_source_code_api
-  in
   let to_json_lines qualifier =
     let path =
-      resolve_module_path ~build_system ~source_code_api ~static_analysis_configuration qualifier
+      resolve_module_path
+        ~lookup_source
+        ~absolute_source_path_of_qualifier
+        ~static_analysis_configuration
+        qualifier
       |> function
       | Some { path; _ } -> `String (PyrePath.absolute path)
       | None -> `Null
@@ -218,79 +213,41 @@ let write_functions_to_file
   Statistics.performance ~name:"Wrote functions" ~phase_name:"Writing functions" ~timer ()
 
 
-(** Perform a full type check and build a type environment. *)
-let type_check
+let create_pyre_read_write_api_and_perform_type_analysis
     ~scheduler
     ~static_analysis_configuration:
       ({ Configuration.StaticAnalysis.configuration; save_results_to; _ } as
       static_analysis_configuration)
-    ~build_system
+    ~lookup_source
     ~decorator_configuration
-    ~cache
   =
-  Cache.type_environment cache (fun () ->
-      Log.info "Starting type checking...";
-      let configuration =
-        (* In order to get an accurate call graph and type information, we need to ensure that we
-           schedule a type check for external files. *)
-        { configuration with Configuration.Analysis.analyze_external_sources = true }
-      in
-      let () = Analysis.DecoratorPreprocessing.setup_preprocessing decorator_configuration in
-      let errors_environment =
-        Analysis.EnvironmentControls.create ~populate_call_graph:false configuration
-        |> Analysis.ErrorsEnvironment.create_with_ast_environment
-      in
-      let type_environment =
-        Analysis.ErrorsEnvironment.AssumeDownstreamNeverNeedsUpdates.type_environment
-          errors_environment
-      in
-      let qualifiers =
-        Analysis.ErrorsEnvironment.AssumeGlobalModuleListing.global_module_paths_api
-          errors_environment
-        |> Analysis.GlobalModulePathsApi.type_check_qualifiers
-      in
-      Log.info "Found %d modules" (List.length qualifiers);
-      let () =
-        match save_results_to with
-        | Some directory ->
-            write_modules_to_file
-              ~static_analysis_configuration
-              ~type_environment
-              ~build_system
-              ~path:(PyrePath.append directory ~element:"modules.json")
-              qualifiers
-        | None -> ()
-      in
-      PyreProfiling.track_shared_memory_usage ~name:"Before legacy type check" ();
-      let definitions =
-        Analysis.TypeEnvironment.collect_definitions ~scheduler type_environment qualifiers
-      in
-      Log.info "Found %d functions" (List.length definitions);
-      let () =
-        match save_results_to with
-        | Some directory ->
-            write_functions_to_file
-              ~static_analysis_configuration
-              ~path:(PyrePath.append directory ~element:"functions.json")
-              definitions
-        | None -> ()
-      in
-      let () =
-        Analysis.TypeEnvironment.populate_for_definitions ~scheduler type_environment definitions
-      in
-      Statistics.event
-        ~section:`Memory
-        ~name:"shared memory size post-typecheck"
-        ~integers:["size", Memory.heap_size ()]
-        ();
-      PyreProfiling.track_shared_memory_usage ~name:"After legacy type check" ();
-      type_environment)
+  let save_qualifiers_and_definitions absolute_source_path_of_qualifier qualifiers definitions =
+    match save_results_to with
+    | Some directory ->
+        write_modules_to_file
+          ~static_analysis_configuration
+          ~lookup_source
+          ~absolute_source_path_of_qualifier
+          ~path:(PyrePath.append directory ~element:"modules.json")
+          qualifiers;
+        write_functions_to_file
+          ~static_analysis_configuration
+          ~path:(PyrePath.append directory ~element:"functions.json")
+          definitions;
+        ()
+    | None -> ()
+  in
+  PyrePysaApi.ReadWrite.create_with_cold_start
+    ~scheduler
+    ~configuration
+    ~decorator_configuration
+    ~callback_with_qualifiers_and_definitions:save_qualifiers_and_definitions
 
 
 let parse_models_and_queries_from_sources
-    ~taint_configuration
     ~scheduler
-    ~resolution
+    ~pyre_api
+    ~taint_configuration
     ~source_sink_filter
     ~definitions
     ~stubs
@@ -303,7 +260,7 @@ let parse_models_and_queries_from_sources
     let taint_configuration = TaintConfiguration.SharedMemory.get taint_configuration in
     List.fold sources ~init:ModelParseResult.empty ~f:(fun state (path, source) ->
         ModelParser.parse
-          ~resolution
+          ~pyre_api
           ~path
           ~source
           ~taint_configuration
@@ -331,9 +288,9 @@ let parse_models_and_queries_from_sources
 
 let parse_models_and_queries_from_configuration
     ~scheduler
+    ~pyre_api
     ~static_analysis_configuration:{ Configuration.StaticAnalysis.verify_models; configuration; _ }
     ~taint_configuration
-    ~resolution
     ~source_sink_filter
     ~definitions
     ~stubs
@@ -342,9 +299,9 @@ let parse_models_and_queries_from_configuration
   let ({ ModelParseResult.errors; _ } as parse_result) =
     ModelParser.get_model_sources ~paths:configuration.taint_model_paths
     |> parse_models_and_queries_from_sources
-         ~taint_configuration
          ~scheduler
-         ~resolution
+         ~pyre_api
+         ~taint_configuration
          ~source_sink_filter
          ~definitions
          ~stubs
@@ -356,17 +313,14 @@ let parse_models_and_queries_from_configuration
 
 let initialize_models
     ~scheduler
+    ~pyre_api
     ~static_analysis_configuration
     ~taint_configuration
     ~taint_configuration_shared_memory
     ~class_hierarchy_graph
-    ~environment
-    ~global_module_paths_api
     ~initial_callables
   =
   let open TaintConfiguration.Heap in
-  let resolution = Analysis.TypeEnvironment.ReadOnly.global_resolution environment in
-
   Log.info "Parsing taint models...";
   let timer = Timer.start () in
   let definitions_hashset =
@@ -378,9 +332,9 @@ let initialize_models
   let { ModelParseResult.models; queries; errors } =
     parse_models_and_queries_from_configuration
       ~scheduler
+      ~pyre_api
       ~static_analysis_configuration
       ~taint_configuration:taint_configuration_shared_memory
-      ~resolution
       ~source_sink_filter:taint_configuration.source_sink_filter
       ~definitions:(Some definitions_hashset)
       ~stubs:(Interprocedural.Target.HashsetSharedMemory.read_only stubs_shared_memory)
@@ -405,8 +359,7 @@ let initialize_models
         }
           =
           ModelQueryExecution.generate_models_from_queries
-            ~environment:(Analysis.TypeEnvironment.ReadOnly.global_environment environment)
-            ~global_module_paths_api
+            ~pyre_api
             ~scheduler
             ~class_hierarchy_graph
             ~verbose
@@ -446,14 +399,17 @@ let initialize_models
   in
 
   let models =
-    ClassModels.infer ~environment ~global_module_paths_api ~user_models:models
+    ClassModels.infer
+      ~environment:(PyrePysaApi.ReadOnly.type_environment pyre_api)
+      ~global_module_paths_api:(PyrePysaApi.ReadOnly.global_module_paths_api pyre_api)
+      ~user_models:models
     |> Registry.merge ~join:Model.join_user_models models
   in
 
   let models =
     MissingFlow.add_obscure_models
       ~static_analysis_configuration
-      ~environment
+      ~environment:(PyrePysaApi.ReadOnly.type_environment pyre_api)
       ~stubs:stubs_hashset
       ~initial_models:models
   in
@@ -461,17 +417,6 @@ let initialize_models
   let () = Interprocedural.Target.HashsetSharedMemory.cleanup stubs_shared_memory in
 
   { ModelParseResult.models; queries = []; errors }
-
-
-(** Aggressively remove things we do not need anymore from the shared memory. *)
-let purge_shared_memory ~environment ~qualifiers =
-  let ast_environment =
-    Analysis.TypeEnvironment.unannotated_global_environment environment
-    |> Analysis.UnannotatedGlobalEnvironment.AssumeAstEnvironment.ast_environment
-  in
-  Analysis.AstEnvironment.remove_sources ast_environment qualifiers;
-  Memory.SharedMemory.collect `aggressive;
-  ()
 
 
 let compact_ocaml_heap ~name =
@@ -486,7 +431,7 @@ let compact_ocaml_heap ~name =
 
 
 let compute_coverage
-    ~environment
+    ~pyre_api
     ~scheduler
     ~resolve_module_path
     ~callables_to_analyze
@@ -499,7 +444,7 @@ let compute_coverage
   let file_coverage =
     FileCoverage.from_callables
       ~scheduler
-      ~resolution:(Analysis.TypeEnvironment.ReadOnly.global_resolution environment)
+      ~pyre_api
       ~resolve_module_path
       ~callables:callables_to_analyze
   in
@@ -563,7 +508,7 @@ let run_taint_analysis
          compute_coverage = compute_coverage_flag;
          _;
        } as static_analysis_configuration)
-    ~build_system
+    ~lookup_source
     ~scheduler
     ()
   =
@@ -588,13 +533,22 @@ let run_taint_analysis
   in
 
   (* We should NOT store anything in memory before calling `Cache.try_load` *)
-  let environment, cache =
-    type_check
-      ~scheduler
+  let pyre_read_write_api, cache =
+    Cache.pyre_read_write_api cache (fun () ->
+        create_pyre_read_write_api_and_perform_type_analysis
+          ~scheduler
+          ~static_analysis_configuration
+          ~lookup_source
+          ~decorator_configuration)
+  in
+  let pyre_api = PyrePysaApi.ReadOnly.of_read_write_api pyre_read_write_api in
+
+  let resolve_module_path =
+    resolve_module_path
+      ~lookup_source
+      ~absolute_source_path_of_qualifier:
+        (PyrePysaApi.ReadOnly.absolute_source_path_of_qualifier pyre_api)
       ~static_analysis_configuration
-      ~build_system
-      ~decorator_configuration
-      ~cache
   in
 
   if compact_ocaml_heap_flag then
@@ -606,29 +560,14 @@ let run_taint_analysis
     TaintConfiguration.SharedMemory.from_heap taint_configuration
   in
 
-  let global_module_paths_api =
-    environment |> Analysis.TypeEnvironment.AssumeGlobalModuleListing.global_module_paths_api
-  in
-  let qualifiers = Analysis.GlobalModulePathsApi.explicit_qualifiers global_module_paths_api in
-  let source_code_api =
-    environment
-    |> Analysis.TypeEnvironment.read_only
-    |> Analysis.TypeEnvironment.ReadOnly.get_untracked_source_code_api
-  in
-  let read_only_environment = Analysis.TypeEnvironment.read_only environment in
-  let resolve_module_path =
-    resolve_module_path ~build_system ~source_code_api ~static_analysis_configuration
-  in
+  let qualifiers = PyrePysaApi.ReadOnly.explicit_qualifiers pyre_api in
 
   let class_hierarchy_graph, cache =
     Cache.class_hierarchy_graph cache (fun () ->
         let timer = Timer.start () in
         let () = Log.info "Computing class hierarchy graph..." in
         let class_hierarchy_graph =
-          Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers
-            ~scheduler
-            ~environment:read_only_environment
-            ~qualifiers
+          Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers ~scheduler ~pyre_api ~qualifiers
         in
         Statistics.performance
           ~name:"Computed class hierarchy graph"
@@ -665,7 +604,7 @@ let run_taint_analysis
           Interprocedural.FetchCallables.from_qualifiers
             ~scheduler
             ~configuration
-            ~environment:read_only_environment
+            ~pyre_api
             ~include_unit_tests:false
             ~qualifiers
         in
@@ -681,12 +620,11 @@ let run_taint_analysis
   let { ModelParseResult.models = initial_models; errors = model_verification_errors; _ } =
     initialize_models
       ~scheduler
+      ~pyre_api
       ~static_analysis_configuration
       ~taint_configuration
       ~taint_configuration_shared_memory
       ~class_hierarchy_graph
-      ~environment:(Analysis.TypeEnvironment.read_only environment)
-      ~global_module_paths_api
       ~initial_callables
   in
 
@@ -711,7 +649,7 @@ let run_taint_analysis
         Interprocedural.OverrideGraph.build_whole_program_overrides
           ~static_analysis_configuration
           ~scheduler
-          ~environment:(Analysis.TypeEnvironment.read_only environment)
+          ~pyre_api
           ~include_unit_tests:false
           ~skip_overrides_targets
           ~maximum_overrides
@@ -730,7 +668,7 @@ let run_taint_analysis
         Interprocedural.GlobalConstants.SharedMemory.from_qualifiers
           ~handle:(Interprocedural.GlobalConstants.SharedMemory.create ())
           ~scheduler
-          ~environment:(Analysis.TypeEnvironment.read_only environment)
+          ~pyre_api
           ~qualifiers)
   in
   Statistics.performance
@@ -754,9 +692,9 @@ let run_taint_analysis
         Interprocedural.CallGraph.build_whole_program_call_graph
           ~scheduler
           ~static_analysis_configuration
-          ~environment:(Analysis.TypeEnvironment.read_only environment)
+          ~environment:(PyrePysaApi.ReadOnly.type_environment pyre_api)
           ~resolve_module_path:(Some resolve_module_path)
-          ~override_graph:override_graph_shared_memory_read_only
+          ~override_graph:(Some override_graph_shared_memory_read_only)
           ~store_shared_memory:true
           ~attribute_targets
           ~skip_analysis_targets
@@ -818,10 +756,7 @@ let run_taint_analysis
      let () = Log.info "Cache has been built. Exiting now" in
      raise Cache.BuildCacheOnly);
 
-  Log.info "Purging shared memory...";
-  let timer = Timer.start () in
-  let () = purge_shared_memory ~environment ~qualifiers in
-  Statistics.performance ~name:"Purged shared memory" ~phase_name:"Purging shared memory" ~timer ();
+  let () = PyrePysaApi.ReadWrite.purge_shared_memory pyre_read_write_api in
 
   let initial_models =
     MissingFlow.add_unknown_callee_models
@@ -830,10 +765,7 @@ let run_taint_analysis
       ~initial_models
   in
 
-  Log.info "Purging shared memory...";
-  let timer = Timer.start () in
-  let () = purge_shared_memory ~environment ~qualifiers in
-  Statistics.performance ~name:"Purged shared memory" ~phase_name:"Purging shared memory" ~timer ();
+  let () = PyrePysaApi.ReadWrite.purge_shared_memory pyre_read_write_api in
 
   if compact_ocaml_heap_flag then
     compact_ocaml_heap ~name:"before fixpoint";
@@ -853,13 +785,13 @@ let run_taint_analysis
   let fixpoint_state =
     Taint.TaintFixpoint.compute
       ~scheduler
-      ~type_environment:(Analysis.TypeEnvironment.read_only environment)
+      ~pyre_api
       ~override_graph:override_graph_shared_memory_read_only
       ~dependency_graph
       ~context:
         {
           Taint.TaintFixpoint.Context.taint_configuration = taint_configuration_shared_memory;
-          type_environment = Analysis.TypeEnvironment.read_only environment;
+          pyre_api;
           class_interval_graph = class_interval_graph_shared_memory;
           define_call_graphs =
             Interprocedural.CallGraph.DefineCallGraphSharedMemory.read_only define_call_graphs;
@@ -878,7 +810,7 @@ let run_taint_analysis
       FileCoverage.empty, RuleCoverage.empty
     else
       compute_coverage
-        ~environment:read_only_environment
+        ~pyre_api
         ~scheduler
         ~resolve_module_path
         ~callables_to_analyze

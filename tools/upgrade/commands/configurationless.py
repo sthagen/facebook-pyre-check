@@ -154,14 +154,19 @@ class Configurationless(Command):
             ) from e
         return root
 
-    def _get_applicable_targets_from_buck(
-        self, targets: Collection[str]
-    ) -> Collection[str]:
+    @staticmethod
+    def format_buck_targets_for_query(targets: Collection[str]) -> List[str]:
         targets = [
             target_expression
             for target in targets
             for target_expression in ["--target", target]
         ]
+        return targets
+
+    def _get_applicable_targets_from_wildcard_targets_buck_query(
+        self, targets: Collection[str]
+    ) -> Collection[str]:
+        targets = self.format_buck_targets_for_query(targets)
         buck_command = [
             "buck2",
             "bxl",
@@ -184,7 +189,7 @@ class Configurationless(Command):
 
     def _get_files_to_process_from_applicable_targets(
         self, applicable_targets: Collection[str], buck_root: Path
-    ) -> Collection[Path]:
+    ) -> Set[Path]:
         formatted_targets = " ".join([f"{target!r}" for target in applicable_targets])
         arguments = f"inputs( set( {formatted_targets} ) )"
 
@@ -210,21 +215,34 @@ class Configurationless(Command):
 
             return {(buck_root / file.strip()).resolve() for file in result.split("\n")}
 
+    def _get_files_from_wildcard_targets(
+        self, wildcard_targets: Collection[str], buck_project_root: Path
+    ) -> Set[Path]:
+        if len(wildcard_targets) == 0:
+            return set()
+
+        applicable_targets = (
+            self._get_applicable_targets_from_wildcard_targets_buck_query(
+                wildcard_targets
+            )
+        )
+        wildcard_target_files = self._get_files_to_process_from_applicable_targets(
+            applicable_targets, buck_project_root
+        )
+        return wildcard_target_files
+
     def _get_files_to_migrate_from_targets(
         self, configuration_targets: List[str]
     ) -> Set[Path]:
-        buck_root = self._get_buck_root()
+        buck_project_root = self._get_buck_root()
 
-        applicable_targets = self._get_applicable_targets_from_buck(
-            configuration_targets
-        )
-        files = self._get_files_to_process_from_applicable_targets(
-            applicable_targets, buck_root
+        wildcard_target_files = self._get_files_from_wildcard_targets(
+            configuration_targets, buck_project_root
         )
 
         return {
             file
-            for file in files
+            for file in wildcard_target_files
             if any(file.match(pattern) for pattern in self._includes)
         }
 

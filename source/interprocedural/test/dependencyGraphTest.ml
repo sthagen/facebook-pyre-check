@@ -18,6 +18,7 @@ let setup ?(other_sources = []) ~context ~handle source =
     let external_sources = List.map other_sources ~f:(fun { handle; source } -> handle, source) in
     ScratchProject.setup ~context ~external_sources [handle, source]
   in
+  let pyre_api = ScratchProject.pyre_pysa_read_only_api project in
   let { ScratchProject.BuiltTypeEnvironment.sources; type_environment; _ } =
     ScratchProject.build_type_environment project
   in
@@ -25,17 +26,15 @@ let setup ?(other_sources = []) ~context ~handle source =
     List.find_exn sources ~f:(fun { Source.module_path; _ } ->
         String.equal (ModulePath.relative module_path) handle)
   in
-  source, type_environment, ScratchProject.configuration_of project
+  source, pyre_api, type_environment, ScratchProject.configuration_of project
 
 
 let create_call_graph ?(other_sources = []) ~context source_text =
-  let source, environment, configuration =
+  let source, pyre_api, environment, configuration =
     setup ~other_sources ~context ~handle:"test.py" source_text
   in
   let static_analysis_configuration = Configuration.StaticAnalysis.create configuration () in
-  let override_graph =
-    OverrideGraph.Heap.from_source ~environment ~include_unit_tests:true ~source
-  in
+  let override_graph = OverrideGraph.Heap.from_source ~pyre_api ~include_unit_tests:true ~source in
   let override_graph_shared_memory = OverrideGraph.SharedMemory.from_heap override_graph in
   let () =
     let errors = TypeEnvironment.ReadOnly.get_errors environment !&"test" in
@@ -48,11 +47,7 @@ let create_call_graph ?(other_sources = []) ~context source_text =
       |> failwith
   in
   let definitions =
-    FetchCallables.from_source
-      ~configuration
-      ~resolution:(TypeEnvironment.ReadOnly.global_resolution environment)
-      ~include_unit_tests:true
-      ~source
+    FetchCallables.from_source ~configuration ~pyre_api ~include_unit_tests:true ~source
     |> FetchCallables.get_definitions
   in
   let fold call_graph callable =
@@ -61,7 +56,7 @@ let create_call_graph ?(other_sources = []) ~context source_text =
         ~static_analysis_configuration
         ~environment
         ~override_graph:
-          (Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory)
+          (Some (Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory))
         ~attribute_targets:(Target.HashSet.create ())
         ~callable
       |> CallGraph.DefineCallGraph.all_targets

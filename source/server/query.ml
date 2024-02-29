@@ -535,29 +535,26 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
         errors
     in
     let setup_and_execute_model_queries model_queries =
+      let pyre_api = PyrePysaApi.ReadOnly.create ~type_environment ~global_module_paths_api in
       let scheduler_wrapper scheduler =
         let qualifiers = GlobalModulePathsApi.explicit_qualifiers global_module_paths_api in
         let initial_callables =
           Interprocedural.FetchCallables.from_qualifiers
             ~scheduler
             ~configuration
-            ~environment:type_environment
+            ~pyre_api
             ~include_unit_tests:false
             ~qualifiers
         in
         let class_hierarchy_graph =
-          Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers
-            ~scheduler
-            ~environment:type_environment
-            ~qualifiers
+          Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers ~scheduler ~pyre_api ~qualifiers
         in
         let stubs_shared_memory_handle =
           Interprocedural.Target.HashsetSharedMemory.from_heap
             (Interprocedural.FetchCallables.get_stubs initial_callables)
         in
         Taint.ModelQueryExecution.generate_models_from_queries
-          ~environment:(TypeEnvironment.ReadOnly.global_environment type_environment)
-          ~global_module_paths_api
+          ~pyre_api
           ~scheduler
           ~class_hierarchy_graph
           ~source_sink_filter:None
@@ -825,6 +822,7 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
         |> List.partition_result
         |> construct_result
     | ModelQuery { path; query_name } -> (
+        let pyre_api = PyrePysaApi.ReadOnly.create ~type_environment ~global_module_paths_api in
         if not (PyrePath.file_exists path) then
           Error (Format.sprintf "File path `%s` does not exist" (PyrePath.show path))
         else
@@ -838,7 +836,7 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
               in
               let get_model_queries (path, source) =
                 Taint.ModelParser.parse
-                  ~resolution:global_resolution
+                  ~pyre_api
                   ~path
                   ~source
                   ~taint_configuration
@@ -1070,10 +1068,11 @@ let rec process_request_exn ~type_environment ~global_module_paths_api ~build_sy
           |> Taint.TaintConfiguration.exception_on_error
         in
         let get_model_errors_and_model_queries sources =
+          let pyre_api = PyrePysaApi.ReadOnly.create ~type_environment ~global_module_paths_api in
           let python_version = Taint.ModelParser.PythonVersion.from_configuration configuration in
           let get_model_errors_and_model_queries (path, source) =
             Taint.ModelParser.parse
-              ~resolution:global_resolution
+              ~pyre_api
               ~path
               ~source
               ~taint_configuration

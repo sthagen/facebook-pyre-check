@@ -1273,10 +1273,11 @@ let compute_indirect_targets ~resolution ~override_graph ~receiver_type implemen
   let global_resolution = Resolution.global_resolution resolution in
   let get_class_type = GlobalResolution.parse_reference global_resolution in
   let get_actual_target method_name =
-    if OverrideGraph.SharedMemory.ReadOnly.overrides_exist override_graph method_name then
-      Target.get_corresponding_override method_name
-    else
-      method_name
+    match override_graph with
+    | Some override_graph
+      when OverrideGraph.SharedMemory.ReadOnly.overrides_exist override_graph method_name ->
+        Target.get_corresponding_override method_name
+    | _ -> method_name
   in
   let receiver_type = receiver_type |> strip_meta |> strip_optional |> Type.weaken_literals in
   let declaring_type, method_name, kind =
@@ -1288,11 +1289,15 @@ let compute_indirect_targets ~resolution ~override_graph ~receiver_type implemen
   if Reference.equal declaring_type (Type.class_name receiver_type) then (* case a *)
     [get_actual_target implementation_target]
   else
-    match
-      OverrideGraph.SharedMemory.ReadOnly.get_overriding_types
-        override_graph
-        ~member:implementation_target
-    with
+    let overriding_types =
+      match override_graph with
+      | Some override_graph ->
+          OverrideGraph.SharedMemory.ReadOnly.get_overriding_types
+            override_graph
+            ~member:implementation_target
+      | None -> None
+    in
+    match overriding_types with
     | None ->
         (* case b *)
         [implementation_target]
@@ -1520,6 +1525,26 @@ let rec resolve_callees_from_type
                    "Failed to resolve %s as callable class, protocol, or a non dunder call."
                    callable_type_string)
               ())
+
+
+and resolve_callees_from_type_external
+    ~resolution
+    ~override_graph
+    ~return_type
+    ?(dunder_call = false)
+    callee
+  =
+  let callee_type = CallResolution.resolve_ignoring_errors ~resolution callee in
+  let callee_kind = CalleeKind.from_callee ~resolution callee callee_type in
+  resolve_callees_from_type
+    ~debug:false
+    ~resolution
+    ~override_graph
+    ~call_indexer:(CallTargetIndexer.create ()) (* Don't care about indexing the callees. *)
+    ~dunder_call
+    ~return_type
+    ~callee_kind
+    callee_type
 
 
 and resolve_constructor_callee ~debug ~resolution ~override_graph ~call_indexer class_type =
@@ -2191,7 +2216,7 @@ module DefineCallGraphFixpoint (Context : sig
 
   val callees_at_location : UnprocessedLocationCallees.t Location.Table.t
 
-  val override_graph : OverrideGraph.SharedMemory.ReadOnly.t
+  val override_graph : OverrideGraph.SharedMemory.ReadOnly.t option
 
   val call_indexer : CallTargetIndexer.t
 

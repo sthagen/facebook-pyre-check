@@ -12,10 +12,9 @@ open Test
 open TestHelper
 open Taint
 
-let get_stubs_and_definitions ~source_file_name ~global_resolution ~project =
-  let { Test.ScratchProject.BuiltTypeEnvironment.type_environment; _ }, _ =
-    Test.ScratchProject.build_type_environment_and_postprocess project
-  in
+let get_stubs_and_definitions ~source_file_name ~project =
+  let pyre_api = Test.ScratchProject.pyre_pysa_read_only_api project in
+  let type_environment = Test.ScratchProject.type_environment project in
   let source_code_api =
     Analysis.TypeEnvironment.ReadOnly.get_untracked_source_code_api type_environment
   in
@@ -27,7 +26,7 @@ let get_stubs_and_definitions ~source_file_name ~global_resolution ~project =
   let initial_callables =
     Interprocedural.FetchCallables.from_source
       ~configuration:(Test.ScratchProject.configuration_of project)
-      ~resolution:global_resolution
+      ~pyre_api
       ~include_unit_tests:false
       ~source:ast_source
   in
@@ -52,6 +51,7 @@ let set_up_environment
   in
   let source_file_name = "test.py" in
   let project = ScratchProject.setup ~context [source_file_name, source] in
+  let pyre_api = Test.ScratchProject.pyre_pysa_read_only_api project in
   let taint_configuration =
     let named name = { AnnotationParser.name; kind = Named; location = None } in
     let sources =
@@ -115,15 +115,12 @@ let set_up_environment
       }
   in
   let source = Test.trim_extra_indentation model_source in
-  let global_resolution = ScratchProject.build_global_resolution project in
 
   ModelVerifier.ClassDefinitionsCache.invalidate ();
-  let stubs, definitions =
-    get_stubs_and_definitions ~source_file_name ~global_resolution ~project
-  in
+  let stubs, definitions = get_stubs_and_definitions ~source_file_name ~project in
   let ({ ModelParseResult.errors; _ } as parse_result) =
     ModelParser.parse
-      ~resolution:global_resolution
+      ~pyre_api
       ~source
       ~taint_configuration
       ~source_sink_filter:(Some taint_configuration.source_sink_filter)
@@ -141,8 +138,8 @@ let set_up_environment
        (List.to_string errors ~f:ModelVerificationError.display))
     (List.is_empty errors);
 
-  let environment = ScratchProject.type_environment project in
-  parse_result, environment, taint_configuration
+  let pyre_api = ScratchProject.pyre_pysa_read_only_api project in
+  parse_result, pyre_api, taint_configuration
 
 
 let assert_model
@@ -156,7 +153,7 @@ let assert_model
     ~expect
     ()
   =
-  let { ModelParseResult.models; _ }, type_environment, taint_configuration =
+  let { ModelParseResult.models; _ }, pyre_api, taint_configuration =
     set_up_environment ?source ?rules ?filtered_sources ?filtered_sinks ~context ~model_source ()
   in
   begin
@@ -174,9 +171,7 @@ let assert_model
   end;
   let get_model = Registry.get models in
   let get_errors _ = [] in
-  List.iter
-    ~f:(check_expectation ~type_environment ~taint_configuration ~get_model ~get_errors)
-    expect
+  List.iter ~f:(check_expectation ~pyre_api ~taint_configuration ~get_model ~get_errors) expect
 
 
 let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~expect () =
@@ -211,9 +206,7 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
             |}
   in
   let sources = ("test.py", source) :: sources in
-  let global_resolution =
-    ScratchProject.setup ~context sources |> ScratchProject.build_global_resolution
-  in
+  let pyre_api = ScratchProject.setup ~context sources |> ScratchProject.pyre_pysa_read_only_api in
   let taint_configuration =
     TaintConfiguration.Heap.
       {
@@ -237,7 +230,7 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
     let path = path >>| PyrePath.create_absolute in
     ModelVerifier.ClassDefinitionsCache.invalidate ();
     ModelParser.parse
-      ~resolution:global_resolution
+      ~pyre_api
       ~taint_configuration
       ~source_sink_filter:None
       ?path

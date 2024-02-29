@@ -107,7 +107,7 @@ let create_callable kind define_name =
 let check_expectation
     ~get_model
     ~get_errors
-    ~type_environment
+    ~pyre_api
     ~taint_configuration
     {
       kind;
@@ -337,9 +337,7 @@ let check_expectation
     let to_analysis_error =
       Error.instantiate
         ~show_error_traces:true
-        ~lookup:
-          (TypeEnvironment.ReadOnly.get_untracked_source_code_api type_environment
-          |> SourceCodeApi.relative_path_of_qualifier)
+        ~lookup:(PyrePysaApi.ReadOnly.relative_path_of_qualifier pyre_api)
     in
     get_errors callable
     |> List.map ~f:(Issue.to_error ~taint_configuration)
@@ -377,12 +375,12 @@ let initial_models_source =
 
 
 let get_initial_models ~context =
-  let global_resolution =
-    Test.ScratchProject.setup ~context [] |> Test.ScratchProject.build_global_resolution
+  let pyre_api =
+    Test.ScratchProject.setup ~context [] |> Test.ScratchProject.pyre_pysa_read_only_api
   in
   let { ModelParseResult.models; errors; _ } =
     ModelParser.parse
-      ~resolution:global_resolution
+      ~pyre_api
       ~source:initial_models_source
       ~taint_configuration:TaintConfiguration.Heap.default
       ~source_sink_filter:None
@@ -414,7 +412,7 @@ type test_environment = {
   stubs: Target.t list;
   initial_models: Registry.t;
   model_query_results: ModelQueryExecution.ModelQueryRegistryMap.t;
-  type_environment: TypeEnvironment.ReadOnly.t;
+  pyre_api: PyrePysaApi.ReadOnly.t;
   class_interval_graph: ClassIntervalSetGraph.Heap.t;
   class_interval_graph_shared_memory: ClassIntervalSetGraph.SharedMemory.t;
   global_constants: GlobalConstants.SharedMemory.t;
@@ -446,7 +444,7 @@ let initialize
   let taint_configuration_shared_memory =
     TaintConfiguration.SharedMemory.from_heap taint_configuration
   in
-  let configuration, type_environment, global_module_paths_api, errors =
+  let configuration, type_environment, global_module_paths_api, pyre_api, errors =
     let project = Test.ScratchProject.setup ~context [handle, source_content] in
     set_up_decorator_preprocessing ~handle models_source;
     let { Test.ScratchProject.BuiltTypeEnvironment.type_environment; _ }, errors =
@@ -455,6 +453,7 @@ let initialize
     ( Test.ScratchProject.configuration_of project,
       type_environment,
       Test.ScratchProject.global_module_paths_api project,
+      Test.ScratchProject.pyre_pysa_read_only_api project,
       errors )
   in
   let static_analysis_configuration =
@@ -485,19 +484,13 @@ let initialize
      in
      failwithf "Pyre errors were found in `%s`:\n%s" handle errors ());
 
-  let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
   let initial_callables =
-    FetchCallables.from_source
-      ~configuration
-      ~resolution:global_resolution
-      ~include_unit_tests:false
-      ~source
+    FetchCallables.from_source ~configuration ~pyre_api ~include_unit_tests:false ~source
   in
   let stubs = FetchCallables.get_stubs initial_callables in
   let definitions = FetchCallables.get_definitions initial_callables in
-  let class_hierarchy_graph =
-    ClassHierarchyGraph.Heap.from_source ~environment:type_environment ~source
-  in
+  let pyre_api = PyrePysaApi.ReadOnly.create ~type_environment ~global_module_paths_api in
+  let class_hierarchy_graph = ClassHierarchyGraph.Heap.from_source ~pyre_api ~source in
   let stubs_shared_memory_handle = Target.HashsetSharedMemory.from_heap stubs in
   let user_models, model_query_results =
     let models_source =
@@ -514,7 +507,7 @@ let initialize
         ModelVerifier.ClassDefinitionsCache.invalidate ();
         let { ModelParseResult.models; errors; queries } =
           ModelParser.parse
-            ~resolution:global_resolution
+            ~pyre_api
             ?path:model_path
             ~source:(Test.trim_extra_indentation source)
             ~taint_configuration
@@ -533,8 +526,7 @@ let initialize
 
         let { ModelQueryExecution.ExecutionResult.models = model_query_results; errors } =
           ModelQueryExecution.generate_models_from_queries
-            ~environment:(TypeEnvironment.ReadOnly.global_environment type_environment)
-            ~global_module_paths_api
+            ~pyre_api
             ~scheduler:(Test.mock_scheduler ())
             ~class_hierarchy_graph
             ~source_sink_filter:(Some taint_configuration.source_sink_filter)
@@ -567,7 +559,7 @@ let initialize
   let initial_models = Registry.merge ~join:Model.join_user_models inferred_models user_models in
   (* Overrides must be done first, as they influence the call targets. *)
   let { OverrideGraph.Heap.overrides = override_graph_heap; _ } =
-    OverrideGraph.Heap.from_source ~environment:type_environment ~include_unit_tests:true ~source
+    OverrideGraph.Heap.from_source ~pyre_api ~include_unit_tests:true ~source
     |> OverrideGraph.Heap.skip_overrides ~to_skip:(Registry.skip_overrides user_models)
     |> OverrideGraph.Heap.cap_overrides
          ~analyze_all_overrides_targets:(Registry.analyze_all_overrides initial_models)
@@ -592,7 +584,7 @@ let initialize
       ~static_analysis_configuration
       ~environment:type_environment
       ~resolve_module_path:None
-      ~override_graph:override_graph_shared_memory_read_only
+      ~override_graph:(Some override_graph_shared_memory_read_only)
       ~store_shared_memory:true
       ~attribute_targets:(Registry.object_targets initial_models)
       ~skip_analysis_targets:Target.Set.empty
@@ -622,7 +614,7 @@ let initialize
     stubs;
     initial_models;
     model_query_results;
-    type_environment;
+    pyre_api;
     class_interval_graph;
     class_interval_graph_shared_memory;
     global_constants;
@@ -747,7 +739,7 @@ let end_to_end_integration_test path context =
       taint_configuration_shared_memory;
       whole_program_call_graph;
       define_call_graphs;
-      type_environment;
+      pyre_api;
       override_graph_heap;
       override_graph_shared_memory;
       initial_models;
@@ -803,13 +795,13 @@ let end_to_end_integration_test path context =
     let fixpoint_state =
       TaintFixpoint.compute
         ~scheduler:(Test.mock_scheduler ())
-        ~type_environment
+        ~pyre_api
         ~override_graph:override_graph_shared_memory_read_only
         ~dependency_graph
         ~context:
           {
             TaintFixpoint.Context.taint_configuration = taint_configuration_shared_memory;
-            type_environment;
+            pyre_api;
             class_interval_graph = class_interval_graph_shared_memory;
             define_call_graphs =
               Interprocedural.CallGraph.DefineCallGraphSharedMemory.read_only define_call_graphs;
@@ -822,9 +814,7 @@ let end_to_end_integration_test path context =
         ~shared_models
     in
     let resolve_module_path qualifier =
-      SourceCodeApi.relative_path_of_qualifier
-        (TypeEnvironment.ReadOnly.get_untracked_source_code_api type_environment)
-        qualifier
+      PyrePysaApi.ReadOnly.relative_path_of_qualifier pyre_api qualifier
       >>| fun filename ->
       { RepositoryPath.filename = Some filename; path = PyrePath.create_absolute filename }
     in

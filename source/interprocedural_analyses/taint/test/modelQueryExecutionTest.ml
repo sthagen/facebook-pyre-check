@@ -31,23 +31,22 @@ let sink name =
 
 let test_generated_annotations context =
   let assert_generated_annotations ~source ~query ~callable ~expected =
-    let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
-      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_type_environment
+    let pyre_api =
+      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.pyre_pysa_read_only_api
     in
-    let environment = Analysis.TypeEnvironment.ReadOnly.global_environment type_environment in
     let class_hierarchy_graph =
       ClassHierarchyGraph.Heap.from_qualifiers
         ~scheduler:(mock_scheduler ())
-        ~environment:type_environment
+        ~pyre_api
         ~qualifiers:[Ast.Reference.create "test"]
       |> ClassHierarchyGraph.SharedMemory.from_heap ~store_transitive_children_for:[]
     in
     let actual =
       ModelQueryExecution.CallableQueryExecutor.generate_annotations_from_query_on_target
         ~verbose:false
-        ~environment
+        ~pyre_api
         ~class_hierarchy_graph
-        ~modelable:(ModelQueryExecution.CallableQueryExecutor.make_modelable ~environment callable)
+        ~modelable:(ModelQueryExecution.CallableQueryExecutor.make_modelable ~pyre_api callable)
         query
     in
     assert_equal
@@ -57,14 +56,13 @@ let test_generated_annotations context =
       actual
   in
   let assert_generated_annotations_for_attributes ~source ~query ~name ~expected =
-    let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
-      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_type_environment
+    let pyre_api =
+      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.pyre_pysa_read_only_api
     in
-    let environment = Analysis.TypeEnvironment.ReadOnly.global_environment type_environment in
     let class_hierarchy_graph =
       ClassHierarchyGraph.Heap.from_qualifiers
         ~scheduler:(mock_scheduler ())
-        ~environment:type_environment
+        ~pyre_api
         ~qualifiers:[Ast.Reference.create "test"]
       |> ClassHierarchyGraph.SharedMemory.from_heap ~store_transitive_children_for:[]
     in
@@ -72,9 +70,9 @@ let test_generated_annotations context =
     let actual =
       ModelQueryExecution.AttributeQueryExecutor.generate_annotations_from_query_on_target
         ~verbose:false
-        ~environment
+        ~pyre_api
         ~class_hierarchy_graph
-        ~modelable:(ModelQueryExecution.AttributeQueryExecutor.make_modelable ~environment target)
+        ~modelable:(ModelQueryExecution.AttributeQueryExecutor.make_modelable ~pyre_api target)
         query
     in
     assert_equal
@@ -84,14 +82,13 @@ let test_generated_annotations context =
       actual
   in
   let assert_generated_annotations_for_globals ~source ~query ~name ~expected =
-    let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
-      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_type_environment
+    let pyre_api =
+      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.pyre_pysa_read_only_api
     in
-    let environment = Analysis.TypeEnvironment.ReadOnly.global_environment type_environment in
     let class_hierarchy_graph =
       ClassHierarchyGraph.Heap.from_qualifiers
         ~scheduler:(mock_scheduler ())
-        ~environment:type_environment
+        ~pyre_api
         ~qualifiers:[Ast.Reference.create "test"]
       |> ClassHierarchyGraph.SharedMemory.from_heap ~store_transitive_children_for:[]
     in
@@ -99,10 +96,9 @@ let test_generated_annotations context =
     let actual =
       ModelQueryExecution.GlobalVariableQueryExecutor.generate_annotations_from_query_on_target
         ~verbose:false
-        ~environment
+        ~pyre_api
         ~class_hierarchy_graph
-        ~modelable:
-          (ModelQueryExecution.GlobalVariableQueryExecutor.make_modelable ~environment target)
+        ~modelable:(ModelQueryExecution.GlobalVariableQueryExecutor.make_modelable ~pyre_api target)
         query
     in
     assert_equal
@@ -1934,7 +1930,7 @@ let test_generated_annotations context =
     ~source:
       {|
       class Flask:
-        def route():
+        def route(self):
           pass
       application = Flask()
       @application.route
@@ -1963,6 +1959,190 @@ let test_generated_annotations context =
       }
     ~callable:(Target.Function { name = "test.my_view"; kind = Normal })
     ~expected:[];
+  (* Basic test case for `FullyQualifiedCallee`. *)
+  assert_generated_annotations
+    ~source:
+      {|
+      class Flask:
+        def route(self):
+          pass
+      application = Flask()
+      @application.route
+      def my_view():
+        pass
+      |}
+    ~query:
+      {
+        location = Ast.Location.any;
+        name = "get_flask_route";
+        logging_group_name = None;
+        path = None;
+        where =
+          [
+            AnyDecoratorConstraint
+              (FullyQualifiedCallee (Matches (Re2.create_exn "test.Flask.route")));
+          ];
+        models = [Return [TaintAnnotation (source "Test")]];
+        find = Function;
+        expected_models = [];
+        unexpected_models = [];
+      }
+    ~callable:(Target.Function { name = "test.my_view"; kind = Normal })
+    ~expected:[ModelParseResult.ModelAnnotation.ReturnAnnotation (source "Test")];
+  (* Test `FullyQualifiedCallee` when the callee is unresolvable. *)
+  assert_generated_annotations
+    ~source:{|
+      @application.route
+      def my_view():
+        pass
+      |}
+    ~query:
+      {
+        location = Ast.Location.any;
+        name = "get_flask_route_unresolved_callee";
+        logging_group_name = None;
+        path = None;
+        where =
+          [
+            AnyDecoratorConstraint
+              (FullyQualifiedCallee (Matches (Re2.create_exn "test.Flask.route")));
+          ];
+        models = [Return [TaintAnnotation (source "Test")]];
+        find = Function;
+        expected_models = [];
+        unexpected_models = [];
+      }
+    ~callable:(Target.Function { name = "test.my_view"; kind = Normal })
+    ~expected:[];
+  (* Test `FullyQualifiedCallee` on a decorator factory. *)
+  assert_generated_annotations
+    ~source:
+      {|
+      class Flask:
+        def route(a, b):
+          pass
+      application = Flask()
+      @application.route(1, 2)
+      def my_view():
+        pass
+      |}
+    ~query:
+      {
+        location = Ast.Location.any;
+        name = "get_flask_route_decorator_factory";
+        logging_group_name = None;
+        path = None;
+        where =
+          [
+            AnyDecoratorConstraint
+              (FullyQualifiedCallee (Matches (Re2.create_exn "test.Flask.route")));
+          ];
+        models = [Return [TaintAnnotation (source "Test")]];
+        find = Function;
+        expected_models = [];
+        unexpected_models = [];
+      }
+    ~callable:(Target.Function { name = "test.my_view"; kind = Normal })
+    ~expected:[ModelParseResult.ModelAnnotation.ReturnAnnotation (source "Test")];
+  (* Test `FullyQualifiedCallee` when there are multiple decorators. We consider it as being matched
+     if one of the decorators match. *)
+  assert_generated_annotations
+    ~source:
+      {|
+      class Flask:
+        def route(self):
+          pass
+        def other():
+          pass
+      application = Flask()
+      @application.route
+      @application.other
+      def my_view():
+        pass
+      |}
+    ~query:
+      {
+        location = Ast.Location.any;
+        name = "get_flask_route_multiple_decorators";
+        logging_group_name = None;
+        path = None;
+        where =
+          [
+            AnyDecoratorConstraint
+              (FullyQualifiedCallee (Matches (Re2.create_exn "test.Flask.route")));
+          ];
+        models = [Return [TaintAnnotation (source "Test")]];
+        find = Function;
+        expected_models = [];
+        unexpected_models = [];
+      }
+    ~callable:(Target.Function { name = "test.my_view"; kind = Normal })
+    ~expected:[ModelParseResult.ModelAnnotation.ReturnAnnotation (source "Test")];
+  (* Test `FullyQualifiedCallee` when the decorator is overriden. *)
+  assert_generated_annotations
+    ~source:
+      {|
+      class Flask:
+        def route(self):
+          pass
+      class OverrideFlask(Flask):
+        def route(self):
+          pass
+      application = OverrideFlask()
+      @application.route
+      def my_view():
+        pass
+      |}
+    ~query:
+      {
+        location = Ast.Location.any;
+        name = "get_flask_route_base_method";
+        logging_group_name = None;
+        path = None;
+        where =
+          [
+            AnyDecoratorConstraint
+              (FullyQualifiedCallee (Matches (Re2.create_exn "test.OverrideFlask.route")));
+          ];
+        models = [Return [TaintAnnotation (source "Test")]];
+        find = Function;
+        expected_models = [];
+        unexpected_models = [];
+      }
+    ~callable:(Target.Function { name = "test.my_view"; kind = Normal })
+    ~expected:[ModelParseResult.ModelAnnotation.ReturnAnnotation (source "Test")];
+  (* Test `FullyQualifiedCallee` when the decorator is a base method. *)
+  assert_generated_annotations
+    ~source:
+      {|
+      class Flask:
+        def route(self):
+          pass
+      class OverrideFlask(Flask):
+        pass
+      application = OverrideFlask()
+      @application.route
+      def my_view():
+        pass
+      |}
+    ~query:
+      {
+        location = Ast.Location.any;
+        name = "get_flask_route_override";
+        logging_group_name = None;
+        path = None;
+        where =
+          [
+            AnyDecoratorConstraint
+              (FullyQualifiedCallee (Matches (Re2.create_exn "test.Flask.route")));
+          ];
+        models = [Return [TaintAnnotation (source "Test")]];
+        find = Function;
+        expected_models = [];
+        unexpected_models = [];
+      }
+    ~callable:(Target.Function { name = "test.my_view"; kind = Normal })
+    ~expected:[ModelParseResult.ModelAnnotation.ReturnAnnotation (source "Test")];
   assert_generated_annotations
     ~source:
       {|
@@ -4608,21 +4788,20 @@ let test_partition_cache_queries _ =
 
 let test_generated_cache context =
   let assert_generated_cache ~source ~queries ~callables ~expected =
-    let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
-      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_type_environment
+    let pyre_api =
+      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.pyre_pysa_read_only_api
     in
-    let environment = Analysis.TypeEnvironment.ReadOnly.global_environment type_environment in
     let class_hierarchy_graph =
       ClassHierarchyGraph.Heap.from_qualifiers
         ~scheduler:(mock_scheduler ())
-        ~environment:type_environment
+        ~pyre_api
         ~qualifiers:[Ast.Reference.create "test"]
       |> ClassHierarchyGraph.SharedMemory.from_heap ~store_transitive_children_for:[]
     in
     let actual =
       ModelQueryExecution.CallableQueryExecutor.generate_cache_from_queries_on_targets
         ~verbose:false
-        ~environment
+        ~pyre_api
         ~class_hierarchy_graph
         ~targets:callables
         queries

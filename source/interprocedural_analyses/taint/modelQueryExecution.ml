@@ -15,9 +15,10 @@ open Core
 open Data_structures
 open Pyre
 open Ast
-open Analysis
 open Interprocedural
 open ModelParseResult
+module PyrePysaApi = Analysis.PyrePysaApi
+module ClassSummary = Analysis.ClassSummary
 
 (* Represents the result of generating models from queries. *)
 module ModelQueryRegistryMap = struct
@@ -377,13 +378,13 @@ let matches_name_constraint ~name_captures ~name_constraint name =
       is_match
 
 
-let rec matches_decorator_constraint ~name_captures ~decorator = function
+let rec matches_decorator_constraint ~pyre_api ~name_captures ~decorator = function
   | ModelQuery.DecoratorConstraint.AnyOf constraints ->
-      List.exists constraints ~f:(matches_decorator_constraint ~name_captures ~decorator)
+      List.exists constraints ~f:(matches_decorator_constraint ~pyre_api ~name_captures ~decorator)
   | ModelQuery.DecoratorConstraint.AllOf constraints ->
-      List.for_all constraints ~f:(matches_decorator_constraint ~name_captures ~decorator)
+      List.for_all constraints ~f:(matches_decorator_constraint ~pyre_api ~name_captures ~decorator)
   | ModelQuery.DecoratorConstraint.Not decorator_constraint ->
-      not (matches_decorator_constraint ~name_captures ~decorator decorator_constraint)
+      not (matches_decorator_constraint ~pyre_api ~name_captures ~decorator decorator_constraint)
   | ModelQuery.DecoratorConstraint.NameConstraint name_constraint ->
       let { Statement.Decorator.name = { Node.value = decorator_name; _ }; _ } = decorator in
       matches_name_constraint
@@ -396,7 +397,41 @@ let rec matches_decorator_constraint ~name_captures ~decorator = function
         ~name_captures
         ~name_constraint
         (decorator_name |> Reference.delocalize |> Reference.show)
-  | ModelQuery.DecoratorConstraint.FullyQualifiedCallee _ -> failwith "Unsupported"
+  | ModelQuery.DecoratorConstraint.FullyQualifiedCallee name_constraint ->
+      let ({ Node.value = expression; _ } as decorator_expression) =
+        Statement.Decorator.to_expression decorator
+      in
+      let callee =
+        match expression with
+        | Expression.Expression.Call { callee; _ } ->
+            (* Decorator factory, such as `@foo(1)` *) callee
+        | Expression.Expression.Name _ ->
+            (* Regular decorator, such as `@foo` *) decorator_expression
+        | _ -> decorator_expression
+      in
+      let return_type =
+        (* Since this won't be used and resolving the return type could be expensive, let's pass a
+           random type. *)
+        lazy Type.Any
+      in
+      let { Interprocedural.CallGraph.CallCallees.call_targets; _ } =
+        Interprocedural.CallGraph.resolve_callees_from_type_external
+          ~resolution:(PyrePysaApi.ReadOnly.contextless_resolution pyre_api)
+          ~override_graph:None
+          ~return_type
+          callee
+      in
+      let call_target_to_string call_target =
+        call_target
+        |> CallGraph.CallTarget.target
+        |> Interprocedural.Target.define_name
+        |> Reference.show
+      in
+      List.exists call_targets ~f:(fun call_target ->
+          matches_name_constraint
+            ~name_captures
+            ~name_constraint
+            (call_target_to_string call_target))
   | ModelQuery.DecoratorConstraint.ArgumentsConstraint arguments_constraint -> (
       let { Statement.Decorator.arguments = decorator_arguments; _ } = decorator in
       let split_arguments =
@@ -450,13 +485,12 @@ let rec matches_decorator_constraint ~name_captures ~decorator = function
 
 
 let matches_annotation_constraint
-    ~environment
+    ~pyre_api
     ~class_hierarchy_graph
     ~name_captures
     ~annotation_constraint
     annotation
   =
-  let resolution = GlobalResolution.create environment in
   let open Expression in
   match annotation_constraint, annotation with
   | ( ModelQuery.AnnotationConstraint.IsAnnotatedTypeConstraint,
@@ -511,7 +545,7 @@ let matches_annotation_constraint
         | "pyre_extensions.ReadOnly" -> extract_class_name (extract_readonly t)
         | extracted_class_name -> Some extracted_class_name
       in
-      let parsed_type = GlobalResolution.parse_annotation resolution annotation_expression in
+      let parsed_type = PyrePysaApi.ReadOnly.parse_annotation pyre_api annotation_expression in
       match extract_class_name parsed_type with
       | Some extracted_class_name ->
           find_children ~class_hierarchy_graph ~is_transitive ~includes_self class_name
@@ -521,7 +555,7 @@ let matches_annotation_constraint
 
 
 let rec normalized_parameter_matches_constraint
-    ~environment
+    ~pyre_api
     ~class_hierarchy_graph
     ~name_captures
     ~parameter:
@@ -534,7 +568,7 @@ let rec normalized_parameter_matches_constraint
   | ModelQuery.ParameterConstraint.AnnotationConstraint annotation_constraint ->
       annotation
       >>| matches_annotation_constraint
-            ~environment
+            ~pyre_api
             ~class_hierarchy_graph
             ~name_captures
             ~annotation_constraint
@@ -550,14 +584,14 @@ let rec normalized_parameter_matches_constraint
         constraints
         ~f:
           (normalized_parameter_matches_constraint
-             ~environment
+             ~pyre_api
              ~class_hierarchy_graph
              ~name_captures
              ~parameter)
   | ModelQuery.ParameterConstraint.Not query_constraint ->
       not
         (normalized_parameter_matches_constraint
-           ~environment
+           ~pyre_api
            ~class_hierarchy_graph
            ~name_captures
            ~parameter
@@ -567,36 +601,38 @@ let rec normalized_parameter_matches_constraint
         constraints
         ~f:
           (normalized_parameter_matches_constraint
-             ~environment
+             ~pyre_api
              ~class_hierarchy_graph
              ~name_captures
              ~parameter)
 
 
-let class_matches_decorator_constraint ~name_captures ~environment ~decorator_constraint class_name =
-  let resolution = GlobalResolution.create environment in
-  GlobalResolution.get_class_summary resolution class_name
+let class_matches_decorator_constraint ~name_captures ~pyre_api ~decorator_constraint class_name =
+  PyrePysaApi.ReadOnly.get_class_summary pyre_api class_name
   >>| Node.value
   >>| (fun { decorators; _ } ->
         List.exists decorators ~f:(fun decorator ->
             Statement.Decorator.from_expression decorator
             >>| (fun decorator ->
-                  matches_decorator_constraint ~name_captures ~decorator decorator_constraint)
+                  matches_decorator_constraint
+                    ~pyre_api
+                    ~name_captures
+                    ~decorator
+                    decorator_constraint)
             |> Option.value ~default:false))
   |> Option.value ~default:false
 
 
-let find_parents ~environment ~is_transitive ~includes_self class_name =
-  let resolution = GlobalResolution.create environment in
+let find_parents ~pyre_api ~is_transitive ~includes_self class_name =
   let parents =
     if is_transitive then
-      match GlobalResolution.get_class_metadata resolution class_name with
+      match PyrePysaApi.ReadOnly.get_class_metadata pyre_api class_name with
       | Some { Analysis.ClassSuccessorMetadataEnvironment.successors = Some successors; _ } ->
           successors
       | _ -> []
     else
       Analysis.ClassHierarchy.immediate_parents
-        (GlobalResolution.class_hierarchy resolution)
+        (PyrePysaApi.ReadOnly.class_hierarchy pyre_api)
         class_name
   in
   let parents =
@@ -608,19 +644,19 @@ let find_parents ~environment ~is_transitive ~includes_self class_name =
   parents
 
 
-let rec class_matches_constraint ~environment ~class_hierarchy_graph ~name_captures ~name = function
+let rec class_matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures ~name = function
   | ModelQuery.ClassConstraint.AnyOf constraints ->
       List.exists
         constraints
-        ~f:(class_matches_constraint ~environment ~class_hierarchy_graph ~name_captures ~name)
+        ~f:(class_matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures ~name)
   | ModelQuery.ClassConstraint.AllOf constraints ->
       List.for_all
         constraints
-        ~f:(class_matches_constraint ~environment ~class_hierarchy_graph ~name_captures ~name)
+        ~f:(class_matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures ~name)
   | ModelQuery.ClassConstraint.Not class_constraint ->
       not
         (class_matches_constraint
-           ~environment
+           ~pyre_api
            ~name
            ~class_hierarchy_graph
            ~name_captures
@@ -636,48 +672,42 @@ let rec class_matches_constraint ~environment ~class_hierarchy_graph ~name_captu
       find_children ~class_hierarchy_graph ~is_transitive ~includes_self class_name
       |> ClassHierarchyGraph.ClassNameSet.mem name
   | ModelQuery.ClassConstraint.DecoratorConstraint decorator_constraint ->
-      class_matches_decorator_constraint ~name_captures ~environment ~decorator_constraint name
+      class_matches_decorator_constraint ~name_captures ~pyre_api ~decorator_constraint name
   | ModelQuery.ClassConstraint.AnyChildConstraint { class_constraint; is_transitive; includes_self }
     ->
       find_children ~class_hierarchy_graph ~is_transitive ~includes_self name
       |> ClassHierarchyGraph.ClassNameSet.exists (fun name ->
              class_matches_constraint
-               ~environment
+               ~pyre_api
                ~name
                ~class_hierarchy_graph
                ~name_captures
                class_constraint)
   | ModelQuery.ClassConstraint.AnyParentConstraint
       { class_constraint; is_transitive; includes_self } ->
-      find_parents ~environment ~is_transitive ~includes_self name
+      find_parents ~pyre_api ~is_transitive ~includes_self name
       |> List.exists ~f:(fun name ->
              class_matches_constraint
-               ~environment
+               ~pyre_api
                ~name
                ~class_hierarchy_graph
                ~name_captures
                class_constraint)
 
 
-let rec matches_constraint ~environment ~class_hierarchy_graph ~name_captures value query_constraint
-  =
+let rec matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures value query_constraint =
   match query_constraint with
   | ModelQuery.Constraint.AnyOf constraints ->
       List.exists
         constraints
-        ~f:(matches_constraint ~environment ~class_hierarchy_graph ~name_captures value)
+        ~f:(matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures value)
   | ModelQuery.Constraint.AllOf constraints ->
       List.for_all
         constraints
-        ~f:(matches_constraint ~environment ~class_hierarchy_graph ~name_captures value)
+        ~f:(matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures value)
   | ModelQuery.Constraint.Not query_constraint ->
       not
-        (matches_constraint
-           ~environment
-           ~class_hierarchy_graph
-           ~name_captures
-           value
-           query_constraint)
+        (matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures value query_constraint)
   | ModelQuery.Constraint.NameConstraint name_constraint ->
       matches_name_constraint
         ~name_captures
@@ -691,7 +721,7 @@ let rec matches_constraint ~environment ~class_hierarchy_graph ~name_captures va
   | ModelQuery.Constraint.AnnotationConstraint annotation_constraint ->
       Modelable.type_annotation value
       >>| matches_annotation_constraint
-            ~environment
+            ~pyre_api
             ~class_hierarchy_graph
             ~name_captures
             ~annotation_constraint
@@ -699,7 +729,7 @@ let rec matches_constraint ~environment ~class_hierarchy_graph ~name_captures va
   | ModelQuery.Constraint.ReturnConstraint annotation_constraint ->
       Modelable.return_annotation value
       >>| matches_annotation_constraint
-            ~environment
+            ~pyre_api
             ~class_hierarchy_graph
             ~name_captures
             ~annotation_constraint
@@ -709,7 +739,7 @@ let rec matches_constraint ~environment ~class_hierarchy_graph ~name_captures va
       |> AccessPath.normalize_parameters
       |> List.exists ~f:(fun parameter ->
              normalized_parameter_matches_constraint
-               ~environment
+               ~pyre_api
                ~class_hierarchy_graph
                ~name_captures
                ~parameter
@@ -722,13 +752,17 @@ let rec matches_constraint ~environment ~class_hierarchy_graph ~name_captures va
       |> List.exists ~f:(fun decorator ->
              Statement.Decorator.from_expression decorator
              >>| (fun decorator ->
-                   matches_decorator_constraint ~name_captures ~decorator decorator_constraint)
+                   matches_decorator_constraint
+                     ~pyre_api
+                     ~name_captures
+                     ~decorator
+                     decorator_constraint)
              |> Option.value ~default:false)
   | ModelQuery.Constraint.ClassConstraint class_constraint ->
       Modelable.class_name value
       >>| (fun name ->
             class_matches_constraint
-              ~environment
+              ~pyre_api
               ~class_hierarchy_graph
               ~name_captures
               ~name
@@ -917,18 +951,18 @@ module type QUERY_KIND = sig
 
   val query_kind_name : string
 
-  val make_modelable : environment:AnnotatedGlobalEnvironment.ReadOnly.t -> Target.t -> Modelable.t
+  val make_modelable : pyre_api:PyrePysaApi.ReadOnly.t -> Target.t -> Modelable.t
 
   (* Generate taint annotations from the `models` part of a given model query. *)
   val generate_annotations_from_query_models
-    :  environment:AnnotatedGlobalEnvironment.ReadOnly.t ->
+    :  pyre_api:PyrePysaApi.ReadOnly.t ->
     class_hierarchy_graph:ClassHierarchyGraph.SharedMemory.t ->
     modelable:Modelable.t ->
     ModelQuery.Model.t list ->
     annotation list
 
   val generate_model_from_annotations
-    :  environment:AnnotatedGlobalEnvironment.ReadOnly.t ->
+    :  pyre_api:PyrePysaApi.ReadOnly.t ->
     source_sink_filter:SourceSinkFilter.t option ->
     stubs:Target.HashsetSharedMemory.ReadOnly.t ->
     target:Target.t ->
@@ -943,7 +977,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let matches_query_constraints
       ~verbose
-      ~environment
+      ~pyre_api
       ~class_hierarchy_graph
       ~name_captures
       ~modelable
@@ -952,7 +986,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
     let result =
       Modelable.matches_find modelable find
       && List.for_all
-           ~f:(matches_constraint ~environment ~class_hierarchy_graph ~name_captures modelable)
+           ~f:(matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures modelable)
            where
     in
     let () =
@@ -968,7 +1002,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_annotations_from_query_on_target
       ~verbose
-      ~environment
+      ~pyre_api
       ~class_hierarchy_graph
       ~modelable
       ({ ModelQuery.models; _ } as query)
@@ -976,14 +1010,14 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
     if
       matches_query_constraints
         ~verbose
-        ~environment
+        ~pyre_api
         ~class_hierarchy_graph
         ~name_captures:None
         ~modelable
         query
     then
       QueryKind.generate_annotations_from_query_models
-        ~environment
+        ~pyre_api
         ~class_hierarchy_graph
         ~modelable
         models
@@ -993,7 +1027,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_model_from_query_on_target
       ~verbose
-      ~environment
+      ~pyre_api
       ~class_hierarchy_graph
       ~source_sink_filter
       ~stubs
@@ -1004,7 +1038,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
     match
       generate_annotations_from_query_on_target
         ~verbose
-        ~environment
+        ~pyre_api
         ~class_hierarchy_graph
         ~modelable
         query
@@ -1012,7 +1046,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
     | [] -> Ok None
     | annotations ->
         QueryKind.generate_model_from_annotations
-          ~environment
+          ~pyre_api
           ~source_sink_filter
           ~stubs
           ~target
@@ -1023,7 +1057,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_models_from_query_on_targets
       ~verbose
-      ~environment
+      ~pyre_api
       ~class_hierarchy_graph
       ~source_sink_filter
       ~stubs
@@ -1031,11 +1065,11 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       query
     =
     let fold (registry, errors) target =
-      let modelable = QueryKind.make_modelable ~environment target in
+      let modelable = QueryKind.make_modelable ~pyre_api target in
       match
         generate_model_from_query_on_target
           ~verbose
-          ~environment
+          ~pyre_api
           ~class_hierarchy_graph
           ~source_sink_filter
           ~stubs
@@ -1054,19 +1088,19 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_models_from_queries_on_target
       ~verbose
-      ~environment
+      ~pyre_api
       ~class_hierarchy_graph
       ~source_sink_filter
       ~stubs
       ~queries
       target
     =
-    let modelable = QueryKind.make_modelable ~environment target in
+    let modelable = QueryKind.make_modelable ~pyre_api target in
     let fold results query =
       match
         generate_model_from_query_on_target
           ~verbose
-          ~environment
+          ~pyre_api
           ~class_hierarchy_graph
           ~source_sink_filter
           ~stubs
@@ -1088,7 +1122,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_models_from_queries_on_targets
       ~verbose
-      ~environment
+      ~pyre_api
       ~class_hierarchy_graph
       ~source_sink_filter
       ~stubs
@@ -1099,7 +1133,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
     |> List.map ~f:(fun target ->
            generate_models_from_queries_on_target
              ~verbose
-             ~environment
+             ~pyre_api
              ~class_hierarchy_graph
              ~source_sink_filter
              ~stubs
@@ -1112,14 +1146,14 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_cache_from_query_on_target
       ~verbose
-      ~environment
+      ~pyre_api
       ~class_hierarchy_graph
       ~initial_cache
       ~target
       ({ ModelQuery.models; name; _ } as query)
     =
     let name_captures = NameCaptures.create () in
-    let modelable = QueryKind.make_modelable ~environment target in
+    let modelable = QueryKind.make_modelable ~pyre_api target in
     let write_to_cache cache = function
       | ModelQuery.Model.WriteToCache { kind; name } ->
           ReadWriteCache.write
@@ -1139,7 +1173,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
     if
       matches_query_constraints
         ~verbose
-        ~environment
+        ~pyre_api
         ~class_hierarchy_graph
         ~name_captures:(Some name_captures)
         ~modelable
@@ -1152,7 +1186,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_cache_from_queries_on_targets
       ~verbose
-      ~environment
+      ~pyre_api
       ~class_hierarchy_graph
       ~targets
       write_to_cache_queries
@@ -1160,7 +1194,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
     let fold_target ~query cache target =
       generate_cache_from_query_on_target
         ~verbose
-        ~environment
+        ~pyre_api
         ~class_hierarchy_graph
         ~initial_cache:cache
         ~target
@@ -1172,7 +1206,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_cache_from_queries_on_targets_with_multiprocessing
       ~verbose
-      ~environment
+      ~pyre_api
       ~scheduler
       ~class_hierarchy_graph
       ~targets
@@ -1182,7 +1216,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
         let map targets =
           generate_cache_from_queries_on_targets
             ~verbose
-            ~environment
+            ~pyre_api
             ~class_hierarchy_graph
             ~targets
             write_to_cache_queries
@@ -1204,7 +1238,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_models_from_read_cache_queries_on_targets
       ~verbose
-      ~environment
+      ~pyre_api
       ~class_hierarchy_graph
       ~source_sink_filter
       ~stubs
@@ -1228,7 +1262,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           let registry, new_errors =
             generate_models_from_query_on_targets
               ~verbose
-              ~environment
+              ~pyre_api
               ~class_hierarchy_graph
               ~source_sink_filter
               ~stubs
@@ -1250,7 +1284,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
   (* Generate models from non-cache queries. *)
   let generate_models_from_regular_queries_on_targets_with_multiprocessing
       ~verbose
-      ~environment
+      ~pyre_api
       ~scheduler
       ~class_hierarchy_graph
       ~source_sink_filter
@@ -1262,7 +1296,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
         let map targets =
           generate_models_from_queries_on_targets
             ~verbose
-            ~environment
+            ~pyre_api
             ~class_hierarchy_graph
             ~source_sink_filter
             ~stubs
@@ -1286,7 +1320,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
 
   let generate_models_from_queries_on_targets_with_multiprocessing
       ~verbose
-      ~environment
+      ~pyre_api
       ~scheduler
       ~class_hierarchy_graph
       ~source_sink_filter
@@ -1313,7 +1347,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       let cache =
         generate_cache_from_queries_on_targets_with_multiprocessing
           ~verbose
-          ~environment
+          ~pyre_api
           ~scheduler
           ~class_hierarchy_graph
           ~targets
@@ -1328,7 +1362,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       let ({ ExecutionResult.models; _ } as results) =
         generate_models_from_read_cache_queries_on_targets
           ~verbose
-          ~environment
+          ~pyre_api
           ~class_hierarchy_graph
           ~source_sink_filter
           ~stubs
@@ -1354,7 +1388,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       let ({ ExecutionResult.models; _ } as results) =
         generate_models_from_regular_queries_on_targets_with_multiprocessing
           ~verbose
-          ~environment
+          ~pyre_api
           ~scheduler
           ~class_hierarchy_graph
           ~source_sink_filter
@@ -1382,8 +1416,8 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
 
   let query_kind_name = "callable"
 
-  let make_modelable ~environment callable =
-    let resolution = GlobalResolution.create environment in
+  let make_modelable ~pyre_api callable =
+    let resolution = PyrePysaApi.ReadOnly.global_resolution pyre_api in
     let signature =
       lazy
         (match Target.get_module_and_definition ~resolution callable with
@@ -1399,7 +1433,7 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
     Modelable.Callable { target = callable; signature }
 
 
-  let generate_annotations_from_query_models ~environment ~class_hierarchy_graph ~modelable models =
+  let generate_annotations_from_query_models ~pyre_api ~class_hierarchy_graph ~modelable models =
     let production_to_taint ?(parameter = None) ~production annotation =
       let open Expression in
       let get_subkind_from_annotation ~pattern annotation =
@@ -1603,7 +1637,7 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
                 where
                 ~f:
                   (normalized_parameter_matches_constraint
-                     ~environment
+                     ~pyre_api
                      ~class_hierarchy_graph
                      ~name_captures:None
                      ~parameter)
@@ -1630,16 +1664,15 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
 
 
   let generate_model_from_annotations
-      ~environment
+      ~pyre_api
       ~source_sink_filter
       ~stubs
       ~target:callable
       ~modelable
       annotations
     =
-    let resolution = GlobalResolution.create environment in
     ModelParser.create_callable_model_from_annotations
-      ~resolution
+      ~pyre_api
       ~modelable
       ~source_sink_filter
       ~is_obscure:(Interprocedural.Target.HashsetSharedMemory.ReadOnly.mem stubs callable)
@@ -1647,14 +1680,12 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
 end)
 
 module AttributeQueryExecutor = struct
-  let get_attributes ~environment ~global_module_paths_api =
-    let resolution = GlobalResolution.create environment in
-    let unannotated_global_environment =
-      AnnotatedGlobalEnvironment.ReadOnly.unannotated_global_environment environment
-    in
+  let get_attributes ~pyre_api =
     let () = Log.info "Fetching all attributes..." in
     let get_class_attributes class_name =
-      let class_summary = GlobalResolution.get_class_summary resolution class_name >>| Node.value in
+      let class_summary =
+        PyrePysaApi.ReadOnly.get_class_summary pyre_api class_name >>| Node.value
+      in
       match class_summary with
       | None -> []
       | Some ({ name = class_name_reference; _ } as class_summary) ->
@@ -1674,22 +1705,17 @@ module AttributeQueryExecutor = struct
           in
           Identifier.SerializableMap.fold get_target_from_attributes all_attributes []
     in
-    let all_classes =
-      UnannotatedGlobalEnvironment.ReadOnly.GlobalApis.all_classes
-        unannotated_global_environment
-        ~global_module_paths_api
-    in
+    let all_classes = PyrePysaApi.ReadOnly.all_classes pyre_api in
     List.concat_map all_classes ~f:get_class_attributes
 
 
-  let get_type_annotation ~environment class_name attribute =
-    let resolution = GlobalResolution.create environment in
+  let get_type_annotation ~pyre_api class_name attribute =
     let get_annotation = function
       | { ClassSummary.Attribute.kind = Simple { ClassSummary.Attribute.annotation; _ }; _ } ->
           annotation
       | _ -> None
     in
-    GlobalResolution.get_class_summary resolution class_name
+    PyrePysaApi.ReadOnly.get_class_summary pyre_api class_name
     >>| Node.value
     >>= fun class_summary ->
     match
@@ -1711,19 +1737,19 @@ module AttributeQueryExecutor = struct
 
     let query_kind_name = "attribute"
 
-    let make_modelable ~environment target =
+    let make_modelable ~pyre_api target =
       let name = Target.object_name target in
       let type_annotation =
         lazy
           (let class_name = Reference.prefix name >>| Reference.show |> Option.value ~default:"" in
            let attribute = Reference.last name in
-           get_type_annotation ~environment class_name attribute)
+           get_type_annotation ~pyre_api class_name attribute)
       in
       Modelable.Attribute { name; type_annotation }
 
 
     let generate_annotations_from_query_models
-        ~environment:_
+        ~pyre_api:_
         ~class_hierarchy_graph:_
         ~modelable:_
         models
@@ -1741,16 +1767,15 @@ module AttributeQueryExecutor = struct
 
 
     let generate_model_from_annotations
-        ~environment
+        ~pyre_api
         ~source_sink_filter
         ~stubs:_
         ~target
         ~modelable:_
         annotations
       =
-      let resolution = GlobalResolution.create environment in
       ModelParser.create_attribute_model_from_annotations
-        ~resolution
+        ~pyre_api
         ~name:(Target.object_name target)
         ~source_sink_filter
         annotations
@@ -1758,38 +1783,22 @@ module AttributeQueryExecutor = struct
 end
 
 module GlobalVariableQueryExecutor = struct
-  let get_globals ~environment ~global_module_paths_api =
+  let get_globals ~pyre_api =
     let () = Log.info "Fetching all globals..." in
-    let unannotated_global_environment =
-      AnnotatedGlobalEnvironment.ReadOnly.unannotated_global_environment environment
-    in
     let filter_global global_reference =
-      match
-        UnannotatedGlobalEnvironment.ReadOnly.get_unannotated_global
-          unannotated_global_environment
-          global_reference
-      with
+      match PyrePysaApi.ReadOnly.get_unannotated_global pyre_api global_reference with
       | Some (TupleAssign _)
       | Some (SimpleAssign _) ->
           true
       | _ -> false
     in
-    unannotated_global_environment
-    |> UnannotatedGlobalEnvironment.ReadOnly.GlobalApis.all_unannotated_globals
-         ~global_module_paths_api
+    PyrePysaApi.ReadOnly.all_unannotated_globals pyre_api
     |> List.filter ~f:filter_global
     |> List.map ~f:Target.create_object
 
 
-  let get_type_annotation ~environment reference =
-    let unannotated_global_environment =
-      AnnotatedGlobalEnvironment.ReadOnly.unannotated_global_environment environment
-    in
-    match
-      UnannotatedGlobalEnvironment.ReadOnly.get_unannotated_global
-        unannotated_global_environment
-        reference
-    with
+  let get_type_annotation ~pyre_api reference =
+    match PyrePysaApi.ReadOnly.get_unannotated_global pyre_api reference with
     | Some (SimpleAssign { explicit_annotation; _ }) -> explicit_annotation
     | _ -> None
 
@@ -1799,15 +1808,15 @@ module GlobalVariableQueryExecutor = struct
 
     let query_kind_name = "global"
 
-    let make_modelable ~environment target =
+    let make_modelable ~pyre_api target =
       let name = Target.object_name target in
-      let type_annotation = lazy (get_type_annotation ~environment name) in
+      let type_annotation = lazy (get_type_annotation ~pyre_api name) in
       Modelable.Global { name; type_annotation }
 
 
     (* Generate taint annotations from the `models` part of a given model query. *)
     let generate_annotations_from_query_models
-        ~environment:_
+        ~pyre_api:_
         ~class_hierarchy_graph:_
         ~modelable:_
         models
@@ -1824,16 +1833,15 @@ module GlobalVariableQueryExecutor = struct
 
 
     let generate_model_from_annotations
-        ~environment
+        ~pyre_api
         ~source_sink_filter
         ~stubs:_
         ~target
         ~modelable:_
         annotations
       =
-      let resolution = GlobalResolution.create environment in
       ModelParser.create_attribute_model_from_annotations
-        ~resolution
+        ~pyre_api
         ~name:(Target.object_name target)
         ~source_sink_filter
         annotations
@@ -1841,8 +1849,7 @@ module GlobalVariableQueryExecutor = struct
 end
 
 let generate_models_from_queries
-    ~environment
-    ~global_module_paths_api
+    ~pyre_api
     ~scheduler
     ~class_hierarchy_graph
     ~source_sink_filter
@@ -1871,7 +1878,7 @@ let generate_models_from_queries
     if not (List.is_empty callable_queries) then
       CallableQueryExecutor.generate_models_from_queries_on_targets_with_multiprocessing
         ~verbose
-        ~environment
+        ~pyre_api
         ~scheduler
         ~class_hierarchy_graph
         ~source_sink_filter
@@ -1885,12 +1892,10 @@ let generate_models_from_queries
   (* Generate models for attributes. *)
   let execution_result =
     if not (List.is_empty attribute_queries) then
-      let attributes =
-        AttributeQueryExecutor.get_attributes ~environment ~global_module_paths_api
-      in
+      let attributes = AttributeQueryExecutor.get_attributes ~pyre_api in
       AttributeQueryExecutor.generate_models_from_queries_on_targets_with_multiprocessing
         ~verbose
-        ~environment
+        ~pyre_api
         ~scheduler
         ~class_hierarchy_graph
         ~source_sink_filter
@@ -1905,10 +1910,10 @@ let generate_models_from_queries
   (* Generate models for globals. *)
   let execution_result =
     if not (List.is_empty global_queries) then
-      let globals = GlobalVariableQueryExecutor.get_globals ~environment ~global_module_paths_api in
+      let globals = GlobalVariableQueryExecutor.get_globals ~pyre_api in
       GlobalVariableQueryExecutor.generate_models_from_queries_on_targets_with_multiprocessing
         ~verbose
-        ~environment
+        ~pyre_api
         ~scheduler
         ~class_hierarchy_graph
         ~source_sink_filter
