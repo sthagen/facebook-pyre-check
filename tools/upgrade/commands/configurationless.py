@@ -143,11 +143,12 @@ class Configurationless(Command):
         try:
             root = Path(
                 subprocess.check_output(
-                    ["buck2", "root"],
+                    ["buck2", "root", "--kind", "project"],
                     text=True,
                     cwd=self._path,
                 ).strip()
-            ).parent
+            )
+            LOG.info(f"buck2 root is {str(root)}")
         except FileNotFoundError as e:
             raise ValueError(
                 "Could not find `buck2` executable when `targets` were specified in local configuration."
@@ -175,7 +176,9 @@ class Configurationless(Command):
             *targets,
         ]
 
-        LOG.info(f"Finding included targets with buck2 command: `{buck_command}`")
+        LOG.info(
+            f"Finding targets from wildcard expression with buck2 command: `{buck_command}`"
+        )
 
         raw_result = subprocess.check_output(
             buck_command,
@@ -203,7 +206,9 @@ class Configurationless(Command):
                 f"@{file.name}",
             ]
 
-            LOG.info(f"Finding included files with buck2 command: `{buck_command}`")
+            LOG.info(
+                f"Finding files from wildcard target expression with buck2 command: `{buck_command}`"
+            )
 
             result = subprocess.check_output(
                 buck_command,
@@ -229,20 +234,97 @@ class Configurationless(Command):
         wildcard_target_files = self._get_files_to_process_from_applicable_targets(
             applicable_targets, buck_project_root
         )
+
+        LOG.debug(
+            f"Files found from wildcard target filter BXL query\n{wildcard_target_files}"
+        )
         return wildcard_target_files
+
+    def _get_sourcedb_from_buck_classic_query(
+        self, targets: Collection[str]
+    ) -> Optional[Path]:
+        targets = self.format_buck_targets_for_query(targets)
+        buck_command = [
+            "buck2",
+            "bxl",
+            "prelude//python/sourcedb/classic.bxl:build",
+            "--",
+            *targets,
+        ]
+
+        LOG.info(f"Finding classic targets with buck2 command: `{buck_command}`")
+
+        raw_result = subprocess.check_output(
+            buck_command,
+            text=True,
+            cwd=self._path,
+        )
+        result = json.loads(raw_result)
+        if "db" in result:
+            return Path(result["db"])
+        return None
+
+    def _get_files_from_sourcedb(
+        self, sourcedb_path: Path, buck_root: Path
+    ) -> Set[Path]:
+        with sourcedb_path.open() as file:
+            loaded_sourcedb = json.load(file)
+
+        if not isinstance(loaded_sourcedb, dict) or "build_map" not in loaded_sourcedb:
+            LOG.warn(f"Malformed sourcedb at {sourcedb_path}")
+            return set()
+
+        build_map = {buck_root / file for file in loaded_sourcedb["build_map"].values()}
+
+        return {
+            file
+            for file in build_map
+            if file.exists() and file.is_relative_to(self._path)
+        }
+
+    def _get_files_from_classic_targets(
+        self, classic_targets: Collection[str], buck_project_root: Path
+    ) -> Set[Path]:
+        if len(classic_targets) == 0:
+            return set()
+
+        sourcedb_path = self._get_sourcedb_from_buck_classic_query(classic_targets)
+        if sourcedb_path is None:
+            LOG.warn("No sourcedb path produced")
+            return set()
+        LOG.debug(f"Sourcedb path found: {sourcedb_path}")
+
+        classic_target_files = self._get_files_from_sourcedb(
+            sourcedb_path, buck_project_root
+        )
+        LOG.debug(
+            f"Files found from classic target filter BXL query\n{classic_target_files}"
+        )
+
+        return classic_target_files
 
     def _get_files_to_migrate_from_targets(
         self, configuration_targets: List[str]
     ) -> Set[Path]:
         buck_project_root = self._get_buck_root()
 
+        wildcard_targets: List[str] = [
+            target for target in configuration_targets if target.endswith("...")
+        ]
+        classic_targets: List[str] = [
+            target for target in configuration_targets if not target.endswith("...")
+        ]
+
         wildcard_target_files = self._get_files_from_wildcard_targets(
-            configuration_targets, buck_project_root
+            wildcard_targets, buck_project_root
+        )
+        classic_target_files = self._get_files_from_classic_targets(
+            classic_targets, buck_project_root
         )
 
         return {
             file
-            for file in wildcard_target_files
+            for file in wildcard_target_files | classic_target_files
             if any(file.match(pattern) for pattern in self._includes)
         }
 
