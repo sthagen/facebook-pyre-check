@@ -29,12 +29,12 @@
  *)
 
 open Core
-open Analysis
 open Ast
 open Expression
 open Pyre
 open Domains
 module CallGraph = Interprocedural.CallGraph
+module PyrePysaApi = Analysis.PyrePysaApi
 
 module type FUNCTION_CONTEXT = sig
   val qualifier : Reference.t
@@ -362,7 +362,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         ~call_target:target
         ~f:(fun () ->
           CallModel.at_callsite
-            ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
+            ~pyre_in_context
             ~get_callee_model:FunctionContext.get_callee_model
             ~call_target:target
             ~arguments)
@@ -393,7 +393,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let get_argument_taint ~pyre_in_context ~argument:{ Call.Argument.value = argument; _ } =
       let global_sink =
         GlobalModel.from_expression
-          ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
+          ~pyre_in_context
           ~call_graph:FunctionContext.call_graph_of_define
           ~get_callee_model:FunctionContext.get_callee_model
           ~qualifier:FunctionContext.qualifier
@@ -525,7 +525,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       in
       let sink_trees =
         CallModel.sink_trees_of_argument
-          ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
+          ~pyre_in_context
           ~transform_non_leaves
           ~model:taint_model
           ~location
@@ -818,7 +818,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         when is_constructor ()
              && String.equal attribute "__init__"
              && Interprocedural.CallResolution.is_super
-                  ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
+                  ~pyre_in_context
                   ~define:FunctionContext.definition
                   base ->
           (* If the super call is `object.__init__`, this is likely due to a lack of type
@@ -1032,7 +1032,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       | None ->
           let global_model =
             GlobalModel.from_expression
-              ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
+              ~pyre_in_context
               ~call_graph:FunctionContext.call_graph_of_define
               ~get_callee_model:FunctionContext.get_callee_model
               ~qualifier:FunctionContext.qualifier
@@ -1397,9 +1397,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   and analyze_call ~pyre_in_context ~location ~taint ~state ~callee ~arguments =
     let { Call.callee; arguments } =
-      CallGraph.redirect_special_calls
-        ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
-        { Call.callee; arguments }
+      CallGraph.redirect_special_calls ~pyre_in_context { Call.callee; arguments }
     in
     let callees = get_call_callees ~location ~call:{ Call.callee; arguments } in
 
@@ -1674,7 +1672,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         let dict_taint =
           let global_taint =
             GlobalModel.from_expression
-              ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
+              ~pyre_in_context
               ~call_graph:FunctionContext.call_graph_of_define
               ~get_callee_model:FunctionContext.get_callee_model
               ~qualifier:FunctionContext.qualifier
@@ -2210,10 +2208,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         analyze_comprehension ~pyre_in_context taint comprehension state
     | Name (Name.Identifier identifier) ->
         let taint =
-          BackwardState.Tree.add_local_type_breadcrumbs
-            ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
-            ~expression
-            taint
+          BackwardState.Tree.add_local_type_breadcrumbs ~pyre_in_context ~expression taint
         in
         store_taint ~weak:true ~root:(AccessPath.Root.Variable identifier) ~path:[] taint state
     | Name (Name.Attribute { base; attribute = "__dict__"; _ }) ->
@@ -2329,7 +2324,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           in
           let global_taint =
             GlobalModel.from_expression
-              ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
+              ~pyre_in_context
               ~call_graph:FunctionContext.call_graph_of_define
               ~get_callee_model:FunctionContext.get_callee_model
               ~qualifier:FunctionContext.qualifier
@@ -2355,9 +2350,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       compute_assignment_taint ~pyre_in_context target state
       |> fst
       |> read_tree fields
-      |> BackwardState.Tree.add_local_type_breadcrumbs
-           ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
-           ~expression:target
+      |> BackwardState.Tree.add_local_type_breadcrumbs ~pyre_in_context ~expression:target
     in
     let state =
       let rec clear_taint state target =
@@ -2392,7 +2385,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     | Assign { target = { Node.location; value = target_value } as target; value; _ } -> (
         let target_global_model =
           GlobalModel.from_expression
-            ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
+            ~pyre_in_context
             ~call_graph:FunctionContext.call_graph_of_define
             ~get_callee_model:FunctionContext.get_callee_model
             ~qualifier:FunctionContext.qualifier
@@ -2470,7 +2463,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         let return_taint = get_taint (Some access_path) state in
         let return_sink =
           CallModel.return_sink
-            ~resolution:(PyrePysaApi.InContext.resolution pyre_in_context)
+            ~pyre_in_context
             ~location:(Location.with_module ~module_reference:FunctionContext.qualifier location)
             ~callee:FunctionContext.callable
             ~sink_model:FunctionContext.existing_model.Model.backward.sink_taint
@@ -2503,7 +2496,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         let pyre_in_context =
           PyrePysaApi.InContext.create_at_statement_key
             pyre_api
-            ~definition:FunctionContext.definition
+            ~define:(Ast.Node.value FunctionContext.definition)
             ~statement_key
         in
         analyze_statement ~pyre_in_context state statement)
@@ -2556,8 +2549,7 @@ let extract_tito_and_sink_models
     let type_breadcrumbs =
       annotation
       >>| PyrePysaApi.ReadOnly.parse_annotation pyre_api
-      |> Features.type_breadcrumbs_from_annotation
-           ~resolution:(PyrePysaApi.ReadOnly.global_resolution pyre_api)
+      |> Features.type_breadcrumbs_from_annotation ~pyre_api
     in
     BackwardState.Tree.add_local_breadcrumbs type_breadcrumbs tree
   in

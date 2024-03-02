@@ -243,6 +243,26 @@ module ReadOnly = struct
 
   let get_typed_dictionary api = global_resolution api |> GlobalResolution.get_typed_dictionary
 
+  let less_or_equal api = global_resolution api |> GlobalResolution.less_or_equal
+
+  let resolve_exports api = global_resolution api |> GlobalResolution.resolve_exports
+
+  let successors api = global_resolution api |> GlobalResolution.successors
+
+  let location_of_global api = global_resolution api |> GlobalResolution.location_of_global
+
+  let get_function_definition api =
+    global_resolution api |> GlobalResolution.get_function_definition
+
+
+  let attribute_from_class_name api =
+    global_resolution api |> GlobalResolution.attribute_from_class_name
+
+
+  let has_transitive_successor api =
+    global_resolution api |> GlobalResolution.has_transitive_successor
+
+
   let exists_matching_class_decorator api =
     unannotated_global_environment api
     |> UnannotatedGlobalEnvironment.ReadOnly.exists_matching_class_decorator
@@ -310,10 +330,8 @@ module InContext = struct
     { pyre_api; resolution = ReadOnly.contextless_resolution pyre_api }
 
 
-  let create_at_statement_key pyre_api ~definition ~statement_key =
-    let { Ast.Node.value = { Ast.Statement.Define.signature = { name; parent; _ }; _ }; _ } =
-      definition
-    in
+  let create_at_statement_key pyre_api ~define ~statement_key =
+    let { Ast.Statement.Define.signature = { name; parent; _ }; _ } = define in
     let local_annotations =
       TypeEnvironment.ReadOnly.get_local_annotations (ReadOnly.type_environment pyre_api) name
     in
@@ -331,11 +349,25 @@ module InContext = struct
 
   let pyre_api { pyre_api; _ } = pyre_api
 
-  let resolution { resolution; _ } = resolution
+  let is_global { resolution; _ } = Resolution.is_global resolution
+
+  let resolve_reference { resolution; _ } = Resolution.resolve_reference resolution
 
   let resolve_assignment { pyre_api; resolution } assign =
     { pyre_api; resolution = Resolution.resolve_assignment resolution assign }
 
+
+  let resolve_expression_to_type { resolution; _ } =
+    Resolution.resolve_expression_to_type resolution
+
+
+  let resolve_attribute_access { resolution; _ } = Resolution.resolve_attribute_access resolution
+
+  let fallback_attribute { resolution; _ } = Resolution.fallback_attribute ~resolution
+
+  let redirect_special_calls { resolution; _ } = AnnotatedCall.redirect_special_calls ~resolution
+
+  let resolve_stringify_call { resolution; _ } = AnnotatedCall.resolve_stringify_call ~resolution
 
   let resolve_generators pyre_in_context generators =
     let resolve_generator pyre_in_context generator =

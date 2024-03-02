@@ -6,13 +6,13 @@
  *)
 
 open Ast
-open Analysis
 open Interprocedural
+module PyrePysaApi = Analysis.PyrePysaApi
 
 type t
 
 val from_expression
-  :  resolution:Resolution.t ->
+  :  pyre_in_context:PyrePysaApi.InContext.t ->
   call_graph:CallGraph.DefineCallGraph.t ->
   get_callee_model:(Target.t -> Model.t option) ->
   qualifier:Reference.t ->

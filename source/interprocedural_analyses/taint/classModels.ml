@@ -17,9 +17,10 @@
 open Core
 open Pyre
 open Ast
-open Analysis
 open Interprocedural
 open Domains
+module PyrePysaApi = Analysis.PyrePysaApi
+module ClassSummary = Analysis.ClassSummary
 
 module FeatureSet = struct
   type t = {
@@ -290,7 +291,7 @@ let infer ~pyre_api ~user_models =
       compute_dataclass_models class_name
     else if
       CallResolution.has_transitive_successor_ignoring_untracked
-        (PyrePysaApi.ReadOnly.global_resolution pyre_api)
+        ~pyre_api
         ~reflexive:false
         ~predecessor:class_name
         ~successor:"typing.NamedTuple"
@@ -298,12 +299,12 @@ let infer ~pyre_api ~user_models =
       compute_named_tuple_models class_name
     else if
       CallResolution.has_transitive_successor_ignoring_untracked
-        (PyrePysaApi.ReadOnly.global_resolution pyre_api)
+        ~pyre_api
         ~reflexive:false
         ~predecessor:class_name
         ~successor:"TypedDictionary"
       || CallResolution.has_transitive_successor_ignoring_untracked
-           (PyrePysaApi.ReadOnly.global_resolution pyre_api)
+           ~pyre_api
            ~reflexive:false
            ~predecessor:class_name
            ~successor:"NonTotalTypedDictionary"

@@ -31,7 +31,6 @@
 
 open Core
 open Pyre
-open Analysis
 open Interprocedural
 open Domains
 
@@ -362,11 +361,7 @@ let add_obscure_sink ~pyre_api ~call_target model =
   match real_target with
   | None -> model
   | Some real_target -> (
-      match
-        Target.get_module_and_definition
-          ~resolution:(PyrePysaApi.ReadOnly.global_resolution pyre_api)
-          real_target
-      with
+      match Target.get_module_and_definition ~pyre_api real_target with
       | None ->
           let () = Log.warning "Found no definition for %a" Target.pp_pretty real_target in
           model

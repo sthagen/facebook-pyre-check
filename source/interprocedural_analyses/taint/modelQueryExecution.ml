@@ -416,7 +416,7 @@ let rec matches_decorator_constraint ~pyre_api ~name_captures ~decorator = funct
       in
       let { Interprocedural.CallGraph.CallCallees.call_targets; _ } =
         Interprocedural.CallGraph.resolve_callees_from_type_external
-          ~resolution:(PyrePysaApi.ReadOnly.contextless_resolution pyre_api)
+          ~pyre_in_context:(PyrePysaApi.InContext.create_at_global_scope pyre_api)
           ~override_graph:None
           ~return_type
           callee
@@ -1417,10 +1417,9 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
   let query_kind_name = "callable"
 
   let make_modelable ~pyre_api callable =
-    let resolution = PyrePysaApi.ReadOnly.global_resolution pyre_api in
     let signature =
       lazy
-        (match Target.get_module_and_definition ~resolution callable with
+        (match Target.get_module_and_definition ~pyre_api callable with
         | Some (_, { Node.value = { signature; _ }; _ }) -> signature
         | None ->
             (* This should only be called with valid targets, generated from `FetchCallables`. *)
