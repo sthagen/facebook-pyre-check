@@ -13,6 +13,7 @@ from ... import backend_arguments, background_tasks, error, identifiers, json_rp
 from ...language_server import connections, daemon_connection, features, protocol as lsp
 from .. import (
     daemon_querier as querier,
+    document_formatter as formatter,
     pyre_language_server as ls,
     pyre_server_options as options,
     server_state as state,
@@ -138,6 +139,9 @@ class MockDaemonQuerier(querier.AbstractDaemonQuerier):
         mock_references_response: Optional[List[lsp.LspLocation]] = None,
         mock_rename_response: Optional[lsp.WorkspaceEdit] = None,
         mock_symbol_search_response: Optional[querier.GetSymbolSearchResponse] = None,
+        mock_document_formatting_response: Optional[
+            querier.GetDocumentFormattingResponse
+        ] = None,
     ) -> None:
         self.requests: List[object] = []
         self.mock_type_errors = mock_type_errors
@@ -150,6 +154,7 @@ class MockDaemonQuerier(querier.AbstractDaemonQuerier):
         self.mock_references_response = mock_references_response
         self.mock_rename_response = mock_rename_response
         self.mock_symbol_search_response = mock_symbol_search_response
+        self.mock_document_formatting_response = mock_document_formatting_response
 
     async def get_type_errors(
         self,
@@ -272,6 +277,14 @@ class MockDaemonQuerier(querier.AbstractDaemonQuerier):
         else:
             return self.mock_symbol_search_response
 
+    async def get_document_formatting(
+        self, text_document: lsp.TextDocumentIdentifier
+    ) -> Union[querier.DaemonQueryFailure, querier.GetDocumentFormattingResponse]:
+        if self.mock_document_formatting_response is None:
+            raise ValueError("You need to set document formatting in the mock querier")
+        else:
+            return self.mock_document_formatting_response
+
     async def get_rename(
         self,
         path: Path,
@@ -326,6 +339,7 @@ mock_server_state: state.ServerState = state.ServerState(
 
 
 def create_pyre_language_server_api(
+    document_formatter: Optional[formatter.AbstractDocumentFormatter],
     output_channel: connections.AsyncTextWriter,
     server_state: state.ServerState,
     daemon_querier: querier.AbstractDaemonQuerier,
@@ -337,6 +351,7 @@ def create_pyre_language_server_api(
         server_state=server_state,
         querier=daemon_querier,
         index_querier=index_querier,
+        document_formatter=document_formatter,
         client_type_error_handler=type_error_handler.ClientTypeErrorHandler(
             client_output_channel=output_channel,
             server_state=server_state,
@@ -355,6 +370,7 @@ def create_pyre_language_server_api_setup(
     opened_documents: Dict[Path, state.OpenedDocumentState],
     querier: MockDaemonQuerier,
     index_querier: Optional[MockDaemonQuerier] = None,
+    document_formatter: Optional[formatter.AbstractDocumentFormatter] = None,
     server_options: options.PyreServerOptions = mock_initial_server_options,
     connection_status: state.ConnectionStatus = DEFAULT_CONNECTION_STATUS,
 ) -> PyreLanguageServerApiSetup:
@@ -370,6 +386,7 @@ def create_pyre_language_server_api_setup(
         server_state=server_state,
         daemon_querier=querier,
         index_querier=index_querier,
+        document_formatter=document_formatter,
     )
     return PyreLanguageServerApiSetup(
         api=api,
@@ -383,10 +400,12 @@ def create_pyre_language_server_dispatcher(
     server_state: state.ServerState,
     daemon_manager: background_tasks.TaskManager,
     querier: MockDaemonQuerier,
+    document_formatter: Optional[formatter.AbstractDocumentFormatter] = None,
 ) -> Tuple[ls.PyreLanguageServerDispatcher, connections.MemoryBytesWriter]:
     output_writer = connections.MemoryBytesWriter()
     output_channel = connections.AsyncTextWriter(output_writer)
     api = create_pyre_language_server_api(
+        document_formatter=document_formatter,
         output_channel=output_channel,
         server_state=server_state,
         daemon_querier=querier,

@@ -47,6 +47,7 @@ from ..language_server import connections, daemon_connection, features, protocol
 from . import (
     commands,
     daemon_querier,
+    document_formatter,
     find_symbols,
     libcst_util,
     server_state as state,
@@ -273,6 +274,15 @@ class PyreLanguageServerApi(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
+    async def process_document_formatting_request(
+        self,
+        parameters: lsp.DocumentFormattingParameters,
+        request_id: Union[int, str, None],
+        activity_key: Optional[Dict[str, object]] = None,
+    ) -> None:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
     async def process_rename_request(
         self,
         parameters: lsp.RenameParameters,
@@ -341,6 +351,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
 
     querier: daemon_querier.AbstractDaemonQuerier
     index_querier: daemon_querier.AbstractDaemonQuerier
+    document_formatter: Optional[document_formatter.AbstractDocumentFormatter]
     client_type_error_handler: type_error_handler.ClientTypeErrorHandler
 
     async def write_telemetry(
@@ -971,6 +982,36 @@ class PyreLanguageServer(PyreLanguageServerApi):
             },
             activity_key,
         )
+
+    async def process_document_formatting_request(
+        self,
+        parameters: lsp.DocumentFormattingParameters,
+        request_id: Union[int, str, None],
+        activity_key: Optional[Dict[str, object]] = None,
+    ) -> None:
+
+        LOG.info("Calling document formatting")
+        document_path = parameters.text_document.document_uri().to_file_path()
+        if document_path is None:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI is not a file: {parameters.text_document.uri}"
+            )
+        if document_path not in self.server_state.opened_documents:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI has not been opened: {parameters.text_document.uri}"
+            )
+
+        try:
+            LOG.info("calling the formatter")
+            if self.document_formatter is None:
+                raise json_rpc.InternalError("Formatter was not initialized correctly.")
+            else:
+                self.document_formatter.format_document(document_path)
+
+        except OSError as error:
+            raise lsp.RequestFailedError(
+                f"Document URI is not a readable file: {parameters.text_document.uri}"
+            ) from error
 
     async def process_completion_request(
         self,
@@ -1687,6 +1728,14 @@ class PyreLanguageServerDispatcher:
         elif request.method == "textDocument/documentSymbol":
             await self.api.process_document_symbols_request(
                 lsp.DocumentSymbolsParameters.from_json_rpc_parameters(
+                    request.extract_parameters()
+                ),
+                request.id,
+                request.activity_key,
+            )
+        elif request.method == "textDocument/formatting":
+            await self.api.process_document_formatting_request(
+                lsp.DocumentFormattingParameters.from_json_rpc_parameters(
                     request.extract_parameters()
                 ),
                 request.id,
