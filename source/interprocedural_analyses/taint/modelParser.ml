@@ -197,6 +197,7 @@ module AnnotationOrigin = struct
     | DefineParameter
     | DefineReturn
     | DefineDecorator
+    | DefineDecoratorCapturedVariables
     | Attribute
     | ModelQueryParameter
     | ModelQueryReturn
@@ -222,6 +223,7 @@ module AnnotationOrigin = struct
 
   let is_parameter = function
     | DefineParameter
+    | DefineDecoratorCapturedVariables
     | ModelQueryParameter ->
         true
     | _ -> false
@@ -2809,6 +2811,24 @@ let adjust_sanitize_and_modes_and_skipped_override
     let original_expression =
       create_function_call ~location:decorator_location name (Option.value ~default:[] arguments)
     in
+    let validate_captured_variables_decorator () =
+      let annotation_error reason =
+        model_verification_error
+          ~path
+          ~location:decorator_location
+          (InvalidTaintAnnotation { taint_annotation = original_expression; reason })
+      in
+      match arguments with
+      | Some [_] -> Ok ()
+      | Some _ ->
+          Error
+            (annotation_error
+               "`@CapturedVariables(...)` takes only one Taint Annotation as argument.")
+      | None ->
+          Error
+            (annotation_error "`@CapturedVariables(...)` needs one Taint Annotation as argument.")
+    in
+
     match name with
     | "Sanitize" ->
         join_with_sanitize_decorator
@@ -2824,6 +2844,8 @@ let adjust_sanitize_and_modes_and_skipped_override
           ~original_expression
           arguments
         >>| fun sanitizers -> sanitizers, modes
+    | "CapturedVariables" ->
+        validate_captured_variables_decorator () >>| fun () -> sanitizers, modes
     | _ -> (
         match Model.Mode.from_string name with
         | Some mode ->
@@ -2885,7 +2907,8 @@ let create_model_from_signature
           | ["Entrypoint"]
           | ["SkipObscure"]
           | ["IgnoreDecorator"]
-          | ["SkipModelBroadening"] ->
+          | ["SkipModelBroadening"]
+          | ["CapturedVariables"] ->
               Either.first decorator
           | _ -> Either.Second decorator_expression)
     in
@@ -3048,6 +3071,51 @@ let create_model_from_signature
   let callable_name =
     compute_localized_name_for_nested_functions ~callable_annotation ~callable_name
   in
+  let add_captured_variables_taint
+      ~path
+      ~location
+      ~origin
+      ~taint_configuration
+      ~top_level_decorators
+      model
+    =
+    let is_captured_variables { Decorator.name = { Node.value = name; _ }; arguments } =
+      match Reference.show name, arguments with
+      | "CapturedVariables", Some [_] -> true
+      | _ -> false
+    in
+    match List.find ~f:is_captured_variables top_level_decorators with
+    | Some { Decorator.arguments = Some [{ Call.Argument.value; _ }]; _ } ->
+        let captured_variables =
+          match PyrePysaApi.ReadOnly.get_define_body pyre_api callable_name with
+          | Some { Node.value = { Define.captures; _ }; _ } ->
+              List.map ~f:(fun capture -> capture.Define.Capture.name) captures
+          | _ -> []
+        in
+        callable_annotation
+        >>= fun callable_annotation ->
+        value
+        |> parse_annotations
+             ~path
+             ~location
+             ~origin
+             ~taint_configuration
+             ~parameters:[]
+             ~callable_parameter_names_to_roots:None
+        >>= List.fold_result ~init:model ~f:(fun model annotation ->
+                List.fold_result captured_variables ~init:model ~f:(fun model captured_variable ->
+                    add_taint_annotation_to_model
+                      ~path
+                      ~location
+                      ~model_name:(Reference.show callable_name)
+                      ~pyre_api
+                      ~callable_annotation
+                      ~source_sink_filter
+                      model
+                      (ModelAnnotation.ParameterAnnotation
+                         (AccessPath.Root.CapturedVariable captured_variable, annotation))))
+    | _ -> Ok model
+  in
   let model =
     callable_annotation
     >>= fun callable_annotation ->
@@ -3080,6 +3148,12 @@ let create_model_from_signature
         ~taint_configuration
         ~origin:DefineDecorator
         ~source_sink_filter
+        ~top_level_decorators
+  >>= add_captured_variables_taint
+        ~path
+        ~location
+        ~taint_configuration
+        ~origin:DefineDecoratorCapturedVariables
         ~top_level_decorators
   >>| fun model ->
   Model { Model.WithTarget.model; target = update_call_target_name ~callable_name call_target }
@@ -3124,11 +3198,31 @@ let create_model_from_attribute
   >>| fun model -> Model { Model.WithTarget.model; target = call_target }
 
 
-let is_obscure ~definitions ~stubs call_target =
+let delocalize_definitions definitions =
+  let add_delocalized_target targets target =
+    match target with
+    | Target.Function { name; kind } when Reference.is_local (Reference.create name) ->
+        Target.Function
+          { name = Reference.show (Reference.delocalize (Reference.create name)); kind }
+        :: targets
+    | _ -> targets
+  in
+  definitions >>| Hash_set.fold ~init:[] ~f:add_delocalized_target >>| Target.HashSet.of_list
+
+
+let is_obscure ~definitions ~delocalized_definitions ~stubs call_target =
   (* The callable is obscure if and only if it is a type stub or it is not in the set of known
      definitions. *)
+  let not_member hash_set1 hash_set2 element =
+    match hash_set1, hash_set2 with
+    | Some hash_set1, Some hash_set2 ->
+        not (Hash_set.mem hash_set1 element || Hash_set.mem hash_set2 element)
+    | _ -> false
+  in
+  (* TODO(T182366550): Refactor modelParser to give localized targets for nested function models
+     early *)
   Interprocedural.Target.HashsetSharedMemory.ReadOnly.mem stubs call_target
-  || definitions >>| Core.Fn.flip Hash_set.mem call_target >>| not |> Option.value ~default:false
+  || not_member definitions delocalized_definitions call_target
 
 
 let parse_models ~pyre_api ~taint_configuration ~source_sink_filter ~definitions ~stubs models =
@@ -3141,7 +3235,12 @@ let parse_models ~pyre_api ~taint_configuration ~source_sink_filter ~definitions
         ~path:None
         ~taint_configuration
         ~source_sink_filter
-        ~is_obscure:(is_obscure ~definitions ~stubs call_target)
+        ~is_obscure:
+          (is_obscure
+             ~definitions
+             ~delocalized_definitions:(delocalize_definitions definitions)
+             ~stubs
+             call_target)
         parsed_signature
       >>| fun model_or_query ->
       match model_or_query with
@@ -3792,6 +3891,7 @@ let create
     | Error { Parser.Error.location; _ } ->
         [], [[model_verification_error ~path ~location ParseError]]
   in
+  let delocalized_definitions = delocalize_definitions definitions in
   let create_model_or_query = function
     | ParsedSignature ({ call_target; _ } as parsed_signature) ->
         create_model_from_signature
@@ -3799,7 +3899,7 @@ let create
           ~path
           ~taint_configuration
           ~source_sink_filter
-          ~is_obscure:(is_obscure ~definitions ~stubs call_target)
+          ~is_obscure:(is_obscure ~definitions ~delocalized_definitions ~stubs call_target)
           parsed_signature
     | ParsedAttribute parsed_attribute ->
         create_model_from_attribute

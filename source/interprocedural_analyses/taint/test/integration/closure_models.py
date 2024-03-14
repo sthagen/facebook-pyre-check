@@ -44,7 +44,6 @@ def test() -> None:
     def return_model_taint():
         return value
 
-    # TODO(T180807435): Model flow from source to return of `return_model_taint_tito`
     source = _test_source()
     def return_model_taint_tito():
         use_source(source)
@@ -68,7 +67,18 @@ def test() -> None:
     )
     value.reclassify(feature="breadcrumb2")
 
-    # TODO(T180807435): Model flow from source to return of `return_model_taint_tito`
+    value = reclassify(
+        inner=return_model_taint_tito,
+        feature="breadcrumb1",
+    )
+    value.reclassify(feature="breadcrumb2")
+
+
+def test_tito_transform():
+    source = _test_source()
+    def return_model_taint_tito():
+        use_source(source)
+
     value = reclassify(
         inner=return_model_taint_tito,
         feature="breadcrumb1",
@@ -85,13 +95,6 @@ def captured_variable_models():
         # TODO(T180817012): Support capturing all variables as sources in nested functions
         _test_sink(complicated_name)
 
-    def model_all_captured_as_tito():
-        # TODO(T180817036): Support capturing all variables as TITOs in nested functions
-        complicated_name
-
-    # TODO(T180817036): Support capturing all variables as TITOs in nested functions
-    _test_sink(model_all_captured_as_tito())
-
     def model_all_captured_as_sink():
         # TODO(T180817051): Support making all writes to captured variables as sinks
         nonlocal complicated_name
@@ -100,3 +103,9 @@ def captured_variable_models():
     model_all_captured_as_sink()
     # TODO(T180817051): Support making all writes to captured variables as sinks
     _test_sink(complicated_name)
+
+    complicated_name = _test_source()
+    def model_all_captured_as_tito():
+        complicated_name
+
+    _test_sink(model_all_captured_as_tito())
