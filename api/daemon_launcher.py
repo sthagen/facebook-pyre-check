@@ -61,7 +61,6 @@ class PyreServerStarterBase(abc.ABC):
     @abc.abstractmethod
     async def run(
         self,
-        binary_location: str,
         configuration: frontend_configuration.Base,
         flavor: identifiers.PyreFlavor,
     ) -> Union[
@@ -83,7 +82,6 @@ class PyreServerStarter(PyreServerStarterBase):
     @override
     async def run(
         self,
-        binary_location: str,
         configuration: frontend_configuration.Base,
         flavor: identifiers.PyreFlavor,
     ) -> Union[
@@ -91,8 +89,11 @@ class PyreServerStarter(PyreServerStarterBase):
         initialization.BuckStartFailure,
         initialization.OtherStartFailure,
     ]:
+        server_start_command = configuration.get_server_start_command(True)
+        if server_start_command is None:
+            raise Exception("No binary found to start pyre")
         command_argument = command_arguments.CommandArguments(
-            binary=str(configuration.get_binary_location())
+            binary=str(server_start_command.get_pyre_binary_location())
         )
         start_arguments = command_arguments.StartArguments.create(
             command_argument=command_argument,
@@ -105,7 +106,7 @@ class PyreServerStarter(PyreServerStarterBase):
             start_arguments,
         )
         return await initialization.async_start_pyre_server(
-            binary_location,
+            server_start_command,
             pyre_arguments,
             flavor,
         )
@@ -146,7 +147,6 @@ async def _start_server(
 
     LOG.info("Starting new Pyre server.")
     server_start_status = await server_starter.run(
-        str(configuration.get_binary_location(True)),
         configuration,
         FLAVOR,
     )
