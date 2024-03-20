@@ -2584,24 +2584,104 @@ let parse_return_taint
   |> map ~f:(List.map ~f:(fun annotation -> ModelAnnotation.ReturnAnnotation annotation))
 
 
-type parsed_signature = {
-  signature: Define.Signature.t;
-  location: Location.t;
-  call_target: Target.t;
-}
+module ParsedStatement : sig
+  type parsed_signature = private {
+    signature: Define.Signature.t;
+    location: Location.t;
+    call_target: Target.t;
+  }
 
-type parsed_attribute = {
-  name: Reference.t;
-  annotations: TaintAnnotation.t list;
-  decorators: Decorator.t list;
-  location: Location.t;
-  call_target: Target.t;
-}
+  type parsed_attribute = private {
+    name: Reference.t;
+    annotations: TaintAnnotation.t list;
+    decorators: Decorator.t list;
+    location: Location.t;
+    call_target: Target.t;
+  }
 
-type parsed_statement =
-  | ParsedSignature of parsed_signature
-  | ParsedAttribute of parsed_attribute
-  | ParsedQuery of ModelQuery.t
+  type t = private
+    | ParsedSignature of parsed_signature
+    | ParsedAttribute of parsed_attribute
+    | ParsedQuery of ModelQuery.t
+
+  val create_parsed_signature
+    :  pyre_api:PyrePysaApi.ReadOnly.t ->
+    signature:Define.Signature.t ->
+    location:Location.t ->
+    call_target:Target.t ->
+    t
+
+  val create_parsed_attribute
+    :  name:Reference.t ->
+    annotations:TaintAnnotation.t list ->
+    decorators:Decorator.t list ->
+    location:Location.t ->
+    call_target:Target.t ->
+    t
+
+  val create_parsed_query : model_query:ModelQuery.t -> t
+end = struct
+  type parsed_signature = {
+    signature: Define.Signature.t;
+    location: Location.t;
+    call_target: Target.t;
+  }
+
+  type parsed_attribute = {
+    name: Reference.t;
+    annotations: TaintAnnotation.t list;
+    decorators: Decorator.t list;
+    location: Location.t;
+    call_target: Target.t;
+  }
+
+  type t =
+    | ParsedSignature of parsed_signature
+    | ParsedAttribute of parsed_attribute
+    | ParsedQuery of ModelQuery.t
+
+  let create_parsed_signature ~pyre_api ~signature ~location ~call_target =
+    (* Convert delocalized signatures to localized form *)
+    let update_call_target_name ~name = function
+      | Target.Function { name = _; kind } -> Target.create_function ~kind name
+      | target -> target
+    in
+    let name = signature.Define.Signature.name in
+    let name =
+      if Option.is_some (PyrePysaApi.ReadOnly.global pyre_api name) then
+        name
+      else
+        name
+        |> Reference.all_parents
+        |> List.filter_map ~f:(PyrePysaApi.ReadOnly.get_define_body pyre_api)
+        |> List.map ~f:Node.value
+        |> List.concat_map ~f:(fun define -> define.Define.body)
+        |> List.find_map ~f:(fun statement ->
+               match statement with
+               | { Node.value = Statement.Define define; _ }
+                 when Reference.equal name (Reference.delocalize (Define.name define)) ->
+                   Some define
+               | _ -> None)
+        >>| (fun define -> define.Define.signature.name)
+        (* TODO(T182905478): Error when no nested function found *)
+        |> Option.value ~default:name
+    in
+    ParsedSignature
+      {
+        signature = { signature with name };
+        location;
+        call_target = update_call_target_name ~name call_target;
+      }
+
+
+  let create_parsed_attribute ~name ~annotations ~decorators ~location ~call_target =
+    ParsedAttribute { name; annotations; decorators; location; call_target }
+
+
+  let create_parsed_query ~model_query = ParsedQuery model_query
+end
+
+open ParsedStatement
 
 type model_or_query =
   | Model of Model.WithTarget.t
@@ -2875,22 +2955,6 @@ let create_model_from_signature
   =
   let open Core.Result in
   let open ModelVerifier in
-  let compute_localized_name_for_nested_functions ~callable_annotation ~callable_name =
-    let open Option in
-    callable_annotation
-    |> Result.ok
-    |> Option.value ~default:None
-    >>| (fun callable ->
-          callable.Type.Record.Callable.kind
-          |> function
-          | Named name when Reference.equal (Reference.delocalize name) callable_name -> name
-          | _ -> callable_name)
-    |> Option.value ~default:callable_name
-  in
-  let update_call_target_name ~callable_name = function
-    | Target.Function { name = _; kind } -> Target.create_function ~kind callable_name
-    | target -> target
-  in
   (* Strip off the decorators only used for taint annotations. *)
   let top_level_decorators, define =
     let get_taint_decorator decorator_expression =
@@ -3067,10 +3131,6 @@ let create_model_from_signature
     |> Option.value ~default:(Ok [])
     >>| fun return_taint -> List.rev_append parameter_taint return_taint
   in
-  (* For nested functions, change the target to use the localized name over the delocalized name. *)
-  let callable_name =
-    compute_localized_name_for_nested_functions ~callable_annotation ~callable_name
-  in
   let add_captured_variables_taint
       ~path
       ~location
@@ -3155,8 +3215,7 @@ let create_model_from_signature
         ~taint_configuration
         ~origin:DefineDecoratorCapturedVariables
         ~top_level_decorators
-  >>| fun model ->
-  Model { Model.WithTarget.model; target = update_call_target_name ~callable_name call_target }
+  >>| fun model -> Model { Model.WithTarget.model; target = call_target }
 
 
 let create_model_from_attribute
@@ -3198,31 +3257,11 @@ let create_model_from_attribute
   >>| fun model -> Model { Model.WithTarget.model; target = call_target }
 
 
-let delocalize_definitions definitions =
-  let add_delocalized_target targets target =
-    match target with
-    | Target.Function { name; kind } when Reference.is_local (Reference.create name) ->
-        Target.Function
-          { name = Reference.show (Reference.delocalize (Reference.create name)); kind }
-        :: targets
-    | _ -> targets
-  in
-  definitions >>| Hash_set.fold ~init:[] ~f:add_delocalized_target >>| Target.HashSet.of_list
-
-
-let is_obscure ~definitions ~delocalized_definitions ~stubs call_target =
+let is_obscure ~definitions ~stubs call_target =
   (* The callable is obscure if and only if it is a type stub or it is not in the set of known
      definitions. *)
-  let not_member hash_set1 hash_set2 element =
-    match hash_set1, hash_set2 with
-    | Some hash_set1, Some hash_set2 ->
-        not (Hash_set.mem hash_set1 element || Hash_set.mem hash_set2 element)
-    | _ -> false
-  in
-  (* TODO(T182366550): Refactor modelParser to give localized targets for nested function models
-     early *)
   Interprocedural.Target.HashsetSharedMemory.ReadOnly.mem stubs call_target
-  || not_member definitions delocalized_definitions call_target
+  || definitions >>| Core.Fn.flip Hash_set.mem call_target >>| not |> Option.value ~default:false
 
 
 let parse_models ~pyre_api ~taint_configuration ~source_sink_filter ~definitions ~stubs models =
@@ -3235,12 +3274,7 @@ let parse_models ~pyre_api ~taint_configuration ~source_sink_filter ~definitions
         ~path:None
         ~taint_configuration
         ~source_sink_filter
-        ~is_obscure:
-          (is_obscure
-             ~definitions
-             ~delocalized_definitions:(delocalize_definitions definitions)
-             ~stubs
-             call_target)
+        ~is_obscure:(is_obscure ~definitions ~stubs call_target)
         parsed_signature
       >>| fun model_or_query ->
       match model_or_query with
@@ -3380,7 +3414,7 @@ let rec parse_statement
         | Some _ -> Target.create_method name
         | None -> Target.create_function name
       in
-      [Ok (ParsedSignature { signature; location; call_target })]
+      [Ok (ParsedStatement.create_parsed_signature ~pyre_api ~signature ~location ~call_target)]
   | { Node.value = Statement.Define { signature = { name; _ }; _ }; location } ->
       [
         Error
@@ -3480,19 +3514,19 @@ let rec parse_statement
                            []
                        in
                        let decorators = List.rev_append extra_decorators decorators in
-                       ParsedSignature
-                         {
-                           signature =
-                             {
-                               signature with
-                               Define.Signature.parameters;
-                               return_annotation = source_annotation;
-                               decorators;
-                             };
-                           location;
-                           call_target = Target.create_method name;
-                         }
+                       ParsedStatement.create_parsed_signature
+                         ~pyre_api
+                         ~signature:
+                           {
+                             signature with
+                             Define.Signature.parameters;
+                             return_annotation = source_annotation;
+                             decorators;
+                           }
+                         ~location
+                         ~call_target:(Target.create_method name)
                      in
+
                      let sources =
                        List.map source_annotations ~f:(fun source_annotation ->
                            signature
@@ -3566,14 +3600,12 @@ let rec parse_statement
         in
         [
           Ok
-            (ParsedAttribute
-               {
-                 name;
-                 annotations = [];
-                 decorators = [decorator];
-                 location;
-                 call_target = Target.create_object name;
-               });
+            (ParsedStatement.create_parsed_attribute
+               ~name
+               ~annotations:[]
+               ~decorators:[decorator]
+               ~location
+               ~call_target:(Target.create_object name));
         ]
       else if
         String.equal annotation_string "ViaTypeOf"
@@ -3594,14 +3626,12 @@ let rec parse_statement
           ~callable_parameter_names_to_roots:None
           annotation
         >>| (fun annotations ->
-              ParsedAttribute
-                {
-                  name;
-                  annotations;
-                  decorators = [];
-                  location;
-                  call_target = Target.create_object name;
-                })
+              ParsedStatement.create_parsed_attribute
+                ~name
+                ~annotations
+                ~decorators:[]
+                ~location
+                ~call_target:(Target.create_object name))
         |> fun result -> [result]
       else
         [
@@ -3757,18 +3787,19 @@ let rec parse_statement
             >>| fun unexpected_models ->
             [
               Ok
-                (ParsedQuery
-                   {
-                     ModelQuery.find;
-                     where;
-                     models;
-                     name;
-                     logging_group_name;
-                     path;
-                     location;
-                     expected_models;
-                     unexpected_models;
-                   });
+                (ParsedStatement.create_parsed_query
+                   ~model_query:
+                     {
+                       ModelQuery.find;
+                       where;
+                       models;
+                       name;
+                       logging_group_name;
+                       path;
+                       location;
+                       expected_models;
+                       unexpected_models;
+                     });
             ])
       |> function
       | Ok parsed_statements_list -> parsed_statements_list
@@ -3891,7 +3922,6 @@ let create
     | Error { Parser.Error.location; _ } ->
         [], [[model_verification_error ~path ~location ParseError]]
   in
-  let delocalized_definitions = delocalize_definitions definitions in
   let create_model_or_query = function
     | ParsedSignature ({ call_target; _ } as parsed_signature) ->
         create_model_from_signature
@@ -3899,7 +3929,7 @@ let create
           ~path
           ~taint_configuration
           ~source_sink_filter
-          ~is_obscure:(is_obscure ~definitions ~delocalized_definitions ~stubs call_target)
+          ~is_obscure:(is_obscure ~definitions ~stubs call_target)
           parsed_signature
     | ParsedAttribute parsed_attribute ->
         create_model_from_attribute
