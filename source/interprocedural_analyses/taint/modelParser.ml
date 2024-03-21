@@ -201,6 +201,7 @@ module AnnotationOrigin = struct
     | Attribute
     | ModelQueryParameter
     | ModelQueryReturn
+    | ModelQueryCapturedVariables
     | ModelQueryAttribute
     | ModelQueryGlobal
   [@@deriving equal]
@@ -215,6 +216,7 @@ module AnnotationOrigin = struct
   let is_model_query = function
     | ModelQueryParameter
     | ModelQueryReturn
+    | ModelQueryCapturedVariables
     | ModelQueryAttribute
     | ModelQueryGlobal ->
         true
@@ -2220,6 +2222,15 @@ let parse_model_clause
         parse_taint ~origin:ModelQueryReturn taint >>| fun taint -> ModelQuery.Model.Return taint
     | Expression.Call
         {
+          Call.callee = { Node.value = Name (Name.Identifier "CapturedVariables"); _ } as callee;
+          arguments = [{ Call.Argument.value = taint; _ }];
+        } ->
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
+        parse_taint ~origin:ModelQueryCapturedVariables taint
+        >>| fun taint -> ModelQuery.Model.CapturedVariables taint
+    | Expression.Call
+        {
           Call.callee = { Node.value = Name (Name.Identifier "AttributeModel"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
@@ -4071,13 +4082,16 @@ let create_callable_model_from_annotations
   let open Core.Result in
   let open ModelVerifier in
   match modelable with
-  | Modelable.Callable { signature = define; _ } ->
-      resolve_global_callable
-        ~path:None
-        ~location:Location.any
-        ~pyre_api
-        ~verify_decorators:false
-        (Lazy.force define)
+  | Modelable.Callable { define; _ } ->
+      define
+      |> Lazy.force
+      |> (function
+           | { Define.signature; _ } -> signature)
+      |> resolve_global_callable
+           ~path:None
+           ~location:Location.any
+           ~pyre_api
+           ~verify_decorators:false
       >>| (function
             | Some (Global.Attribute (Type.Callable t))
             | Some

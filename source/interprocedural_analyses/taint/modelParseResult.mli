@@ -342,6 +342,7 @@ module ModelQuery : sig
           taint: QueryTaintAnnotation.t list;
         }
       | Return of QueryTaintAnnotation.t list
+      | CapturedVariables of QueryTaintAnnotation.t list
       | Attribute of QueryTaintAnnotation.t list
       | Global of QueryTaintAnnotation.t list
       | Modes of Model.ModeSet.t
@@ -384,7 +385,7 @@ module Modelable : sig
   type t =
     | Callable of {
         target: Interprocedural.Target.t;
-        signature: Ast.Statement.Define.Signature.t lazy_t;
+        define: Ast.Statement.Define.t lazy_t;
       }
     | Attribute of {
         name: Ast.Reference.t;

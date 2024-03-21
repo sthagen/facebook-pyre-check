@@ -627,6 +627,7 @@ module ModelQuery = struct
           taint: QueryTaintAnnotation.t list;
         }
       | Return of QueryTaintAnnotation.t list
+      | CapturedVariables of QueryTaintAnnotation.t list
       | Attribute of QueryTaintAnnotation.t list
       | Global of QueryTaintAnnotation.t list
       | Modes of Model.ModeSet.t
@@ -715,7 +716,7 @@ module Modelable = struct
   type t =
     | Callable of {
         target: Target.t;
-        signature: Statement.Define.Signature.t Lazy.t;
+        define: Statement.Define.t Lazy.t;
       }
     | Attribute of {
         name: Reference.t;
@@ -748,8 +749,8 @@ module Modelable = struct
 
 
   let return_annotation = function
-    | Callable { signature; _ } ->
-        let { Statement.Define.Signature.return_annotation; _ } = Lazy.force signature in
+    | Callable { define; _ } ->
+        let { Statement.Define.signature = { return_annotation; _ }; _ } = Lazy.force define in
         return_annotation
     | Attribute _
     | Global _ ->
@@ -757,8 +758,8 @@ module Modelable = struct
 
 
   let parameters = function
-    | Callable { signature; _ } ->
-        let { Statement.Define.Signature.parameters; _ } = Lazy.force signature in
+    | Callable { define; _ } ->
+        let { Statement.Define.signature = { parameters; _ }; _ } = Lazy.force define in
         parameters
     | Attribute _
     | Global _ ->
@@ -766,9 +767,11 @@ module Modelable = struct
 
 
   let decorators = function
-    | Callable { signature; _ } ->
-        signature
+    | Callable { define; _ } ->
+        define
         |> Lazy.force
+        |> (function
+             | { Statement.Define.signature; _ } -> signature)
         |> Analysis.DecoratorPreprocessing.original_decorators_from_preprocessed_signature
     | Attribute _
     | Global _ ->
