@@ -48,7 +48,8 @@ let set_up_environment ?source ~context ~model_source ~validate () =
     let named name = { AnnotationParser.name; kind = Named; location = None } in
     let sources = [named "Test"] in
     let sinks = [named "Test"] in
-    TaintConfiguration.Heap.{ empty with sources; sinks }
+    let transforms = [TaintTransform.Named "TestTransform"] in
+    TaintConfiguration.Heap.{ empty with sources; sinks; transforms }
   in
   let source = Test.trim_extra_indentation model_source in
   let pyre_api = ScratchProject.pyre_pysa_read_only_api project in
@@ -2211,7 +2212,6 @@ let test_query_parsing_captured_variables context =
   |}
     ~expect:"Unexpected model expression: `CapturedVariables`"
     ();
-
   assert_queries
     ~context
     ~model_source:
@@ -2236,6 +2236,47 @@ let test_query_parsing_captured_variables context =
             [
               CapturedVariables
                 [TaintAnnotation (ModelParseResult.TaintAnnotation.from_tito Sinks.LocalReturn)];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "taint_transform",
+     find = "functions",
+     where = name.matches("foo"),
+     model = CapturedVariables(TaintInTaintOut[Transform[TestTransform]])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "taint_transform";
+          logging_group_name = None;
+          path = None;
+          where = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          find = Function;
+          models =
+            [
+              CapturedVariables
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_tito
+                       (Sinks.Transform
+                          {
+                            local =
+                              TaintTransforms.of_named_transforms
+                                [TaintTransform.Named "TestTransform"];
+                            global = TaintTransforms.empty;
+                            base = Sinks.LocalReturn;
+                          }));
+                ];
             ];
           expected_models = [];
           unexpected_models = [];
