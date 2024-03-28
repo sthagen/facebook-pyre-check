@@ -62,7 +62,6 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
     client_status_message_handler: status_message_handler.ClientStatusMessageHandler
     client_type_error_handler: type_error_handler.ClientTypeErrorHandler
     subscription_response_parser: PyreSubscriptionResponseParser
-    client_register_event: Optional[asyncio.Event]
 
     def __init__(
         self,
@@ -72,7 +71,6 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
         client_type_error_handler: type_error_handler.ClientTypeErrorHandler,
         subscription_response_parser: PyreSubscriptionResponseParser,
         remote_logging: Optional[backend_arguments.RemoteLogging] = None,
-        client_register_event: Optional[asyncio.Event] = None,
     ) -> None:
         self.server_options_reader = server_options_reader
         self.remote_logging = remote_logging
@@ -80,7 +78,6 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
         self.client_status_message_handler = client_status_message_handler
         self.client_type_error_handler = client_type_error_handler
         self.subscription_response_parser = subscription_response_parser
-        self.client_register_event = client_register_event
 
     @abc.abstractmethod
     async def handle_type_error_event(
@@ -254,8 +251,8 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
         connection_timer = timer.Timer()
         try:
             await self.client_setup()
-            if self.client_register_event is not None:
-                self.client_register_event.set()
+            if self.server_state.client_register_event is not None:
+                self.server_state.client_register_event.set()
             await self.connect_and_subscribe(
                 server_options,
                 socket_path,
@@ -263,7 +260,8 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
                 is_preexisting=True,
             )
         except connections.ConnectionFailure:
-            pass
+            if self.server_state.client_register_event is not None:
+                self.server_state.client_register_event.clear()
 
         await self.client_status_message_handler.log_and_show_status_message_to_client(
             f"Starting a new Pyre server at `{project_identifier}` in "
@@ -280,6 +278,8 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
         )
         if isinstance(start_status, StartSuccess):
             await self.client_setup()
+            if self.server_state.client_register_event is not None:
+                self.server_state.client_register_event.set()
             await self.connect_and_subscribe(
                 server_options,
                 socket_path,
@@ -392,9 +392,15 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
             self.server_state.status_tracker.set_status(
                 state.ConnectionStatus.DISCONNECTED
             )
+            # we have this here and down below since we need to stop allowing
+            # requests to be sent before client_teardown
+            if self.server_state.client_register_event is not None:
+                self.server_state.client_register_event.clear()
             await self.client_teardown()
             raise
         finally:
+            if self.server_state.client_register_event is not None:
+                self.server_state.client_register_event.clear()
             if error_message is not None:
                 log_lsp_event.log(
                     remote_logging=self.remote_logging,
