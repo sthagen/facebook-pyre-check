@@ -201,12 +201,6 @@ class PyreLanguageServerApi(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    async def _get_definition_result(
-        self, document_path: Path, position: lsp.LspPosition
-    ) -> QueryResultWithDurations[List[Dict[str, object]]]:
-        raise NotImplementedError()
-
-    @abc.abstractmethod
     async def process_definition_request(
         self,
         parameters: lsp.DefinitionParameters,
@@ -524,7 +518,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
         activity_key: Optional[Dict[str, object]] = None,
     ) -> None:
         client_register_event = self.server_state.client_register_event
-        if client_register_event is None or not client_register_event.is_set():
+        if client_register_event is not None and not client_register_event.is_set():
             return
         daemon_status_before = self.server_state.status_tracker.get_status()
         type_errors_timer = timer.Timer()
@@ -807,7 +801,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
 
     async def _get_definition_result(
         self, document_path: Path, position: lsp.LspPosition
-    ) -> QueryResultWithDurations[List[Dict[str, object]]]:
+    ) -> QueryResultWithDurations[List[lsp.LspLocation]]:
         """
         Helper function to call the querier. Exists only to reduce code duplication
         due to shadow mode, please don't make more of these - we already have enough
@@ -833,10 +827,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
             result = raw_result
         else:
             source = raw_result.source
-            result = lsp.LspLocation.cached_schema().dump(
-                raw_result.data,
-                many=True,
-            )
+            result = raw_result.data
         return QueryResultWithDurations(
             source=source,
             result=result,
@@ -904,7 +895,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
         result = result_with_durations.result
         if isinstance(result, DaemonQueryFailure):
             error_message = result.error_message
-            output_result = (
+            output_result: List[lsp.LspLocation] = (
                 result.fallback_result.data
                 if result.fallback_result is not None
                 else []
@@ -915,13 +906,16 @@ class PyreLanguageServer(PyreLanguageServerApi):
             output_result = result
             error_source = None
         # Unless we are in shadow mode, we send the response as output
+        output_result_json = lsp.LspLocation.cached_schema().dump(
+            output_result, many=True
+        )
         if not shadow_mode:
             await lsp.write_json_rpc(
                 self.output_channel,
                 json_rpc.SuccessResponse(
                     id=request_id,
                     activity_key=activity_key,
-                    result=output_result,
+                    result=output_result_json,
                 ),
             )
         # Only sample if response is empty
@@ -941,8 +935,8 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 "type": "LSP",
                 "operation": "definition",
                 "filePath": str(document_path),
-                "count": len(output_result),
-                "response": output_result,
+                "count": len(output_result_json),
+                "response": output_result_json,
                 "duration_ms": result_with_durations.overall_duration,
                 "query_source": result_with_durations.source,
                 "overlay_update_duration": result_with_durations.overlay_update_duration,

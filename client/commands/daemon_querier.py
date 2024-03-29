@@ -1158,9 +1158,10 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
     async def handle_register_client(
         self,
     ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        return await self.base_querier.handle_register_client()
+        return "Ok"
 
     async def handle_dispose_client(
         self,
     ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        return await self.base_querier.handle_dispose_client()
+        # we should not dispose the base_querier here since it will get closed twice
+        return "Ok"
