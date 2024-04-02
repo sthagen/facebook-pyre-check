@@ -28,7 +28,6 @@ from .. import dataclasses_json_extensions as json_mixins, error
 from ..language_server import (
     code_navigation_request,
     daemon_connection,
-    features,
     protocol as lsp,
     remote_index,
 )
@@ -146,21 +145,7 @@ def path_to_expression_coverage_response(
     )
 
 
-def is_server_unavailable(server_state: state.ServerState) -> bool:
-    return server_state.status_tracker.get_status().connection_status in {
-        state.ConnectionStatus.DISCONNECTED,
-        state.ConnectionStatus.NOT_CONNECTED,
-    }
-
-
 class AbstractDaemonQuerier(abc.ABC):
-    def __init__(
-        self,
-        server_state: state.ServerState,
-    ) -> None:
-        self.server_state = server_state
-        self.socket_path: Path = server_state.server_options.get_socket_path()
-
     @abc.abstractmethod
     async def get_type_errors(
         self,
@@ -279,9 +264,6 @@ class AbstractDaemonQuerier(abc.ABC):
         self,
     ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
         raise NotImplementedError()
-
-    def get_language_server_features(self) -> features.LanguageServerFeatures:
-        return self.server_state.server_options.language_server_features
 
 
 class EmptyQuerier(AbstractDaemonQuerier):
@@ -389,19 +371,32 @@ class EmptyQuerier(AbstractDaemonQuerier):
         raise NotImplementedError()
 
 
-class PersistentDaemonQuerier(AbstractDaemonQuerier):
+class ServerStateBackedDaemonQuerier(AbstractDaemonQuerier):
+    def __init__(
+        self,
+        server_state: state.ServerState,
+    ) -> None:
+        self.server_state = server_state
+
+    def get_socket_path(self) -> Path:
+        return self.server_state.server_options.get_socket_path()
+
+    def is_unsaved_changes_enabled(self) -> bool:
+        return (
+            self.server_state.server_options.language_server_features.unsaved_changes.is_enabled()
+        )
+
+
+class PersistentDaemonQuerier(ServerStateBackedDaemonQuerier):
+
     async def _query_modules_of_path(
         self,
         path: Path,
     ) -> Union[DaemonQueryFailure, QueryModulesOfPathResponse]:
-        overlay_id = (
-            str(path)
-            if self.get_language_server_features().unsaved_changes.is_enabled()
-            else None
-        )
+        overlay_id = str(path) if self.is_unsaved_changes_enabled() else None
         return await daemon_query.attempt_typed_async_query(
             response_type=QueryModulesOfPathResponse,
-            socket_path=self.socket_path,
+            socket_path=self.get_socket_path(),
             query_text=f"modules_of_path('{path}')",
             overlay_id=overlay_id,
         )
@@ -431,7 +426,7 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
                     "in a language server without unsaved changes support."
                 )
             result = await daemon_query.attempt_async_overlay_type_errors(
-                socket_path=self.socket_path,
+                socket_path=self.get_socket_path(),
                 source_code_path=path,
                 overlay_id=overlay_id,
             )
@@ -451,7 +446,7 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
             return file_not_typechecked_coverage_result()
         strict_by_default = self.server_state.server_options.strict_default
         response = await daemon_query.attempt_async_query(
-            socket_path=self.socket_path,
+            socket_path=self.get_socket_path(),
             query_text=f"expression_level_coverage('{path}')",
         )
         if isinstance(response, DaemonQueryFailure):
@@ -476,7 +471,7 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
         )
         daemon_response = await daemon_query.attempt_typed_async_query(
             response_type=HoverResponse,
-            socket_path=self.socket_path,
+            socket_path=self.get_socket_path(),
             query_text=query_text,
             overlay_id=self._get_overlay_id(path),
         )
@@ -500,7 +495,7 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
         )
         daemon_response = await daemon_query.attempt_typed_async_query(
             response_type=DefinitionLocationResponse,
-            socket_path=self.socket_path,
+            socket_path=self.get_socket_path(),
             query_text=query_text,
             overlay_id=self._get_overlay_id(path),
         )
@@ -559,7 +554,7 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
         )
         daemon_response = await daemon_query.attempt_typed_async_query(
             response_type=ReferencesResponse,
-            socket_path=self.socket_path,
+            socket_path=self.get_socket_path(),
             query_text=query_text,
             overlay_id=self._get_overlay_id(path),
         )
@@ -621,7 +616,7 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
         ]
         # Response is only used in the event that it is a DaemonConnectionFailure
         daemon_response = await daemon_connection.attempt_send_async_raw_request(
-            socket_path=self.socket_path,
+            socket_path=self.get_socket_path(),
             request=json.dumps(overlay_update_json),
         )
         return daemon_response
@@ -637,135 +632,11 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
         return "Ok"
 
     def _get_overlay_id(self, path: Path) -> Optional[str]:
-        unsaved_changes_enabled = (
-            self.get_language_server_features().unsaved_changes.is_enabled()
-        )
+        unsaved_changes_enabled = self.is_unsaved_changes_enabled()
         return f"{path}, pid_{os.getpid()}" if unsaved_changes_enabled else None
 
 
-class FailableDaemonQuerier(AbstractDaemonQuerier):
-    """
-    We may need to fail fast and return a DaemonQueryFailure instead
-    of querying the Pyre server backend - by passing a AbstractDaemonQueryFailer
-    to the constructor of the `FailableDaemonQuerier` we have the option to do this
-    """
-
-    def __init__(
-        self,
-        base_querier: AbstractDaemonQuerier,
-    ) -> None:
-        super().__init__(base_querier.server_state)
-        self.base_querier: AbstractDaemonQuerier = base_querier
-
-    async def get_hover(
-        self,
-        path: Path,
-        position: lsp.PyrePosition,
-    ) -> Union[DaemonQueryFailure, GetHoverResponse]:
-        return await self.base_querier.get_hover(path, position)
-
-    async def get_type_errors(
-        self,
-        paths: List[Path],
-    ) -> Union[DaemonQueryFailure, Dict[Path, List[error.Error]]]:
-        return await self.base_querier.get_type_errors(paths)
-
-    async def get_definition_locations(
-        self,
-        path: Path,
-        position: lsp.PyrePosition,
-    ) -> Union[DaemonQueryFailure, GetDefinitionLocationsResponse]:
-        return await self.base_querier.get_definition_locations(path, position)
-
-    async def get_completions(
-        self,
-        path: Path,
-        position: lsp.PyrePosition,
-    ) -> Union[DaemonQueryFailure, List[lsp.CompletionItem]]:
-        return await self.base_querier.get_completions(path, position)
-
-    async def get_reference_locations(
-        self,
-        path: Path,
-        position: lsp.PyrePosition,
-    ) -> Union[DaemonQueryFailure, List[lsp.LspLocation]]:
-        return await self.base_querier.get_reference_locations(path, position)
-
-    async def get_init_call_hierarchy(
-        self,
-        path: Path,
-        position: lsp.PyrePosition,
-        relation_direction: lsp.PyreCallHierarchyRelationDirection,
-    ) -> Union[DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
-        return await self.base_querier.get_init_call_hierarchy(
-            path, position, relation_direction
-        )
-
-    async def get_call_hierarchy_from_item(
-        self,
-        path: Path,
-        call_hierarchy_item: lsp.CallHierarchyItem,
-        relation_direction: lsp.PyreCallHierarchyRelationDirection,
-    ) -> Union[DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
-        return await self.base_querier.get_call_hierarchy_from_item(
-            path, call_hierarchy_item, relation_direction
-        )
-
-    async def get_type_coverage(
-        self,
-        path: Path,
-    ) -> Union[DaemonQueryFailure, Optional[lsp.TypeCoverageResponse]]:
-        return await self.base_querier.get_type_coverage(path)
-
-    async def handle_file_opened(
-        self,
-        path: Path,
-        code: str,
-    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        return await self.base_querier.handle_file_opened(path, code)
-
-    async def handle_file_closed(
-        self,
-        path: Path,
-    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        return await self.base_querier.handle_file_closed(path)
-
-    async def update_overlay(
-        self,
-        path: Path,
-        code: str,
-    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        return await self.base_querier.update_overlay(path, code)
-
-    async def handle_register_client(
-        self,
-    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        return await self.base_querier.handle_register_client()
-
-    async def handle_dispose_client(
-        self,
-    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        return await self.base_querier.handle_dispose_client()
-
-    async def get_document_symbols(
-        self,
-        path: Path,
-    ) -> Union[DaemonQueryFailure, DocumentSymbolsResponse]:
-        return await self.base_querier.get_document_symbols(path)
-
-    async def get_symbol_search(
-        self,
-        query: str,
-    ) -> Union[DaemonQueryFailure, GetSymbolSearchResponse]:
-        return await self.base_querier.get_symbol_search(query)
-
-    async def get_document_formatting(
-        self, text_document: lsp.TextDocumentIdentifier
-    ) -> Union[DaemonQueryFailure, GetDocumentFormattingResponse]:
-        return await self.base_querier.get_document_formatting(text_document)
-
-
-class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
+class CodeNavigationDaemonQuerier(ServerStateBackedDaemonQuerier):
     type_check_file_suffixes: List[str] = [".py", ".pyi"]
 
     async def get_type_errors(
@@ -787,7 +658,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
             client_id=self._get_client_id(),
         )
         response = await code_navigation_request.async_handle_type_errors_request(
-            self.socket_path, type_errors_request
+            self.get_socket_path(), type_errors_request
         )
         if isinstance(response, code_navigation_request.ErrorResponse):
             return DaemonQueryFailure(
@@ -822,7 +693,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
             position=position,
         )
         response = await code_navigation_request.async_handle_hover_request(
-            self.socket_path,
+            self.get_socket_path(),
             hover_request,
         )
         if isinstance(response, code_navigation_request.HoverResponse):
@@ -843,7 +714,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
             position=position,
         )
         response = await code_navigation_request.async_handle_definition_request(
-            self.socket_path,
+            self.get_socket_path(),
             definition_request,
         )
         if isinstance(response, code_navigation_request.ErrorResponse):
@@ -868,7 +739,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
         )
 
         response = await code_navigation_request.async_handle_document_symbol_request(
-            self.socket_path,
+            self.get_socket_path(),
             document_symbol_request,
         )
 
@@ -908,7 +779,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
             position=position,
         )
         response = await code_navigation_request.async_handle_completion_request(
-            self.socket_path, completions_request
+            self.get_socket_path(), completions_request
         )
         if isinstance(response, code_navigation_request.ErrorResponse):
             return DaemonQueryFailure(
@@ -944,7 +815,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
             content=code,
         )
         return await code_navigation_request.async_handle_local_update(
-            self.socket_path, local_update
+            self.get_socket_path(), local_update
         )
 
     async def get_init_call_hierarchy(
@@ -975,7 +846,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
             content=code,
         )
         return await code_navigation_request.async_handle_file_opened(
-            self.socket_path, file_opened
+            self.get_socket_path(), file_opened
         )
 
     async def handle_file_closed(
@@ -985,7 +856,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
         client_id = self._get_client_id()
         file_closed = code_navigation_request.FileClosed(client_id=client_id, path=path)
         return await code_navigation_request.async_handle_file_closed(
-            self.socket_path, file_closed
+            self.get_socket_path(), file_closed
         )
 
     def _get_client_id(self) -> str:
@@ -997,7 +868,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
         client_id = self._get_client_id()
         register_client = code_navigation_request.RegisterClient(client_id=client_id)
         return await code_navigation_request.async_handle_register_client(
-            self.socket_path, register_client
+            self.get_socket_path(), register_client
         )
 
     async def handle_dispose_client(
@@ -1006,16 +877,18 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
         client_id = self._get_client_id()
         dispose_client = code_navigation_request.DisposeClient(client_id=client_id)
         return await code_navigation_request.async_handle_dispose_client(
-            self.socket_path, dispose_client
+            self.get_socket_path(), dispose_client
         )
 
 
 class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
     def __init__(
         self,
+        daemon_status_tracker: state.DaemonStatusTracker,
         base_querier: AbstractDaemonQuerier,
         index: remote_index.AbstractRemoteIndex,
     ) -> None:
+        self.daemon_status_tracker: state.DaemonStatusTracker = daemon_status_tracker
         self.base_querier: AbstractDaemonQuerier = base_querier
         self.index: remote_index.AbstractRemoteIndex = index
 
@@ -1036,7 +909,7 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
         path: Path,
         position: lsp.PyrePosition,
     ) -> Union[DaemonQueryFailure, GetHoverResponse]:
-        if is_server_unavailable(self.base_querier.server_state):
+        if self.daemon_status_tracker.is_unavailable():
             index_result = await self.index.hover(path, position)
             return GetHoverResponse(
                 source=DaemonQuerierSource.GLEAN_INDEXER, data=index_result
@@ -1080,7 +953,7 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
         path: Path,
         position: lsp.PyrePosition,
     ) -> Union[DaemonQueryFailure, GetDefinitionLocationsResponse]:
-        if is_server_unavailable(self.base_querier.server_state):
+        if self.daemon_status_tracker.is_unavailable():
             return await self.get_definition_locations_from_glean(path, position)
         base_results = await self.base_querier.get_definition_locations(path, position)
 
