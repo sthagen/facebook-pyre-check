@@ -237,6 +237,7 @@ module DumpModelQueryResults = struct
         ~expand_overrides:None
         ~is_valid_callee:(fun ~port:_ ~path:_ ~callee:_ -> true)
         ~resolve_module_path:None
+        ~resolve_callable_location:None
         ~export_leaf_names:Domains.ExportLeafNames.Always
         callable
         model
@@ -394,6 +395,7 @@ let matches_callee_constraint ~pyre_api ~name_captures ~name_constraint callee =
   let call_target_to_string call_target =
     call_target
     |> CallGraph.CallTarget.target
+    |> Interprocedural.Target.override_to_method
     |> Interprocedural.Target.define_name
     |> Reference.show
   in

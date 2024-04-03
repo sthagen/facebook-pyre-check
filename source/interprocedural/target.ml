@@ -198,7 +198,16 @@ let method_name = function
       None
 
 
-let is_method = function
+let is_function_or_method = function
+  | Function _
+  | Method _ ->
+      true
+  | Override _
+  | Object _ ->
+      false
+
+
+let is_method_or_override = function
   | Method _
   | Override _ ->
       true
@@ -215,14 +224,15 @@ let override_to_method = function
   | Object name -> Object name
 
 
-(** Return the define name of a target. Note that multiple targets can match to the same define name
-    (e.g, property getters and setters). Hence, use this at your own risk. *)
+(** Return the define name of a Function or Method target. Note that multiple targets can match to
+    the same define name (e.g, property getters and setters). Hence, use this at your own risk. *)
 let define_name = function
   | Function { name; _ } -> Reference.create name
-  | Method { class_name; method_name; _ }
-  | Override { class_name; method_name; _ } ->
+  | Method { class_name; method_name; _ } ->
       Reference.create ~prefix:(Reference.create class_name) method_name
-  | Object _ -> failwith "unexpected"
+  | Override _
+  | Object _ ->
+      failwith "unexpected"
 
 
 let object_name = function
@@ -276,6 +286,12 @@ let get_module_and_definition ~pyre_api callable =
   |> get_definitions ~pyre_api
   >>= fun { qualifier; callables; _ } ->
   Map.find_opt callable callables >>| fun define -> qualifier, define
+
+
+let get_callable_location ~pyre_api callable =
+  get_module_and_definition ~pyre_api callable
+  >>| fun (module_reference, { Node.location; _ }) ->
+  Location.with_module ~module_reference location
 
 
 let resolve_method ~pyre_api ~class_type ~method_name =
