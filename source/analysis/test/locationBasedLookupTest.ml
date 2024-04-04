@@ -1089,7 +1089,7 @@ let test_find_narrowest_spanning_symbol context =
   ()
 
 
-let test_resolve_definition_for_symbol context =
+let test_resolve_definition_for_symbol =
   let default_external_sources =
     [
       ( "library.py",
@@ -1109,6 +1109,7 @@ let test_resolve_definition_for_symbol context =
       ?(external_sources = default_external_sources)
       ~source
       expected
+      context
     =
     let type_environment =
       let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
@@ -1132,7 +1133,7 @@ let test_resolve_definition_for_symbol context =
       >>= LocationBasedLookup.resolve_definition_for_symbol ~type_environment ~module_reference
       |> ok)
   in
-  let assert_resolved_definition ?external_sources source =
+  let assert_resolved_definition source context =
     let expected_definition_location =
       if String.is_substring ~substring:"# No definition found" source then
         None
@@ -1150,579 +1151,655 @@ let test_resolve_definition_for_symbol context =
         |> Location.with_module ~module_reference
         |> Option.some
     in
-    assert_resolved_definition_with_location ?external_sources ~source expected_definition_location
+    assert_resolved_definition_with_location ~source expected_definition_location context
   in
-  let assert_resolved_definition_with_location_string ?external_sources ~source expected =
+  let assert_resolved_definition_with_location_string_and_external_sources
+      ~external_sources
+      ~source
+      expected
+      context
+    =
     assert_resolved_definition_with_location
-      ?external_sources
+      ~external_sources
       ~source
       (expected >>| parse_location_with_module)
+      context
   in
-  assert_resolved_definition
-    {|
-        def getint() -> int: # start line
-          #    ^- cursor
+  let assert_resolved_definition_with_location_string =
+    assert_resolved_definition_with_location_string_and_external_sources
+      ~external_sources:default_external_sources
+  in
+  test_list
+    [
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             def getint() -> int: # start line
+               #    ^- cursor
 
-          return 42          # stop line
-    |};
-  assert_resolved_definition_with_location_string
-    ~source:{|
-        def foo(a: int, b: str) -> None: ...
-          #             ^- cursor
-    |}
-    (Some "test:2:16-2:22");
-  assert_resolved_definition
-    {|
-        def foo(x: str) -> None:
-          #     ^     ^
+               return 42          # stop line
+           |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             def foo(a: int, b: str) -> None: ...
+               #             ^- cursor
+         |}
+           (Some "test:2:16-2:22");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             def foo(x: str) -> None:
+               #     ^     ^
 
-          print(x)
-          #     ^- cursor
-    |};
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        def getint() -> int:
-                      # ^- cursor
-          return 42
-    |}
-    (* This points to builtins.pyi. *)
-    (Some ":111:0-212:35");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        def foo() -> None:
-          xs: list[str] = ["a", "b"]
-          #    ^- cursor
-
-          # No definition found.
-    |}
-    (* This points to builtins.pyi. *)
-    (Some ":394:0-422:31");
-  assert_resolved_definition
-    {|
-      class Foo:
-        def bar(self) -> None:
-          #     ^   ^
-
-            print(self.foo())
-            #      ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-      class Foo:
-        def bar(self) -> None:
-            print(self.foo())
-            #           ^- cursor
-
-
-        def foo(self) -> int:  # start line
-          return 42            # stop line
-
-    |};
-  assert_resolved_definition_with_location_string
-    ~source:{|
-        from library import Base
+               print(x)
+               #     ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             def getint() -> int:
                            # ^- cursor
-    |}
-    (Some "library:2:0-2:15");
-  assert_resolved_definition_with_location_string
-    ~source:{|
-        import library
-        #        ^- cursor
-    |}
-    (Some "library:1:0-1:0");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        from . import library as my_library
-                                    # ^- cursor
-    |}
-    (Some "library:1:0-1:0");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        from . import library as my_library
+               return 42
+         |}
+           (* This points to builtins.pyi. *)
+           (Some ":111:0-212:35");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             def foo() -> None:
+               xs: list[str] = ["a", "b"]
+               #    ^- cursor
 
-        x = my_library.Base()
-        #    ^- cursor
-    |}
-    (Some "library:1:0-1:0");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        def return_str() -> str:
-          return "hello"
+               # No definition found.
+         |}
+           (* This points to builtins.pyi. *)
+           (Some ":394:0-422:31");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+           class Foo:
+             def bar(self) -> None:
+               #     ^   ^
 
-        def foo() -> None:
-          return_str().capitalize().lower()
-                     # ^- cursor
-    |}
-    (* This points to builtins.pyi. *)
-    (Some ":335:2-335:34");
-  assert_resolved_definition
-    {|
-        class Foo:
-          def bar(self) -> None:  # start line
-              pass                # stop line
-
-        class Bar:
-          some_attribute: Foo = Foo()
-
-          def foo(self) -> Foo:
-              return Foo()
-
-        def test() -> None:
-          Bar().foo().bar()
-          #           ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        class Foo: ...
-
-        class Bar:
-          some_attribute: Foo = Foo()
-        # ^                          ^
-
-        Bar().some_attribute
-        #       ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        def foo() -> None:
-          x = 42
-        # ^^
+                 print(self.foo())
+                 #      ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+           class Foo:
+             def bar(self) -> None:
+                 print(self.foo())
+                 #           ^- cursor
 
 
-          print(x)
-          #     ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        def foo() -> None:
-          with open() as f:
-                      #  ^^
-            f.readline()
-          # ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        def foo(x: str) -> None:
-          for x in [1]:
-            # ^^
+             def foo(self) -> int:  # start line
+               return 42            # stop line
 
-            print(x)
-            #     ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        class Foo:
-          @classmethod
-          def my_class_method(cls) -> None: ...
-        # ^                                    ^
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from library import Base
+                                # ^- cursor
+         |}
+           (Some "library:2:0-2:15");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:{|
+             import library
+             #        ^- cursor
+         |}
+           (Some "library:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from . import library as my_library
+                                         # ^- cursor
+         |}
+           (Some "library:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from . import library as my_library
 
-        def foo() -> None:
-          Foo.my_class_method()
-          #    ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        class Foo:
-          def my_method() -> None: ...
-        # ^                           ^
+             x = my_library.Base()
+             #    ^- cursor
+         |}
+           (Some "library:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             def return_str() -> str:
+               return "hello"
 
-        def foo() -> None:
-          Foo.my_method()
-          #    ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        class Foo:
-          @staticmethod
-          def my_static_method() -> None: ...
-        # ^                                  ^
+             def foo() -> None:
+               return_str().capitalize().lower()
+                          # ^- cursor
+         |}
+           (* This points to builtins.pyi. *)
+           (Some ":335:2-335:34");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             class Foo:
+               def bar(self) -> None:  # start line
+                   pass                # stop line
 
-        def foo() -> None:
-          Foo.my_static_method()
-          #     ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        from dataclasses import dataclass
+             class Bar:
+               some_attribute: Foo = Foo()
 
-        @dataclass(frozen=True)
-        class Foo:
-          my_attribute: int
-        # ^                ^
+               def foo(self) -> Foo:
+                   return Foo()
 
-        def main(foo: Foo) -> None:
-          print(foo.my_attribute)
-          #           ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        from dataclasses import dataclass
+             def test() -> None:
+               Bar().foo().bar()
+               #           ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             class Foo: ...
 
-        @dataclass(frozen=True)
-        class Foo:
-          my_attribute: int
-        # ^                ^
+             class Bar:
+               some_attribute: Foo = Foo()
+             # ^                          ^
 
-        def main(foo: Foo) -> None:
-          if foo.my_attribute:
-            #        ^- cursor
-            print("hello")
-    |};
-  assert_resolved_definition
-    {|
-        def getint(xs: list[int]) -> None:
-          #        ^            ^
+             Bar().some_attribute
+             #       ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             def foo() -> None:
+               x = 42
+             # ^^
 
-          for x in xs:
-            #      ^- cursor
-            pass
-    |};
-  assert_resolved_definition
-    {|
-        def foo(xs: list[int]) -> None:
-          #     ^            ^
 
-          print(f"xs: {xs}")
-          #            ^- cursor
-    |};
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        def foo(xs: list[int]) -> None:
-          print(f"xs: {xs.append(xs)}")
-                        # ^- cursor
-    |}
-    (* This points to builtins.pyi. *)
-    (Some ":410:2-410:46");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        try:
-          print("hello")
-        except Exception as exception:
-          print(exception)
-          #      ^- cursor
-    |}
-    (Some "test:4:20-5:2");
-  (* We create special stubs in `MissingFromStubs` for special forms like `Callable`. They end up
-     making the location be `any` (with all positions as `-1`), which the IDE doesn't recognize. We
-     should translate that to something sensible, so that the IDE at least goes to the relevant
-     file. *)
-  assert_resolved_definition_with_location_string
-    ~source:{|
-        from typing import Callable
+               print(x)
+               #     ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             def foo() -> None:
+               with open() as f:
+                           #  ^^
+                 f.readline()
+               # ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             def foo(x: str) -> None:
+               for x in [1]:
+                 # ^^
 
-        f: Callable
-        #   ^- cursor
-    |}
-    (Some "typing:1:0-1:0");
-  assert_resolved_definition_with_location_string
-    ~external_sources:["a.py", {| |}; "b.py", {| import a as x |}]
-    ~source:{|
-        from b import x as y
-        print(y)
-           #  ^- cursor
-    |}
-    (Some "a:1:0-1:0");
-  assert_resolved_definition_with_location_string
-    ~external_sources:["a.py", {| |}; "b.py", {| import a as x |}]
-    ~source:{|
-        from b import x
-        print(x)
-           #  ^- cursor
-    |}
-    (Some "a:1:0-1:0");
-  assert_resolved_definition_with_location_string
-    ~external_sources:["foo/a.py", {| class Foo: ... |}; "b.py", {| import foo.a as x |}]
-    ~source:{|
-        from b import x as y
-        print(y)
-           #  ^- cursor
-    |}
-    (Some "foo.a:1:0-1:0");
-  assert_resolved_definition_with_location_string
-    ~external_sources:["a.py", {| class Foo: ... |}; "b.py", {| import a as x |}]
-    ~source:{|
-        from b import x as y
-        print(y.Foo)
-              #  ^- cursor
-    |}
-    (Some "a:1:0-1:14");
-  assert_resolved_definition_with_location_string
-    ~external_sources:["my_placeholder_stub.pyi", {| # pyre-placeholder-stub |}]
-    ~source:
-      {|
-        import my_placeholder_stub
-        print(my_placeholder_stub)
-           #  ^- cursor
-    |}
-    (Some "my_placeholder_stub:1:0-1:0");
-  assert_resolved_definition_with_location_string
-    ~external_sources:["my_placeholder_stub.pyi", {| # pyre-placeholder-stub |}]
-    ~source:
-      {|
-        from my_placeholder_stub import x as y
-        print(y.Foo)
-              #  ^- cursor
-    |}
-    (Some "my_placeholder_stub:1:0-1:0");
-  assert_resolved_definition
-    {|
-        class Base:
-          def base_method(self) -> None: ...
-        # ^                                 ^
+                 print(x)
+                 #     ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             class Foo:
+               @classmethod
+               def my_class_method(cls) -> None: ...
+             # ^                                    ^
 
-        class Child(Base): ...
+             def foo() -> None:
+               Foo.my_class_method()
+               #    ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             class Foo:
+               def my_method() -> None: ...
+             # ^                           ^
 
-        def foo(x: Child) -> None:
-          x.base_method()
-          #    ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        class Base:
-          base_attribute: int
-        # ^                  ^
+             def foo() -> None:
+               Foo.my_method()
+               #    ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             class Foo:
+               @staticmethod
+               def my_static_method() -> None: ...
+             # ^                                  ^
 
-        class Child(Base): ...
+             def foo() -> None:
+               Foo.my_static_method()
+               #     ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             from dataclasses import dataclass
 
-        def foo(x: Child) -> None:
-          x.base_attribute
-          #    ^- cursor
-    |};
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        MY_GLOBAL = "hello"
+             @dataclass(frozen=True)
+             class Foo:
+               my_attribute: int
+             # ^                ^
 
-        def main() -> int:
-          MY_GLOBAL.capitalize()
-          #    ^- cursor
-    |}
-    (Some "test:2:0-2:9");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        MY_GLOBAL = "hello"
+             def main(foo: Foo) -> None:
+               print(foo.my_attribute)
+               #           ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             from dataclasses import dataclass
 
-        def main() -> int:
-          def nested() -> void:
-            MY_GLOBAL.capitalize()
-            #    ^- cursor
-    |}
-    (Some "test:2:0-2:9");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        def my_global() -> int:
-          return 21
+             @dataclass(frozen=True)
+             class Foo:
+               my_attribute: int
+             # ^                ^
 
-        def main() -> int:
-          def nested() -> void:
-            my_global()
-            #    ^- cursor
-    |}
-    (Some "test:2:0-3:11");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        class Global_Class():
-          pass
+             def main(foo: Foo) -> None:
+               if foo.my_attribute:
+                 #        ^- cursor
+                 print("hello")
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             def getint(xs: list[int]) -> None:
+               #        ^            ^
 
-        def main() -> int:
-          def nested() -> void:
-            Global_Class()
-            #    ^- cursor
-    |}
-    (Some "test:2:0-3:6");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        from typing import Callable
+               for x in xs:
+                 #      ^- cursor
+                 pass
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             def foo(xs: list[int]) -> None:
+               #     ^            ^
 
-        Foo = list[int]
+               print(f"xs: {xs}")
+               #            ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             def foo(xs: list[int]) -> None:
+               print(f"xs: {xs.append(xs)}")
+                             # ^- cursor
+         |}
+           (* This points to builtins.pyi. *)
+           (Some ":410:2-410:46");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             try:
+               print("hello")
+             except Exception as exception:
+               print(exception)
+               #      ^- cursor
+         |}
+           (Some "test:4:20-5:2");
+      (* We create special stubs in `MissingFromStubs` for special forms like `Callable`. They end
+         up making the location be `any` (with all positions as `-1`), which the IDE doesn't
+         recognize. We should translate that to something sensible, so that the IDE at least goes to
+         the relevant file. *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from typing import Callable
 
-        def main(x: Foo) -> None:
-          #          ^- cursor
-          pass
-    |}
-    (Some "test:4:0-4:3");
-  assert_resolved_definition
-    {|
-        from typing import Optional
+             f: Callable
+             #   ^- cursor
+         |}
+           (Some "typing:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string_and_external_sources
+           ~external_sources:["a.py", {| |}; "b.py", {| import a as x |}]
+           ~source:
+             {|
+             from b import x as y
+             print(y)
+                #  ^- cursor
+         |}
+           (Some "a:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string_and_external_sources
+           ~external_sources:["a.py", {| |}; "b.py", {| import a as x |}]
+           ~source:
+             {|
+             from b import x
+             print(x)
+                #  ^- cursor
+         |}
+           (Some "a:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string_and_external_sources
+           ~external_sources:["foo/a.py", {| class Foo: ... |}; "b.py", {| import foo.a as x |}]
+           ~source:
+             {|
+             from b import x as y
+             print(y)
+                #  ^- cursor
+         |}
+           (Some "foo.a:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string_and_external_sources
+           ~external_sources:["a.py", {| class Foo: ... |}; "b.py", {| import a as x |}]
+           ~source:
+             {|
+             from b import x as y
+             print(y.Foo)
+                   #  ^- cursor
+         |}
+           (Some "a:1:0-1:14");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string_and_external_sources
+           ~external_sources:["my_placeholder_stub.pyi", {| # pyre-placeholder-stub |}]
+           ~source:
+             {|
+             import my_placeholder_stub
+             print(my_placeholder_stub)
+                #  ^- cursor
+         |}
+           (Some "my_placeholder_stub:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string_and_external_sources
+           ~external_sources:["my_placeholder_stub.pyi", {| # pyre-placeholder-stub |}]
+           ~source:
+             {|
+             from my_placeholder_stub import x as y
+             print(y.Foo)
+                   #  ^- cursor
+         |}
+           (Some "my_placeholder_stub:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             class Base:
+               def base_method(self) -> None: ...
+             # ^                                 ^
 
-        class Foo:
-          some_attribute: int
-        # ^                  ^
+             class Child(Base): ...
 
-        def main(foo: Optional[Foo]) -> None:
+             def foo(x: Child) -> None:
+               x.base_method()
+               #    ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             class Base:
+               base_attribute: int
+             # ^                  ^
 
-          if foo is not None:
-            print(foo.some_attribute)
-            #           ^- cursor
-    |};
-  (* TODO(T129228930): Handle refinement within a statement. *)
-  assert_resolved_definition
-    {|
-        from typing import Optional
+             class Child(Base): ...
 
-        class Foo:
-          some_attribute: int
+             def foo(x: Child) -> None:
+               x.base_attribute
+               #    ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             MY_GLOBAL = "hello"
 
-        def main(foo: Optional[Foo]) -> None:
-          d = foo.some_attribute if foo is not None else None
-            #           ^- cursor
+             def main() -> int:
+               MY_GLOBAL.capitalize()
+               #    ^- cursor
+         |}
+           (Some "test:2:0-2:9");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             MY_GLOBAL = "hello"
 
-        # No definition found.
-    |};
-  assert_resolved_definition
-    {|
-        from typing import Optional
+             def main() -> int:
+               def nested() -> void:
+                 MY_GLOBAL.capitalize()
+                 #    ^- cursor
+         |}
+           (Some "test:2:0-2:9");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             def my_global() -> int:
+               return 21
 
-        class Foo:              # start line
-          some_attribute: int   # stop line
+             def main() -> int:
+               def nested() -> void:
+                 my_global()
+                 #    ^- cursor
+         |}
+           (Some "test:2:0-3:11");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             class Global_Class():
+               pass
 
-        def main(foo: Optional[Foo]) -> None:
-          #                     ^- cursor
-          pass
-    |};
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        from typing import Optional
+             def main() -> int:
+               def nested() -> void:
+                 Global_Class()
+                 #    ^- cursor
+         |}
+           (Some "test:2:0-3:6");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from typing import Callable
 
-        foo: Optional[int]
-        #      ^- cursor
-    |}
-    (* `Optional` is a special form, so it points to the start of the file. *)
-    (Some "typing:1:0-1:0");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        from typing import Union
+             Foo = list[int]
 
-        foo: Union[int, str, bool]
-        #      ^- cursor
-    |}
-    (* `Union` is a special form, so it points to the start of the file. *)
-    (Some "typing:1:0-1:0");
-  assert_resolved_definition
-    {|
-        from typing import Generic, TypeVar
+             def main(x: Foo) -> None:
+               #          ^- cursor
+               pass
+         |}
+           (Some "test:4:0-4:3");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             from typing import Optional
 
-        T = TypeVar("T")
+             class Foo:
+               some_attribute: int
+             # ^                  ^
 
-        class MyContainer(Generic[T]):  # start line
-          pass                          # stop line
+             def main(foo: Optional[Foo]) -> None:
 
-        foo: MyContainer[int]
-        #      ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        class Foo:                                     # start line
-          def my_method(self, x: "Foo") -> None: ...   # stop line
-            #                      ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        def main() -> None:
-          while (x := True):
-            #    ^^
-              print(x)
-                #   ^- cursor
-    |};
-  assert_resolved_definition
-    {|
-        from typing import Callable
+               if foo is not None:
+                 print(foo.some_attribute)
+                 #           ^- cursor
+         |};
+      (* TODO(T129228930): Handle refinement within a statement. *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             from typing import Optional
 
-        def my_decorator(f: Callable[[], int]) -> Callable[[], int]:  # start line
-          pass                                                        # stop line
+             class Foo:
+               some_attribute: int
 
-        @my_decorator
-        #   ^- cursor
-        def foo() -> int: ...
-    |};
-  (* TODO(T129228930): We don't handle files that are shadowed by stubs. *)
-  assert_resolved_definition_with_location_string
-    ~external_sources:["test.pyi", {|
-        FOO: int = ...
-      |}]
-    ~source:{|
-        FOO = 1
-        # ^- cursor
-    |}
-    None;
-  assert_resolved_definition_with_location_string
-    ~external_sources:["test.pyi", {|
-        FOO: int = ...
-      |}]
-    ~source:{|
-        FOO = 1
+             def main(foo: Optional[Foo]) -> None:
+               d = foo.some_attribute if foo is not None else None
+                 #           ^- cursor
 
-        print(FOO)
-          #    ^- cursor
-    |}
-    None;
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        from typing import Optional
-        from dataclasses import dataclass
+             # No definition found.
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             from typing import Optional
 
-        @dataclass
-        # ^- cursor
-        class Foo: ...
+             class Foo:              # start line
+               some_attribute: int   # stop line
 
-        # No definition found.
-    |}
-    (Some "dataclasses:6:0-6:46");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        from library import contains_kw_args
+             def main(foo: Optional[Foo]) -> None:
+               #                     ^- cursor
+               pass
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from typing import Optional
 
-        contains_kw_args(foo="test")
-        #                 ^- cursor
-      |}
-    (Some "library:6:0-7:18");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        from library import contains_kw_args
+             foo: Optional[int]
+             #      ^- cursor
+         |}
+           (* `Optional` is a special form, so it points to the start of the file. *)
+           (Some "typing:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from typing import Union
 
-        contains_kw_args(kw="test")
-        #                 ^- cursor
-      |}
-    (Some "library:6:0-7:18");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        def foo() -> None:
-          if derp:
-            x = 42
+             foo: Union[int, str, bool]
+             #      ^- cursor
+         |}
+           (* `Union` is a special form, so it points to the start of the file. *)
+           (Some "typing:1:0-1:0");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             from typing import Generic, TypeVar
 
-          print(x)
-          #     ^- cursor
-      |}
-    (Some "test:4:4-4:5");
-  assert_resolved_definition_with_location_string
-    ~source:
-      {|
-        def foo() -> None:
-          if derp:
-            x = 42
-        #   ^- cursor
+             T = TypeVar("T")
 
-          print(x)
-      |}
-    (Some "test:4:4-4:5");
-  ()
+             class MyContainer(Generic[T]):  # start line
+               pass                          # stop line
+
+             foo: MyContainer[int]
+             #      ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             class Foo:                                     # start line
+               def my_method(self, x: "Foo") -> None: ...   # stop line
+                 #                      ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             def main() -> None:
+               while (x := True):
+                 #    ^^
+                   print(x)
+                     #   ^- cursor
+         |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition
+           {|
+             from typing import Callable
+
+             def my_decorator(f: Callable[[], int]) -> Callable[[], int]:  # start line
+               pass                                                        # stop line
+
+             @my_decorator
+             #   ^- cursor
+             def foo() -> int: ...
+         |};
+      (* TODO(T129228930): We don't handle files that are shadowed by stubs. *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string_and_external_sources
+           ~external_sources:["test.pyi", {|
+             FOO: int = ...
+           |}]
+           ~source:{|
+             FOO = 1
+             # ^- cursor
+         |}
+           None;
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string_and_external_sources
+           ~external_sources:["test.pyi", {|
+             FOO: int = ...
+           |}]
+           ~source:
+             {|
+             FOO = 1
+
+             print(FOO)
+               #    ^- cursor
+         |}
+           None;
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from typing import Optional
+             from dataclasses import dataclass
+
+             @dataclass
+             # ^- cursor
+             class Foo: ...
+
+             # No definition found.
+         |}
+           (Some "dataclasses:6:0-6:46");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from library import contains_kw_args
+
+             contains_kw_args(foo="test")
+             #                 ^- cursor
+           |}
+           (Some "library:6:0-7:18");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             from library import contains_kw_args
+
+             contains_kw_args(kw="test")
+             #                 ^- cursor
+           |}
+           (Some "library:6:0-7:18");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             def foo() -> None:
+               if derp:
+                 x = 42
+
+               print(x)
+               #     ^- cursor
+           |}
+           (Some "test:4:4-4:5");
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_resolved_definition_with_location_string
+           ~source:
+             {|
+             def foo() -> None:
+               if derp:
+                 x = 42
+             #   ^- cursor
+
+               print(x)
+           |}
+           (Some "test:4:4-4:5");
+    ]
 
 
 let ( >>: ) test_name test_function = test_name >:: fun context -> test_function ~context
@@ -2240,185 +2317,181 @@ let test_lookup_dataclass_attributes context =
   ()
 
 
-let test_lookup_comprehensions context =
-  let source = {|
-       def foo() -> None:
-         a = [x for x in [1.0]]
-    |} in
-  assert_annotation_list
-    ~lookup:(generate_lookup ~context source)
+let test_lookup_comprehensions =
+  let assert_annotation_list source expected context =
+    assert_annotation_list ~lookup:(generate_lookup ~context source) expected
+  in
+  test_list
     [
-      "2:4-2:7/typing.Callable(test.foo)[[], None]";
-      "2:13-2:17/typing.Type[None]";
-      "3:2-3:3/typing.List[float]";
-      "3:6-3:24/typing.List[float]";
-      "3:7-3:8/float";
-      "3:13-3:14/float";
-      "3:18-3:23/typing.List[float]";
-      "3:19-3:22/float";
-    ];
-  let source =
-    {|
-       class Foo:
-         def __init__(self, x: int) -> None:
-           pass
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_annotation_list
+           {|
+              a = [x for x in [1.0]]
+            |}
+           [
+             "2:0-2:1/typing.List[float]";
+             "2:4-2:22/typing.List[float]";
+             "2:5-2:6/float";
+             "2:11-2:12/float";
+             "2:16-2:21/typing.List[float]";
+             "2:17-2:20/float";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_annotation_list
+           {|
+              class Foo:
+                def __init__(self, x: int) -> None:
+                  pass
 
-       def foo() -> None:
-         a = [Foo(x) for x in [1]]
-    |}
-  in
-  assert_annotation_list
-    ~lookup:(generate_lookup ~context source)
-    [
-      "2:6-2:9/typing.Type[test.Foo]";
-      "3:6-3:14/typing.Callable(test.Foo.__init__)[[Named(self, test.Foo), Named(x, int)], None]";
-      "3:15-3:19/test.Foo";
-      "3:21-3:22/int";
-      "3:24-3:27/typing.Type[int]";
-      "3:32-3:36/typing.Type[None]";
-      "6:4-6:7/typing.Callable(test.foo)[[], None]";
-      "6:13-6:17/typing.Type[None]";
-      "7:2-7:3/typing.List[test.Foo]";
-      "7:6-7:27/typing.List[test.Foo]";
-      "7:7-7:10/typing.Type[test.Foo]";
-      "7:7-7:13/test.Foo";
-      (* TODO(T60237096): "7:11-7:12/int" should be a valid lookup. *)
-      "7:18-7:19/int";
-      "7:23-7:26/typing.List[int]";
-      "7:24-7:25/typing_extensions.Literal[1]";
-    ];
-  let source = {|
-       def foo() -> None:
-         x = 1
-         a = [x for x in [1.0]]
-    |} in
-  assert_annotation_list
-    ~lookup:(generate_lookup ~context source)
-    [
-      "2:4-2:7/typing.Callable(test.foo)[[], None]";
-      "2:13-2:17/typing.Type[None]";
-      "3:2-3:3/typing_extensions.Literal[1]";
-      "3:6-3:7/typing_extensions.Literal[1]";
-      "4:2-4:3/typing.List[float]";
-      "4:6-4:24/typing.List[float]";
-      "4:7-4:8/float";
-      "4:13-4:14/float";
-      "4:18-4:23/typing.List[float]";
-      "4:19-4:22/float";
-    ];
-  let source = {|
-       def foo() -> None:
-         a = [a for a in [None, 1.0] if a]
-    |} in
-  assert_annotation_list
-    ~lookup:(generate_lookup ~context source)
-    [
-      "2:4-2:7/typing.Callable(test.foo)[[], None]";
-      "2:13-2:17/typing.Type[None]";
-      "3:2-3:3/typing.List[float]";
-      "3:6-3:35/typing.List[float]";
-      "3:7-3:8/float";
-      "3:13-3:14/float";
-      "3:18-3:29/typing.List[typing.Optional[float]]";
-      "3:19-3:23/None";
-      "3:25-3:28/float";
-      "3:33-3:34/typing.Optional[float]";
-    ];
-  let source =
-    {|
-       def foo() -> None:
-         a = [(a, b) for a in [1.0, 2.0] for b in [1, 2]]
-    |}
-  in
-  assert_annotation_list
-    ~lookup:(generate_lookup ~context source)
-    [
-      "2:4-2:7/typing.Callable(test.foo)[[], None]";
-      "2:13-2:17/typing.Type[None]";
-      "3:2-3:3/typing.List[typing.Tuple[float, int]]";
-      "3:6-3:50/typing.List[typing.Tuple[float, int]]";
-      "3:7-3:13/typing.Tuple[float, int]";
-      "3:18-3:19/float";
-      "3:23-3:33/typing.List[float]";
-      "3:24-3:27/float";
-      "3:29-3:32/float";
-      "3:38-3:39/int";
-      "3:43-3:49/typing.List[int]";
-      "3:44-3:45/typing_extensions.Literal[1]";
-      "3:47-3:48/typing_extensions.Literal[2]";
-    ];
-  let source = {|
-       def foo() -> None:
-         x = 1
-         a = {x for x in [1.0]}
-    |} in
-  assert_annotation_list
-    ~lookup:(generate_lookup ~context source)
-    [
-      "2:4-2:7/typing.Callable(test.foo)[[], None]";
-      "2:13-2:17/typing.Type[None]";
-      "3:2-3:3/typing_extensions.Literal[1]";
-      "3:6-3:7/typing_extensions.Literal[1]";
-      "4:2-4:3/typing.Set[float]";
-      "4:6-4:24/typing.Set[float]";
-      "4:7-4:8/float";
-      "4:13-4:14/float";
-      "4:18-4:23/typing.List[float]";
-      "4:19-4:22/float";
-    ];
-  let source =
-    {|
-       def foo() -> None:
-         a = 1
-         b = 1
-         c = {a: b for a in [1.0]}
-    |}
-  in
-  assert_annotation_list
-    ~lookup:(generate_lookup ~context source)
-    [
-      "2:4-2:7/typing.Callable(test.foo)[[], None]";
-      "2:13-2:17/typing.Type[None]";
-      "3:2-3:3/typing_extensions.Literal[1]";
-      "3:6-3:7/typing_extensions.Literal[1]";
-      "4:2-4:3/typing_extensions.Literal[1]";
-      "4:6-4:7/typing_extensions.Literal[1]";
-      "5:2-5:3/typing.Dict[float, int]";
-      "5:6-5:27/typing.Dict[float, int]";
-      "5:7-5:8/float";
-      "5:10-5:11/typing_extensions.Literal[1]";
-      "5:16-5:17/float";
-      "5:21-5:26/typing.List[float]";
-      "5:22-5:25/float";
-    ];
-  let source =
-    {|
-       def foo() -> None:
-         a = 1
-         b = 1
-         c = {a: b for a in [1.0] for b in [1, 2]}
-    |}
-  in
-  assert_annotation_list
-    ~lookup:(generate_lookup ~context source)
-    [
-      "2:4-2:7/typing.Callable(test.foo)[[], None]";
-      "2:13-2:17/typing.Type[None]";
-      "3:2-3:3/typing_extensions.Literal[1]";
-      "3:6-3:7/typing_extensions.Literal[1]";
-      "4:2-4:3/typing_extensions.Literal[1]";
-      "4:6-4:7/typing_extensions.Literal[1]";
-      "5:2-5:3/typing.Dict[float, int]";
-      "5:6-5:43/typing.Dict[float, int]";
-      "5:7-5:8/float";
-      "5:10-5:11/int";
-      "5:16-5:17/float";
-      "5:21-5:26/typing.List[float]";
-      "5:22-5:25/float";
-      "5:31-5:32/int";
-      "5:36-5:42/typing.List[int]";
-      "5:37-5:38/typing_extensions.Literal[1]";
-      "5:40-5:41/typing_extensions.Literal[2]";
+              def foo() -> None:
+                a = [Foo(x) for x in [1]]
+            |}
+           [
+             "2:6-2:9/typing.Type[test.Foo]";
+             "3:6-3:14/typing.Callable(test.Foo.__init__)[[Named(self, test.Foo), Named(x, int)], \
+              None]";
+             "3:15-3:19/test.Foo";
+             "3:21-3:22/int";
+             "3:24-3:27/typing.Type[int]";
+             "3:32-3:36/typing.Type[None]";
+             "6:4-6:7/typing.Callable(test.foo)[[], None]";
+             "6:13-6:17/typing.Type[None]";
+             "7:2-7:3/typing.List[test.Foo]";
+             "7:6-7:27/typing.List[test.Foo]";
+             "7:7-7:10/typing.Type[test.Foo]";
+             "7:7-7:13/test.Foo";
+             (* TODO(T60237096): "7:11-7:12/int" should be a valid lookup. *)
+             "7:18-7:19/int";
+             "7:23-7:26/typing.List[int]";
+             "7:24-7:25/typing_extensions.Literal[1]";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_annotation_list
+           {|
+              def foo() -> None:
+                x = 1
+                a = [x for x in [1.0]]
+            |}
+           [
+             "2:4-2:7/typing.Callable(test.foo)[[], None]";
+             "2:13-2:17/typing.Type[None]";
+             "3:2-3:3/typing_extensions.Literal[1]";
+             "3:6-3:7/typing_extensions.Literal[1]";
+             "4:2-4:3/typing.List[float]";
+             "4:6-4:24/typing.List[float]";
+             "4:7-4:8/float";
+             "4:13-4:14/float";
+             "4:18-4:23/typing.List[float]";
+             "4:19-4:22/float";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_annotation_list
+           {|
+               def foo() -> None:
+                 a = [a for a in [None, 1.0] if a]
+            |}
+           [
+             "2:4-2:7/typing.Callable(test.foo)[[], None]";
+             "2:13-2:17/typing.Type[None]";
+             "3:2-3:3/typing.List[float]";
+             "3:6-3:35/typing.List[float]";
+             "3:7-3:8/float";
+             "3:13-3:14/float";
+             "3:18-3:29/typing.List[typing.Optional[float]]";
+             "3:19-3:23/None";
+             "3:25-3:28/float";
+             "3:33-3:34/typing.Optional[float]";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_annotation_list
+           {|
+              def foo() -> None:
+                a = [(a, b) for a in [1.0, 2.0] for b in [1, 2]]
+            |}
+           [
+             "2:4-2:7/typing.Callable(test.foo)[[], None]";
+             "2:13-2:17/typing.Type[None]";
+             "3:2-3:3/typing.List[typing.Tuple[float, int]]";
+             "3:6-3:50/typing.List[typing.Tuple[float, int]]";
+             "3:7-3:13/typing.Tuple[float, int]";
+             "3:18-3:19/float";
+             "3:23-3:33/typing.List[float]";
+             "3:24-3:27/float";
+             "3:29-3:32/float";
+             "3:38-3:39/int";
+             "3:43-3:49/typing.List[int]";
+             "3:44-3:45/typing_extensions.Literal[1]";
+             "3:47-3:48/typing_extensions.Literal[2]";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_annotation_list
+           {|
+              def foo() -> None:
+                x = 1
+                a = {x for x in [1.0]}
+            |}
+           [
+             "2:4-2:7/typing.Callable(test.foo)[[], None]";
+             "2:13-2:17/typing.Type[None]";
+             "3:2-3:3/typing_extensions.Literal[1]";
+             "3:6-3:7/typing_extensions.Literal[1]";
+             "4:2-4:3/typing.Set[float]";
+             "4:6-4:24/typing.Set[float]";
+             "4:7-4:8/float";
+             "4:13-4:14/float";
+             "4:18-4:23/typing.List[float]";
+             "4:19-4:22/float";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_annotation_list
+           {|
+              def foo() -> None:
+                a = 1
+                b = 1
+                c = {a: b for a in [1.0]}
+            |}
+           [
+             "2:4-2:7/typing.Callable(test.foo)[[], None]";
+             "2:13-2:17/typing.Type[None]";
+             "3:2-3:3/typing_extensions.Literal[1]";
+             "3:6-3:7/typing_extensions.Literal[1]";
+             "4:2-4:3/typing_extensions.Literal[1]";
+             "4:6-4:7/typing_extensions.Literal[1]";
+             "5:2-5:3/typing.Dict[float, int]";
+             "5:6-5:27/typing.Dict[float, int]";
+             "5:7-5:8/float";
+             "5:10-5:11/typing_extensions.Literal[1]";
+             "5:16-5:17/float";
+             "5:21-5:26/typing.List[float]";
+             "5:22-5:25/float";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_annotation_list
+           {|
+              def foo() -> None:
+                a = 1
+                b = 1
+                c = {a: b for a in [1.0] for b in [1, 2]}
+            |}
+           [
+             "2:4-2:7/typing.Callable(test.foo)[[], None]";
+             "2:13-2:17/typing.Type[None]";
+             "3:2-3:3/typing_extensions.Literal[1]";
+             "3:6-3:7/typing_extensions.Literal[1]";
+             "4:2-4:3/typing_extensions.Literal[1]";
+             "4:6-4:7/typing_extensions.Literal[1]";
+             "5:2-5:3/typing.Dict[float, int]";
+             "5:6-5:43/typing.Dict[float, int]";
+             "5:7-5:8/float";
+             "5:10-5:11/int";
+             "5:16-5:17/float";
+             "5:21-5:26/typing.List[float]";
+             "5:22-5:25/float";
+             "5:31-5:32/int";
+             "5:36-5:42/typing.List[int]";
+             "5:37-5:38/typing_extensions.Literal[1]";
+             "5:40-5:41/typing_extensions.Literal[2]";
+           ];
     ]
 
 
@@ -3972,7 +4045,6 @@ let test_hover_info_for_position context =
         def bar(self) -> None:
           self.foo()
               # ^- cursor
-  |}
     { value = Some "def foo() -> None: ..."; docstring = None };
   assert_hover_info_for_position
     {|
@@ -4000,14 +4072,14 @@ let () =
          "lookup_pick_narrowest" >:: test_lookup_pick_narrowest;
          "narrowest_match" >:: test_narrowest_match;
          "find_narrowest_spanning_symbol" >:: test_find_narrowest_spanning_symbol;
-         "resolve_definition_for_symbol" >:: test_resolve_definition_for_symbol;
+         test_resolve_definition_for_symbol;
          "lookup_attributes" >:: test_lookup_attributes;
          "lookup_assign" >:: test_lookup_assign;
          "lookup_call_arguments" >:: test_lookup_call_arguments;
          "lookup_class_attributes" >:: test_lookup_class_attributes;
          "lookup_class_attributes_nested" >:: test_lookup_class_attributes_nested;
          "lookup_dataclass_attributes" >:: test_lookup_dataclass_attributes;
-         "lookup_comprehensions" >:: test_lookup_comprehensions;
+         test_lookup_comprehensions;
          "lookup_if_statements" >:: test_lookup_if_statements;
          "lookup_imports" >:: test_lookup_imports;
          "lookup_string_annotations" >:: test_lookup_string_annotations;
