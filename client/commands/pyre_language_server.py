@@ -54,7 +54,7 @@ from . import (
     type_error_handler,
 )
 
-from .daemon_querier import DaemonQuerierSource, DaemonQueryFailure
+from .daemon_querier import DaemonQueryFailure, GetDefinitionLocationsResponse
 from .document_formatter import AbstractDocumentFormatter
 from .pyre_language_server_error import (
     getLanguageServerErrorFromDaemonError,
@@ -120,7 +120,6 @@ QueryResultType = TypeVar("QueryResultType")
 
 @dataclasses.dataclass(frozen=True)
 class QueryResultWithDurations(Generic[QueryResultType]):
-    source: Optional[DaemonQuerierSource]
     result: Union[QueryResultType, DaemonQueryFailure]
     overlay_update_duration: float
     query_duration: float
@@ -805,7 +804,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
         self,
         document_path: Path,
         position: lsp.LspPosition,
-    ) -> QueryResultWithDurations[List[lsp.LspLocation]]:
+    ) -> QueryResultWithDurations[GetDefinitionLocationsResponse]:
         """
         Helper function to call the querier. Exists only to reduce code duplication
         due to shadow mode, please don't make more of these - we already have enough
@@ -815,25 +814,19 @@ class PyreLanguageServer(PyreLanguageServerApi):
         overlay_update_duration = await self.update_overlay_if_needed(document_path)
         query_timer = timer.Timer()
         # TODO Bring out the state logic and use regular querier
-        raw_result = await self.index_querier.get_definition_locations(
+        result = await self.index_querier.get_definition_locations(
             path=document_path,
             position=position.to_pyre_position(),
         )
         query_duration = query_timer.stop_in_millisecond()
-        if isinstance(raw_result, DaemonQueryFailure):
+        if isinstance(result, DaemonQueryFailure):
             LOG.info(
                 "%s",
                 daemon_failure_string(
-                    "definition", str(type(raw_result)), raw_result.error_message
+                    "definition", str(type(result)), result.error_message
                 ),
             )
-            source = None
-            result = raw_result
-        else:
-            source = raw_result.source
-            result = raw_result.data
         return QueryResultWithDurations(
-            source=source,
             result=result,
             overlay_update_duration=overlay_update_duration,
             query_duration=query_duration,
@@ -909,16 +902,21 @@ class PyreLanguageServer(PyreLanguageServerApi):
         result = result_with_durations.result
         if isinstance(result, DaemonQueryFailure):
             error_message = result.error_message
-            output_result: List[lsp.LspLocation] = (
-                result.fallback_result.data
-                if result.fallback_result is not None
-                else []
-            )
             error_source = result.error_source
+            if result.fallback_result is None:
+                output_result = []
+                query_source = None
+                empty_reason = None
+            else:
+                output_result = result.fallback_result.data
+                query_source = result.fallback_result.source
+                empty_reason = result.fallback_result.empty_reason
         else:
             error_message = None
-            output_result = result
             error_source = None
+            output_result = result.data
+            query_source = result.source
+            empty_reason = result.empty_reason
         marshalling_response_timer = timer.Timer()
         # Unless we are in shadow mode, we send the response as output
         output_result_json = lsp.LspLocation.cached_schema().dump(
@@ -957,7 +955,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 "filePath": str(document_path),
                 "count": len(output_result_json),
                 "response": output_result_json,
-                "query_source": result_with_durations.source,
+                "query_source": query_source,
                 "duration_ms": result_with_durations.overall_duration,
                 "dispatch_request_duration": dispatch_request_duration,
                 "process_request_duration": process_request_duration,
@@ -978,6 +976,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 "character_at_position": character_at_position,
                 **daemon_status_before.as_telemetry_dict(),
                 "error_type": getLanguageServerErrorFromDaemonError(error_message),
+                "empty_reason": empty_reason,
             },
             activity_key,
         )

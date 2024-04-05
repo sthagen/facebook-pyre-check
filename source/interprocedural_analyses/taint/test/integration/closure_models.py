@@ -109,8 +109,11 @@ def some_decorator(func):
     return wrapper_func
 
 def test_dsl_source(some_data: str) -> None:
+    def decorated_local_function_capturing_local_variable():
+        _test_sink(some_data)
 
-    # TODO(T180817012): Should be found, but is not currently
+def test_dsl_decorator_source(some_data: str) -> None:
+    # TODO(T184343924): Fix bug with DSL decorator parameter sources
     @some_decorator
     def decorated_local_function_capturing_local_variable():
         _test_sink(some_data)
@@ -131,8 +134,8 @@ def captured_variable_model_parameter_source():
     # complicated_name has no taint outside nested functions, no issue
     _test_sink(complicated_name)
 
+    # model capturing all variables as parameter sources in nested functions
     def model_all_captured_as_parameter_sources():
-        # TODO(T180817012): Support capturing all variables as parameter sources in nested functions
         _test_sink(complicated_name)
 
 
