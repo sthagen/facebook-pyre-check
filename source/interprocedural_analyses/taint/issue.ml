@@ -151,7 +151,7 @@ let generate_issues
     List.map flows ~f:partition
   in
   let apply_rule_on_flow
-      { Rule.sources; sinks; transforms; _ }
+      { Rule.sources; sinks; transforms; filters; _ }
       { PartitionedFlow.source_partition; sink_partition }
     =
     let add_source_taint source_taint source =
@@ -304,26 +304,26 @@ let generate_issues
       in
       Rule.transform_splits transforms |> List.fold ~init:Flow.bottom ~f:add_and_sanitize_flow
     in
-    let partition_flow = apply_transforms { source_taint; sink_taint } in
+    let apply_filters { Flow.source_taint; sink_taint } =
+      let source_taint =
+        match filters with
+        | Some { maximum_source_distance = Some maximum_source_distance; _ } ->
+            ForwardTaint.prune_maximum_length maximum_source_distance source_taint
+        | _ -> source_taint
+      in
+      let sink_taint =
+        match filters with
+        | Some { maximum_sink_distance = Some maximum_sink_distance; _ } ->
+            BackwardTaint.prune_maximum_length maximum_sink_distance sink_taint
+        | _ -> sink_taint
+      in
+      { Flow.source_taint; sink_taint }
+    in
+    let partition_flow = { source_taint; sink_taint } |> apply_transforms |> apply_filters in
     if Flow.is_bottom partition_flow then
       None
     else
       Some partition_flow
-  in
-  let apply_rule_separate_access_path issues_so_far (rule : Rule.t) =
-    let fold_partitions issues candidate =
-      match apply_rule_on_flow rule candidate with
-      | Some flow ->
-          {
-            flow;
-            handle = { code = rule.code; callable = Target.create define; sink = sink_handle };
-            locations = LocationSet.singleton location;
-            define;
-          }
-          :: issues
-      | None -> issues
-    in
-    List.fold partitions ~init:issues_so_far ~f:fold_partitions
   in
   let apply_rule_merge_access_path rule =
     let fold_partitions flow_so_far candidate =
@@ -358,15 +358,10 @@ let generate_issues
     in
     IssueHandle.SerializableMap.update issue.handle update map
   in
-  if taint_configuration.TaintConfiguration.Heap.lineage_analysis then
-    (* Create different issues for same access path, e.g, Issue{[a] -> [b]}, Issue {[c] -> [d]}. *)
-    (* Note that this breaks a SAPP invariant because there might be multiple issues with the same
-       handle. This is fine because in that configuration we do not use SAPP. *)
-    List.fold taint_configuration.rules ~init:[] ~f:apply_rule_separate_access_path
-  else (* Create single issue for same access path, e.g, Issue{[a],[c] -> [b], [d]}. *)
-    List.filter_map ~f:apply_rule_merge_access_path taint_configuration.rules
-    |> List.fold ~init:IssueHandle.SerializableMap.empty ~f:group_by_handle
-    |> IssueHandle.SerializableMap.data
+  (* Create single issue for same access path, e.g, Issue{[a],[c] -> [b], [d]}. *)
+  List.filter_map ~f:apply_rule_merge_access_path taint_configuration.TaintConfiguration.Heap.rules
+  |> List.fold ~init:IssueHandle.SerializableMap.empty ~f:group_by_handle
+  |> IssueHandle.SerializableMap.data
 
 
 (* A map from triggered sink kinds (which is a string) to the handles of the flows that are detected
