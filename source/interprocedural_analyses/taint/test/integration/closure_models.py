@@ -109,11 +109,11 @@ def some_decorator(func):
     return wrapper_func
 
 def test_dsl_source(some_data: str) -> None:
-    def decorated_local_function_capturing_local_variable():
+    def local_function_capturing_local_variable():
         _test_sink(some_data)
 
 def test_dsl_decorator_source(some_data: str) -> None:
-    # TODO(T184343924): Fix bug with DSL decorator parameter sources
+    # TODO(T171117938): Decorator inlining causes unignored decorators to break closure taint flows
     @some_decorator
     def decorated_local_function_capturing_local_variable():
         _test_sink(some_data)
@@ -138,6 +138,9 @@ def captured_variable_model_parameter_source():
     def model_all_captured_as_parameter_sources():
         _test_sink(complicated_name)
 
+    model_all_captured_as_parameter_sources()
+    _test_sink(complicated_name) # no issue
+
 
 def captured_variable_model_generation_source():
     complicated_name = ...
@@ -145,8 +148,20 @@ def captured_variable_model_generation_source():
     # model simulates writing taint to nonlocal
     def model_all_captured_as_generation_sources():
         complicated_name
+        _test_sink(complicated_name) # no issue
 
     model_all_captured_as_generation_sources()
+    _test_sink(complicated_name)
+
+
+def captured_variable_model_both_generation_parameter_source():
+    complicated_name = ...
+
+    # model simulates writing taint to nonlocal and parameter sources
+    def model_all_captured_as_generation_and_parameter_sources():
+        _test_sink(complicated_name)
+
+    model_all_captured_as_generation_and_parameter_sources()
     _test_sink(complicated_name)
 
 
