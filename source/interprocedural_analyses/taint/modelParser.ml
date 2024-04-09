@@ -980,37 +980,10 @@ let rec parse_annotations
             ];
         _;
       } ->
-        let add_cross_repository_information annotation =
-          let leaf_name =
-            Features.LeafName.
-              { leaf = canonical_name; port = Features.LeafPort.Anchor { port = canonical_port } }
-          in
-          match annotation with
-          | TaintAnnotation.Source { source; features } ->
-              TaintAnnotation.Source
-                {
-                  source;
-                  features =
-                    {
-                      features with
-                      leaf_names = leaf_name :: features.leaf_names;
-                      leaf_name_provided = true;
-                    };
-                }
-          | TaintAnnotation.Sink { sink; features } ->
-              TaintAnnotation.Sink
-                {
-                  sink;
-                  features =
-                    {
-                      features with
-                      leaf_names = leaf_name :: features.leaf_names;
-                      leaf_name_provided = true;
-                    };
-                }
-          | _ -> annotation
-        in
-        parse_annotation taint |> map ~f:(List.map ~f:add_cross_repository_information)
+        let open Core.Result in
+        parse_annotation taint
+        >>| List.map
+              ~f:(TaintAnnotation.add_cross_repository_anchor ~canonical_name ~canonical_port)
     | _ ->
         Error
           (annotation_error
@@ -1707,7 +1680,7 @@ let parse_read_from_cache_constraint ~path ~location ~constraint_expression ~arg
            (InvalidReadFromCacheArguments constraint_expression))
 
 
-let parse_format_string ~find_clause substrings =
+let parse_format_string ~find_clause ~allow_parameter_name ~allow_parameter_position substrings =
   let open Core.Result in
   let check_find_is ~identifier expected =
     if ModelQuery.Find.equal find_clause expected then
@@ -1717,9 +1690,60 @@ let parse_format_string ~find_clause substrings =
         (ModelVerificationError.FormatStringError.InvalidIdentifierForFind
            { identifier; find = ModelQuery.Find.show find_clause })
   in
+  let rec parse_integer_expression = function
+    | { Node.value = Expression.Constant (Constant.Integer value); _ } ->
+        Ok (ModelQuery.FormatString.IntegerExpression.Constant value)
+    | { Node.value = Expression.Name (Identifier "parameter_position"); _ } ->
+        if allow_parameter_position then
+          Ok ModelQuery.FormatString.IntegerExpression.ParameterPosition
+        else
+          Error
+            (ModelVerificationError.FormatStringError.InvalidIdentifierForContext
+               "parameter_position")
+    | {
+        Node.value =
+          Expression.Name
+            (Identifier
+              (("function_name" | "method_name" | "class_name" | "parameter_name") as identifier));
+        _;
+      } ->
+        Error
+          (ModelVerificationError.FormatStringError.InvalidIdentifierInIntegerExpression identifier)
+    | { Node.value = Expression.Name (Identifier identifier); _ } ->
+        Error (ModelVerificationError.FormatStringError.InvalidIdentifier identifier)
+    | {
+        Node.value =
+          Expression.Call
+            {
+              callee =
+                {
+                  Node.value =
+                    Expression.Name
+                      (Name.Attribute
+                        { base; attribute = ("__add__" | "__sub__" | "__mul__") as operator; _ });
+                  _;
+                };
+              arguments = [{ Call.Argument.value = argument; _ }];
+            };
+        _;
+      } -> (
+        parse_integer_expression base
+        >>= fun left ->
+        parse_integer_expression argument
+        >>| fun right ->
+        match operator with
+        | "__add__" -> ModelQuery.FormatString.IntegerExpression.Add { left; right }
+        | "__sub__" -> ModelQuery.FormatString.IntegerExpression.Sub { left; right }
+        | "__mul__" -> ModelQuery.FormatString.IntegerExpression.Mul { left; right }
+        | _ -> failwith "unreachable")
+    | expression -> Error (ModelVerificationError.FormatStringError.InvalidExpression expression)
+  in
   let parse_substring = function
     | Ast.Expression.Substring.Literal { Node.value; _ } ->
         Ok (ModelQuery.FormatString.Substring.Literal value)
+    | Ast.Expression.Substring.Format
+        { Node.value = Expression.Constant (Constant.Integer value); _ } ->
+        Ok (ModelQuery.FormatString.Substring.Integer (Constant value))
     | Ast.Expression.Substring.Format
         { Node.value = Expression.Name (Identifier ("class_name" as identifier)); _ } ->
         check_find_is ~identifier ModelQuery.Find.Method
@@ -1732,6 +1756,21 @@ let parse_format_string ~find_clause substrings =
         { Node.value = Expression.Name (Identifier ("method_name" as identifier)); _ } ->
         check_find_is ~identifier ModelQuery.Find.Method
         >>| fun () -> ModelQuery.FormatString.Substring.MethodName
+    | Ast.Expression.Substring.Format
+        { Node.value = Expression.Name (Identifier "parameter_name"); _ } ->
+        if allow_parameter_name then
+          Ok ModelQuery.FormatString.Substring.ParameterName
+        else
+          Error
+            (ModelVerificationError.FormatStringError.InvalidIdentifierForContext "parameter_name")
+    | Ast.Expression.Substring.Format
+        { Node.value = Expression.Name (Identifier "parameter_position"); _ } ->
+        if allow_parameter_position then
+          Ok (ModelQuery.FormatString.Substring.Integer ParameterPosition)
+        else
+          Error
+            (ModelVerificationError.FormatStringError.InvalidIdentifierForContext
+               "parameter_position")
     | Ast.Expression.Substring.Format { Node.value = Expression.Name (Identifier identifier); _ } ->
         Error (ModelVerificationError.FormatStringError.InvalidIdentifier identifier)
     | Ast.Expression.Substring.Format
@@ -1751,6 +1790,24 @@ let parse_format_string ~find_clause substrings =
           _;
         } ->
         Ok (ModelQuery.FormatString.Substring.Capture name)
+    | Ast.Expression.Substring.Format
+        ({
+           Node.value =
+             Expression.Call
+               {
+                 callee =
+                   {
+                     Node.value =
+                       Expression.Name
+                         (Name.Attribute { attribute = "__add__" | "__sub__" | "__mul__"; _ });
+                     _;
+                   };
+                 arguments = [_];
+               };
+           _;
+         } as expression) ->
+        parse_integer_expression expression
+        >>| fun expression -> ModelQuery.FormatString.Substring.Integer expression
     | Ast.Expression.Substring.Format expression ->
         Error (ModelVerificationError.FormatStringError.InvalidExpression expression)
   in
@@ -1770,7 +1827,13 @@ let parse_write_to_cache_model ~path ~location ~find_clause ~model_expression ~a
      value = { Node.value = Expression.FormatString substrings; _ };
    };
   ] -> (
-      match parse_format_string ~find_clause substrings with
+      match
+        parse_format_string
+          ~find_clause
+          ~allow_parameter_name:false
+          ~allow_parameter_position:false
+          substrings
+      with
       | Ok name -> Ok (ModelQuery.Model.WriteToCache { kind; name })
       | Error error ->
           Error (model_verification_error ~path ~location (InvalidWriteToCacheName error)))
@@ -2101,6 +2164,8 @@ let parse_parameter_where_clause ~path ({ Node.value; location } as expression) 
             };
           ] ) ->
           Ok (ModelQuery.ParameterConstraint.IndexConstraint index)
+      | ["has_position"], [] -> Ok ModelQuery.ParameterConstraint.HasPosition
+      | ["has_name"], [] -> Ok ModelQuery.ParameterConstraint.HasName
       | _ ->
           Error
             (model_verification_error
@@ -2189,6 +2254,75 @@ let parse_model_clause
                      ~path
                      ~location
                      (UnexpectedTaintAnnotation parametric_annotation)))
+        | Expression.Call
+            {
+              Call.callee =
+                {
+                  Node.value =
+                    Expression.Name
+                      (Name.Attribute
+                        {
+                          base =
+                            { Node.value = Name (Name.Identifier "CrossRepositoryTaintAnchor"); _ };
+                          attribute = "__getitem__";
+                          special = true;
+                        });
+                  _;
+                };
+              arguments =
+                [
+                  {
+                    value =
+                      {
+                        Node.value =
+                          Expression.Tuple [taint_expression; canonical_name; canonical_port];
+                        _;
+                      };
+                    _;
+                  };
+                ];
+            } ->
+            let parse_string_argument parameter_name argument =
+              match Node.value argument with
+              | Expression.Constant (Constant.String { StringLiteral.value; _ }) ->
+                  Ok [ModelQuery.FormatString.Substring.Literal value]
+              | Expression.FormatString substrings ->
+                  parse_format_string
+                    ~find_clause
+                    ~allow_parameter_name:
+                      (AnnotationOrigin.equal origin AnnotationOrigin.ModelQueryParameter)
+                    ~allow_parameter_position:
+                      (AnnotationOrigin.equal origin AnnotationOrigin.ModelQueryParameter)
+                    substrings
+                  |> Result.map_error ~f:(fun error ->
+                         model_verification_error
+                           ~path
+                           ~location
+                           (InvalidCrossRepositoryTaintAnchorFormatString
+                              { argument = parameter_name; error }))
+              | _ ->
+                  Error
+                    (model_verification_error
+                       ~path
+                       ~location
+                       (InvalidCrossRepositoryTaintAnchorString
+                          { argument = parameter_name; value = argument }))
+            in
+            parse_string_argument "canonical name" canonical_name
+            >>= fun canonical_name ->
+            parse_string_argument "canonical port" canonical_port
+            >>= fun canonical_port ->
+            parse_annotations
+              ~path
+              ~location
+              ~origin
+              ~taint_configuration
+              ~parameters:[]
+              ~callable_parameter_names_to_roots:None
+              taint_expression
+            >>| List.map ~f:(fun annotation ->
+                    ModelQuery.QueryTaintAnnotation.CrossRepositoryTaintAnchor
+                      { annotation; canonical_name; canonical_port })
         | _ ->
             parse_annotations
               ~path

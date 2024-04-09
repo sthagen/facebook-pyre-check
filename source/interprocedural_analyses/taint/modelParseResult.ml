@@ -314,6 +314,37 @@ module TaintAnnotation = struct
 
   let from_tito tito = Tito { tito; features = TaintFeatures.empty }
 
+  let add_cross_repository_anchor ~canonical_name ~canonical_port annotation =
+    let leaf_name =
+      Features.LeafName.
+        { leaf = canonical_name; port = Features.LeafPort.Anchor { port = canonical_port } }
+    in
+    match annotation with
+    | Source { source; features } ->
+        Source
+          {
+            source;
+            features =
+              {
+                features with
+                leaf_names = leaf_name :: features.leaf_names;
+                leaf_name_provided = true;
+              };
+          }
+    | Sink { sink; features } ->
+        Sink
+          {
+            sink;
+            features =
+              {
+                features with
+                leaf_names = leaf_name :: features.leaf_names;
+                leaf_name_provided = true;
+              };
+          }
+    | _ -> annotation
+
+
   let pp formatter = function
     | Sink { sink; features } ->
         Format.fprintf
@@ -416,6 +447,8 @@ module ModelQuery = struct
       | AnnotationConstraint of AnnotationConstraint.t
       | NameConstraint of NameConstraint.t
       | IndexConstraint of int
+      | HasPosition
+      | HasName
       | AnyOf of t list
       | AllOf of t list
       | Not of t
@@ -464,6 +497,25 @@ module ModelQuery = struct
   end
 
   module FormatString = struct
+    module IntegerExpression = struct
+      type t =
+        | Constant of int
+        | ParameterPosition
+        | Add of {
+            left: t;
+            right: t;
+          }
+        | Sub of {
+            left: t;
+            right: t;
+          }
+        | Mul of {
+            left: t;
+            right: t;
+          }
+      [@@deriving equal, show]
+    end
+
     module Substring = struct
       type t =
         | Literal of string
@@ -471,6 +523,8 @@ module ModelQuery = struct
         | FunctionName
         | MethodName
         | ClassName
+        | ParameterName
+        | Integer of IntegerExpression.t
       [@@deriving equal, show]
     end
 
@@ -581,6 +635,11 @@ module ModelQuery = struct
       | ParametricSinkFromAnnotation of {
           sink_pattern: string;
           kind: string;
+        }
+      | CrossRepositoryTaintAnchor of {
+          annotation: TaintAnnotation.t;
+          canonical_name: FormatString.t;
+          canonical_port: FormatString.t;
         }
     [@@deriving show, equal]
   end
@@ -801,29 +860,83 @@ module Modelable = struct
     | _ -> false
 
 
-  let expand_format_string ~name_captures modelable name =
-    let expand_substring modelable substring =
-      match substring, modelable with
-      | ModelQuery.FormatString.Substring.Literal value, _ -> Ok value
-      | FunctionName, Callable { target = Target.Function { name; _ }; _ } ->
+  let expand_format_string ~name_captures ~parameter modelable name =
+    let open Core.Result in
+    let expand_function_name () =
+      match modelable with
+      | Callable { target = Target.Function { name; _ }; _ } ->
           Reference.create name |> Reference.last |> Result.return
-      | FunctionName, _ -> Error "`function_name` can only be used on functions"
-      | MethodName, Callable { target = Target.Method { method_name; _ }; _ } -> Ok method_name
-      | MethodName, _ -> Error "`method_name` can only be used on methods"
-      | ClassName, Callable { target = Target.Method { class_name; _ }; _ } ->
-          Reference.create class_name |> Reference.last |> Result.return
-      | ClassName, _ -> Error "`class_name` can only be used on methods"
-      | Capture identifier, _ -> (
-          match NameCaptures.get name_captures identifier with
-          | Some value -> Ok value
-          | None ->
-              let () = Log.warning "No match for capture `%s` in WriteToCache query" identifier in
-              Ok "")
+      | _ -> Error "`function_name` can only be used on functions"
     in
-    name
-    |> List.map ~f:(expand_substring modelable)
-    |> Result.all
-    |> Result.map ~f:(String.concat ~sep:"")
+    let expand_method_name () =
+      match modelable with
+      | Callable { target = Target.Method { method_name; _ }; _ } -> Ok method_name
+      | _ -> Error "`method_name` can only be used on methods"
+    in
+    let expand_class_name () =
+      match modelable with
+      | Callable { target = Target.Method { class_name; _ }; _ } ->
+          Reference.create class_name |> Reference.last |> Result.return
+      | _ -> Error "`class_name` can only be used on methods"
+    in
+    let expand_capture identifier =
+      match NameCaptures.get name_captures identifier with
+      | Some value -> Ok value
+      | None ->
+          let () = Log.warning "No match for capture `%s` in WriteToCache query" identifier in
+          Ok ""
+    in
+    let expand_parameter_name () =
+      match parameter with
+      | None
+      | Some AccessPath.Root.LocalResult
+      | Some (AccessPath.Root.Variable _)
+      | Some (AccessPath.Root.CapturedVariable _) ->
+          Error "`parameter_name` can only be used on parameters"
+      | Some (AccessPath.Root.PositionalParameter { name; _ }) -> Ok name
+      | Some (AccessPath.Root.NamedParameter { name }) -> Ok name
+      | Some (AccessPath.Root.StarParameter _) -> Ok "*args"
+      | Some (AccessPath.Root.StarStarParameter _) -> Ok "**kwargs"
+    in
+    let expand_parameter_position () =
+      match parameter with
+      | None
+      | Some AccessPath.Root.LocalResult
+      | Some (AccessPath.Root.Variable _)
+      | Some (AccessPath.Root.CapturedVariable _) ->
+          Error "`parameter_position` can only be used on parameters"
+      | Some (AccessPath.Root.PositionalParameter { position; _ }) -> Ok position
+      | Some (AccessPath.Root.StarParameter { position }) -> Ok position
+      | Some (AccessPath.Root.NamedParameter _)
+      | Some (AccessPath.Root.StarStarParameter _) ->
+          (* These don't have a position, let's use -1. Do not throw an error since this can easily
+             be triggered on code changes. To prevent issues, the user should use a model query
+             constraint to match on positional parameters only. *)
+          Ok (-1)
+    in
+    let rec expand_integer_expression = function
+      | ModelQuery.FormatString.IntegerExpression.Constant value -> Ok value
+      | ParameterPosition -> expand_parameter_position ()
+      | Add { left; right } ->
+          expand_integer_expression left
+          >>= fun left -> expand_integer_expression right >>| fun right -> left + right
+      | Sub { left; right } ->
+          expand_integer_expression left
+          >>= fun left -> expand_integer_expression right >>| fun right -> left - right
+      | Mul { left; right } ->
+          expand_integer_expression left
+          >>= fun left -> expand_integer_expression right >>| fun right -> left * right
+    in
+    let expand_substring = function
+      | ModelQuery.FormatString.Substring.Literal value -> Ok value
+      | FunctionName -> expand_function_name ()
+      | MethodName -> expand_method_name ()
+      | ClassName -> expand_class_name ()
+      | Capture identifier -> expand_capture identifier
+      | ParameterName -> expand_parameter_name ()
+      | Integer expression -> expression |> expand_integer_expression >>| string_of_int
+    in
+    name |> List.map ~f:expand_substring |> Result.all |> Result.map ~f:(String.concat ~sep:"")
 end
 
 type t = {

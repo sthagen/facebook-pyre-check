@@ -2331,6 +2331,338 @@ let test_query_parsing_captured_variables context =
   ()
 
 
+let test_query_parsing_cross_repository_taint_anchor context =
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = Parameters(CrossRepositoryTaintAnchor[TaintSink[Test], 1, 2])
+    )
+  |}
+    ~expect:"Expected string for canonical name of CrossRepositoryTaintAnchor, got `1`"
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = Parameters(CrossRepositoryTaintAnchor[TaintSink[Test], "a", 2])
+    )
+  |}
+    ~expect:"Expected string for canonical port of CrossRepositoryTaintAnchor, got `2`"
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = Parameters(CrossRepositoryTaintAnchor[Foo, "a", "b"])
+    )
+  |}
+    ~expect:"`Foo` is an invalid taint annotation: Failed to parse the given taint annotation."
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = Parameters(CrossRepositoryTaintAnchor[TaintSink[Test], f"{unknown_identifier}", "b"])
+    )
+  |}
+    ~expect:
+      {|Invalid canonical name for CrossRepositoryTaintAnchor: unknown identifier `unknown_identifier`|}
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = Parameters(CrossRepositoryTaintAnchor[TaintSink[Test], f"{method_name}", "b"])
+    )
+  |}
+    ~expect:
+      {|Invalid canonical name for CrossRepositoryTaintAnchor: invalid identifier `method_name` for find="functions"|}
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = Parameters(CrossRepositoryTaintAnchor[TaintSink[Test], f"{function_name}", f"{method_name}"])
+    )
+  |}
+    ~expect:
+      {|Invalid canonical port for CrossRepositoryTaintAnchor: invalid identifier `method_name` for find="functions"|}
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = Returns(CrossRepositoryTaintAnchor[TaintSink[Test], f"{parameter_name}", "formal(0)"])
+    )
+  |}
+    ~expect:
+      {|Invalid canonical name for CrossRepositoryTaintAnchor: identifier `parameter_name` is invalid in this context|}
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = Returns(CrossRepositoryTaintAnchor[TaintSink[Test], f"{parameter_position}", "formal(0)"])
+    )
+  |}
+    ~expect:
+      {|Invalid canonical name for CrossRepositoryTaintAnchor: identifier `parameter_position` is invalid in this context|}
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = CapturedVariables(CrossRepositoryTaintAnchor[TaintSink[Test], f"{parameter_name}", "formal(0)"])
+    )
+  |}
+    ~expect:
+      {|Invalid canonical name for CrossRepositoryTaintAnchor: identifier `parameter_name` is invalid in this context|}
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = CapturedVariables(CrossRepositoryTaintAnchor[TaintSink[Test], f"{parameter_position}", "formal(0)"])
+    )
+  |}
+    ~expect:
+      {|Invalid canonical name for CrossRepositoryTaintAnchor: identifier `parameter_position` is invalid in this context|}
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = CapturedVariables(CrossRepositoryTaintAnchor[TaintSink[Test], f"{function_name + 1}", "formal(0)"])
+    )
+  |}
+    ~expect:
+      {|Invalid canonical name for CrossRepositoryTaintAnchor: identifier `function_name` cannot be used in an integer expression|}
+    ();
+  assert_invalid_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "invalid_cross_repository_taint_anchor",
+     find = "functions",
+     where = name.matches("foo"),
+     model = CapturedVariables(CrossRepositoryTaintAnchor[TaintSink[Test], f"{foo + 1}", "formal(0)"])
+    )
+  |}
+    ~expect:{|Invalid canonical name for CrossRepositoryTaintAnchor: unknown identifier `foo`|}
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "cross_repository_taint_anchor",
+     find = "methods",
+     where = name.matches("foo"),
+     model = Parameters(CrossRepositoryTaintAnchor[TaintSink[Test], f"{class_name}:{method_name}", "formal(1)"])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "cross_repository_taint_anchor";
+          logging_group_name = None;
+          path = None;
+          where = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          find = Method;
+          models =
+            [
+              Parameter
+                {
+                  where = [];
+                  taint =
+                    [
+                      CrossRepositoryTaintAnchor
+                        {
+                          annotation =
+                            ModelParseResult.TaintAnnotation.from_sink (Sinks.NamedSink "Test");
+                          canonical_name =
+                            [
+                              FormatString.Substring.ClassName;
+                              FormatString.Substring.Literal ":";
+                              FormatString.Substring.MethodName;
+                            ];
+                          canonical_port = [FormatString.Substring.Literal "formal(1)"];
+                        };
+                    ];
+                };
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "cross_repository_taint_anchor",
+     find = "methods",
+     where = name.matches("foo"),
+     model = Parameters(CrossRepositoryTaintAnchor[TaintSink[Test], f"{class_name}:{method_name}", f"formal(1).{parameter_name}"])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "cross_repository_taint_anchor";
+          logging_group_name = None;
+          path = None;
+          where = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          find = Method;
+          models =
+            [
+              Parameter
+                {
+                  where = [];
+                  taint =
+                    [
+                      CrossRepositoryTaintAnchor
+                        {
+                          annotation =
+                            ModelParseResult.TaintAnnotation.from_sink (Sinks.NamedSink "Test");
+                          canonical_name =
+                            [
+                              FormatString.Substring.ClassName;
+                              FormatString.Substring.Literal ":";
+                              FormatString.Substring.MethodName;
+                            ];
+                          canonical_port =
+                            [
+                              FormatString.Substring.Literal "formal(1).";
+                              FormatString.Substring.ParameterName;
+                            ];
+                        };
+                    ];
+                };
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "cross_repository_taint_anchor",
+     find = "methods",
+     where = name.matches("foo"),
+     model = Parameters(CrossRepositoryTaintAnchor[
+       TaintSink[Test],
+       f"{class_name}:{method_name}",
+       f"formal({parameter_position * 2 + 1})"
+     ])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 11; column = 1 } };
+          name = "cross_repository_taint_anchor";
+          logging_group_name = None;
+          path = None;
+          where = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          find = Method;
+          models =
+            [
+              Parameter
+                {
+                  where = [];
+                  taint =
+                    [
+                      CrossRepositoryTaintAnchor
+                        {
+                          annotation =
+                            ModelParseResult.TaintAnnotation.from_sink (Sinks.NamedSink "Test");
+                          canonical_name =
+                            [
+                              FormatString.Substring.ClassName;
+                              FormatString.Substring.Literal ":";
+                              FormatString.Substring.MethodName;
+                            ];
+                          canonical_port =
+                            [
+                              FormatString.Substring.Literal "formal(";
+                              FormatString.Substring.Integer
+                                (FormatString.IntegerExpression.Add
+                                   {
+                                     left =
+                                       FormatString.IntegerExpression.Mul
+                                         {
+                                           left = FormatString.IntegerExpression.ParameterPosition;
+                                           right = FormatString.IntegerExpression.Constant 2;
+                                         };
+                                     right = FormatString.IntegerExpression.Constant 1;
+                                   });
+                              FormatString.Substring.Literal ")";
+                            ];
+                        };
+                    ];
+                };
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  ()
+
+
 let () =
   "taint_model"
   >::: [
@@ -2344,5 +2676,7 @@ let () =
          "query_parsing_cache" >:: test_query_parsing_cache;
          "query_parsing_logging_group" >:: test_query_parsing_logging_group;
          "query_parsing_captured_variables" >:: test_query_parsing_captured_variables;
+         "query_parsing_cross_repository_taint_anchor"
+         >:: test_query_parsing_cross_repository_taint_anchor;
        ]
   |> Test.run

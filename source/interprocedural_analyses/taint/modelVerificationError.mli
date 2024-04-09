@@ -41,6 +41,8 @@ module FormatStringError : sig
         identifier: string;
         find: string;
       }
+    | InvalidIdentifierForContext of string
+    | InvalidIdentifierInIntegerExpression of string
   [@@deriving sexp, equal, compare, show]
 
   val description : t -> string
@@ -178,6 +180,14 @@ type kind =
   | InvalidWriteToCacheName of FormatStringError.t
   | MutuallyExclusiveReadWriteToCache
   | MutuallyExclusiveTaintWriteToCache
+  | InvalidCrossRepositoryTaintAnchorString of {
+      argument: string;
+      value: Expression.t;
+    }
+  | InvalidCrossRepositoryTaintAnchorFormatString of {
+      argument: string;
+      error: FormatStringError.t;
+    }
 [@@deriving sexp, equal, compare]
 
 type t = {

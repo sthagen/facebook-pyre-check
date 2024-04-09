@@ -188,6 +188,218 @@
 {
   "kind": "model",
   "data": {
+    "callable": "cross_repository.TestDSLAnchor.bar",
+    "filename": "cross_repository.py",
+    "callable_line": 55,
+    "sinks": [
+      {
+        "port": "formal(yet_another_c, position=2)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "test_3:TestDSLAnchor:bar",
+                    "port": "anchor:formal(7)"
+                  },
+                  {
+                    "name": "test_2:TestDSLAnchor:yet_another_c",
+                    "port": "anchor:formal(2)"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      },
+      {
+        "port": "formal(crtex_b, position=1)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "test_2:TestDSLAnchor:crtex_b",
+                    "port": "anchor:formal(1)"
+                  },
+                  {
+                    "name": "test_1:TestDSLAnchor:bar",
+                    "port": "anchor:formal(1).b"
+                  },
+                  {
+                    "name": "test_3:TestDSLAnchor:bar",
+                    "port": "anchor:formal(4)"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      },
+      {
+        "port": "formal(self, position=0)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "test_2:TestDSLAnchor:self",
+                    "port": "anchor:formal(0)"
+                  },
+                  {
+                    "name": "test_3:TestDSLAnchor:bar",
+                    "port": "anchor:formal(1)"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "cross_repository.TestDSLAnchor.foo",
+    "filename": "cross_repository.py",
+    "callable_line": 52,
+    "sinks": [
+      {
+        "port": "formal(**kwargs, excluded=[other_b,crtex_a,self])",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "test_2:TestDSLAnchor:**kwargs",
+                    "port": "anchor:formal(-1)"
+                  },
+                  {
+                    "name": "test_3:TestDSLAnchor:foo",
+                    "port": "anchor:formal(-2)"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      },
+      {
+        "port": "formal(*args, position=3)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "test_3:TestDSLAnchor:foo",
+                    "port": "anchor:formal(10)"
+                  },
+                  {
+                    "name": "test_2:TestDSLAnchor:*args",
+                    "port": "anchor:formal(3)"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      },
+      {
+        "port": "formal(other_b, position=2)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "test_3:TestDSLAnchor:foo",
+                    "port": "anchor:formal(7)"
+                  },
+                  {
+                    "name": "test_2:TestDSLAnchor:other_b",
+                    "port": "anchor:formal(2)"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      },
+      {
+        "port": "formal(crtex_a, position=1)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "test_1:TestDSLAnchor:foo",
+                    "port": "anchor:formal(1).a"
+                  },
+                  {
+                    "name": "test_3:TestDSLAnchor:foo",
+                    "port": "anchor:formal(4)"
+                  },
+                  {
+                    "name": "test_2:TestDSLAnchor:crtex_a",
+                    "port": "anchor:formal(1)"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      },
+      {
+        "port": "formal(self, position=0)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "test_2:TestDSLAnchor:self",
+                    "port": "anchor:formal(0)"
+                  },
+                  {
+                    "name": "test_3:TestDSLAnchor:foo",
+                    "port": "anchor:formal(1)"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "cross_repository.cross_repository_anchor_sink",
     "filename": "cross_repository.py",
     "callable_line": 26,

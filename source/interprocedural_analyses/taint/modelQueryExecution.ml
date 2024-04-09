@@ -372,10 +372,10 @@ let matches_name_constraint ~name_captures ~name_constraint name =
   | ModelQuery.NameConstraint.Equals string -> String.equal string name
   | ModelQuery.NameConstraint.Matches pattern ->
       let is_match = Re2.matches pattern name in
-      (match name_captures with
-      | Some name_captures when is_match ->
+      let () =
+        if is_match then
           NameCaptures.add name_captures (Re2.first_match_exn pattern name)
-      | _ -> ());
+      in
       is_match
 
 
@@ -583,6 +583,16 @@ let rec normalized_parameter_matches_constraint
   | ModelQuery.ParameterConstraint.IndexConstraint index -> (
       match root with
       | AccessPath.Root.PositionalParameter { position; _ } when position = index -> true
+      | _ -> false)
+  | ModelQuery.ParameterConstraint.HasPosition -> (
+      match root with
+      | AccessPath.Root.PositionalParameter _ -> true
+      | _ -> false)
+  | ModelQuery.ParameterConstraint.HasName -> (
+      match root with
+      | AccessPath.Root.PositionalParameter _
+      | AccessPath.Root.NamedParameter _ ->
+          true
       | _ -> false)
   | ModelQuery.ParameterConstraint.AnyOf constraints ->
       List.exists
@@ -962,6 +972,7 @@ module type QUERY_KIND = sig
   val generate_annotations_from_query_models
     :  pyre_api:PyrePysaApi.ReadOnly.t ->
     class_hierarchy_graph:ClassHierarchyGraph.SharedMemory.t ->
+    name_captures:NameCaptures.t ->
     modelable:Modelable.t ->
     ModelQuery.Model.t list ->
     annotation list
@@ -1012,18 +1023,20 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~modelable
       ({ ModelQuery.models; _ } as query)
     =
+    let name_captures = NameCaptures.create () in
     if
       matches_query_constraints
         ~verbose
         ~pyre_api
         ~class_hierarchy_graph
-        ~name_captures:None
+        ~name_captures
         ~modelable
         query
     then
       QueryKind.generate_annotations_from_query_models
         ~pyre_api
         ~class_hierarchy_graph
+        ~name_captures
         ~modelable
         models
     else
@@ -1161,7 +1174,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
     let modelable = QueryKind.make_modelable ~pyre_api target in
     let write_to_cache cache = function
       | ModelQuery.Model.WriteToCache { kind; name } -> (
-          match Modelable.expand_format_string ~name_captures modelable name with
+          match Modelable.expand_format_string ~name_captures ~parameter:None modelable name with
           | Ok name -> ReadWriteCache.write cache ~kind ~name ~target
           | Error error -> Format.asprintf "unexpected WriteToCache name: %s" error |> failwith)
       | model ->
@@ -1178,7 +1191,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
         ~verbose
         ~pyre_api
         ~class_hierarchy_graph
-        ~name_captures:(Some name_captures)
+        ~name_captures
         ~modelable
         query
     then
@@ -1435,8 +1448,14 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
     Modelable.Callable { target = callable; define }
 
 
-  let generate_annotations_from_query_models ~pyre_api ~class_hierarchy_graph ~modelable models =
-    let production_to_taint ?(parameter = None) ~production annotation =
+  let generate_annotations_from_query_models
+      ~pyre_api
+      ~class_hierarchy_graph
+      ~name_captures
+      ~modelable
+      models
+    =
+    let production_to_taint ~root ~production annotation =
       let open Expression in
       let get_subkind_from_annotation ~pattern annotation =
         let get_annotation_of_type annotation =
@@ -1506,33 +1525,43 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
         | feature -> feature
       in
       let update_placeholder_via_features taint_annotation =
-        match parameter, taint_annotation with
-        | Some actual_parameter, ModelParseResult.TaintAnnotation.Source { source; features } ->
-            let via_features =
-              List.map ~f:(update_placeholder_via_feature ~actual_parameter) features.via_features
-            in
-            ModelParseResult.TaintAnnotation.Source
-              { source; features = { features with via_features } }
-        | Some actual_parameter, ModelParseResult.TaintAnnotation.Sink { sink; features } ->
-            let via_features =
-              List.map ~f:(update_placeholder_via_feature ~actual_parameter) features.via_features
-            in
-            ModelParseResult.TaintAnnotation.Sink
-              { sink; features = { features with via_features } }
-        | Some actual_parameter, ModelParseResult.TaintAnnotation.Tito { tito; features } ->
-            let via_features =
-              List.map ~f:(update_placeholder_via_feature ~actual_parameter) features.via_features
-            in
-            ModelParseResult.TaintAnnotation.Tito
-              { tito; features = { features with via_features } }
-        | Some actual_parameter, ModelParseResult.TaintAnnotation.AddFeatureToArgument { features }
-          ->
-            let via_features =
-              List.map ~f:(update_placeholder_via_feature ~actual_parameter) features.via_features
-            in
-            ModelParseResult.TaintAnnotation.AddFeatureToArgument
-              { features = { features with via_features } }
-        | _ -> taint_annotation
+        if AccessPath.Root.is_parameter root then
+          match taint_annotation with
+          | ModelParseResult.TaintAnnotation.Source { source; features } ->
+              let via_features =
+                List.map
+                  ~f:(update_placeholder_via_feature ~actual_parameter:root)
+                  features.via_features
+              in
+              ModelParseResult.TaintAnnotation.Source
+                { source; features = { features with via_features } }
+          | ModelParseResult.TaintAnnotation.Sink { sink; features } ->
+              let via_features =
+                List.map
+                  ~f:(update_placeholder_via_feature ~actual_parameter:root)
+                  features.via_features
+              in
+              ModelParseResult.TaintAnnotation.Sink
+                { sink; features = { features with via_features } }
+          | ModelParseResult.TaintAnnotation.Tito { tito; features } ->
+              let via_features =
+                List.map
+                  ~f:(update_placeholder_via_feature ~actual_parameter:root)
+                  features.via_features
+              in
+              ModelParseResult.TaintAnnotation.Tito
+                { tito; features = { features with via_features } }
+          | ModelParseResult.TaintAnnotation.AddFeatureToArgument { features } ->
+              let via_features =
+                List.map
+                  ~f:(update_placeholder_via_feature ~actual_parameter:root)
+                  features.via_features
+              in
+              ModelParseResult.TaintAnnotation.AddFeatureToArgument
+                { features = { features with via_features } }
+          | _ -> taint_annotation
+        else
+          taint_annotation
       in
       match production with
       | ModelQuery.QueryTaintAnnotation.TaintAnnotation taint_annotation ->
@@ -1553,21 +1582,42 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
               sink = Sinks.ParametricSink { sink_name = kind; subkind };
               features = ModelParseResult.TaintFeatures.empty;
             }
+      | ModelQuery.QueryTaintAnnotation.CrossRepositoryTaintAnchor
+          { annotation; canonical_name; canonical_port } ->
+          let expand_format_string format_string =
+            match
+              Modelable.expand_format_string
+                ~name_captures
+                ~parameter:(Some root)
+                modelable
+                format_string
+            with
+            | Ok name -> name
+            | Error error ->
+                Format.asprintf "unexpected CrossRepositoryTaintAnchor argument: %s" error
+                |> failwith
+          in
+          annotation
+          |> update_placeholder_via_features
+          |> TaintAnnotation.add_cross_repository_anchor
+               ~canonical_name:(expand_format_string canonical_name)
+               ~canonical_port:(expand_format_string canonical_port)
+          |> Option.some
     in
     let apply_model ~normalized_parameters ~captures ~return_annotation = function
       | ModelQuery.Model.Return productions ->
           List.filter_map productions ~f:(fun production ->
-              production_to_taint return_annotation ~production
+              production_to_taint ~root:AccessPath.Root.LocalResult ~production return_annotation
               >>| fun taint -> ModelParseResult.ModelAnnotation.ReturnAnnotation taint)
       | ModelQuery.Model.CapturedVariables { taint = productions; generation_if_source } ->
           List.cartesian_product productions captures
           |> List.filter_map ~f:(fun (production, capture) ->
-                 production_to_taint return_annotation ~production
-                 >>| fun taint ->
-                 ModelParseResult.ModelAnnotation.ParameterAnnotation
-                   ( AccessPath.Root.CapturedVariable
-                       { name = capture.Statement.Define.Capture.name; generation_if_source },
-                     taint ))
+                 let root =
+                   AccessPath.Root.CapturedVariable
+                     { name = capture.Statement.Define.Capture.name; generation_if_source }
+                 in
+                 production_to_taint ~root ~production return_annotation
+                 >>| fun taint -> ModelParseResult.ModelAnnotation.ParameterAnnotation (root, taint))
       | ModelQuery.Model.NamedParameter { name; taint = productions } -> (
           let parameter =
             List.find_map
@@ -1587,7 +1637,7 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
           match parameter with
           | Some (parameter, annotation) ->
               List.filter_map productions ~f:(fun production ->
-                  production_to_taint annotation ~production
+                  production_to_taint ~root:parameter ~production annotation
                   >>| fun taint ->
                   ModelParseResult.ModelAnnotation.ParameterAnnotation (parameter, taint))
           | None -> [])
@@ -1610,7 +1660,7 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
           match parameter with
           | Some (parameter, annotation) ->
               List.filter_map productions ~f:(fun production ->
-                  production_to_taint annotation ~production
+                  production_to_taint ~root:parameter ~production annotation
                   >>| fun taint ->
                   ModelParseResult.ModelAnnotation.ParameterAnnotation (parameter, taint))
           | None -> [])
@@ -1629,7 +1679,7 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
             then
               None
             else
-              production_to_taint annotation ~production
+              production_to_taint ~root ~production annotation
               >>| fun taint -> ModelParseResult.ModelAnnotation.ParameterAnnotation (root, taint)
           in
           List.cartesian_product normalized_parameters taint
@@ -1650,10 +1700,10 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
                   (normalized_parameter_matches_constraint
                      ~pyre_api
                      ~class_hierarchy_graph
-                     ~name_captures:None
+                     ~name_captures
                      ~parameter)
             then
-              production_to_taint annotation ~production ~parameter:(Some root)
+              production_to_taint ~root ~production annotation
               >>| fun taint -> ModelParseResult.ModelAnnotation.ParameterAnnotation (root, taint)
             else
               None
@@ -1762,6 +1812,7 @@ module AttributeQueryExecutor = struct
     let generate_annotations_from_query_models
         ~pyre_api:_
         ~class_hierarchy_graph:_
+        ~name_captures:_
         ~modelable:_
         models
       =
@@ -1829,6 +1880,7 @@ module GlobalVariableQueryExecutor = struct
     let generate_annotations_from_query_models
         ~pyre_api:_
         ~class_hierarchy_graph:_
+        ~name_captures:_
         ~modelable:_
         models
       =
