@@ -484,9 +484,7 @@ let initialize
      in
      failwithf "Pyre errors were found in `%s`:\n%s" handle errors ());
 
-  let initial_callables =
-    FetchCallables.from_source ~configuration ~pyre_api ~include_unit_tests:false ~source
-  in
+  let initial_callables = FetchCallables.from_source ~configuration ~pyre_api ~source in
   let stubs = FetchCallables.get_stubs initial_callables in
   let definitions = FetchCallables.get_definitions initial_callables in
   let pyre_api = PyrePysaApi.ReadOnly.create ~type_environment ~global_module_paths_api in
@@ -557,7 +555,7 @@ let initialize
   let initial_models = Registry.merge ~join:Model.join_user_models inferred_models user_models in
   (* Overrides must be done first, as they influence the call targets. *)
   let { OverrideGraph.Heap.overrides = override_graph_heap; _ } =
-    OverrideGraph.Heap.from_source ~pyre_api ~include_unit_tests:true ~source
+    OverrideGraph.Heap.from_source ~pyre_api ~source
     |> OverrideGraph.Heap.skip_overrides ~to_skip:(Registry.skip_overrides user_models)
     |> OverrideGraph.Heap.cap_overrides
          ~analyze_all_overrides_targets:(Registry.analyze_all_overrides initial_models)

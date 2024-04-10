@@ -18,7 +18,6 @@
 open Core
 open Pyre
 open Ast
-open Statement
 
 type t = {
   dependency: SharedMemoryKeys.DependencyKey.registered option;
@@ -99,22 +98,26 @@ let get_class_summary ({ dependency; _ } as resolution) =
     ?dependency
 
 
-let get_define_body ({ dependency; _ } as resolution) =
-  UnannotatedGlobalEnvironment.ReadOnly.get_define_body
+(* This will return an empty list if the qualifier isn't part of the project we are type
+   checking. *)
+let get_define_names_for_qualifier_in_project ({ dependency; _ } as resolution) =
+  UnannotatedGlobalEnvironment.ReadOnly.get_define_names_for_qualifier_in_project
     ?dependency
     (unannotated_global_environment resolution)
 
 
-let get_define_names ({ dependency; _ } as resolution) =
-  UnannotatedGlobalEnvironment.ReadOnly.get_define_names
+(* This will return None if called on a function definition that is not part of the project we are
+   type checking (i.e. defined in dependencies). *)
+let get_function_definition_in_project ({ dependency; _ } as resolution) =
+  UnannotatedGlobalEnvironment.ReadOnly.get_function_definition_in_project
     ?dependency
     (unannotated_global_environment resolution)
 
 
-let get_function_definition ({ dependency; _ } as resolution) =
-  UnannotatedGlobalEnvironment.ReadOnly.get_function_definition
-    ?dependency
-    (unannotated_global_environment resolution)
+(* This will return None if called on a function definition that is not part of the project we are
+   type checking (i.e. defined in dependencies). *)
+let get_define_body_in_project resolution name =
+  get_function_definition_in_project resolution name >>= fun { FunctionDefinition.body; _ } -> body
 
 
 let module_exists ({ dependency; _ } as resolution) =
@@ -498,50 +501,6 @@ let is_consistent_with resolution ~resolve left right ~expression =
     |> WeakenMutableLiterals.resolved_type
   in
   comparator ~get_typed_dictionary_override:(fun _ -> None) ~left ~right
-
-
-(* There isn't a great way of testing whether a file only contains tests in Python.
- * We currently use the following heuristics:
- * - If a class inherits from `unittest.TestCase`, we assume this is a test file.
- * - If `pytest` is imported and at least one function starts with `test_`, we assume this is a test file.
- *)
-let source_is_unit_test resolution ~source =
-  let is_unittest () =
-    let is_unittest_class { Node.value = { Class.name; _ }; _ } =
-      try
-        has_transitive_successor
-          ~placeholder_subclass_extends_all:false
-          resolution
-          ~successor:"unittest.case.TestCase"
-          (Reference.show name)
-      with
-      | ClassHierarchy.Untracked _ -> false
-    in
-    List.exists (Preprocessing.classes source) ~f:is_unittest_class
-  in
-  let is_pytest () =
-    let imports_pytest () =
-      let has_pytest_prefix = Reference.is_prefix ~prefix:(Reference.create "pytest") in
-      let is_pytest_import { Node.value; _ } =
-        match value with
-        | Statement.Import { from = Some { Node.value; _ }; _ } when has_pytest_prefix value -> true
-        | Statement.Import { imports; _ }
-          when List.exists imports ~f:(fun { Node.value = { name; _ }; _ } ->
-                   has_pytest_prefix name) ->
-            true
-        | _ -> false
-      in
-      List.exists source.statements ~f:is_pytest_import
-    in
-    let has_test_function () =
-      let is_test_function { Node.value = { Define.signature = { name; _ }; _ }; _ } =
-        Reference.last name |> String.is_prefix ~prefix:"test_"
-      in
-      List.exists (Preprocessing.defines source) ~f:is_test_function
-    in
-    imports_pytest () && has_test_function ()
-  in
-  is_unittest () || is_pytest ()
 
 
 module ConstraintsSet = struct

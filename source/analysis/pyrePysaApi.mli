@@ -6,7 +6,7 @@
  *)
 
 module ReadWrite : sig
-  type t = { type_environment: TypeEnvironment.t }
+  type t
 
   val load_from_cache : configuration:Configuration.Analysis.t -> t
 
@@ -37,10 +37,7 @@ module ReadWrite : sig
 end
 
 module ReadOnly : sig
-  type t = {
-    type_environment: TypeEnvironment.TypeEnvironmentReadOnly.t;
-    global_module_paths_api: GlobalModulePathsApi.t;
-  }
+  type t
 
   val of_read_write_api : ReadWrite.t -> t
 
@@ -73,7 +70,7 @@ module ReadOnly : sig
 
   val immediate_parents : t -> string -> string list
 
-  val get_define_names : t -> Ast.Reference.t -> Ast.Reference.t list
+  val get_define_names_for_qualifier : t -> Ast.Reference.t -> Ast.Reference.t list
 
   val parse_reference : t -> Ast.Reference.t -> Type.t
 
@@ -118,7 +115,12 @@ module ReadOnly : sig
     instantiated:Type.t ->
     AnnotatedAttribute.instantiated option
 
-  val has_transitive_successor : t -> successor:string -> string -> bool
+  val has_transitive_successor
+    :  t ->
+    ?placeholder_subclass_extends_all:bool ->
+    successor:string ->
+    string ->
+    bool
 
   val exists_matching_class_decorator
     :  t ->
@@ -151,10 +153,7 @@ module ReadOnly : sig
 end
 
 module InContext : sig
-  type t = {
-    pyre_api: ReadOnly.t;
-    resolution: Resolution.t;
-  }
+  type t
 
   val create_at_global_scope : ReadOnly.t -> t
 

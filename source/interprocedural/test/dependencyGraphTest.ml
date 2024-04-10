@@ -34,7 +34,7 @@ let create_call_graph ?(other_sources = []) ~context source_text =
     setup ~other_sources ~context ~handle:"test.py" source_text
   in
   let static_analysis_configuration = Configuration.StaticAnalysis.create configuration () in
-  let override_graph = OverrideGraph.Heap.from_source ~pyre_api ~include_unit_tests:true ~source in
+  let override_graph = OverrideGraph.Heap.from_source ~pyre_api ~source in
   let override_graph_shared_memory = OverrideGraph.SharedMemory.from_heap override_graph in
   let () =
     let errors = TypeEnvironment.ReadOnly.get_errors environment !&"test" in
@@ -47,8 +47,7 @@ let create_call_graph ?(other_sources = []) ~context source_text =
       |> failwith
   in
   let definitions =
-    FetchCallables.from_source ~configuration ~pyre_api ~include_unit_tests:true ~source
-    |> FetchCallables.get_definitions
+    FetchCallables.from_source ~configuration ~pyre_api ~source |> FetchCallables.get_definitions
   in
   let fold call_graph callable =
     let callees =

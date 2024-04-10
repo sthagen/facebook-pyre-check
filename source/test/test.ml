@@ -1812,6 +1812,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         sep: str
         |}
     );
+    "pytest.pyi", "";
     ( "os/__init__.pyi",
       {|
     from builtins import _PathLike as PathLike
@@ -3480,17 +3481,18 @@ let assert_instantiated_attribute_equal expected actual =
    This is useful when Pyre adds, removes, or modifies the original class's attributes, e.g., by
    adding dunder methods. *)
 let assert_equivalent_attributes
-    ~context
     ?(assert_attribute_equal = assert_instantiated_attribute_equal)
+    ?external_sources
     ~source
     ~class_name
     expected_equivalent_class_source
+    context
   =
   let module_name = "test" in
   let attributes source =
     Memory.reset_shared_memory ();
     let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
-      ScratchProject.setup ~context [Format.asprintf "%s.py" module_name, source]
+      ScratchProject.setup ~context ?external_sources [Format.asprintf "%s.py" module_name, source]
       |> ScratchProject.build_global_environment
     in
     let global_resolution = GlobalResolution.create global_environment in
