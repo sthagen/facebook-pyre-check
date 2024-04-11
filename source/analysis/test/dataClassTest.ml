@@ -1145,6 +1145,48 @@ let test_dataclass_transform =
                     self.x = x
                   def __eq__(self, o: object) -> bool: ...
               |};
+      (* TODO(T129464224) Fix kw_only / kw_only_default support in dataclass transforms *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_equivalent_attributes
+           ~source:
+             {|
+              @__dataclass_transform__
+              def mytransform(kw_only: bool = False):
+                ...
+
+              @mytransform(kw_only=True, eq=False)
+              class Foo:
+                x: int
+            |}
+           ~class_name:"Foo"
+           {|
+                class Foo:
+                  x: int
+                  # OOPS! Here `x` should be keyword-only
+                  def __init__(self, *, x: int) -> None:
+                    self.x = x
+              |};
+      (* TODO(T129464224) Fix kw_only / kw_only_default support in dataclass transforms *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_equivalent_attributes
+           ~source:
+             {|
+              @__dataclass_transform__(kw_only_default=True, eq_default=False)
+              def mytransform(kw_only: bool = True):
+                ...
+
+              @mytransform(eq=False)
+              class Foo:
+                x: int
+            |}
+           ~class_name:"Foo"
+           {|
+                class Foo:
+                  x: int
+                  # OOPS! Here `x` should be keyword-only
+                  def __init__(self, *, x: int) -> None:
+                    self.x = x
+              |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_equivalent_attributes
            ~source:
@@ -1312,20 +1354,26 @@ let test_dataclass_transform =
               |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_equivalent_attributes
-           ~external_sources:["custom_dataclass_transform.py", {|
-            |}]
+           ~external_sources:
+             [
+               ( "custom_dataclass_transform.py",
+                 {|
+                   @__dataclass_transform__(eq_default=False, order_default=True)
+                   class Bar:
+                     def __init_subclass__(
+                         cls,
+                         *,
+                         init: bool = True,
+                         frozen: bool = False,
+                         eq: bool = False,
+                         order: bool = True,
+                     ) -> None: ...
+                 |}
+               );
+             ]
            ~source:
              {|
-              @__dataclass_transform__(eq_default=False, order_default=True)
-              class Bar:
-                def __init_subclass__(
-                    cls,
-                    *,
-                    init: bool = True,
-                    frozen: bool = False,
-                    eq: bool = False,
-                    order: bool = True,
-                ) -> None: ...
+              from custom_dataclass_transform import Bar
 
               class Foo(Bar, eq=True, order=False):
                 x: int
@@ -1344,11 +1392,11 @@ let test_dataclass_transform =
              [
                ( "custom_dataclass_transform.py",
                  {|
-              @__dataclass_transform__
-              def mytransform():
-                ...
+                  @__dataclass_transform__
+                  def mytransform():
+                    ...
 
-            |}
+                |}
                );
              ]
            ~source:
