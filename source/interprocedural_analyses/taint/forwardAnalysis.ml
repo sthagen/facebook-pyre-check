@@ -687,7 +687,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     in
     let result_taint =
       if is_result_used then
-        ForwardState.read ~root:AccessPath.Root.LocalResult ~path:[] forward.source_taint
+        ForwardState.read ~root:AccessPath.Root.LocalResult ~path:[] forward.generations
         |> ForwardState.Tree.apply_call
              ~pyre_in_context
              ~location:
@@ -745,7 +745,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let apply_captured_variable_side_effects state =
       let propagate_captured_variables state root =
         match root with
-        | AccessPath.Root.CapturedVariable { name = variable; generation_if_source = true } ->
+        | AccessPath.Root.CapturedVariable { name = variable } ->
             let nonlocal_reference = Reference.delocalize (Reference.create variable) in
             let define_reference =
               Reference.delocalize FunctionContext.definition.value.signature.name
@@ -759,7 +759,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                 ~weak:true
                 ~root:(AccessPath.Root.captured_variable_to_variable root)
                 ~path:[]
-                (ForwardState.read ~root ~path:[] forward.source_taint)
+                (ForwardState.read ~root ~path:[] forward.generations)
                 state
             in
             (* Propagate captured variable taint up until the function where the nonlocal variable
@@ -769,16 +769,13 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                 ~weak:true
                 ~root
                 ~path:[]
-                (ForwardState.read ~root ~path:[] forward.source_taint)
+                (ForwardState.read ~root ~path:[] forward.generations)
                 state
             else
               state
         | _ -> state
       in
-      List.fold
-        ~init:state
-        ~f:propagate_captured_variables
-        (ForwardState.roots forward.source_taint)
+      List.fold ~init:state ~f:propagate_captured_variables (ForwardState.roots forward.generations)
     in
     let returned_taint =
       result_taint
@@ -2824,9 +2821,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
               (* Propagate taint for nonlocal assignment. *)
               store_taint
                 ~weak
-                ~root:
-                  (AccessPath.Root.CapturedVariable
-                     { name = identifier; generation_if_source = true })
+                ~root:(AccessPath.Root.CapturedVariable { name = identifier })
                 ~path:fields
                 (ForwardState.Tree.add_local_breadcrumb (Features.captured_variable ()) taint)
                 state
@@ -2993,10 +2988,10 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   let create ~existing_model parameters define_location =
     (* Use primed sources to populate initial state of parameters *)
-    let forward_primed_taint = existing_model.Model.forward.source_taint in
+    let parameter_sources = existing_model.Model.parameter_sources.parameter_sources in
     let pyre_in_context = PyrePysaApi.InContext.create_at_global_scope pyre_api in
     let apply_call ~location ~root =
-      ForwardState.read ~root ~path:[] forward_primed_taint
+      ForwardState.read ~root ~path:[] parameter_sources
       |> ForwardState.Tree.apply_call
            ~pyre_in_context
            ~location
@@ -3038,7 +3033,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     in
     let add_captured_variables_paramater_sources state =
       let store_captured_variable_taint state root =
-        if AccessPath.Root.is_captured_variable_not_generation_if_source root then
+        if AccessPath.Root.is_captured_variable root then
           (* The origin for captured variables taint is at the inner function boundry due to there
              being no explicit parameter to mark as location *)
           (* TODO(T184561320): Pull in location of `nonlocal` statement if present *)
@@ -3054,10 +3049,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         else
           state
       in
-      List.fold
-        ~init:state
-        ~f:store_captured_variable_taint
-        (ForwardState.roots forward_primed_taint)
+      List.fold ~init:state ~f:store_captured_variable_taint (ForwardState.roots parameter_sources)
     in
 
     parameters
@@ -3098,39 +3090,44 @@ let extract_source_model
           { maximum_model_source_tree_width; maximum_trace_length; _ };
         _;
       }
-    ~breadcrumbs_to_attach
-    ~via_features_to_attach
+    ~existing_forward
     ~apply_broadening
     exit_taint
   =
   let { Statement.Define.signature = { return_annotation; name; parameters; _ }; _ } = define in
-  let return_type_breadcrumbs =
-    return_annotation
-    >>| PyrePysaApi.ReadOnly.parse_annotation pyre_api
-    |> Features.type_breadcrumbs_from_annotation ~pyre_api
-  in
-  let local_result_model =
-    let simplify tree =
-      let tree =
-        match maximum_trace_length with
-        | Some maximum_trace_length ->
-            (* We limit by maximum_trace_length - 1, since the distance will be incremented by one
-               when the taint is propagated. *)
-            ForwardState.Tree.prune_maximum_length (maximum_trace_length - 1) tree
-        | _ -> tree
-      in
-      if apply_broadening then
-        tree
-        |> ForwardState.Tree.shape
-             ~mold_with_return_access_paths:false
-             ~breadcrumbs:(Features.model_source_shaping_set ())
-        |> ForwardState.Tree.limit_to
-             ~breadcrumbs:(Features.model_source_broadening_set ())
-             ~width:maximum_model_source_tree_width
-      else
-        tree
+  let simplify tree =
+    let tree =
+      match maximum_trace_length with
+      | Some maximum_trace_length ->
+          (* We limit by maximum_trace_length - 1, since the distance will be incremented by one
+             when the taint is propagated. *)
+          ForwardState.Tree.prune_maximum_length (maximum_trace_length - 1) tree
+      | _ -> tree
     in
+    if apply_broadening then
+      tree
+      |> ForwardState.Tree.shape
+           ~mold_with_return_access_paths:false
+           ~breadcrumbs:(Features.model_source_shaping_set ())
+      |> ForwardState.Tree.limit_to
+           ~breadcrumbs:(Features.model_source_broadening_set ())
+           ~width:maximum_model_source_tree_width
+    else
+      tree
+  in
+  let model =
     let return_taint =
+      let breadcrumbs_to_attach, via_features_to_attach =
+        ForwardState.extract_features_to_attach
+          ~root:AccessPath.Root.LocalResult
+          ~attach_to_kind:Sources.Attach
+          existing_forward.Model.Forward.generations
+      in
+      let return_type_breadcrumbs =
+        return_annotation
+        >>| PyrePysaApi.ReadOnly.parse_annotation pyre_api
+        |> Features.type_breadcrumbs_from_annotation ~pyre_api
+      in
       let return_variable =
         (* Our handling of property setters is counterintuitive.
          * We treat `a.property = x` as `a = a.property(x)`.
@@ -3151,25 +3148,22 @@ let extract_source_model
         else
           AccessPath.Root.LocalResult
       in
-      ForwardState.read ~root:return_variable ~path:[] exit_taint |> simplify
+      ForwardState.read ~root:return_variable ~path:[] exit_taint
+      |> simplify
+      |> ForwardState.Tree.add_local_breadcrumbs breadcrumbs_to_attach
+      |> ForwardState.Tree.add_via_features via_features_to_attach
+      |> ForwardState.Tree.add_local_breadcrumbs return_type_breadcrumbs
     in
-
     ForwardState.assign ~root:AccessPath.Root.LocalResult ~path:[] return_taint ForwardState.bottom
-    |> ForwardState.add_local_breadcrumbs return_type_breadcrumbs
   in
-  let captured_variables_model =
+  let model =
     ForwardState.roots exit_taint
-    |> List.filter ~f:AccessPath.Root.is_captured_variable_generation_if_source
-    |> List.fold ~init:ForwardState.bottom ~f:(fun state root ->
-           let captured_variable_taint = ForwardState.read ~root ~path:[] exit_taint in
-           let captured_variable_model =
-             ForwardState.assign ~root ~path:[] captured_variable_taint ForwardState.bottom
-           in
-           ForwardState.join state captured_variable_model)
+    |> List.filter ~f:AccessPath.Root.is_captured_variable
+    |> List.fold ~init:model ~f:(fun model root ->
+           let captured_variable_taint = ForwardState.read ~root ~path:[] exit_taint |> simplify in
+           ForwardState.assign ~root ~path:[] captured_variable_taint model)
   in
-  ForwardState.join local_result_model captured_variables_model
-  |> ForwardState.add_local_breadcrumbs breadcrumbs_to_attach
-  |> ForwardState.add_via_features via_features_to_attach
+  model
 
 
 let run
@@ -3263,27 +3257,20 @@ let run
     | None -> State.log "No exit state found"
   in
   let extract_model { State.taint; _ } =
-    let breadcrumbs_to_attach, via_features_to_attach =
-      ForwardState.extract_features_to_attach
-        ~root:AccessPath.Root.LocalResult
-        ~attach_to_kind:Sources.Attach
-        existing_model.forward.source_taint
-    in
     let apply_broadening =
       not (Model.ModeSet.contains Model.Mode.SkipModelBroadening existing_model.modes)
     in
-    let source_taint =
+    let generations =
       TaintProfiler.track_duration ~profiler ~name:"Forward analysis - extract model" ~f:(fun () ->
           extract_source_model
             ~define:define.value
             ~pyre_api
             ~taint_configuration:FunctionContext.taint_configuration
-            ~breadcrumbs_to_attach
-            ~via_features_to_attach
+            ~existing_forward:existing_model.forward
             ~apply_broadening
             taint)
     in
-    let model = Model.Forward.{ source_taint } in
+    let model = Model.Forward.{ generations } in
     let () = State.log "Forward Model:@,%a" Model.Forward.pp model in
     model
   in
