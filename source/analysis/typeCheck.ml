@@ -5,10 +5,22 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* Typecheck is the main file used for typechecking within Pyre. It contains methods for resolving
-   the entire fixpoint including type refinement. In Pyre, we mainly resolve forward, meaning we
-   recompute types in a resolution as we move forward in the control flow graph. In every reachable
-   node, we will save type errors for displaying at the end. *)
+(* TypeCheck is the main module used for typechecking within Pyre.
+
+   Type checking in Pyre is currently performed as a fixpoint analysis using Fixpoint.ml's plumbing,
+   which means that all statement-level control-flow analysis and complex statement logic is handled
+   by Cfg.ml and that the core type checker just traverses one simple statement at a time,
+   converting a Resolution.t with type and scope context (including any active type refinements)
+   before that statement into a new Resolution.t after that statement.
+
+   The entrypoint is therefore usually `forward_statement`, which has a number of helpers like
+   `forward_assign` (used for assignment statements) and `forward_expression` (which traverses
+   expression trees within a statement, along the way inferring types, producing type errors, and
+   possibly adding to the scope for features like the walrus operator).
+
+   In some cases (such as powering IDE features) Pyre needs to traverse individual expressions
+   outside of the main type check, in which case we will load up a cached `Resolution.t` from the
+   containing statement and re-traverse the expressions on the fly using `forward_expression`. *)
 
 open Core
 open Pyre
@@ -4449,7 +4461,7 @@ module State (Context : Context) = struct
                                    (ClassVariable { class_name = Type.show parent; class_variable }))
                         | _ -> errors
                       in
-                      let check_final_is_outermost_qualifier errors =
+                      let check_final_is_outermost_parametric_type errors =
                         original_annotation
                         >>| (fun annotation ->
                               if Type.contains_final annotation then
@@ -4621,7 +4633,7 @@ module State (Context : Context) = struct
                             check_assignment_compatibility errors
                       in
                       check_assign_class_variable_on_instance errors
-                      |> check_final_is_outermost_qualifier
+                      |> check_final_is_outermost_parametric_type
                       |> check_undefined_attribute_target
                       |> check_nested_explicit_type_alias
                       |> check_enumeration_literal
