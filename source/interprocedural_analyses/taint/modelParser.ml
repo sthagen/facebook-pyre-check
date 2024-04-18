@@ -2735,6 +2735,8 @@ let add_taint_annotation_to_model
           Ok (introduce_sanitize ~source_sink_filter ~root model annotations))
   | ModelAnnotation.ModeAnnotation model_query_modes ->
       Ok { model with modes = Model.ModeSet.join_user_modes model_query_modes model.modes }
+  | ModelAnnotation.SanitizeAnnotation sanitizers ->
+      Ok { model with sanitizers = Model.Sanitizers.join sanitizers model.sanitizers }
 
 
 let parse_return_taint
@@ -2895,13 +2897,12 @@ let resolve_global_callable
     Ok (resolve_global ~pyre_api name)
 
 
-let adjust_sanitize_and_modes_and_skipped_override
+let parse_decorator_annotations
     ~path
     ~taint_configuration
     ~origin
     ~source_sink_filter
     ~top_level_decorators
-    model
   =
   let open Core.Result in
   let create_get_item_call ~location callee arguments =
@@ -2937,7 +2938,7 @@ let adjust_sanitize_and_modes_and_skipped_override
           }
     | Error error -> Error error
   in
-  let join_with_sanitize_decorator ~sanitizers ~location ~original_expression arguments =
+  let parse_sanitize_decorator ~location ~original_expression arguments =
     let annotation_error reason =
       model_verification_error
         ~path
@@ -2945,7 +2946,7 @@ let adjust_sanitize_and_modes_and_skipped_override
         (InvalidTaintAnnotation { taint_annotation = original_expression; reason })
     in
     match arguments with
-    | None -> Ok { sanitizers with Model.Sanitizers.global = Sanitize.all }
+    | None -> Ok (Model.Sanitizers.from_global Sanitize.all)
     | Some
         [
           {
@@ -2973,15 +2974,16 @@ let adjust_sanitize_and_modes_and_skipped_override
                  "`TaintSink` is not supported within `Sanitize()`. Did you mean to use \
                   `SanitizeSingleTrace(...)`?")
         | "TaintSource" ->
-            let global = { sanitizers.global with sources = SanitizeTransform.SourceSet.all } in
-            Ok { sanitizers with global }
+            Ok
+              (Model.Sanitizers.from_global
+                 (Sanitize.from_sources_only SanitizeTransform.SourceSet.all))
         | "TaintSink" ->
-            let global = { sanitizers.global with sinks = SanitizeTransform.SinkSet.all } in
-            Ok { sanitizers with global }
+            Ok
+              (Model.Sanitizers.from_global
+                 (Sanitize.from_sinks_only SanitizeTransform.SinkSet.all))
         | "TaintInTaintOut" ->
-            let global = { sanitizers.global with tito = SanitizeTransformSet.all } in
-            Ok { sanitizers with global }
-        | "Parameters" -> Ok { sanitizers with parameters = Sanitize.all }
+            Ok (Model.Sanitizers.from_global (Sanitize.from_tito_only SanitizeTransformSet.all))
+        | "Parameters" -> Ok (Model.Sanitizers.from_parameters Sanitize.all)
         | _ -> failwith "impossible")
     | Some
         [
@@ -2989,8 +2991,7 @@ let adjust_sanitize_and_modes_and_skipped_override
         ]
       when is_base_name callee "Parameters" ->
         parse_sanitize_annotations ~location ~original_expression arguments
-        >>| fun parameters_sanitize ->
-        { sanitizers with parameters = Sanitize.join sanitizers.parameters parameters_sanitize }
+        >>| Model.Sanitizers.from_parameters
     | Some arguments -> (
         parse_sanitize_annotations ~location ~original_expression arguments
         >>= function
@@ -3008,11 +3009,9 @@ let adjust_sanitize_and_modes_and_skipped_override
               (annotation_error
                  "`TaintSink` is not supported within `Sanitize(...)`. Did you mean to use \
                   `SanitizeSingleTrace(...)`?")
-        | global_sanitize ->
-            Ok { sanitizers with global = Sanitize.join sanitizers.global global_sanitize })
+        | global_sanitize -> Ok (Model.Sanitizers.from_global global_sanitize))
   in
-  let join_with_sanitize_single_trace_decorator ~sanitizers ~location ~original_expression arguments
-    =
+  let parse_sanitize_single_trace_sanitizer ~location ~original_expression arguments =
     let annotation_error reason =
       model_verification_error
         ~path
@@ -3032,10 +3031,9 @@ let adjust_sanitize_and_modes_and_skipped_override
             _;
           };
         ] ->
-        let global =
-          { sanitizers.Model.Sanitizers.global with sources = SanitizeTransform.SourceSet.all }
-        in
-        Ok { sanitizers with global }
+        Ok
+          (Model.Sanitizers.from_global
+             (Sanitize.from_sources_only SanitizeTransform.SourceSet.all))
     | Some
         [
           {
@@ -3043,10 +3041,7 @@ let adjust_sanitize_and_modes_and_skipped_override
             _;
           };
         ] ->
-        let global =
-          { sanitizers.Model.Sanitizers.global with sinks = SanitizeTransform.SinkSet.all }
-        in
-        Ok { sanitizers with global }
+        Ok (Model.Sanitizers.from_global (Sanitize.from_sinks_only SanitizeTransform.SinkSet.all))
     | Some arguments -> (
         parse_sanitize_annotations ~location ~original_expression arguments
         >>= function
@@ -3055,10 +3050,9 @@ let adjust_sanitize_and_modes_and_skipped_override
               (annotation_error
                  "`TaintInTaintOut` is not supported within `SanitizeSingleTrace(...)`. Did you \
                   mean to use `Sanitize(...)`?")
-        | sanitizer -> Ok { sanitizers with global = Sanitize.join sanitizers.global sanitizer })
+        | sanitizer -> Ok (Model.Sanitizers.from_global sanitizer))
   in
-  let join_with_decorator
-      (sanitizers, modes)
+  let parse_decorator_annotation
       { Decorator.name = { Node.value = name; location = decorator_location }; arguments }
     =
     let name = Reference.show name in
@@ -3067,30 +3061,20 @@ let adjust_sanitize_and_modes_and_skipped_override
     in
     match name with
     | "Sanitize" ->
-        join_with_sanitize_decorator
-          ~sanitizers
-          ~location:decorator_location
-          ~original_expression
-          arguments
-        >>| fun sanitizers -> sanitizers, modes
+        parse_sanitize_decorator ~location:decorator_location ~original_expression arguments
+        >>| fun sanitizer -> [ModelAnnotation.SanitizeAnnotation sanitizer]
     | "SanitizeSingleTrace" ->
-        join_with_sanitize_single_trace_decorator
-          ~sanitizers
+        parse_sanitize_single_trace_sanitizer
           ~location:decorator_location
           ~original_expression
           arguments
-        >>| fun sanitizers -> sanitizers, modes
+        >>| fun sanitizer -> [ModelAnnotation.SanitizeAnnotation sanitizer]
     | _ -> (
         match Model.Mode.from_string name with
-        | Some mode ->
-            Ok (sanitizers, Model.ModeSet.join_user_modes modes (Model.ModeSet.singleton mode))
-        | _ -> Ok (sanitizers, modes))
+        | Some mode -> Ok [ModelAnnotation.ModeAnnotation (Model.ModeSet.singleton mode)]
+        | _ -> Ok [])
   in
-  List.fold_result
-    top_level_decorators
-    ~f:join_with_decorator
-    ~init:(model.Model.sanitizers, model.Model.modes)
-  >>| fun (sanitizers, modes) -> { model with sanitizers; modes }
+  top_level_decorators |> List.map ~f:parse_decorator_annotation |> all >>| List.concat
 
 
 let create_model_from_signature
@@ -3256,42 +3240,12 @@ let create_model_from_signature
         in
         List.map parameters ~f:adjust_parameter |> all
   in
-  let annotations () =
-    normalized_model_parameters
-    >>= fun normalized_model_parameters ->
-    List.map
-      normalized_model_parameters
-      ~f:
-        (parse_parameter_taint
-           ~path
-           ~location
-           ~origin:DefineParameter
-           ~taint_configuration
-           ~parameters
-           ~callable_parameter_names_to_roots)
-    |> all
-    >>| List.concat
-    >>= fun parameter_taint ->
-    return_annotation
-    |> Option.map
-         ~f:
-           (parse_return_taint
-              ~path
-              ~location
-              ~origin:DefineReturn
-              ~taint_configuration
-              ~parameters
-              ~callable_parameter_names_to_roots)
-    |> Option.value ~default:(Ok [])
-    >>| fun return_taint -> List.rev_append parameter_taint return_taint
-  in
-  let add_captured_variables_taint
+  let parse_captured_variables_decorators
       ~path
       ~location
       ~origin
       ~taint_configuration
       ~top_level_decorators
-      model
     =
     let annotation_error reason arguments =
       let taint_annotation =
@@ -3309,15 +3263,13 @@ let create_model_from_signature
       | "CapturedVariables" -> true
       | _ -> false
     in
-    let add_taint ~generation_if_source taint_annotation =
+    let parse_annotation ~generation_if_source taint_annotation =
       let captured_variables =
         match PyrePysaApi.ReadOnly.get_define_body pyre_api callable_name with
         | Some { Node.value = { Define.captures; _ }; _ } ->
             List.map ~f:(fun capture -> capture.Define.Capture.name) captures
         | _ -> []
       in
-      callable_annotation
-      >>= fun callable_annotation ->
       taint_annotation
       |> parse_annotations
            ~path
@@ -3326,26 +3278,22 @@ let create_model_from_signature
            ~taint_configuration
            ~parameters:[]
            ~callable_parameter_names_to_roots:None
-      >>= List.fold_result ~init:model ~f:(fun model annotation ->
-              List.fold_result captured_variables ~init:model ~f:(fun model captured_variable ->
-                  add_taint_annotation_to_model
-                    ~path
-                    ~location
-                    ~model_name:(Reference.show callable_name)
-                    ~pyre_api
-                    ~callable_annotation
-                    ~source_sink_filter
-                    model
-                    (ModelAnnotation.ParameterAnnotation
-                       {
-                         root = AccessPath.Root.CapturedVariable { name = captured_variable };
-                         annotation;
-                         generation_if_source;
-                       })))
+      >>| List.fold ~init:[] ~f:(fun annotations annotation ->
+              List.fold
+                captured_variables
+                ~init:annotations
+                ~f:(fun annotations captured_variable ->
+                  ModelAnnotation.ParameterAnnotation
+                    {
+                      root = AccessPath.Root.CapturedVariable { name = captured_variable };
+                      annotation;
+                      generation_if_source;
+                    }
+                  :: annotations))
     in
     match List.find ~f:is_captured_variables top_level_decorators with
     | Some { Decorator.arguments = Some [{ Call.Argument.value; _ }]; _ } ->
-        add_taint ~generation_if_source:false value
+        parse_annotation ~generation_if_source:false value
     | Some
         {
           Decorator.arguments =
@@ -3361,7 +3309,7 @@ let create_model_from_signature
           _;
         } ->
         if String.is_substring ~substring:"TaintSource" (Expression.show value) then
-          add_taint ~generation_if_source:true value
+          parse_annotation ~generation_if_source:true value
         else
           annotation_error
             "`@CapturedVariables(..., generation=True)` must be used only on `TaintSource`s."
@@ -3381,47 +3329,76 @@ let create_model_from_signature
           arguments
     | Some { Decorator.arguments = None; _ } ->
         annotation_error "`@CapturedVariables(...)` needs one Taint Annotation as argument." None
-    | None -> Ok model
+    | None -> Ok []
   in
-  let model =
+  callable_annotation
+  >>= fun callable_annotation ->
+  normalized_model_parameters
+  >>= fun normalized_model_parameters ->
+  ModelVerifier.verify_signature
+    ~path
+    ~location
+    ~normalized_model_parameters
+    ~name:callable_name
     callable_annotation
-    >>= fun callable_annotation ->
+  >>= fun () ->
+  List.map
     normalized_model_parameters
-    >>= fun normalized_model_parameters ->
-    ModelVerifier.verify_signature
-      ~path
-      ~location
-      ~normalized_model_parameters
-      ~name:callable_name
-      callable_annotation
-    >>= fun () ->
-    annotations ()
-    >>= fun annotations ->
-    let default_model = if is_obscure then Model.obscure_model else Model.empty_model in
-    List.fold_result annotations ~init:default_model ~f:(fun accumulator annotation ->
-        add_taint_annotation_to_model
-          ~path
-          ~location
-          ~model_name:(Reference.show callable_name)
-          ~pyre_api
-          ~callable_annotation
-          ~source_sink_filter
-          accumulator
-          annotation)
+    ~f:
+      (parse_parameter_taint
+         ~path
+         ~location
+         ~origin:DefineParameter
+         ~taint_configuration
+         ~parameters
+         ~callable_parameter_names_to_roots)
+  |> all
+  >>| List.concat
+  >>= fun parameters_annotations ->
+  return_annotation
+  |> Option.map
+       ~f:
+         (parse_return_taint
+            ~path
+            ~location
+            ~origin:DefineReturn
+            ~taint_configuration
+            ~parameters
+            ~callable_parameter_names_to_roots)
+  |> Option.value ~default:(Ok [])
+  >>= fun return_annotations ->
+  parse_decorator_annotations
+    ~path
+    ~taint_configuration
+    ~origin:DefineDecorator
+    ~source_sink_filter
+    ~top_level_decorators
+  >>= fun decorator_annotations ->
+  parse_captured_variables_decorators
+    ~path
+    ~location
+    ~taint_configuration
+    ~origin:DefineDecoratorCapturedVariables
+    ~top_level_decorators
+  >>= fun captured_variables_annotations ->
+  let default_model = if is_obscure then Model.obscure_model else Model.empty_model in
+  let all_annotations =
+    return_annotations
+    |> List.rev_append parameters_annotations
+    |> List.rev_append captured_variables_annotations
+    |> List.rev_append decorator_annotations
   in
-  model
-  >>= adjust_sanitize_and_modes_and_skipped_override
-        ~path
-        ~taint_configuration
-        ~origin:DefineDecorator
-        ~source_sink_filter
-        ~top_level_decorators
-  >>= add_captured_variables_taint
-        ~path
-        ~location
-        ~taint_configuration
-        ~origin:DefineDecoratorCapturedVariables
-        ~top_level_decorators
+  List.fold_result
+    all_annotations
+    ~init:default_model
+    ~f:
+      (add_taint_annotation_to_model
+         ~path
+         ~location
+         ~model_name:(Reference.show callable_name)
+         ~pyre_api
+         ~callable_annotation
+         ~source_sink_filter)
   >>| fun model -> Model { Model.WithTarget.model; target = call_target }
 
 
@@ -3435,34 +3412,35 @@ let create_model_from_attribute
   let open Core.Result in
   ModelVerifier.verify_global ~path ~location ~pyre_api ~name
   >>= fun () ->
-  List.fold_result annotations ~init:Model.empty_model ~f:(fun accumulator annotation ->
-      let model_annotation =
+  let model_annotations =
+    List.map annotations ~f:(fun annotation ->
         match annotation with
-        | TaintAnnotation.Source _ -> Ok (ModelAnnotation.ReturnAnnotation annotation)
+        | TaintAnnotation.Source _ -> ModelAnnotation.ReturnAnnotation annotation
         | TaintAnnotation.Sink _
         | TaintAnnotation.Tito _ ->
-            Ok
-              (ModelAnnotation.ParameterAnnotation
-                 { root = attribute_symbolic_parameter; annotation; generation_if_source = false })
-        | _ -> failwith "unreachable"
-      in
-      model_annotation
-      >>= fun model_annotation ->
-      add_taint_annotation_to_model
-        ~path
-        ~location
-        ~model_name:(Reference.show name)
-        ~pyre_api
-        ~callable_annotation:None
-        ~source_sink_filter
-        accumulator
-        model_annotation)
-  >>= adjust_sanitize_and_modes_and_skipped_override
-        ~path
-        ~taint_configuration
-        ~origin:Attribute
-        ~source_sink_filter
-        ~top_level_decorators:decorators
+            ModelAnnotation.ParameterAnnotation
+              { root = attribute_symbolic_parameter; annotation; generation_if_source = false }
+        | _ -> failwith "unreachable")
+  in
+  parse_decorator_annotations
+    ~path
+    ~taint_configuration
+    ~origin:Attribute
+    ~source_sink_filter
+    ~top_level_decorators:decorators
+  >>= fun decorator_annotations ->
+  let all_annotations = List.rev_append model_annotations decorator_annotations in
+  List.fold_result
+    all_annotations
+    ~init:Model.empty_model
+    ~f:
+      (add_taint_annotation_to_model
+         ~path
+         ~location
+         ~model_name:(Reference.show name)
+         ~pyre_api
+         ~callable_annotation:None
+         ~source_sink_filter)
   >>| fun model -> Model { Model.WithTarget.model; target = call_target }
 
 
