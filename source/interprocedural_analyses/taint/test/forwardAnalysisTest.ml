@@ -53,7 +53,7 @@ let assert_taint ?models ?models_source ~context source expect =
   in
   let defines = source |> Preprocessing.defines |> List.rev in
   let analyze_and_store_in_order models define =
-    let call_target = Target.create define in
+    let call_target = Target.create (Ast.Node.value define) in
     let () = Log.log ~section:`Taint "Analyzing %a" Target.pp call_target in
     let call_graph_of_define =
       CallGraph.call_graph_of_define
@@ -1088,7 +1088,7 @@ let test_construction context =
       outcome
         ~kind:`Method
         ~returns:[]
-        ~parameter_titos:[{ name = "capture"; titos = [Sinks.LocalReturn] }]
+        ~parameter_titos:[{ name = "capture"; titos = [Sinks.ParameterUpdate 0] }]
         "qualifier.Data.__init__";
       outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "qualifier.test_capture";
       outcome ~kind:`Function ~returns:[] "qualifier.test_no_capture";
