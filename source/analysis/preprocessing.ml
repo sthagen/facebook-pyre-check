@@ -276,7 +276,6 @@ module Qualify (Context : QualifyContext) = struct
   type alias = {
     name: Reference.t;
     qualifier: Reference.t;
-    is_forward_reference: bool;
   }
 
   type qualify_strings =
@@ -289,7 +288,6 @@ module Qualify (Context : QualifyContext) = struct
     aliases: alias Reference.Map.t;
     immutables: Reference.Set.t;
     locals: Reference.Set.t;
-    use_forward_references: bool;
     is_top_level: bool;
     skip: Location.Set.t;
     is_in_function: bool;
@@ -315,12 +313,7 @@ module Qualify (Context : QualifyContext) = struct
           Map.set
             aliases
             ~key:reference
-            ~data:
-              {
-                name = Reference.create renamed;
-                qualifier = Context.source_qualifier;
-                is_forward_reference = false;
-              };
+            ~data:{ name = Reference.create renamed; qualifier = Context.source_qualifier };
         immutables = Set.add immutables reference;
       },
       stars,
@@ -328,9 +321,7 @@ module Qualify (Context : QualifyContext) = struct
 
 
   let rec explore_scope ~scope statements =
-    let global_alias ~qualifier ~name =
-      { name = Reference.combine qualifier name; qualifier; is_forward_reference = true }
-    in
+    let global_alias ~qualifier ~name = { name = Reference.combine qualifier name; qualifier } in
     let explore_scope
         ({ qualifier; aliases; immutables; skip; is_in_function; _ } as scope)
         { Node.location; value }
@@ -400,11 +391,7 @@ module Qualify (Context : QualifyContext) = struct
           let alias = qualify_local_identifier simple_name ~qualifier |> Reference.create in
           ( {
               scope with
-              aliases =
-                Map.set
-                  aliases
-                  ~key:name
-                  ~data:{ name = alias; qualifier; is_forward_reference = false };
+              aliases = Map.set aliases ~key:name ~data:{ name = alias; qualifier };
               locals = Set.add locals name;
             },
             alias )
@@ -417,18 +404,10 @@ module Qualify (Context : QualifyContext) = struct
           {
             scope with
             aliases =
-              Map.set
-                aliases
-                ~key:name
-                ~data:
-                  {
-                    name = Reference.combine qualifier name;
-                    qualifier;
-                    is_forward_reference = false;
-                  };
+              Map.set aliases ~key:name ~data:{ name = Reference.combine qualifier name; qualifier };
           }
       in
-      scope, qualify_reference ~suppress_synthetics:true ~scope name
+      scope, qualify_reference ~scope name
 
 
   and qualify_parameters ~scope parameters =
@@ -494,7 +473,7 @@ module Qualify (Context : QualifyContext) = struct
       ({ Node.location; value } as statement)
     =
     let scope, value =
-      let local_alias ~qualifier ~name = { name; qualifier; is_forward_reference = false } in
+      let local_alias ~qualifier ~name = { name; qualifier } in
       let qualify_assign { Assign.target; annotation; value } =
         let qualify_value ~qualify_potential_alias_strings ~scope = function
           | { Node.value = Expression.Constant (Constant.String _); _ } ->
@@ -656,12 +635,7 @@ module Qualify (Context : QualifyContext) = struct
           nesting_define >>| fun nesting_define -> qualify_reference ~scope nesting_define
         in
         let decorators =
-          List.map
-            decorators
-            ~f:
-              (qualify_expression
-                 ~qualify_strings:DoNotQualify
-                 ~scope:{ scope with use_forward_references = true })
+          List.map decorators ~f:(qualify_expression ~qualify_strings:DoNotQualify ~scope)
         in
         (* Take care to qualify the function name before parameters, as parameters shadow it. *)
         let scope, _ = qualify_function_name ~scope name in
@@ -1030,43 +1004,19 @@ module Qualify (Context : QualifyContext) = struct
     scope, qualify_expression ~qualify_strings:DoNotQualify ~scope target
 
 
-  and qualify_reference
-      ?(suppress_synthetics = false)
-      ~scope:{ aliases; use_forward_references; _ }
-      reference
-    =
+  and qualify_reference ~scope:{ aliases; _ } reference =
     match Reference.as_list reference with
     | [] -> Reference.empty
     | head :: tail -> (
         match Map.find aliases (Reference.create head) with
-        | Some { name; is_forward_reference; qualifier }
-          when (not is_forward_reference) || use_forward_references ->
-            if Reference.show name |> is_qualified && suppress_synthetics then
-              Reference.combine qualifier reference
-            else
-              Reference.combine name (Reference.create_from_list tail)
+        | Some { name; _ } -> Reference.combine name (Reference.create_from_list tail)
         | _ -> reference)
 
 
-  and qualify_name
-      ?(suppress_synthetics = false)
-      ~qualify_strings
-      ~location
-      ~scope:({ aliases; use_forward_references; _ } as scope)
-    = function
+  and qualify_name ~qualify_strings ~location ~scope:({ aliases; _ } as scope) = function
     | Name.Identifier identifier -> (
         match Map.find aliases (Reference.create identifier) with
-        | Some { name; is_forward_reference; qualifier }
-          when (not is_forward_reference) || use_forward_references ->
-            if Reference.show name |> is_qualified && suppress_synthetics then
-              Name.Attribute
-                {
-                  base = from_reference ~location qualifier;
-                  attribute = identifier;
-                  special = false;
-                }
-            else
-              create_name_from_reference ~location name
+        | Some { name; _ } -> create_name_from_reference ~location name
         | _ -> Name.Identifier identifier)
     | Name.Attribute { base = { Node.value = Name (Name.Identifier "builtins"); _ }; attribute; _ }
       ->
@@ -1294,7 +1244,6 @@ let qualify
       aliases = Reference.Map.empty;
       locals = Reference.Set.empty;
       immutables = Reference.Set.empty;
-      use_forward_references = true;
       is_top_level = true;
       skip = Location.Set.empty;
       is_in_function = false;

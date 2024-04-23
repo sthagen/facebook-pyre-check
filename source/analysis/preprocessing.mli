@@ -116,7 +116,6 @@ module Qualify (_ : QualifyContext) : sig
   type alias = {
     name: Reference.t;
     qualifier: Reference.t;
-    is_forward_reference: bool;
   }
 
   type scope = {
@@ -124,7 +123,6 @@ module Qualify (_ : QualifyContext) : sig
     aliases: alias Reference.Map.t;
     immutables: Reference.Set.t;
     locals: Reference.Set.t;
-    use_forward_references: bool;
     is_top_level: bool;
     skip: Location.Set.t;
     is_in_function: bool;
