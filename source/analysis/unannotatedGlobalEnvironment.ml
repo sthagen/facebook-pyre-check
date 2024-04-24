@@ -233,45 +233,6 @@ module OutgoingDataComputation = struct
     |> Option.value ~default:false
 
 
-  let legacy_resolve_exports Queries.{ get_module_metadata; _ } reference =
-    (* Resolve exports. Fixpoint is necessary due to export/module name conflicts: P59503092 *)
-    let widening_threshold = 25 in
-    let rec resolve_exports_fixpoint ~reference ~visited ~count =
-      if Set.mem visited reference || count > widening_threshold then
-        reference
-      else
-        let rec resolve_exports ~lead ~tail =
-          match tail with
-          | head :: tail -> (
-              let incremented_lead = lead @ [head] in
-              if Option.is_some (get_module_metadata (Reference.create_from_list incremented_lead))
-              then
-                resolve_exports ~lead:incremented_lead ~tail
-              else
-                get_module_metadata (Reference.create_from_list lead)
-                >>= (fun definition ->
-                      Module.legacy_aliased_export definition (Reference.create head))
-                >>| (fun export -> Reference.combine export (Reference.create_from_list tail))
-                |> function
-                | Some reference -> reference
-                | None -> resolve_exports ~lead:(lead @ [head]) ~tail)
-          | _ -> reference
-        in
-        match Reference.as_list reference with
-        | head :: tail ->
-            let exported_reference = resolve_exports ~lead:[head] ~tail in
-            if Reference.is_strict_prefix ~prefix:reference exported_reference then
-              reference
-            else
-              resolve_exports_fixpoint
-                ~reference:exported_reference
-                ~visited:(Set.add visited reference)
-                ~count:(count + 1)
-        | _ -> reference
-    in
-    resolve_exports_fixpoint ~reference ~visited:Reference.Set.empty ~count:0
-
-
   let resolve_exports Queries.{ get_module_metadata; _ } ?(from = Reference.empty) reference =
     let module ResolveExportItem = struct
       module T = struct
@@ -516,10 +477,6 @@ module ReadOnly = struct
 
   let is_protocol { get_queries; _ } ?dependency =
     get_queries ~dependency |> OutgoingDataComputation.is_protocol
-
-
-  let legacy_resolve_exports { get_queries; _ } ?dependency =
-    get_queries ~dependency |> OutgoingDataComputation.legacy_resolve_exports
 
 
   let resolve_exports { get_queries; _ } ?dependency =
