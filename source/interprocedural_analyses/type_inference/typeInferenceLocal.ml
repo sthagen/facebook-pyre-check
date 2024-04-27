@@ -99,7 +99,7 @@ module State (Context : Context) = struct
 
     let debug = Context.configuration.debug
 
-    let constraint_solving_style = Configuration.Analysis.default_constraint_solving_style
+    let no_validation_on_class_lookup_failure = false
 
     let define = Context.define
 

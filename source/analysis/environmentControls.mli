@@ -37,13 +37,13 @@ val use_lazy_module_tracking : t -> bool
 
 module TypeCheckControls : sig
   type t = {
-    constraint_solving_style: Configuration.Analysis.constraint_solving_style;
     include_type_errors: bool;
     include_local_annotations: bool;
     include_readonly_errors: bool;
     include_unawaited_awaitable_errors: bool;
     debug: bool;
     include_suppressed_errors: bool;
+    no_validation_on_class_lookup_failure: bool;
   }
 end
 

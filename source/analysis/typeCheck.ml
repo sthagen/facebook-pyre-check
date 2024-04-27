@@ -15,6 +15,7 @@
 
    The entrypoint is therefore usually `forward_statement`, which has a number of helpers like
    `forward_assign` (used for assignment statements) and `forward_expression` (which traverses
+
    expression trees within a statement, along the way inferring types, producing type errors, and
    possibly adding to the scope for features like the walrus operator).
 
@@ -61,7 +62,7 @@ module type Context = sig
 
   val debug : bool
 
-  val constraint_solving_style : Configuration.Analysis.constraint_solving_style
+  val no_validation_on_class_lookup_failure : bool
 
   val define : Define.t Node.t
 
@@ -465,44 +466,63 @@ module State (Context : Context) = struct
 
 
   let get_untracked_annotation_errors ~resolution ~location annotation =
-    let add_untracked_errors errors =
-      let is_untracked_name class_name =
-        not (GlobalResolution.class_hierarchy_contains_class resolution class_name)
-      in
-      Type.elements annotation
-      |> List.dedup_and_sort ~compare:String.compare
-      |> List.filter ~f:is_untracked_name
-      |> List.fold ~init:errors ~f:(fun errors name ->
-             emit_error ~errors ~location ~kind:(Error.UndefinedType (Primitive name)))
-    in
-    let add_literal_value_errors errors =
-      (* Literal enum class names will later be parsed as types, so we must validate them when
-         checking for untracked annotations. In error messaging, assume these are arbitrary
-         non-literal expressions. *)
-      let literals =
-        let is_literal_enumeration = function
-          | Type.Literal (Type.EnumerationMember _) -> true
-          | _ -> false
+    match Context.no_validation_on_class_lookup_failure with
+    | true -> []
+    | false ->
+        let is_untracked_name class_name =
+          match GlobalResolution.resolve_exports resolution (Reference.create class_name) with
+          | None -> true
+          | Some (ResolvedReference.PlaceholderStub _) -> false
+          | Some (ResolvedReference.Module _) ->
+              (* `name` refers to a module, which is usually not valid type *)
+              true
+          | Some
+              (ResolvedReference.ModuleAttribute
+                { export = ResolvedReference.FromModuleGetattr; _ }) ->
+              (* Don't complain if `name` is derived from getattr-Any *)
+              false
+          | Some (ResolvedReference.ModuleAttribute { from; name; remaining; _ }) ->
+              let full_name =
+                Reference.combine from (Reference.create_from_list (name :: remaining))
+                |> Reference.show
+              in
+              not (GlobalResolution.class_exists resolution full_name)
         in
-        Type.collect annotation ~predicate:is_literal_enumeration
-      in
-      let add_literal_error errors literal =
-        match literal with
-        | Type.Literal
-            (Type.EnumerationMember
-              { enumeration_type = Type.Primitive enumeration_name; member_name })
-          when not (GlobalResolution.class_hierarchy_contains_class resolution enumeration_name) ->
-            emit_error
-              ~errors
-              ~location
-              ~kind:
-                (Error.InvalidType
-                   (InvalidLiteral (Reference.create (enumeration_name ^ "." ^ member_name))))
-        | _ -> errors
-      in
-      List.fold literals ~init:errors ~f:add_literal_error
-    in
-    add_untracked_errors [] |> add_literal_value_errors
+        let add_untracked_errors errors =
+          Type.elements annotation
+          |> List.dedup_and_sort ~compare:String.compare
+          |> List.filter ~f:is_untracked_name
+          |> List.fold ~init:errors ~f:(fun errors name ->
+                 emit_error ~errors ~location ~kind:(Error.UndefinedType (Primitive name)))
+        in
+        let add_literal_value_errors errors =
+          (* Literal enum class names will later be parsed as types, so we must validate them when
+             checking for untracked annotations. In error messaging, assume these are arbitrary
+             non-literal expressions. *)
+          let literals =
+            let is_literal_enumeration = function
+              | Type.Literal (Type.EnumerationMember _) -> true
+              | _ -> false
+            in
+            Type.collect annotation ~predicate:is_literal_enumeration
+          in
+          let add_literal_error errors literal =
+            match literal with
+            | Type.Literal
+                (Type.EnumerationMember
+                  { enumeration_type = Type.Primitive enumeration_name; member_name })
+              when is_untracked_name enumeration_name ->
+                emit_error
+                  ~errors
+                  ~location
+                  ~kind:
+                    (Error.InvalidType
+                       (InvalidLiteral (Reference.create (enumeration_name ^ "." ^ member_name))))
+            | _ -> errors
+          in
+          List.fold literals ~init:errors ~f:add_literal_error
+        in
+        add_untracked_errors [] |> add_literal_value_errors
 
 
   let parse_and_check_annotation
@@ -526,22 +546,17 @@ module State (Context : Context) = struct
         else
           None
       in
-      let all_primitives_and_variables_are_valid, errors =
-        let errors, no_untracked =
-          let untracked_annotation_errors =
-            get_untracked_annotation_errors ~resolution:global_resolution ~location annotation
-          in
-          List.append errors untracked_annotation_errors, List.is_empty untracked_annotation_errors
-        in
-        let invalid_variable_error_kinds =
-          Type.Variable.all_free_variables annotation
-          |> List.filter_map ~f:(check_invalid_variables resolution)
-        in
-        ( no_untracked && List.is_empty invalid_variable_error_kinds,
-          List.fold invalid_variable_error_kinds ~init:errors ~f:(fun errors kind ->
-              emit_error ~errors ~location ~kind) )
+      let untracked_annotation_errors =
+        get_untracked_annotation_errors ~resolution:global_resolution ~location annotation
       in
-      if all_primitives_and_variables_are_valid then
+      let untracked_annotation_and_invalid_variable_errors =
+        Type.Variable.all_free_variables annotation
+        |> List.filter_map ~f:(check_invalid_variables resolution)
+        |> List.fold ~init:untracked_annotation_errors ~f:(fun errors kind ->
+               emit_error ~errors ~location ~kind)
+      in
+      let errors = List.append untracked_annotation_and_invalid_variable_errors errors in
+      if List.is_empty untracked_annotation_and_invalid_variable_errors then
         add_invalid_type_parameters_errors
           annotation
           ~resolution:global_resolution
@@ -1058,6 +1073,385 @@ module State (Context : Context) = struct
     resolution, cast_annotation, resolved, errors
 
 
+  (* The `forward_call` function accepts a callee and takes arguments as type information, and
+     handles type checking and inferring the resulting type of the actual call. The incoming
+     resolution and errors should include whatever was produced when type checking arguments and
+     inferring argument types.
+
+     Separating `forward_call` from `forward_call_with_arguments`, which takes arguments as
+     expressions, allows us to type check special function calls (like implicit `__setitem__`) that
+     don't correspond in a straightforward way to an actual AST expression. *)
+  and forward_call ~resolution ~location ~errors ~target ~dynamic ~callee ~arguments =
+    let global_resolution = Resolution.global_resolution resolution in
+    let open CallableApplicationData in
+    let unpack_callable_and_self_argument =
+      unpack_callable_and_self_argument
+        ~signature_select:
+          (GlobalResolution.signature_select
+             global_resolution
+             ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution))
+        ~global_resolution
+    in
+    let find_method ~parent ~name ~special_method =
+      GlobalResolution.attribute_from_annotation global_resolution ~parent ~name ~special_method
+      >>| AnnotatedAttribute.annotation
+      >>| Annotation.annotation
+      >>= unpack_callable_and_self_argument
+    in
+    let callable_from_type resolved =
+      match unpack_callable_and_self_argument resolved with
+      | Some unpacked -> Some unpacked
+      | _ -> find_method ~parent:resolved ~name:"__call__" ~special_method:true
+    in
+    let inverse_operator_callable
+        ~callee_attribute:
+          ({ Callee.base = { expression; resolved_base }; attribute = { name; _ }; _ } as
+          callee_attribute)
+      = function
+      | [{ AttributeResolution.Argument.resolved; _ }] as arguments ->
+          let found_inverse_operator =
+            inverse_operator name
+            >>= (fun name -> find_method ~parent:resolved ~name ~special_method:false)
+            >>= fun found_callable ->
+            if Type.is_any resolved_base || Type.is_unbound resolved_base then
+              None
+            else
+              let inverted_arguments =
+                [
+                  {
+                    AttributeResolution.Argument.expression = Some expression;
+                    resolved = resolved_base;
+                    kind = Positional;
+                  };
+                ]
+              in
+              Some
+                (KnownCallable
+                   {
+                     callable = found_callable;
+                     arguments = inverted_arguments;
+                     is_inverted_operator = true;
+                     selected_return_annotation = ();
+                   })
+          in
+          Option.first_some
+            found_inverse_operator
+            (Some (UnknownCallableAttribute { callable_attribute = callee_attribute; arguments }))
+      | _ -> None
+    in
+    let rec get_callables callee =
+      match callee with
+      | Callee.Attribute ({ attribute = { resolved; _ }; _ } as callee_attribute)
+        when Type.is_top resolved ->
+          Some [unknown_callable_attribute_before_application callee_attribute]
+      | Callee.Attribute { attribute = { resolved; _ }; _ }
+      | Callee.NonAttribute { resolved; _ } -> (
+          match resolved with
+          | Type.Union annotations ->
+              List.map annotations ~f:(fun annotation ->
+                  callable_from_type annotation
+                  >>| fun callable -> known_callable_before_application callable)
+              |> Option.all
+          | Type.Variable ({ constraints = Type.Variable.Explicit _; _ } as explicit) ->
+              let upper_bound = Type.Variable.Unary.upper_bound explicit in
+              let callee =
+                match callee with
+                | Callee.Attribute { attribute; base; expression } ->
+                    Callee.Attribute
+                      { base; attribute = { attribute with resolved = upper_bound }; expression }
+                | Callee.NonAttribute callee ->
+                    Callee.NonAttribute { callee with resolved = upper_bound }
+              in
+              get_callables callee
+          | Type.Variable { constraints = Type.Variable.Bound parent; _ } ->
+              let callee =
+                match callee with
+                | Callee.Attribute { attribute; base; expression } ->
+                    Callee.Attribute
+                      { base; attribute = { attribute with resolved = parent }; expression }
+                | Callee.NonAttribute callee ->
+                    Callee.NonAttribute { callee with resolved = parent }
+              in
+              get_callables callee
+          | annotation ->
+              callable_from_type annotation
+              >>| fun callable -> [known_callable_before_application callable])
+    in
+    let return_annotation_with_callable_and_self
+        ~resolution
+        ({
+           callable = { TypeOperation.callable; _ };
+           arguments;
+           is_inverted_operator;
+           selected_return_annotation;
+         } as callable_data)
+      =
+      match selected_return_annotation, callable with
+      | SignatureSelectionTypes.NotFound _, _ -> (
+          match callee, callable, arguments with
+          | ( Callee.Attribute { base = { expression; resolved_base }; _ },
+              { Type.Callable.kind = Type.Callable.Named name; _ },
+              [{ AttributeResolution.Argument.resolved; _ }] )
+            when not is_inverted_operator ->
+              inverse_operator (Reference.last name)
+              >>= (fun name -> find_method ~parent:resolved ~name ~special_method:false)
+              >>| (fun ({ TypeOperation.callable; self_argument } as
+                       unpacked_callable_and_self_argument) ->
+                    let arguments =
+                      [
+                        {
+                          AttributeResolution.Argument.expression = Some expression;
+                          kind = Positional;
+                          resolved = resolved_base;
+                        };
+                      ]
+                    in
+                    {
+                      callable_data with
+                      selected_return_annotation =
+                        GlobalResolution.signature_select
+                          (Resolution.global_resolution resolution)
+                          ~arguments
+                          ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution)
+                          ~callable
+                          ~self_argument;
+                      (* Make sure we emit errors against the inverse function, not the original *)
+                      callable = unpacked_callable_and_self_argument;
+                    })
+              |> Option.value ~default:{ callable_data with selected_return_annotation }
+          | _ -> { callable_data with selected_return_annotation })
+      | ( (Found { selected_return_annotation; _ } as found_return_annotation),
+          { kind = Named access; _ } )
+        when String.equal "__init__" (Reference.last access) ->
+          Type.split selected_return_annotation
+          |> fst
+          |> Type.primitive_name
+          >>| (function
+                | class_name ->
+                    let abstract_methods =
+                      GlobalResolution.uninstantiated_attributes
+                        global_resolution
+                        ~transitive:true
+                        class_name
+                      >>| List.filter ~f:AnnotatedAttribute.abstract
+                      |> Option.value ~default:[]
+                      |> List.map ~f:AnnotatedAttribute.name
+                    in
+                    if not (List.is_empty abstract_methods) then
+                      SignatureSelectionTypes.NotFound
+                        {
+                          closest_return_annotation = selected_return_annotation;
+                          reason =
+                            Some
+                              (AbstractClassInstantiation
+                                 { class_name = Reference.create class_name; abstract_methods });
+                        }
+                    else if GlobalResolution.is_protocol global_resolution (Primitive class_name)
+                    then
+                      NotFound
+                        {
+                          closest_return_annotation = selected_return_annotation;
+                          reason = Some (ProtocolInstantiation (Reference.create class_name));
+                        }
+                    else
+                      found_return_annotation)
+          |> Option.value ~default:found_return_annotation
+          |> fun selected_return_annotation -> { callable_data with selected_return_annotation }
+      | _ -> { callable_data with selected_return_annotation }
+    in
+    let extract_found_not_found_unknown_attribute = function
+      | KnownCallable
+          {
+            selected_return_annotation =
+              SignatureSelectionTypes.Found { selected_return_annotation };
+            _;
+          } ->
+          `Fst selected_return_annotation
+      | KnownCallable _ as not_found -> `Snd not_found
+      | UnknownCallableAttribute _ as unknown_callable_attribute -> `Trd unknown_callable_attribute
+    in
+    let resolved_for_bad_callable ~resolution ~errors undefined_attributes =
+      (* When an operator does not exist on the left operand but its inverse exists on the right
+         operand, the missing attribute error would not have been thrown for the original operator.
+         Build up the original error in case the inverse operator does not typecheck. *)
+      let potential_missing_operator_error undefined_attributes =
+        match target, callee with
+        | Some target, Callee.Attribute { attribute = { name; resolved }; _ }
+          when Type.is_top resolved
+               && Option.is_some (inverse_operator name)
+               && (not (Type.is_any target))
+               && not (Type.is_unbound target) -> (
+            match undefined_attributes, operator_name_to_symbol name with
+            | ( [
+                  UnknownCallableAttribute
+                    { arguments = [{ AttributeResolution.Argument.resolved; _ }]; _ };
+                ],
+                Some operator_name ) ->
+                Some
+                  (Error.UnsupportedOperand
+                     (Binary { operator_name; left_operand = target; right_operand = resolved }))
+            | _ ->
+                let class_module = module_path_of_type ~global_resolution target in
+                Some
+                  (Error.UndefinedAttribute
+                     {
+                       attribute = name;
+                       origin =
+                         Error.Class
+                           { class_origin = ClassType target; parent_module_path = class_module };
+                     }))
+        | _ -> None
+      in
+      let errors =
+        let resolved_callee = Callee.resolved callee in
+        match resolved_callee, potential_missing_operator_error undefined_attributes with
+        | Type.Top, Some kind -> emit_error ~errors ~location ~kind
+        | Parametric { name = "type"; parameters = [Single Any] }, _
+        | Parametric { name = "BoundMethod"; parameters = [Single Any; _] }, _
+        | Type.Any, _
+        | Type.Top, _ ->
+            errors
+        | _ -> emit_error ~errors ~location ~kind:(Error.NotCallable resolved_callee)
+      in
+      { Resolved.resolution; errors; resolved = Type.Any; resolved_annotation = None; base = None }
+    in
+    let join_return_annotations
+        ~resolution
+        ~errors
+        (found_return_annotations, not_found_return_annotations)
+      =
+      match found_return_annotations, not_found_return_annotations with
+      | head :: tail, [] ->
+          Some
+            {
+              Resolved.resolution;
+              errors;
+              resolved = List.fold ~f:(GlobalResolution.join global_resolution) ~init:head tail;
+              resolved_annotation = None;
+              base = None;
+            }
+      | ( _,
+          KnownCallable
+            {
+              selected_return_annotation =
+                SignatureSelectionTypes.NotFound { closest_return_annotation; reason = Some reason };
+              callable = unpacked_callable_and_self_argument;
+              arguments;
+              _;
+            }
+          :: _ ) ->
+          (* For a union of callables, we prioritize mismatched signatures even if some of the
+             callables matched correctly. *)
+          let errors =
+            let error_kinds =
+              let { TypeOperation.callable; self_argument } = unpacked_callable_and_self_argument in
+              errors_from_not_found
+                ~reason
+                ~callable
+                ~self_argument
+                ~global_resolution
+                ?original_target:target
+                ~callee_expression:(Callee.expression callee)
+                ~callee_base_expression:(Callee.base_expression callee)
+                ~arguments:(Some arguments)
+                ()
+            in
+            let emit errors (more_specific_error_location, kind) =
+              let location = Option.value more_specific_error_location ~default:location in
+              emit_error ~errors ~location ~kind
+            in
+            List.fold error_kinds ~init:errors ~f:emit
+          in
+          Some
+            {
+              resolution;
+              errors;
+              resolved = closest_return_annotation;
+              resolved_annotation = None;
+              base = None;
+            }
+      | _ -> None
+    in
+    let callables_with_selected_return_annotations, resolution, errors =
+      let callable_data_list = get_callables callee |> Option.value ~default:[] in
+      let callable_data_list =
+        List.filter_map callable_data_list ~f:(function
+            | UnknownCallableAttribute { callable_attribute; _ } ->
+                inverse_operator_callable ~callee_attribute:callable_attribute arguments
+            | KnownCallable callable_data -> Some (KnownCallable { callable_data with arguments }))
+      in
+      let select_annotation_for_known_callable = function
+        | KnownCallable
+            ({ callable = { TypeOperation.callable; self_argument }; arguments; _ } as
+            callable_data) ->
+            let selected_return_annotation =
+              GlobalResolution.signature_select
+                global_resolution
+                ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution)
+                ~arguments
+                ~callable
+                ~self_argument
+            in
+            KnownCallable
+              (return_annotation_with_callable_and_self
+                 ~resolution
+                 { callable_data with selected_return_annotation })
+        | UnknownCallableAttribute other -> UnknownCallableAttribute other
+      in
+      List.map callable_data_list ~f:select_annotation_for_known_callable, resolution, errors
+    in
+    Context.Builder.add_callee
+      ~global_resolution
+      ~target
+      ~callables:
+        (List.filter_map callables_with_selected_return_annotations ~f:(function
+            | KnownCallable { callable = { TypeOperation.callable; _ }; _ } -> Some callable
+            | _ -> None))
+      ~dynamic
+      ~qualifier:Context.qualifier
+      ~callee_type:(Callee.resolved callee)
+      ~callee:(Callee.expression callee);
+    let found_return_annotations, not_found_return_annotations, undefined_attributes =
+      List.partition3_map
+        callables_with_selected_return_annotations
+        ~f:extract_found_not_found_unknown_attribute
+    in
+    join_return_annotations
+      ~resolution
+      ~errors
+      (found_return_annotations, not_found_return_annotations)
+    |> function
+    | Some resolved -> resolved
+    | None -> resolved_for_bad_callable ~resolution ~errors undefined_attributes
+
+
+  (* The `forward_call_with_arguments` function accepts arguments as *expressions* and will traverse
+     them with forward_expression. The call itself is handled by `resolve_call`. *)
+  and forward_call_with_arguments
+      ~resolution
+      ~location
+      ~errors
+      ~target
+      ~dynamic
+      ~callee
+      ~arguments:(_ as argument_expressions)
+    =
+    let resolution, errors, reversed_arguments =
+      let forward_argument (resolution, errors, reversed_arguments) argument =
+        let expression, kind = Ast.Expression.Call.Argument.unpack argument in
+        forward_expression ~resolution expression
+        |> fun { resolution; errors = new_errors; resolved; _ } ->
+        ( resolution,
+          List.append new_errors errors,
+          { AttributeResolution.Argument.kind; expression = Some expression; resolved }
+          :: reversed_arguments )
+      in
+      List.fold argument_expressions ~f:forward_argument ~init:(resolution, errors, [])
+    in
+    let arguments = List.rev reversed_arguments in
+    forward_call ~resolution ~location ~errors ~target ~dynamic ~callee ~arguments
+
+
   (** Resolves types by moving forward through nodes in the CFG starting at an expression. *)
   and forward_expression ~resolution { Node.location; value } =
     let global_resolution = Resolution.global_resolution resolution in
@@ -1449,488 +1843,6 @@ module State (Context : Context) = struct
       in
       { resolved with base }
     in
-    let forward_call ~resolution ~errors ~target ~dynamic ~callee ~arguments =
-      let open CallableApplicationData in
-      let unpack_callable_and_self_argument =
-        unpack_callable_and_self_argument
-          ~signature_select:
-            (GlobalResolution.signature_select
-               global_resolution
-               ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution))
-          ~global_resolution
-      in
-      let find_method ~parent ~name ~special_method =
-        GlobalResolution.attribute_from_annotation global_resolution ~parent ~name ~special_method
-        >>| AnnotatedAttribute.annotation
-        >>| Annotation.annotation
-        >>= unpack_callable_and_self_argument
-      in
-      let callable_from_type resolved =
-        match unpack_callable_and_self_argument resolved with
-        | Some unpacked -> Some unpacked
-        | _ -> find_method ~parent:resolved ~name:"__call__" ~special_method:true
-      in
-      let inverse_operator_callable
-          ~callee_attribute:
-            ({ Callee.base = { expression; resolved_base }; attribute = { name; _ }; _ } as
-            callee_attribute)
-        = function
-        | [{ AttributeResolution.Argument.resolved; _ }] as arguments ->
-            let found_inverse_operator =
-              inverse_operator name
-              >>= (fun name -> find_method ~parent:resolved ~name ~special_method:false)
-              >>= fun found_callable ->
-              if Type.is_any resolved_base || Type.is_unbound resolved_base then
-                None
-              else
-                let inverted_arguments =
-                  [
-                    {
-                      AttributeResolution.Argument.expression = Some expression;
-                      resolved = resolved_base;
-                      kind = Positional;
-                    };
-                  ]
-                in
-                Some
-                  (KnownCallable
-                     {
-                       callable = found_callable;
-                       arguments = inverted_arguments;
-                       is_inverted_operator = true;
-                       selected_return_annotation = ();
-                     })
-            in
-            Option.first_some
-              found_inverse_operator
-              (Some (UnknownCallableAttribute { callable_attribute = callee_attribute; arguments }))
-        | _ -> None
-      in
-      let rec get_callables callee =
-        match callee with
-        | Callee.Attribute ({ attribute = { resolved; _ }; _ } as callee_attribute)
-          when Type.is_top resolved ->
-            Some [unknown_callable_attribute_before_application callee_attribute]
-        | Callee.Attribute { attribute = { resolved; _ }; _ }
-        | Callee.NonAttribute { resolved; _ } -> (
-            match resolved with
-            | Type.Union annotations ->
-                List.map annotations ~f:(fun annotation ->
-                    callable_from_type annotation
-                    >>| fun callable -> known_callable_before_application callable)
-                |> Option.all
-            | Type.Variable ({ constraints = Type.Variable.Explicit _; _ } as explicit) ->
-                let upper_bound = Type.Variable.Unary.upper_bound explicit in
-                let callee =
-                  match callee with
-                  | Callee.Attribute { attribute; base; expression } ->
-                      Callee.Attribute
-                        { base; attribute = { attribute with resolved = upper_bound }; expression }
-                  | Callee.NonAttribute callee ->
-                      Callee.NonAttribute { callee with resolved = upper_bound }
-                in
-                get_callables callee
-            | Type.Variable { constraints = Type.Variable.Bound parent; _ } ->
-                let callee =
-                  match callee with
-                  | Callee.Attribute { attribute; base; expression } ->
-                      Callee.Attribute
-                        { base; attribute = { attribute with resolved = parent }; expression }
-                  | Callee.NonAttribute callee ->
-                      Callee.NonAttribute { callee with resolved = parent }
-                in
-                get_callables callee
-            | annotation ->
-                callable_from_type annotation
-                >>| fun callable -> [known_callable_before_application callable])
-      in
-      let return_annotation_with_callable_and_self
-          ~resolution
-          ({
-             callable = { TypeOperation.callable; _ };
-             arguments;
-             is_inverted_operator;
-             selected_return_annotation;
-           } as callable_data)
-        =
-        match selected_return_annotation, callable with
-        | SignatureSelectionTypes.NotFound _, _ -> (
-            match callee, callable, arguments with
-            | ( Callee.Attribute { base = { expression; resolved_base }; _ },
-                { Type.Callable.kind = Type.Callable.Named name; _ },
-                [{ AttributeResolution.Argument.resolved; _ }] )
-              when not is_inverted_operator ->
-                inverse_operator (Reference.last name)
-                >>= (fun name -> find_method ~parent:resolved ~name ~special_method:false)
-                >>| (fun ({ TypeOperation.callable; self_argument } as
-                         unpacked_callable_and_self_argument) ->
-                      let arguments =
-                        [
-                          {
-                            AttributeResolution.Argument.expression = Some expression;
-                            kind = Positional;
-                            resolved = resolved_base;
-                          };
-                        ]
-                      in
-                      {
-                        callable_data with
-                        selected_return_annotation =
-                          GlobalResolution.signature_select
-                            (Resolution.global_resolution resolution)
-                            ~arguments
-                            ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution)
-                            ~callable
-                            ~self_argument;
-                        (* Make sure we emit errors against the inverse function, not the
-                           original *)
-                        callable = unpacked_callable_and_self_argument;
-                      })
-                |> Option.value ~default:{ callable_data with selected_return_annotation }
-            | _ -> { callable_data with selected_return_annotation })
-        | ( (Found { selected_return_annotation; _ } as found_return_annotation),
-            { kind = Named access; _ } )
-          when String.equal "__init__" (Reference.last access) ->
-            Type.split selected_return_annotation
-            |> fst
-            |> Type.primitive_name
-            >>| (function
-                  | class_name ->
-                      let abstract_methods =
-                        GlobalResolution.uninstantiated_attributes
-                          global_resolution
-                          ~transitive:true
-                          class_name
-                        >>| List.filter ~f:AnnotatedAttribute.abstract
-                        |> Option.value ~default:[]
-                        |> List.map ~f:AnnotatedAttribute.name
-                      in
-                      if not (List.is_empty abstract_methods) then
-                        SignatureSelectionTypes.NotFound
-                          {
-                            closest_return_annotation = selected_return_annotation;
-                            reason =
-                              Some
-                                (AbstractClassInstantiation
-                                   { class_name = Reference.create class_name; abstract_methods });
-                          }
-                      else if GlobalResolution.is_protocol global_resolution (Primitive class_name)
-                      then
-                        NotFound
-                          {
-                            closest_return_annotation = selected_return_annotation;
-                            reason = Some (ProtocolInstantiation (Reference.create class_name));
-                          }
-                      else
-                        found_return_annotation)
-            |> Option.value ~default:found_return_annotation
-            |> fun selected_return_annotation -> { callable_data with selected_return_annotation }
-        | _ -> { callable_data with selected_return_annotation }
-      in
-      let extract_found_not_found_unknown_attribute = function
-        | KnownCallable
-            {
-              selected_return_annotation =
-                SignatureSelectionTypes.Found { selected_return_annotation };
-              _;
-            } ->
-            `Fst selected_return_annotation
-        | KnownCallable _ as not_found -> `Snd not_found
-        | UnknownCallableAttribute _ as unknown_callable_attribute ->
-            `Trd unknown_callable_attribute
-      in
-      let resolved_for_bad_callable ~resolution ~errors undefined_attributes =
-        (* When an operator does not exist on the left operand but its inverse exists on the right
-           operand, the missing attribute error would not have been thrown for the original
-           operator. Build up the original error in case the inverse operator does not typecheck. *)
-        let potential_missing_operator_error undefined_attributes =
-          match target, callee with
-          | Some target, Callee.Attribute { attribute = { name; resolved }; _ }
-            when Type.is_top resolved
-                 && Option.is_some (inverse_operator name)
-                 && (not (Type.is_any target))
-                 && not (Type.is_unbound target) -> (
-              match undefined_attributes, operator_name_to_symbol name with
-              | ( [
-                    UnknownCallableAttribute
-                      { arguments = [{ AttributeResolution.Argument.resolved; _ }]; _ };
-                  ],
-                  Some operator_name ) ->
-                  Some
-                    (Error.UnsupportedOperand
-                       (Binary { operator_name; left_operand = target; right_operand = resolved }))
-              | _ ->
-                  let class_module = module_path_of_type ~global_resolution target in
-                  Some
-                    (Error.UndefinedAttribute
-                       {
-                         attribute = name;
-                         origin =
-                           Error.Class
-                             { class_origin = ClassType target; parent_module_path = class_module };
-                       }))
-          | _ -> None
-        in
-        let errors =
-          let resolved_callee = Callee.resolved callee in
-          match resolved_callee, potential_missing_operator_error undefined_attributes with
-          | Type.Top, Some kind -> emit_error ~errors ~location ~kind
-          | Parametric { name = "type"; parameters = [Single Any] }, _
-          | Parametric { name = "BoundMethod"; parameters = [Single Any; _] }, _
-          | Type.Any, _
-          | Type.Top, _ ->
-              errors
-          | _ -> emit_error ~errors ~location ~kind:(Error.NotCallable resolved_callee)
-        in
-        {
-          Resolved.resolution;
-          errors;
-          resolved = Type.Any;
-          resolved_annotation = None;
-          base = None;
-        }
-      in
-      let join_return_annotations
-          ~resolution
-          ~errors
-          (found_return_annotations, not_found_return_annotations)
-        =
-        match found_return_annotations, not_found_return_annotations with
-        | head :: tail, [] ->
-            Some
-              {
-                Resolved.resolution;
-                errors;
-                resolved = List.fold ~f:(GlobalResolution.join global_resolution) ~init:head tail;
-                resolved_annotation = None;
-                base = None;
-              }
-        | ( _,
-            KnownCallable
-              {
-                selected_return_annotation =
-                  SignatureSelectionTypes.NotFound
-                    { closest_return_annotation; reason = Some reason };
-                callable = unpacked_callable_and_self_argument;
-                arguments;
-                _;
-              }
-            :: _ ) ->
-            (* For a union of callables, we prioritize mismatched signatures even if some of the
-               callables matched correctly. *)
-            let errors =
-              let error_kinds =
-                let { TypeOperation.callable; self_argument } =
-                  unpacked_callable_and_self_argument
-                in
-                errors_from_not_found
-                  ~reason
-                  ~callable
-                  ~self_argument
-                  ~global_resolution
-                  ?original_target:target
-                  ~callee_expression:(Callee.expression callee)
-                  ~callee_base_expression:(Callee.base_expression callee)
-                  ~arguments:(Some arguments)
-                  ()
-              in
-              let emit errors (more_specific_error_location, kind) =
-                let location = Option.value more_specific_error_location ~default:location in
-                emit_error ~errors ~location ~kind
-              in
-              List.fold error_kinds ~init:errors ~f:emit
-            in
-            Some
-              {
-                resolution;
-                errors;
-                resolved = closest_return_annotation;
-                resolved_annotation = None;
-                base = None;
-              }
-        | _ -> None
-      in
-      let check_for_error ({ Resolved.resolved; errors; _ } as input) =
-        let is_broadcast_error = function
-          | Type.Parametric
-              {
-                name = "pyre_extensions.BroadcastError";
-                parameters = [Type.Parameter.Single _; Type.Parameter.Single _];
-              } ->
-              true
-          | _ -> false
-        in
-        match Type.collect resolved ~predicate:is_broadcast_error with
-        | [] -> input
-        | broadcast_errors ->
-            let new_errors =
-              List.fold broadcast_errors ~init:errors ~f:(fun current_errors error_type ->
-                  match error_type with
-                  | Type.Parametric
-                      {
-                        name = "pyre_extensions.BroadcastError";
-                        parameters =
-                          [Type.Parameter.Single left_type; Type.Parameter.Single right_type];
-                      } ->
-                      emit_error
-                        ~errors:current_errors
-                        ~location
-                        ~kind:
-                          (Error.BroadcastError
-                             {
-                               expression = { location; value };
-                               left = left_type;
-                               right = right_type;
-                             })
-                  | _ -> current_errors)
-            in
-
-            { input with resolved = Type.Any; errors = new_errors }
-      in
-      let select_return_annotation_bidirectional_inference
-          ({
-             callable =
-               {
-                 TypeOperation.callable =
-                   { Type.Callable.implementation = { parameters; _ }; overloads; _ } as callable;
-                 self_argument;
-               };
-             _;
-           } as callable_data)
-        =
-        let callable_data_with_return_annotation, resolution, errors =
-          match parameters, overloads with
-          | Type.Callable.Defined record_parameters, [] ->
-              let resolution, errors, reversed_arguments =
-                let forward_argument (resolution, errors, reversed_arguments) argument =
-                  let expression, kind = Ast.Expression.Call.Argument.unpack argument in
-                  forward_expression ~resolution expression
-                  |> fun { resolution; errors = new_errors; resolved; _ } ->
-                  ( resolution,
-                    List.append new_errors errors,
-                    { AttributeResolution.Argument.kind; expression = Some expression; resolved }
-                    :: reversed_arguments )
-                in
-                List.fold arguments ~f:forward_argument ~init:(resolution, errors, [])
-              in
-              let arguments = List.rev reversed_arguments in
-              let open AttributeResolution.SignatureSelection in
-              prepare_arguments_for_signature_selection ~self_argument arguments
-              |> get_parameter_argument_mapping
-                   ~all_parameters:parameters
-                   ~parameters:record_parameters
-                   ~self_argument
-              |> check_arguments_against_parameters
-                   ~order:(GlobalResolution.full_order global_resolution)
-                   ~resolve_mutable_literals:
-                     (GlobalResolution.resolve_mutable_literals global_resolution)
-                   ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution)
-                   ~callable
-              |> instantiate_return_annotation
-                   ~order:(GlobalResolution.full_order global_resolution)
-              |> fun selected_return_annotation ->
-              { callable_data with arguments; selected_return_annotation }, resolution, errors
-          | _ ->
-              let resolution, errors, reversed_arguments =
-                let forward_argument (resolution, errors, reversed_arguments) argument =
-                  let expression, kind = Ast.Expression.Call.Argument.unpack argument in
-                  forward_expression ~resolution expression
-                  |> fun { resolution; errors = new_errors; resolved; _ } ->
-                  ( resolution,
-                    List.append new_errors errors,
-                    { AttributeResolution.Argument.kind; expression = Some expression; resolved }
-                    :: reversed_arguments )
-                in
-                List.fold arguments ~f:forward_argument ~init:(resolution, errors, [])
-              in
-              let arguments = List.rev reversed_arguments in
-              let selected_return_annotation =
-                GlobalResolution.signature_select
-                  global_resolution
-                  ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution)
-                  ~arguments
-                  ~callable
-                  ~self_argument
-              in
-              { callable_data with arguments; selected_return_annotation }, resolution, errors
-        in
-        let callable_data_with_selected_return_annotation =
-          return_annotation_with_callable_and_self ~resolution callable_data_with_return_annotation
-        in
-        [KnownCallable callable_data_with_selected_return_annotation], resolution, errors
-      in
-      let callables_with_selected_return_annotations, resolution, errors =
-        let callable_data_list = get_callables callee |> Option.value ~default:[] in
-        match callable_data_list, Context.constraint_solving_style with
-        | [KnownCallable callable_data], Configuration.Analysis.ExpressionLevel ->
-            select_return_annotation_bidirectional_inference callable_data
-        | callable_data_list, _ ->
-            let resolution, errors, reversed_arguments =
-              let forward_argument (resolution, errors, reversed_arguments) argument =
-                let expression, kind = Ast.Expression.Call.Argument.unpack argument in
-                forward_expression ~resolution expression
-                |> fun { resolution; errors = new_errors; resolved; _ } ->
-                ( resolution,
-                  List.append new_errors errors,
-                  { AttributeResolution.Argument.kind; expression = Some expression; resolved }
-                  :: reversed_arguments )
-              in
-              List.fold arguments ~f:forward_argument ~init:(resolution, errors, [])
-            in
-            let arguments = List.rev reversed_arguments in
-            let callable_data_list =
-              List.filter_map callable_data_list ~f:(function
-                  | UnknownCallableAttribute { callable_attribute; _ } ->
-                      inverse_operator_callable ~callee_attribute:callable_attribute arguments
-                  | KnownCallable callable_data ->
-                      Some (KnownCallable { callable_data with arguments }))
-            in
-            let select_annotation_for_known_callable = function
-              | KnownCallable
-                  ({ callable = { TypeOperation.callable; self_argument }; arguments; _ } as
-                  callable_data) ->
-                  let selected_return_annotation =
-                    GlobalResolution.signature_select
-                      global_resolution
-                      ~resolve_with_locals:(resolve_expression_type_with_locals ~resolution)
-                      ~arguments
-                      ~callable
-                      ~self_argument
-                  in
-                  KnownCallable
-                    (return_annotation_with_callable_and_self
-                       ~resolution
-                       { callable_data with selected_return_annotation })
-              | UnknownCallableAttribute other -> UnknownCallableAttribute other
-            in
-            List.map callable_data_list ~f:select_annotation_for_known_callable, resolution, errors
-      in
-      Context.Builder.add_callee
-        ~global_resolution
-        ~target
-        ~callables:
-          (List.filter_map callables_with_selected_return_annotations ~f:(function
-              | KnownCallable { callable = { TypeOperation.callable; _ }; _ } -> Some callable
-              | _ -> None))
-        ~arguments
-        ~dynamic
-        ~qualifier:Context.qualifier
-        ~callee_type:(Callee.resolved callee)
-        ~callee:(Callee.expression callee);
-      let found_return_annotations, not_found_return_annotations, undefined_attributes =
-        List.partition3_map
-          callables_with_selected_return_annotations
-          ~f:extract_found_not_found_unknown_attribute
-      in
-      join_return_annotations
-        ~resolution
-        ~errors
-        (found_return_annotations, not_found_return_annotations)
-      |> (function
-           | Some resolved -> resolved
-           | None -> resolved_for_bad_callable ~resolution ~errors undefined_attributes)
-      |> check_for_error
-    in
     match value with
     | Await expression -> (
         let { Resolved.resolution; resolved; errors; _ } =
@@ -2080,8 +1992,9 @@ module State (Context : Context) = struct
             }
         | None ->
             let { Resolved.resolved; _ } = forward_expression ~resolution callee in
-            forward_call
+            forward_call_with_arguments
               ~resolution
+              ~location
               ~errors:[]
               ~target:None
               ~callee:(Callee.NonAttribute { expression = callee; resolved })
@@ -2331,8 +2244,7 @@ module State (Context : Context) = struct
         {
           callee = { Node.value = Name (Name.Identifier "isinstance"); _ } as callee;
           arguments =
-            [{ Call.Argument.value = expression; _ }; { Call.Argument.value = annotations; _ }] as
-            arguments;
+            [{ Call.Argument.value = expression; _ }; { Call.Argument.value = annotations; _ }];
         } ->
         let { Resolved.resolved; _ } = forward_expression ~resolution callee in
         let callables =
@@ -2344,7 +2256,6 @@ module State (Context : Context) = struct
           ~global_resolution
           ~target:None
           ~callables
-          ~arguments
           ~dynamic:false
           ~qualifier:Context.qualifier
           ~callee_type:resolved
@@ -2451,8 +2362,9 @@ module State (Context : Context) = struct
           in
           resolution, resolved, List.append assume_errors callee_errors, resolved_base
         in
-        forward_call
+        forward_call_with_arguments
           ~resolution
+          ~location
           ~errors
           ~target:None
           ~dynamic:true
@@ -2490,8 +2402,9 @@ module State (Context : Context) = struct
           in
           resolution, resolved, List.append assume_errors callee_errors, resolved_base
         in
-        forward_call
+        forward_call_with_arguments
           ~resolution
+          ~location
           ~errors
           ~target:None
           ~dynamic:true
@@ -2596,8 +2509,9 @@ module State (Context : Context) = struct
             ->
               let forward_inner_callable (resolution, errors, annotations) inner_resolved_callee =
                 let target, dynamic = target_and_dynamic inner_resolved_callee in
-                forward_call
+                forward_call_with_arguments
                   ~resolution
+                  ~location
                   ~errors:[]
                   ~target
                   ~dynamic
@@ -2621,13 +2535,53 @@ module State (Context : Context) = struct
               }
           | _ ->
               let target, dynamic = target_and_dynamic resolved_callee in
-              forward_call
+              let detect_broadcast_errors ({ Resolved.resolved; errors; _ } as input) =
+                let is_broadcast_error = function
+                  | Type.Parametric
+                      {
+                        name = "pyre_extensions.BroadcastError";
+                        parameters = [Type.Parameter.Single _; Type.Parameter.Single _];
+                      } ->
+                      true
+                  | _ -> false
+                in
+                match Type.collect resolved ~predicate:is_broadcast_error with
+                | [] -> input
+                | broadcast_errors ->
+                    let new_errors =
+                      List.fold broadcast_errors ~init:errors ~f:(fun current_errors error_type ->
+                          match error_type with
+                          | Type.Parametric
+                              {
+                                name = "pyre_extensions.BroadcastError";
+                                parameters =
+                                  [
+                                    Type.Parameter.Single left_type; Type.Parameter.Single right_type;
+                                  ];
+                              } ->
+                              emit_error
+                                ~errors:current_errors
+                                ~location
+                                ~kind:
+                                  (Error.BroadcastError
+                                     {
+                                       expression = { location; value };
+                                       left = left_type;
+                                       right = right_type;
+                                     })
+                          | _ -> current_errors)
+                    in
+                    { input with resolved = Type.Any; errors = new_errors }
+              in
+              forward_call_with_arguments
                 ~resolution:callee_resolution
+                ~location
                 ~errors:callee_errors
                 ~target
                 ~dynamic
                 ~callee:(create_callee resolved_callee)
                 ~arguments
+              |> detect_broadcast_errors
         in
         {
           resolution = Resolution.clear_temporary_annotations updated_resolution;
@@ -2693,8 +2647,9 @@ module State (Context : Context) = struct
                         };
                     }
                 in
-                forward_call
+                forward_call_with_arguments
                   ~resolution
+                  ~location
                   ~errors
                   ~target:(Some instantiated)
                   ~dynamic:true
@@ -2737,18 +2692,20 @@ module State (Context : Context) = struct
                       |> Type.primitive_name
                       >>= (fun class_name -> resolve_method class_name parent method_name)
                       >>| fun callable ->
-                      forward_call
+                      forward_call_with_arguments
                         ~dynamic:true
                         ~resolution
+                        ~location
                         ~errors
                         ~target:(Some parent)
                         ~callee:(create_callee callable)
                         ~arguments:
                           (List.map arguments ~f:(fun value -> { Call.Argument.name = None; value }))
                     in
-                    forward_call
+                    forward_call_with_arguments
                       ~dynamic:true
                       ~resolution
+                      ~location
                       ~errors
                       ~target:(Some instantiated)
                       ~callee:(create_callee iter_callable)
@@ -4114,8 +4071,9 @@ module State (Context : Context) = struct
    * - type aliases, which are always simple names on the LHS and have custom logic
    * - single targets, which have several subcases:
    *   - simple-name targets like `e` which become global or local scope operations
-   *   - subscripted targets like `a[5]`, which become `__setitem__` calls.
-   *     - TODO(T146934909) - this actually isn't handled yet, see note below.
+   *   - subscripted targets like `a[5]`, which currently the parser lowers into
+   *     `__getitem__` calls on the LHS and we need to translate into `__setitem__`
+   *     calls.
    *   - attribute targets like `b.c`, which follow attribute-setting logic (which
    *     is nontrivial because of properties, descriptors, and `__setattr__`), plus
    *     in some cases we may also attempt to refine the attribute.
@@ -4124,7 +4082,7 @@ module State (Context : Context) = struct
    *   - if type of the RHS can be expressed as a single iterable, we will try to
    *     unpack it, e.g. `a, *b, c = function_producing_list_of_int()`
    *   - otherwise, we will try to match the RHS and the LHS, e.g. `a, b = 5, "s"`.
-   *   
+   *
    * TODO(T146934909): At the moment this function never handles the subscript
    * case. For single subscrpted assignments our AST lowering turns them into
    * `__setitem__` calls, and we just silently ignore type errors if subscripts
@@ -5197,6 +5155,7 @@ module State (Context : Context) = struct
                    ~f:(fun (resolution, errors) (target, guide) ->
                      forward_assign ~resolution ~errors ~target ~guide ~resolved_value:guide None)
           | _ ->
+              Log.dump "Hit the impossible case, target is %a" Expression.pp target;
               (* This branch should only be hit when a LHS is subscripted; currently Pyre won't
                  check that case if it's part of a multi-assignment, because we only handle the
                  cases the parser could eagerly convert to `__setitem__` calls.
@@ -6831,7 +6790,7 @@ module DummyContext = struct
 
   let debug = false
 
-  let constraint_solving_style = Configuration.Analysis.default_constraint_solving_style
+  let no_validation_on_class_lookup_failure = false
 
   let define =
     Define.create_toplevel ~unbound_names:[] ~qualifier:None ~statements:[]
@@ -7625,17 +7584,20 @@ let exit_state ~resolution (module Context : Context) =
     { errors; local_annotations = Some local_annotations; callees = Some callees })
 
 
-let compute_local_annotations ~global_environment name =
-  let global_resolution = GlobalResolution.create global_environment in
+let compute_local_annotations
+    ~type_check_controls:
+      { EnvironmentControls.TypeCheckControls.debug; no_validation_on_class_lookup_failure; _ }
+    ~global_resolution
+    name
+  =
   let exit_state_of_define define_node =
-    let resolution = resolution global_resolution (module DummyContext) in
     let module Context = struct
       (* Doesn't matter what the qualifier is since we won't be using it *)
       let qualifier = Reference.empty
 
-      let debug = false
+      let debug = debug
 
-      let constraint_solving_style = Configuration.Analysis.default_constraint_solving_style
+      let no_validation_on_class_lookup_failure = no_validation_on_class_lookup_failure
 
       let define = define_node
 
@@ -7646,6 +7608,7 @@ let compute_local_annotations ~global_environment name =
       module Builder = Callgraph.NullBuilder
     end
     in
+    let resolution = resolution global_resolution (module Context) in
     exit_state ~resolution (module Context)
   in
   GlobalResolution.get_define_body_in_project global_resolution name
@@ -7683,11 +7646,11 @@ let errors_from_other_analyses
 let check_define
     ~type_check_controls:
       {
-        EnvironmentControls.TypeCheckControls.constraint_solving_style;
-        include_type_errors;
+        EnvironmentControls.TypeCheckControls.include_type_errors;
         include_local_annotations;
         debug;
         include_unawaited_awaitable_errors;
+        no_validation_on_class_lookup_failure;
         _;
       }
     ~call_graph_builder:(module Builder : Callgraph.Builder)
@@ -7702,7 +7665,7 @@ let check_define
 
         let debug = debug
 
-        let constraint_solving_style = constraint_solving_style
+        let no_validation_on_class_lookup_failure = no_validation_on_class_lookup_failure
 
         let define = define_node
 

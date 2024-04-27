@@ -22,7 +22,7 @@ module type Context = sig
 
   val debug : bool
 
-  val constraint_solving_style : Configuration.Analysis.constraint_solving_style
+  val no_validation_on_class_lookup_failure : bool
 
   val define : Define.t Node.t
 
@@ -84,7 +84,8 @@ val resolution_at_key
   Resolution.t
 
 val compute_local_annotations
-  :  global_environment:AnnotatedGlobalEnvironment.ReadOnly.t ->
+  :  type_check_controls:EnvironmentControls.TypeCheckControls.t ->
+  global_resolution:GlobalResolution.t ->
   Reference.t ->
   LocalAnnotationMap.ReadOnly.t option
 
