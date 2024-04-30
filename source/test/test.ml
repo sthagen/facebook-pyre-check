@@ -1584,16 +1584,39 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         def dataclass(_cls: Type[_T]) -> Type[_T]: ...
         if sys.version_info >= (3, 10):
           class KW_ONLY: ...
-        def field(
-            *,
-            default: _T,
-            init: bool = ...,
-            repr: bool = ...,
-            hash: bool | None = ...,
-            compare: bool = ...,
-            metadata: Mapping[Any, Any] | None = ...,
-            kw_only: bool = ...,
-        ) -> _T: ...
+          @overload  # `default` and `default_factory` are optional and mutually exclusive.
+          def field(
+              *,
+              default: _T,
+              init: bool = True,
+              repr: bool = True,
+              hash: bool | None = None,
+              compare: bool = True,
+              metadata: Mapping[Any, Any] | None = None,
+              kw_only: bool = ...,
+          ) -> _T: ...
+          @overload
+          def field(
+              *,
+              default_factory: Callable[[], _T],
+              init: bool = True,
+              repr: bool = True,
+              hash: bool | None = None,
+              compare: bool = True,
+              metadata: Mapping[Any, Any] | None = None,
+              kw_only: bool = ...,
+          ) -> _T: ...
+          @overload
+          def field(
+              *,
+              init: bool = True,
+              repr: bool = True,
+              hash: bool | None = None,
+              compare: bool = True,
+              metadata: Mapping[Any, Any] | None = None,
+              kw_only: bool = ...,
+          ) -> Any: ...
+
         |}
     );
     ( "functools.pyi",
@@ -3129,6 +3152,9 @@ module ScratchProject = struct
         external_sources
     in
     let controls =
+      let default_python_version =
+        { Configuration.PythonVersion.major = 3; minor = 12; micro = 2 }
+      in
       let configuration =
         Configuration.Analysis.create
           ~local_root
@@ -3141,7 +3167,7 @@ module ScratchProject = struct
           ~show_error_traces
           ~parallel:false
           ~use_errpy_parser
-          ?python_version
+          ~python_version:(Option.value python_version ~default:default_python_version)
           ?strict
           ?debug
           ?enable_readonly_analysis
