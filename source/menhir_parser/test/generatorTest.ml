@@ -3104,28 +3104,20 @@ let test_dictionary =
   test_list
     [
       labeled_test_case __FUNCTION__ __LINE__
-      @@ assert_parsed_equal
-           "{}"
-           [
-             +Statement.Expression
-                (+Expression.Dictionary { Dictionary.entries = []; keywords = [] });
-           ];
+      @@ assert_parsed_equal "{}" [+Statement.Expression (+Expression.Dictionary [])];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
            "{1: 2}"
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 1);
-                            value = +Expression.Constant (Constant.Integer 2);
-                          };
-                        ];
-                      keywords = [];
-                    });
+                    [
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 1);
+                          value = +Expression.Constant (Constant.Integer 2);
+                        };
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3133,16 +3125,13 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 1);
-                            value = +Expression.Constant (Constant.Integer 2);
-                          };
-                        ];
-                      keywords = [];
-                    });
+                    [
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 1);
+                          value = +Expression.Constant (Constant.Integer 2);
+                        };
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3150,16 +3139,14 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 1);
-                            value = +Expression.Constant (Constant.Integer 2);
-                          };
-                        ];
-                      keywords = [!"durp"];
-                    });
+                    [
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 1);
+                          value = +Expression.Constant (Constant.Integer 2);
+                        };
+                      Splat !"durp";
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3167,16 +3154,15 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 1);
-                            value = +Expression.Constant (Constant.Integer 2);
-                          };
-                        ];
-                      keywords = [!"durp"; !"hurp"];
-                    });
+                    [
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 1);
+                          value = +Expression.Constant (Constant.Integer 2);
+                        };
+                      Splat !"durp";
+                      Splat !"hurp";
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3184,10 +3170,7 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries = [];
-                      keywords = [+Expression.List [+Expression.Constant (Constant.Integer 1)]];
-                    });
+                    [Splat (+Expression.List [+Expression.Constant (Constant.Integer 1)])]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3195,16 +3178,14 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 1);
-                            value = +Expression.Constant (Constant.Integer 2);
-                          };
-                        ];
-                      keywords = [!"durp"];
-                    });
+                    [
+                      Splat !"durp";
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 1);
+                          value = +Expression.Constant (Constant.Integer 2);
+                        };
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3212,23 +3193,19 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 1);
-                            value =
-                              +Expression.ComparisonOperator
-                                 {
-                                   ComparisonOperator.left =
-                                     +Expression.Constant (Constant.Integer 1);
-                                   operator = ComparisonOperator.LessThan;
-                                   right = +Expression.Constant (Constant.Integer 2);
-                                 };
-                          };
-                        ];
-                      keywords = [];
-                    });
+                    [
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 1);
+                          value =
+                            +Expression.ComparisonOperator
+                               {
+                                 ComparisonOperator.left = +Expression.Constant (Constant.Integer 1);
+                                 operator = ComparisonOperator.LessThan;
+                                 right = +Expression.Constant (Constant.Integer 2);
+                               };
+                        };
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3236,20 +3213,18 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 1);
-                            value = +Expression.Constant (Constant.Integer 2);
-                          };
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 2);
-                            value = +Expression.Constant (Constant.Integer 3);
-                          };
-                        ];
-                      keywords = [];
-                    });
+                    [
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 1);
+                          value = +Expression.Constant (Constant.Integer 2);
+                        };
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 2);
+                          value = +Expression.Constant (Constant.Integer 3);
+                        };
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3257,20 +3232,18 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 1);
-                            value = +Expression.Constant (Constant.Integer 2);
-                          };
-                          {
-                            Dictionary.Entry.key = +Expression.Constant (Constant.Integer 2);
-                            value = +Expression.Constant (Constant.Integer 3);
-                          };
-                        ];
-                      keywords = [];
-                    });
+                    [
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 1);
+                          value = +Expression.Constant (Constant.Integer 2);
+                        };
+                      KeyValue
+                        {
+                          key = +Expression.Constant (Constant.Integer 2);
+                          value = +Expression.Constant (Constant.Integer 3);
+                        };
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3279,7 +3252,7 @@ let test_dictionary =
              +Statement.Expression
                 (+Expression.DictionaryComprehension
                     {
-                      Comprehension.element = { Dictionary.Entry.key = !"a"; value = !"b" };
+                      Comprehension.element = { key = !"a"; value = !"b" };
                       generators =
                         [
                           {
@@ -3300,7 +3273,7 @@ let test_dictionary =
                     {
                       Comprehension.element =
                         {
-                          Dictionary.Entry.key =
+                          key =
                             +Expression.Ternary
                                { Ternary.target = !"a"; test = !"a"; alternative = !"a" };
                           value = !"b";
@@ -3325,7 +3298,7 @@ let test_dictionary =
                     {
                       Comprehension.element =
                         {
-                          Dictionary.Entry.key =
+                          key =
                             +Expression.Ternary
                                { Ternary.target = !"a"; test = !"a"; alternative = !"a" };
                           value =
@@ -3352,7 +3325,7 @@ let test_dictionary =
                     {
                       Comprehension.element =
                         {
-                          Dictionary.Entry.key =
+                          key =
                             +Expression.BooleanOperator
                                {
                                  BooleanOperator.left =
@@ -3386,7 +3359,7 @@ let test_dictionary =
              +Statement.Expression
                 (+Expression.DictionaryComprehension
                     {
-                      Comprehension.element = { Dictionary.Entry.key = !"a"; value = !"b" };
+                      Comprehension.element = { key = !"a"; value = !"b" };
                       generators =
                         [
                           {
@@ -3404,22 +3377,19 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key =
-                              +Expression.BooleanOperator
-                                 {
-                                   BooleanOperator.left = !"a";
-                                   operator = BooleanOperator.Or;
-                                   right = !"b";
-                                 };
-                            value = +Expression.Constant (Constant.Integer 2);
-                          };
-                        ];
-                      keywords = [];
-                    });
+                    [
+                      KeyValue
+                        {
+                          key =
+                            +Expression.BooleanOperator
+                               {
+                                 BooleanOperator.left = !"a";
+                                 operator = BooleanOperator.Or;
+                                 right = !"b";
+                               };
+                          value = +Expression.Constant (Constant.Integer 2);
+                        };
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_parsed_equal
@@ -3427,22 +3397,19 @@ let test_dictionary =
            [
              +Statement.Expression
                 (+Expression.Dictionary
-                    {
-                      Dictionary.entries =
-                        [
-                          {
-                            Dictionary.Entry.key =
-                              +Expression.BooleanOperator
-                                 {
-                                   BooleanOperator.left = !"a";
-                                   operator = BooleanOperator.And;
-                                   right = !"b";
-                                 };
-                            value = +Expression.Constant (Constant.Integer 2);
-                          };
-                        ];
-                      keywords = [];
-                    });
+                    [
+                      KeyValue
+                        {
+                          key =
+                            +Expression.BooleanOperator
+                               {
+                                 BooleanOperator.left = !"a";
+                                 operator = BooleanOperator.And;
+                                 right = !"b";
+                               };
+                          value = +Expression.Constant (Constant.Integer 2);
+                        };
+                    ]);
            ];
       labeled_test_case __FUNCTION__ __LINE__ @@ assert_not_parsed "{ a or lambda b: b + 1: c }";
     ]
@@ -7210,19 +7177,25 @@ let test_format_string =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_format_string
            "f'{1}'"
-           [Substring.Format (+Expression.Constant (Constant.Integer 1))];
+           [
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 1) };
+           ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_format_string
            "f'foo{1}'"
            [
-             Substring.Literal (+"foo"); Substring.Format (+Expression.Constant (Constant.Integer 1));
+             Substring.Literal (+"foo");
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 1) };
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_format_string
            "f'foo{1}' 'foo{2}'"
            [
              Substring.Literal (+"foo");
-             Substring.Format (+Expression.Constant (Constant.Integer 1));
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 1) };
              Substring.Literal (+"foo{2}");
            ];
       labeled_test_case __FUNCTION__ __LINE__
@@ -7231,24 +7204,29 @@ let test_format_string =
            [
              Substring.Literal (+"foo{1}");
              Substring.Literal (+"foo");
-             Substring.Format (+Expression.Constant (Constant.Integer 2));
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 2) };
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_format_string
            "f'foo{1}' f'foo{2}'"
            [
              Substring.Literal (+"foo");
-             Substring.Format (+Expression.Constant (Constant.Integer 1));
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 1) };
              Substring.Literal (+"foo");
-             Substring.Format (+Expression.Constant (Constant.Integer 2));
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 2) };
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_format_string
            "f'foo{1}{2}foo'"
            [
              Substring.Literal (+"foo");
-             Substring.Format (+Expression.Constant (Constant.Integer 1));
-             Substring.Format (+Expression.Constant (Constant.Integer 2));
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 1) };
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 2) };
              Substring.Literal (+"foo");
            ];
       labeled_test_case __FUNCTION__ __LINE__
@@ -7261,7 +7239,8 @@ let test_format_string =
            [
              Substring.Literal (+"foo");
              Substring.Literal (+"{{ ");
-             Substring.Format (+Expression.Constant (Constant.Integer 1));
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 1) };
              Substring.Literal (+" }}");
            ];
       labeled_test_case __FUNCTION__ __LINE__
@@ -7270,7 +7249,8 @@ let test_format_string =
            [
              Substring.Literal (+"foo");
              Substring.Literal (+"{{");
-             Substring.Format (+Expression.Constant (Constant.Integer 1));
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 1) };
              Substring.Literal (+" }}");
            ];
       labeled_test_case __FUNCTION__ __LINE__
@@ -7279,7 +7259,8 @@ let test_format_string =
            [
              Substring.Literal (+"foo");
              Substring.Literal (+"{{ ");
-             Substring.Format (+Expression.Constant (Constant.Integer 1));
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 1) };
              Substring.Literal (+"}}");
            ];
       labeled_test_case __FUNCTION__ __LINE__
@@ -7288,7 +7269,8 @@ let test_format_string =
            [
              Substring.Literal (+"foo");
              Substring.Literal (+"{{");
-             Substring.Format (+Expression.Constant (Constant.Integer 1));
+             Substring.Format
+               { format_spec = None; value = +Expression.Constant (Constant.Integer 1) };
              Substring.Literal (+"}}");
            ];
       labeled_test_case __FUNCTION__ __LINE__
@@ -7301,43 +7283,51 @@ let test_format_string =
            [
              Substring.Literal (+"foo");
              Substring.Format
-               (+Expression.Call
-                   {
-                     Call.callee =
-                       +Expression.Name
-                          (Name.Attribute
-                             {
-                               Name.Attribute.base = +Expression.Constant (Constant.Integer 1);
-                               attribute = "__add__";
-                               special = true;
-                             });
-                     arguments =
-                       [
-                         {
-                           Call.Argument.name = None;
-                           value = +Expression.Constant (Constant.Integer 2);
-                         };
-                       ];
-                   });
+               {
+                 format_spec = None;
+                 value =
+                   +Expression.Call
+                      {
+                        Call.callee =
+                          +Expression.Name
+                             (Name.Attribute
+                                {
+                                  Name.Attribute.base = +Expression.Constant (Constant.Integer 1);
+                                  attribute = "__add__";
+                                  special = true;
+                                });
+                        arguments =
+                          [
+                            {
+                              Call.Argument.name = None;
+                              value = +Expression.Constant (Constant.Integer 2);
+                            };
+                          ];
+                      };
+               };
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_format_string
            "f'{x for x in []}'"
            [
              Substring.Format
-               (+Expression.Generator
-                   {
-                     Comprehension.element = +Expression.Name (Name.Identifier "x");
-                     generators =
-                       [
-                         {
-                           Comprehension.Generator.target = +Expression.Name (Name.Identifier "x");
-                           iterator = +Expression.List [];
-                           conditions = [];
-                           async = false;
-                         };
-                       ];
-                   });
+               {
+                 format_spec = None;
+                 value =
+                   +Expression.Generator
+                      {
+                        Comprehension.element = +Expression.Name (Name.Identifier "x");
+                        generators =
+                          [
+                            {
+                              Comprehension.Generator.target = +Expression.Name (Name.Identifier "x");
+                              iterator = +Expression.List [];
+                              conditions = [];
+                              async = false;
+                            };
+                          ];
+                      };
+               };
            ];
     ]
 

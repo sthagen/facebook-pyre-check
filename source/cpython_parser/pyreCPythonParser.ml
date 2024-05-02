@@ -351,15 +351,16 @@ let expression =
     |> Node.create ~location
   in
   let dict ~location ~keys ~values =
-    let entries, keywords =
+    let open Dictionary.Entry in
+    let entries =
       (* `keys` and `values` are guaranteed by CPython parser to be of the same length. *)
       List.zip_exn keys values
-      |> List.partition_map ~f:(fun (key, value) ->
+      |> List.map ~f:(fun (key, value) ->
              match key with
-             | None -> Either.Second value
-             | Some key -> Either.First { Dictionary.Entry.key; value })
+             | None -> Splat value
+             | Some key -> KeyValue Dictionary.Entry.KeyValue.{ key; value })
     in
-    Expression.Dictionary { Dictionary.entries; keywords } |> Node.create ~location
+    Expression.Dictionary entries |> Node.create ~location
   in
   let set ~location ~elts = Expression.Set elts |> Node.create ~location in
   let list_comp ~location ~elt ~generators =
@@ -371,7 +372,7 @@ let expression =
   in
   let dict_comp ~location ~key ~value ~generators =
     Expression.DictionaryComprehension
-      { Comprehension.element = { Dictionary.Entry.key; value }; generators }
+      { Comprehension.element = Dictionary.Entry.KeyValue.{ key; value }; generators }
     |> Node.create ~location
   in
   let generator_exp ~location ~elt ~generators =
@@ -419,8 +420,8 @@ let expression =
     in
     Expression.Call { Call.callee = func; arguments } |> Node.create ~location
   in
-  let formatted_value ~location ~value ~conversion:_ ~format_spec:_ =
-    Expression.FormatString [Substring.Format value] |> Node.create ~location
+  let formatted_value ~location ~value ~conversion:_ ~format_spec =
+    Expression.FormatString [Substring.Format { format_spec; value }] |> Node.create ~location
   in
   let joined_str ~location ~values =
     let collapse_formatted_value ({ Node.value; location } as expression) =
@@ -431,7 +432,7 @@ let expression =
       | Expression.FormatString [substring] -> substring
       | _ ->
           (* NOTE (grievejia): It may be impossible for CPython parser to reach this branch *)
-          Substring.Format expression
+          Substring.Format { value = expression; format_spec = None }
     in
     Expression.FormatString (List.map values ~f:collapse_formatted_value) |> Node.create ~location
   in

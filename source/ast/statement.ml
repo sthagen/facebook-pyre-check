@@ -1968,13 +1968,16 @@ let is_generator statements =
         is_expression_generator callee
         || List.exists arguments ~f:(fun { Call.Argument.value; _ } ->
                is_expression_generator value)
-    | Expression.Dictionary { Dictionary.entries; keywords } ->
-        List.exists entries ~f:(fun { Dictionary.Entry.key; value } ->
-            is_expression_generator key || is_expression_generator value)
-        || List.exists keywords ~f:is_expression_generator
+    | Expression.Dictionary entries ->
+        List.exists entries ~f:(fun entry ->
+            let open Dictionary.Entry in
+            match entry with
+            | KeyValue KeyValue.{ key; value } ->
+                is_expression_generator key || is_expression_generator value
+            | Splat s -> is_expression_generator s)
     | Expression.DictionaryComprehension comprehension ->
         is_comprehension_generator
-          ~is_element_generator:(fun { Dictionary.Entry.key; value } ->
+          ~is_element_generator:(fun Dictionary.Entry.KeyValue.{ key; value } ->
             is_expression_generator key || is_expression_generator value)
           comprehension
     | Expression.Generator comprehension
@@ -1990,7 +1993,9 @@ let is_generator statements =
     | Expression.FormatString substrings ->
         let is_substring_generator = function
           | Substring.(Literal _) -> false
-          | Substring.Format expression -> is_expression_generator expression
+          | Substring.Format format ->
+              is_expression_generator format.value
+              || is_optional_expression_generator format.format_spec
         in
         List.exists substrings ~f:is_substring_generator
     | Expression.Ternary { Ternary.target; test; alternative } ->
@@ -2010,8 +2015,7 @@ let is_generator statements =
     is_element_generator element
     || List.exists generators ~f:(fun { Comprehension.Generator.iterator; conditions; _ } ->
            is_expression_generator iterator || List.exists conditions ~f:is_expression_generator)
-  in
-  let is_optional_expression_generator =
+  and is_optional_expression_generator =
     Option.value_map ~f:is_expression_generator ~default:false
   in
   let rec is_statement_generator { Node.value; _ } =

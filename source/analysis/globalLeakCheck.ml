@@ -362,21 +362,18 @@ module State (Context : Context) = struct
               reachable_globals
               (value_errors @ errors);
         }
-    | Dictionary { entries; keywords } ->
-        let forward_entries { Dictionary.Entry.key; value } =
-          let { errors = key_errors; _ } = forward_expression key in
-          let { errors = value_errors; _ } = forward_expression value in
-          key_errors @ value_errors
+    | Dictionary entries ->
+        let forward_entries entry =
+          let open Dictionary.Entry in
+          match entry with
+          | KeyValue { key; value } ->
+              let { errors = key_errors; _ } = forward_expression key in
+              let { errors = value_errors; _ } = forward_expression value in
+              key_errors @ value_errors
+          | Splat s -> (forward_expression s).errors
         in
         let entry_errors = List.concat_map ~f:forward_entries entries in
-        let keyword_errors =
-          List.concat_map
-            ~f:(fun expression ->
-              let { errors; _ } = forward_expression expression in
-              errors)
-            keywords
-        in
-        { empty_result with errors = entry_errors @ keyword_errors }
+        { empty_result with errors = entry_errors }
     | DictionaryComprehension { element = { key; value }; generators } ->
         let { errors = key_errors; _ } = forward_expression key in
         let { errors = value_errors; _ } = forward_expression value in
@@ -390,18 +387,20 @@ module State (Context : Context) = struct
         { empty_result with errors = element_errors @ generator_errors }
     | FormatString substrings ->
         let forward_format_string = function
-          | Substring.Format expression ->
-              let { errors; _ } = forward_expression expression in
-              errors
+          | Substring.Format format ->
+              let { errors = value_errors; _ } = forward_expression format.value in
+              let format_spec_errors =
+                (format.format_spec >>| forward_expression |> Option.value ~default:empty_result)
+                  .errors
+              in
+              value_errors @ format_spec_errors
           | _ -> []
         in
         let errors = List.concat_map ~f:forward_format_string substrings in
         { empty_result with errors }
     | Lambda { parameters; body } ->
         let forward_parameters { Node.value = { Parameter.value; _ }; _ } =
-          value
-          >>| (fun expression -> forward_expression expression |> fun { errors; _ } -> errors)
-          |> Option.value ~default:[]
+          (value >>| forward_expression |> Option.value ~default:empty_result).errors
         in
         let parameter_errors = List.concat_map ~f:forward_parameters parameters in
         let { errors = body_errors; _ } = forward_expression body in
@@ -566,10 +565,8 @@ module State (Context : Context) = struct
           errors
       | Raise { expression; from } ->
           let get_errors expression =
-            expression
-            >>| (fun expression ->
-                  forward_expression ~resolution expression |> fun { errors; _ } -> errors)
-            |> Option.value ~default:[]
+            (expression >>| forward_expression ~resolution |> Option.value ~default:empty_result)
+              .errors
           in
           get_errors expression @ get_errors from
       | Return { expression = Some expression; _ } ->

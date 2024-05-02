@@ -74,9 +74,13 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
       visit_expression iterator;
       List.iter conditions ~f:visit_expression
     in
-    let visit_entry { Dictionary.Entry.key; value } ~visit_expression =
-      visit_expression key;
-      visit_expression value
+    let visit_entry entry ~visit_expression =
+      let open Dictionary.Entry in
+      match entry with
+      | KeyValue KeyValue.{ key; value } ->
+          visit_expression key;
+          visit_expression value
+      | Splat s -> visit_expression s
     in
     let visit_children value =
       let open Expression in
@@ -96,12 +100,12 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
             visit_expression value
           in
           List.iter arguments ~f:visit_argument
-      | Dictionary { Dictionary.entries; keywords } ->
-          List.iter entries ~f:(visit_entry ~visit_expression);
-          List.iter keywords ~f:visit_expression |> ignore
-      | DictionaryComprehension { Comprehension.element; generators } ->
+      | Dictionary entries -> List.iter entries ~f:(visit_entry ~visit_expression)
+      | DictionaryComprehension
+          { Comprehension.element = Dictionary.Entry.KeyValue.{ key; value }; generators } ->
           List.iter generators ~f:(visit_generator ~visit_expression);
-          visit_entry element ~visit_expression
+          visit_expression key;
+          visit_expression value
       | Generator { Comprehension.element; generators } ->
           List.iter generators ~f:(visit_generator ~visit_expression);
           visit_expression element
@@ -129,7 +133,9 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
             substrings;
           if Visitor.visit_format_string_children !state expression then
             let visit_children = function
-              | Substring.Format expression -> visit_expression expression
+              | Substring.Format format ->
+                  visit_expression format.value;
+                  Option.iter ~f:visit_expression format.format_spec
               | _ -> ()
             in
             List.iter ~f:visit_children substrings
@@ -483,7 +489,7 @@ let collect_locations source =
           | Argument { Argument.argument; _ } -> Some (Node.location argument)
           | Parameter node -> Some (Node.location node)
           | Reference node -> Some (Node.location node)
-          | Substring (Substring.Format node) -> Some (Node.location node)
+          | Substring (Substring.Format { value; _ }) -> Some (Node.location value)
           | Substring _
           | Generator _ ->
               None

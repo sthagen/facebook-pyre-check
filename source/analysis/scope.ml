@@ -100,11 +100,9 @@ module Binding = struct
               of_expression sofar value)
         in
         of_expression sofar callee
-    | Expression.Dictionary { Dictionary.entries; keywords } ->
-        let sofar = List.fold entries ~init:sofar ~f:of_dictionary_entry in
-        List.fold keywords ~init:sofar ~f:of_expression
+    | Expression.Dictionary entries -> List.fold entries ~init:sofar ~f:of_dictionary_entry
     | Expression.DictionaryComprehension comprehension ->
-        of_comprehension sofar comprehension ~of_element:of_dictionary_entry
+        of_comprehension sofar comprehension ~of_element:of_keyvalue
     | Expression.Generator comprehension
     | Expression.ListComprehension comprehension
     | Expression.SetComprehension comprehension ->
@@ -120,7 +118,9 @@ module Binding = struct
     | Expression.FormatString substrings ->
         let of_substring sofar = function
           | Substring.(Literal _) -> sofar
-          | Substring.Format expression -> of_expression sofar expression
+          | Substring.Format format ->
+              let sofar = of_expression sofar format.value in
+              of_optional_expression sofar format.format_spec
         in
         List.fold substrings ~init:sofar ~f:of_substring
     | Constant _
@@ -130,7 +130,16 @@ module Binding = struct
         sofar
 
 
-  and of_dictionary_entry sofar { Expression.Dictionary.Entry.key; value } =
+  and of_dictionary_entry sofar entry =
+    let open Expression.Dictionary.Entry in
+    match entry with
+    | KeyValue { key; value } ->
+        let sofar = of_expression sofar key in
+        of_expression sofar value
+    | Splat s -> of_expression sofar s
+
+
+  and of_keyvalue sofar { key; value } =
     let sofar = of_expression sofar key in
     of_expression sofar value
 
@@ -149,10 +158,13 @@ module Binding = struct
     of_element sofar element
 
 
+  and of_optional ~f sofar = Option.value_map ~default:sofar ~f:(f sofar)
+
+  and of_optional_expression sofar = of_optional ~f:of_expression sofar
+
   let rec of_statement sofar { Node.value = statement; location } =
-    let of_optional ~f sofar = Option.value_map ~default:sofar ~f:(f sofar) in
-    let of_optional_expression sofar = of_optional ~f:of_expression sofar in
     let open Statement in
+    let of_optional ~f sofar = Option.value_map ~default:sofar ~f:(f sofar) in
     match statement with
     | Statement.Assert { test; message; _ } ->
         let sofar = of_expression sofar test in

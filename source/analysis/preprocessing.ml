@@ -1043,11 +1043,16 @@ module Qualify (Context : QualifyContext) = struct
 
   and qualify_expression ~qualify_strings ~scope ({ Node.location; value } as expression) =
     let value =
-      let qualify_entry ~qualify_strings ~scope { Dictionary.Entry.key; value } =
-        {
-          Dictionary.Entry.key = qualify_expression ~qualify_strings ~scope key;
-          value = qualify_expression ~qualify_strings ~scope value;
-        }
+      let qualify_entry ~qualify_strings ~scope entry =
+        let open Dictionary.Entry in
+        match entry with
+        | KeyValue { key; value } ->
+            KeyValue
+              {
+                key = qualify_expression ~qualify_strings ~scope key;
+                value = qualify_expression ~qualify_strings ~scope value;
+              }
+        | Splat s -> Splat (qualify_expression ~qualify_strings ~scope s)
       in
       let qualify_generators ~qualify_strings ~scope generators =
         let qualify_generator
@@ -1126,16 +1131,19 @@ module Qualify (Context : QualifyContext) = struct
               operator;
               right = qualify_expression ~qualify_strings ~scope right;
             }
-      | Dictionary { Dictionary.entries; keywords } ->
-          Dictionary
-            {
-              Dictionary.entries = List.map entries ~f:(qualify_entry ~qualify_strings ~scope);
-              keywords = List.map keywords ~f:(qualify_expression ~qualify_strings ~scope);
-            }
-      | DictionaryComprehension { Comprehension.element; generators } ->
+      | Dictionary entries ->
+          Dictionary (List.map entries ~f:(qualify_entry ~qualify_strings ~scope))
+      | DictionaryComprehension { Comprehension.element = { key; value }; generators } ->
           let scope, generators = qualify_generators ~qualify_strings ~scope generators in
           DictionaryComprehension
-            { Comprehension.element = qualify_entry ~qualify_strings ~scope element; generators }
+            {
+              Comprehension.element =
+                {
+                  key = qualify_expression ~qualify_strings ~scope key;
+                  value = qualify_expression ~qualify_strings ~scope value;
+                };
+              generators;
+            }
       | Generator { Comprehension.element; generators } ->
           let scope, generators = qualify_generators ~qualify_strings ~scope generators in
           Generator
@@ -1170,8 +1178,13 @@ module Qualify (Context : QualifyContext) = struct
       | FormatString substrings ->
           let qualify_substring = function
             | Substring.Literal _ as substring -> substring
-            | Substring.Format expression ->
-                Substring.Format (qualify_expression ~qualify_strings ~scope expression)
+            | Substring.Format { value; format_spec } ->
+                Substring.Format
+                  {
+                    value = qualify_expression ~qualify_strings ~scope value;
+                    format_spec =
+                      Option.map ~f:(qualify_expression ~qualify_strings ~scope) format_spec;
+                  }
           in
           FormatString (List.map substrings ~f:qualify_substring)
       | Constant (Constant.String { StringLiteral.value; kind }) -> (
@@ -2307,7 +2320,7 @@ let expand_typed_dictionary_declarations
                         { Call.Argument.name = None; value = name }
                         :: {
                              Call.Argument.name = None;
-                             value = { Node.value = Dictionary { Dictionary.entries; _ }; _ };
+                             value = { Node.value = Dictionary entries; _ };
                              _;
                            }
                         :: argument_tail;
@@ -2320,7 +2333,12 @@ let expand_typed_dictionary_declarations
           >>= (fun name ->
                 typed_dictionary_class_declaration
                   ~name:(string_literal (Reference.show (Reference.create ~prefix:qualifier name)))
-                  ~fields:(List.map entries ~f:(fun { Dictionary.Entry.key; value } -> key, value))
+                  ~fields:
+                    (List.filter_map entries ~f:(fun entry ->
+                         let open Dictionary.Entry in
+                         match entry with
+                         | KeyValue { key; value } -> Some (key, value)
+                         | Splat _ -> None))
                   ~total:(extract_totality argument_tail))
           |> Option.value ~default:value
       | Class
@@ -3032,9 +3050,13 @@ module CaptureSet = Set.Make (Define.Capture)
 module AccessCollector = struct
   let rec from_expression collected { Node.value; location = expression_location } =
     let open Expression in
-    let from_entry collected { Dictionary.Entry.key; value } =
-      let collected = from_expression collected key in
-      from_expression collected value
+    let from_entry collected entry =
+      let open Dictionary.Entry in
+      match entry with
+      | KeyValue { key; value } ->
+          let collected = from_expression collected key in
+          from_expression collected value
+      | Splat s -> from_expression collected s
     in
     match value with
     (* Lambdas are speical -- they bind their own names, which we want to exclude *)
@@ -3072,10 +3094,14 @@ module AccessCollector = struct
         let collected = from_expression collected callee in
         List.fold arguments ~init:collected ~f:(fun collected { Call.Argument.value; _ } ->
             from_expression collected value)
-    | Dictionary { Dictionary.entries; keywords } ->
-        let collected = List.fold entries ~init:collected ~f:from_entry in
-        List.fold keywords ~init:collected ~f:from_expression
-    | DictionaryComprehension comprehension -> from_comprehension from_entry collected comprehension
+    | Dictionary entries -> List.fold entries ~init:collected ~f:from_entry
+    | DictionaryComprehension comprehension ->
+        from_comprehension
+          (fun collected Dictionary.Entry.KeyValue.{ key; value } ->
+            let collected = from_expression collected key in
+            from_expression collected value)
+          collected
+          comprehension
     | Generator comprehension
     | ListComprehension comprehension
     | SetComprehension comprehension ->
@@ -3087,7 +3113,9 @@ module AccessCollector = struct
     | FormatString substrings ->
         let from_substring sofar = function
           | Substring.Literal _ -> sofar
-          | Substring.Format expression -> from_expression sofar expression
+          | Substring.Format format ->
+              let sofar = from_expression sofar format.value in
+              Option.value_map format.format_spec ~default:sofar ~f:(from_expression sofar)
         in
         List.fold substrings ~init:collected ~f:from_substring
     | Starred (Starred.Once expression)

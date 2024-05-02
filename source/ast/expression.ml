@@ -435,65 +435,91 @@ end
 
 and Dictionary : sig
   module Entry : sig
-    type t = {
-      key: Expression.t;
-      value: Expression.t;
-    }
+    module KeyValue : sig
+      type t = {
+        key: Expression.t;
+        value: Expression.t;
+      }
+      [@@deriving equal, compare, sexp, show, hash, to_yojson]
+
+      val location_insensitive_compare : t -> t -> int
+    end
+    [@@deriving equal, compare, sexp, show, hash, to_yojson]
+
+    type t =
+      | KeyValue of KeyValue.t
+      | Splat of Expression.t
     [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
     val location_insensitive_compare : t -> t -> int
   end
 
-  type t = {
-    entries: Entry.t list;
-    keywords: Expression.t list;
-  }
-  [@@deriving equal, compare, sexp, show, hash, to_yojson]
+  type t = Entry.t list [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 
-  val string_literal_keys : Entry.t list -> (string * Expression.t) list option
+  val string_literal_keys : t -> (string * Expression.t) list option
+
+  val has_no_keywords : t -> bool
 end = struct
   module Entry = struct
-    type t = {
-      key: Expression.t;
-      value: Expression.t;
-    }
+    module KeyValue = struct
+      type t = {
+        key: Expression.t;
+        value: Expression.t;
+      }
+      [@@deriving equal, compare, sexp, show, hash, to_yojson]
+
+      let location_insensitive_compare left right =
+        match Expression.location_insensitive_compare left.key right.key with
+        | x when not (Int.equal x 0) -> x
+        | _ -> Expression.location_insensitive_compare left.value right.value
+    end
+
+    type t =
+      | KeyValue of KeyValue.t
+      | Splat of Expression.t
     [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
     let location_insensitive_compare left right =
-      match Expression.location_insensitive_compare left.key right.key with
-      | x when not (Int.equal x 0) -> x
-      | _ -> Expression.location_insensitive_compare left.value right.value
+      match left, right with
+      | KeyValue kv1, KeyValue kv2 -> KeyValue.location_insensitive_compare kv1 kv2
+      | Splat s1, Splat s2 -> Expression.location_insensitive_compare s1 s2
+      | Splat _, _ -> 1
+      | KeyValue _, _ -> -1
   end
 
-  type t = {
-    entries: Entry.t list;
-    keywords: Expression.t list;
-  }
-  [@@deriving equal, compare, sexp, show, hash, to_yojson]
+  type t = Entry.t list [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
-    match List.compare Entry.location_insensitive_compare left.entries right.entries with
-    | x when not (Int.equal x 0) -> x
-    | _ -> List.compare Expression.location_insensitive_compare left.keywords right.keywords
+    List.compare Entry.location_insensitive_compare left right
+
+
+  let rec has_no_keywords entries =
+    match entries with
+    | [] -> true
+    | Entry.Splat _ :: _ -> false
+    | Entry.KeyValue _ :: tail -> has_no_keywords tail
 
 
   let string_literal_keys entries =
     let rec match_literal_key entries accumulated_result =
       match entries with
-      | {
-          Dictionary.Entry.key =
+      | Entry.KeyValue
+          Dictionary.Entry.KeyValue.
             {
-              Node.value = Expression.Constant (Constant.String { StringLiteral.value = key; _ });
-              _;
-            };
-          value;
-        }
+              key =
+                {
+                  Node.value =
+                    Expression.Constant (Constant.String { StringLiteral.value = key; _ });
+                  _;
+                };
+              value;
+            }
         :: tail ->
           match_literal_key tail ((key, value) :: accumulated_result)
+      | _ :: tail -> match_literal_key tail accumulated_result
       | [] -> Some (List.rev accumulated_result)
-      | _ -> None
     in
     match_literal_key entries []
 end
@@ -651,20 +677,34 @@ end
 and Substring : sig
   type t =
     | Literal of string Node.t
-    | Format of Expression.t
+    | Format of {
+        value: Expression.t;
+        format_spec: Expression.t option;
+      }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end = struct
   type t =
     | Literal of string Node.t
-    | Format of Expression.t
+    | Format of {
+        value: Expression.t;
+        format_spec: Expression.t option;
+      }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
     match left, right with
     | Literal left, Literal right -> Node.location_insensitive_compare String.compare left right
-    | Format left, Format right -> Expression.location_insensitive_compare left right
+    | Format left, Format right -> begin
+        match Expression.location_insensitive_compare left.value right.value with
+        | x when not (Int.equal x 0) -> x
+        | _ ->
+            Option.compare
+              Expression.location_insensitive_compare
+              left.format_spec
+              right.format_spec
+      end
     | Literal _, _ -> -1
     | Format _, _ -> 1
 end
@@ -795,7 +835,7 @@ and Expression : sig
     | ComparisonOperator of ComparisonOperator.t
     | Constant of Constant.t
     | Dictionary of Dictionary.t
-    | DictionaryComprehension of Dictionary.Entry.t Comprehension.t
+    | DictionaryComprehension of Dictionary.Entry.KeyValue.t Comprehension.t
     | Generator of t Comprehension.t
     | FormatString of Substring.t list
     | Lambda of Lambda.t
@@ -829,7 +869,7 @@ end = struct
     | ComparisonOperator of ComparisonOperator.t
     | Constant of Constant.t
     | Dictionary of Dictionary.t
-    | DictionaryComprehension of Dictionary.Entry.t Comprehension.t
+    | DictionaryComprehension of Dictionary.Entry.KeyValue.t Comprehension.t
     | Generator of t Comprehension.t
     | FormatString of Substring.t list
     | Lambda of Lambda.t
@@ -862,7 +902,7 @@ end = struct
     | Dictionary left, Dictionary right -> Dictionary.location_insensitive_compare left right
     | DictionaryComprehension left, DictionaryComprehension right ->
         Comprehension.location_insensitive_compare
-          Dictionary.Entry.location_insensitive_compare
+          Dictionary.Entry.KeyValue.location_insensitive_compare
           left
           right
     | Generator left, Generator right ->
@@ -934,8 +974,12 @@ end = struct
           Format.fprintf formatter "%a, %a" pp_argument argument pp_argument_list argument_list
 
 
-    and pp_dictionary_entry formatter { Dictionary.Entry.key; value } =
-      Format.fprintf formatter "%a:%a" pp_expression_t key pp_expression_t value
+    and pp_dictionary_entry formatter entry =
+      let open Dictionary.Entry in
+      match entry with
+      | KeyValue KeyValue.{ key; value } ->
+          Format.fprintf formatter "%a:%a" pp_expression_t key pp_expression_t value
+      | Splat s -> Format.fprintf formatter "%a" pp_expression_t s
 
 
     and pp_dictionary formatter dictionary =
@@ -979,14 +1023,6 @@ end = struct
       | [generator] -> Format.fprintf formatter "generators(%a)" pp_generator generator
       | generator :: xs ->
           Format.fprintf formatter "generators(%a, %a)" pp_generator generator pp_generators xs
-
-
-    and pp_keywords formatter keywords =
-      match keywords with
-      | [] -> ()
-      | [keyword] -> Format.fprintf formatter ", %a" pp_expression_t keyword
-      | keyword :: keywords ->
-          Format.fprintf formatter ", %a%a" pp_expression_t keyword pp_keywords keywords
 
 
     and pp_parameter formatter { Node.value = { Parameter.name; value; annotation }; _ } =
@@ -1068,8 +1104,16 @@ end = struct
       | FormatString substrings ->
           let pp_substring formatter = function
             | Substring.Literal { Node.value; _ } -> Format.fprintf formatter "\"%s\"" value
-            | Substring.Format expression ->
+            | Substring.Format { value = expression; format_spec = None } ->
                 Format.fprintf formatter "f\"{%a}\"" pp_expression_t expression
+            | Substring.Format { value = expression; format_spec = Some format_expr } ->
+                Format.fprintf
+                  formatter
+                  "f\"{%a:{%a}}\""
+                  pp_expression_t
+                  expression
+                  pp_expression_t
+                  format_expr
           in
           List.iter substrings ~f:(pp_substring formatter)
       | ComparisonOperator { ComparisonOperator.left; operator; right } ->
@@ -1083,10 +1127,15 @@ end = struct
             pp_expression_t
             right
       | Constant constant -> Format.fprintf formatter "%a" Constant.pp constant
-      | Dictionary { Dictionary.entries; keywords } ->
-          Format.fprintf formatter "{ %a%a }" pp_dictionary entries pp_keywords keywords
+      | Dictionary entries -> Format.fprintf formatter "{ %a }" pp_dictionary entries
       | DictionaryComprehension { Comprehension.element; generators } ->
-          Format.fprintf formatter "{ %a: %a }" pp_dictionary_entry element pp_generators generators
+          Format.fprintf
+            formatter
+            "{ %a: %a }"
+            pp_dictionary_entry
+            (Dictionary.Entry.KeyValue element)
+            pp_generators
+            generators
       | Generator generator -> Format.fprintf formatter "%a" pp_basic_comprehension generator
       | Lambda { Lambda.parameters; body } ->
           Format.fprintf
@@ -1153,7 +1202,7 @@ module Mapper = struct
     map_constant: mapper:'a t -> location:Location.t -> Constant.t -> 'a;
     map_dictionary: mapper:'a t -> location:Location.t -> Dictionary.t -> 'a;
     map_dictionary_comprehension:
-      mapper:'a t -> location:Location.t -> Dictionary.Entry.t Comprehension.t -> 'a;
+      mapper:'a t -> location:Location.t -> Dictionary.Entry.KeyValue.t Comprehension.t -> 'a;
     map_generator: mapper:'a t -> location:Location.t -> Expression.t Comprehension.t -> 'a;
     map_format_string: mapper:'a t -> location:Location.t -> Substring.t list -> 'a;
     map_lambda: mapper:'a t -> location:Location.t -> Lambda.t -> 'a;
@@ -1237,12 +1286,16 @@ module Mapper = struct
 
   let map_option ~mapper = Option.map ~f:(map ~mapper)
 
-  let default_map_dictionary_entry ~mapper { Dictionary.Entry.key; value } =
-    { Dictionary.Entry.key = map ~mapper key; value = map ~mapper value }
+  let default_map_dictionary_entry ~mapper entry =
+    let open Dictionary.Entry in
+    match entry with
+    | KeyValue KeyValue.{ key; value } ->
+        KeyValue KeyValue.{ key = map ~mapper key; value = map ~mapper value }
+    | Splat s -> Splat (map ~mapper s)
 
 
-  let default_map_dictionary_entries ~mapper entries =
-    (create_list_mapper default_map_dictionary_entry) ~mapper entries
+  let default_map_dictionary_keyvalue ~mapper Dictionary.Entry.KeyValue.{ key; value } =
+    Dictionary.Entry.KeyValue.{ key = map ~mapper key; value = map ~mapper value }
 
 
   let default_map_argument ~mapper { Call.Argument.name; value } =
@@ -1303,7 +1356,8 @@ module Mapper = struct
   let default_map_substring_with_location ~mapper ~map_location = function
     | Substring.Literal { Node.value; location } ->
         Substring.Literal { Node.value; location = map_location location }
-    | Substring.Format expression -> Substring.Format (map ~mapper expression)
+    | Substring.Format { value; format_spec } ->
+        Substring.Format { value = map ~mapper value; format_spec = map_option ~mapper format_spec }
 
 
   let default_map_substrings_with_location ~mapper ~map_location substrings =
@@ -1354,11 +1408,8 @@ module Mapper = struct
     Node.create ~location (Expression.Constant (default_map_constant ~mapper constant))
 
 
-  let default_map_dictionary ~mapper { Dictionary.entries; keywords } =
-    {
-      Dictionary.entries = default_map_dictionary_entries ~mapper entries;
-      keywords = map_list ~mapper keywords;
-    }
+  let default_map_dictionary ~mapper entries =
+    (create_list_mapper default_map_dictionary_entry) ~mapper entries
 
 
   let default_map_dictionary_node ~mapper ~location dictionary =
@@ -1366,7 +1417,7 @@ module Mapper = struct
 
 
   let default_map_dictionary_comprehension ~mapper comprehension =
-    default_map_comprehension ~map_element:default_map_dictionary_entry ~mapper comprehension
+    default_map_comprehension ~map_element:default_map_dictionary_keyvalue ~mapper comprehension
 
 
   let default_map_dictionary_comprehension_node ~mapper ~location comprehension =
@@ -1784,7 +1835,11 @@ module Folder = struct
     fold_constant: folder:'a t -> state:'a -> location:Location.t -> Constant.t -> 'a;
     fold_dictionary: folder:'a t -> state:'a -> location:Location.t -> Dictionary.t -> 'a;
     fold_dictionary_comprehension:
-      folder:'a t -> state:'a -> location:Location.t -> Dictionary.Entry.t Comprehension.t -> 'a;
+      folder:'a t ->
+      state:'a ->
+      location:Location.t ->
+      Dictionary.Entry.KeyValue.t Comprehension.t ->
+      'a;
     fold_generator:
       folder:'a t -> state:'a -> location:Location.t -> Expression.t Comprehension.t -> 'a;
     fold_format_string: folder:'a t -> state:'a -> location:Location.t -> Substring.t list -> 'a;
@@ -1876,7 +1931,16 @@ module Folder = struct
     Option.fold ~init:state ~f:(fun state item -> fold ~folder ~state item)
 
 
-  let default_fold_dictionary_entry ~folder ~state { Dictionary.Entry.key; value } =
+  let default_fold_dictionary_entry ~folder ~state entry =
+    let open Dictionary.Entry in
+    match entry with
+    | KeyValue KeyValue.{ key; value } ->
+        let state = fold ~folder ~state key in
+        fold ~folder ~state value
+    | Splat s -> fold ~folder ~state s
+
+
+  let default_fold_dictionary_keyvalue ~folder ~state Dictionary.Entry.KeyValue.{ key; value } =
     let state = fold ~folder ~state key in
     fold ~folder ~state value
 
@@ -1942,7 +2006,9 @@ module Folder = struct
 
   let default_fold_substring_with_location ~folder ~state ~fold_location = function
     | Substring.Literal { Node.value = _; location } -> fold_location ~state location
-    | Substring.Format expression -> fold ~folder ~state expression
+    | Substring.Format { value; format_spec } ->
+        let state = fold ~folder ~state value in
+        fold_option ~folder ~state format_spec
 
 
   let default_fold_substrings_with_location ~folder ~state ~fold_location substrings =
@@ -1983,14 +2049,13 @@ module Folder = struct
 
   let default_fold_constant ~folder:_ ~state _ = state
 
-  let default_fold_dictionary ~folder ~state { Dictionary.entries; keywords } =
-    let state = default_fold_dictionary_entries ~folder ~state entries in
-    fold_list ~folder ~state keywords
+  let default_fold_dictionary ~folder ~state entries =
+    default_fold_dictionary_entries ~folder ~state entries
 
 
   let default_fold_dictionary_comprehension ~folder ~state comprehension =
     default_fold_comprehension
-      ~fold_element:default_fold_dictionary_entry
+      ~fold_element:default_fold_dictionary_keyvalue
       ~folder
       ~state
       comprehension
