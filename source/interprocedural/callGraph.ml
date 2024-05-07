@@ -1784,6 +1784,58 @@ let redirect_special_calls ~pyre_in_context call =
       PyrePysaApi.InContext.redirect_special_calls pyre_in_context call
 
 
+let redirect_assignments = function
+  | {
+      Node.value =
+        Statement.Assign
+          {
+            Assign.target =
+              {
+                Node.value =
+                  Expression.Call
+                    {
+                      callee =
+                        {
+                          value =
+                            Name
+                              (Name.Attribute { base; attribute = "__getitem__"; special = true });
+                          _;
+                        };
+                      arguments = [key_argument];
+                    };
+                _;
+              };
+            value = Some value_expression;
+            _;
+          };
+      location;
+    } ->
+      (* TODO(T187636576): For now, we translate assignments such as `d[a] = b` into
+         `d.__setitem__(a, b)`. Unfortunately, this won't work for multi-target assignments such as
+         `x, y[a], z = w`. In the future, we should implement proper logic to handle those. *)
+      let value_argument = { Call.Argument.value = value_expression; name = None } in
+      {
+        Node.location;
+        value =
+          Statement.Expression
+            {
+              Node.location;
+              value =
+                Expression.Call
+                  {
+                    callee =
+                      {
+                        value =
+                          Name (Name.Attribute { base; attribute = "__setitem__"; special = true });
+                        location;
+                      };
+                    arguments = [key_argument; value_argument];
+                  };
+            };
+      }
+  | statement -> statement
+
+
 let resolve_recognized_callees
     ~debug
     ~pyre_in_context
@@ -2666,16 +2718,59 @@ struct
     let generator_visitor ({ pyre_in_context; _ } as state) generator =
       (* Since generators create variables that Pyre sees as scoped within the generator, handle
          them by adding the generator's bindings to the resolution. *)
-      let ({ Ast.Statement.Assign.target = _; value = { Node.value; location }; _ } as assignment) =
+      let ({ Ast.Statement.Assign.target = _; value; _ } as assignment) =
         Ast.Statement.Statement.generator_assignment generator
       in
       (* Since the analysis views the generator as an assignment, we need to also register (extra)
          calls that (are generated above and) appear within the right-hand-side of the assignment*)
-      let iter, iter_next =
+      let iter, iter_next, location =
         match value with
-        | Expression.Await
+        | Some
             {
-              Node.value =
+              value =
+                Expression.Await
+                  {
+                    Node.value =
+                      Expression.Call
+                        {
+                          callee =
+                            {
+                              Node.value =
+                                Name
+                                  (Name.Attribute
+                                    {
+                                      base =
+                                        {
+                                          Node.value =
+                                            Expression.Call
+                                              {
+                                                callee =
+                                                  {
+                                                    Node.value =
+                                                      Name
+                                                        (Name.Attribute
+                                                          { attribute = "__aiter__"; _ });
+                                                    _;
+                                                  };
+                                                _;
+                                              } as aiter;
+                                          _;
+                                        };
+                                      attribute = "__anext__";
+                                      _;
+                                    });
+                              _;
+                            };
+                          _;
+                        } as aiter_anext;
+                    _;
+                  };
+              location;
+            } ->
+            (* E.g., x async for x in y *) aiter, aiter_anext, location
+        | Some
+            {
+              value =
                 Expression.Call
                   {
                     callee =
@@ -2692,54 +2787,23 @@ struct
                                           callee =
                                             {
                                               Node.value =
-                                                Name (Name.Attribute { attribute = "__aiter__"; _ });
+                                                Name (Name.Attribute { attribute = "__iter__"; _ });
                                               _;
                                             };
                                           _;
-                                        } as aiter;
+                                        } as iter;
                                     _;
                                   };
-                                attribute = "__anext__";
+                                attribute = "__next__";
                                 _;
                               });
                         _;
                       };
                     _;
-                  } as aiter_anext;
-              _;
+                  } as iter_next;
+              location;
             } ->
-            (* E.g., x async for x in y *) aiter, aiter_anext
-        | Expression.Call
-            {
-              callee =
-                {
-                  Node.value =
-                    Name
-                      (Name.Attribute
-                        {
-                          base =
-                            {
-                              Node.value =
-                                Expression.Call
-                                  {
-                                    callee =
-                                      {
-                                        Node.value =
-                                          Name (Name.Attribute { attribute = "__iter__"; _ });
-                                        _;
-                                      };
-                                    _;
-                                  } as iter;
-                              _;
-                            };
-                          attribute = "__next__";
-                          _;
-                        });
-                  _;
-                };
-              _;
-            } as iter_next ->
-            (* E.g., x for x in y *) iter, iter_next
+            (* E.g., x for x in y *) iter, iter_next, location
         | _ -> failwith "Expect generators to be treated as e.__iter__().__next__()"
       in
       let state = expression_visitor state { Node.value = iter; location } in
@@ -2786,8 +2850,9 @@ struct
 
     let forward_statement ~pyre_in_context ~statement =
       log "Building call graph of statement: `%a`" Ast.Statement.pp statement;
+      let statement = redirect_assignments statement in
       match Node.value statement with
-      | Statement.Assign { Assign.target; value; _ } ->
+      | Statement.Assign { Assign.target; value = Some value; _ } ->
           CalleeVisitor.visit_expression
             ~state:
               (ref
@@ -2796,6 +2861,12 @@ struct
           CalleeVisitor.visit_expression
             ~state:(ref { pyre_in_context; assignment_target = None })
             value
+      | Statement.Assign { Assign.target; value = None; _ } ->
+          CalleeVisitor.visit_expression
+            ~state:
+              (ref
+                 { pyre_in_context; assignment_target = Some { location = Node.location target } })
+            target
       | _ ->
           CalleeVisitor.visit_statement
             ~state:(ref { pyre_in_context; assignment_target = None })

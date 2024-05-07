@@ -1305,7 +1305,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       let { Statement.Assign.target; value; _ } =
         Statement.Statement.generator_assignment generator
       in
-      analyze_assignment ~pyre_in_context ~target ~value state
+      match value with
+      | Some value -> analyze_assignment ~pyre_in_context ~target ~value state
+      | None -> state
     in
     List.fold ~f:handle_generator generators ~init:state
 
@@ -2361,12 +2363,15 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     analyze_expression ~pyre_in_context ~taint ~state ~expression:value
 
 
-  let analyze_statement ~pyre_in_context state { Node.value = statement; location } =
-    match statement with
+  let analyze_statement ~pyre_in_context state ({ Node.location; _ } as statement) =
+    let statement = CallGraph.redirect_assignments statement in
+    match Node.value statement with
     | Statement.Statement.Assign
-        { value = { Node.value = Expression.Constant Constant.Ellipsis; _ }; _ } ->
+        { value = Some { Node.value = Expression.Constant Constant.Ellipsis; _ }; _ } ->
         state
-    | Assign { target = { Node.location; value = target_value } as target; value; _ } -> (
+    | Assign { value = None; _ } -> state
+    | Assign { target = { Node.location; value = target_value } as target; value = Some value; _ }
+      -> (
         let target_global_model =
           GlobalModel.from_expression
             ~pyre_in_context

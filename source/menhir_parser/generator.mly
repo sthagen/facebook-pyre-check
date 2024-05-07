@@ -165,10 +165,6 @@
     let location = Location.create ~start ~stop in
     Node.create (Expression.Constant AstExpression.Constant.Ellipsis) ~location
 
-  let create_ellipsis_after { Node.location; _ } =
-    Node.create
-      (Expression.Constant AstExpression.Constant.Ellipsis)
-      ~location:{ location with Location.start = location.Location.stop }
 
   let subscript_argument subscripts =
     let value =
@@ -191,26 +187,6 @@
     in
     Expression.Call { Call.callee; arguments = [subscript_argument subscripts] }
     |> Node.create ~location:{ subscript_location with Location.start = location.Location.start }
-
-  let subscript_mutation ~subscript ~value ~annotation:_ =
-    let head, subscripts, subscript_location = subscript in
-    let callee =
-      let location =
-        { head.Node.location with Location.stop = subscript_location.Location.stop }
-      in
-      Expression.Name (Name.Attribute { Name.Attribute.base = head; attribute = "__setitem__"; special = true })
-      |> Node.create ~location
-    in
-    let location =
-      { head.Node.location with Location.stop = value.Node.location.Location.stop }
-    in
-    Expression.Call {
-      Call.callee;
-      arguments = [subscript_argument subscripts; { Call.Argument.name = None; value }];
-    }
-    |> Node.create ~location
-    |> fun expression -> Statement.Expression expression
-    |> Node.create ~location
 
   let with_annotation ~parameter ~annotation =
     let value =
@@ -527,16 +503,6 @@ simple_statement:
   ;
 
 small_statement:
-  | subscript = subscript; compound = compound_operator; value = value {
-      let value =
-        binary_operator
-          ~compound:true
-          ~left:(subscript_access subscript)
-          ~operator:compound
-          ~right:value
-      in
-      [subscript_mutation ~subscript ~value ~annotation:None]
-  }
   | target = test_list;
     compound = compound_operator;
     value = value {
@@ -549,7 +515,7 @@ small_statement:
         value = Statement.Assign {
           Assign.target = target;
           annotation = None;
-          value = value;
+          value = Some value;
         };
       }]
     }
@@ -563,7 +529,7 @@ small_statement:
         value = Statement.Assign {
           Assign.target = target;
           annotation = Some annotation;
-          value = create_ellipsis_after annotation;
+          value = None;
         };
       }]
     }
@@ -577,7 +543,7 @@ small_statement:
         value = Statement.Assign {
           Assign.target = target;
           annotation = Some annotation;
-          value = create_ellipsis_after annotation;
+          value = None;
         };
       }]
     }
@@ -593,7 +559,7 @@ small_statement:
         value = Statement.Assign {
           Assign.target = target;
           annotation = Some annotation;
-          value = value;
+          value = Some value;
         };
       }]
     }
@@ -609,7 +575,7 @@ small_statement:
         value = Statement.Assign {
           Assign.target = target;
           annotation = Some annotation;
-          value = value;
+          value = Some value;
         };
       }]
     }
@@ -633,7 +599,7 @@ small_statement:
         value = Statement.Assign {
           Assign.target = target;
           annotation = Some annotation;
-          value = ellipsis;
+          value = Some ellipsis;
         };
       }]
     }
@@ -1358,13 +1324,12 @@ import:
           value = Statement.Assign {
             Assign.target = target;
             annotation = annotation;
-            value = value;
+            value = Some value;
           };
         }
       in
       assignment_with_annotation
     }
-  | subscript = subscript { subscript_mutation ~subscript }
 
 targets:
   | target = target; EQUALS { [target] }

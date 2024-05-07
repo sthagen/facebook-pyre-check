@@ -51,7 +51,6 @@ module Attribute = struct
     annotation: Expression.t option;
     values: value_and_origin list;
     primitive: bool;
-    frozen: bool;
     toplevel: bool;
     implicit: bool;
     nested_class: bool;
@@ -194,7 +193,6 @@ module Attribute = struct
       ?annotation
       ?value_and_origin
       ?(primitive = false)
-      ?(frozen = false)
       ?(toplevel = true)
       ?(implicit = false)
       ?(nested_class = false)
@@ -202,10 +200,7 @@ module Attribute = struct
       ()
     =
     let values = Option.to_list value_and_origin in
-    {
-      name;
-      kind = Simple { annotation; values; primitive; frozen; toplevel; implicit; nested_class };
-    }
+    { name; kind = Simple { annotation; values; primitive; toplevel; implicit; nested_class } }
     |> Node.create ~location
 
 
@@ -245,9 +240,13 @@ module ClassAttributes = struct
       in
       List.fold ~init:Identifier.SerializableMap.empty ~f:add_parameter parameters
     in
-    let attribute ~toplevel map { Node.value; _ } =
+    let attribute ~toplevel map { Node.value; location } =
       match value with
       | Statement.Assign { Assign.target; annotation; value; _ } -> (
+          (* TODO: T101298692 don't substitute ellipsis for missing RHS of assignment *)
+          let value =
+            Option.value value ~default:(Node.create ~location (Expression.Constant Ellipsis))
+          in
           let simple_attribute ~map ~target:({ Node.location; _ } as target) ~annotation =
             match target with
             | {
@@ -263,7 +262,6 @@ module ClassAttributes = struct
                     Attribute.annotation;
                     values = [{ value; origin = Implicit }];
                     primitive = true;
-                    frozen = false;
                     toplevel;
                     implicit = true;
                     nested_class = false;
@@ -509,7 +507,7 @@ module ClassAttributes = struct
         | Statement.Assign
             {
               Assign.target = { Node.value = Tuple targets; _ };
-              value = { Node.value = Tuple values; _ };
+              value = Some { Node.value = Tuple values; _ };
               _;
             } ->
             let add_attribute map ({ Node.location; _ } as target) value =
@@ -532,6 +530,10 @@ module ClassAttributes = struct
             else
               map
         | Assign { Assign.target = { Node.value = Tuple targets; _ }; value; _ } ->
+            (* TODO: T101298692 don't substitute ellipsis for missing RHS of assignment *)
+            let value =
+              Option.value value ~default:(Node.create ~location (Expression.Constant Ellipsis))
+            in
             let add_attribute index map ({ Node.location; _ } as target) =
               Attribute.name ~parent:parent_name target
               |> function
@@ -580,10 +582,13 @@ module ClassAttributes = struct
             in
             List.foldi ~init:map ~f:add_attribute targets
         | Assign { Assign.target; annotation; value; _ } -> (
+            (* TODO: T101298692 don't substitute ellipsis for missing RHS of assignment *)
+            let value =
+              Option.value value ~default:(Node.create ~location (Expression.Constant Ellipsis))
+            in
             Attribute.name ~parent:parent_name target
             |> function
             | Some name ->
-                let frozen = Class.is_frozen definition in
                 let attribute =
                   Attribute.create_simple
                     ~location
@@ -591,7 +596,6 @@ module ClassAttributes = struct
                     ~value_and_origin:{ value; origin = Explicit }
                     ?annotation
                     ~primitive:true
-                    ~frozen
                     ()
                 in
                 Identifier.SerializableMap.set map ~key:name ~data:attribute
@@ -862,7 +866,7 @@ module ClassAttributes = struct
           | Statement.Assign
               {
                 Assign.target = { Node.value = target_value; _ };
-                value = { Node.value = List attributes; location };
+                value = Some { Node.value = List attributes; location };
                 _;
               }
             when is_slots target_value ->

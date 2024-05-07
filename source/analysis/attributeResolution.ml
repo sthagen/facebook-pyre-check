@@ -350,6 +350,7 @@ module ClassDecorators = struct
     field_descriptors: Ast.Expression.t list;
     keyword_only: bool;
     has_slots: bool;
+    frozen: bool;
   }
 
   (** This is necessary as an abstraction over AnnotatedAttribute to determine which attributes are
@@ -361,7 +362,7 @@ module ClassDecorators = struct
     keyword_only: bool;
   }
 
-  let extract_options ~default ~init ~repr ~eq ~order ~keyword_only ~has_slots decorator =
+  let extract_options ~default ~init ~repr ~eq ~order ~keyword_only ~has_slots ~frozen decorator =
     let open Expression in
     let extract_options_from_arguments =
       let apply_arguments default argument =
@@ -426,6 +427,13 @@ module ClassDecorators = struct
               else
                 default
             in
+            let default =
+              if String.equal argument_name frozen then
+                { default with frozen = recognize_value value ~default:default.frozen }
+              else
+                default
+            in
+
             default
         | _ -> default
       in
@@ -452,6 +460,7 @@ module ClassDecorators = struct
               field_descriptors;
               keyword_only = false;
               has_slots = false;
+              frozen = false;
             }
           ~init:"init"
           ~repr:"repr"
@@ -459,6 +468,7 @@ module ClassDecorators = struct
           ~order:"order"
           ~keyword_only:"kw_only"
           ~has_slots:"slots"
+          ~frozen:"frozen"
 
 
   let attrs_attributes ~queries:Queries.{ first_matching_class_decorator; _ } class_summary =
@@ -474,6 +484,7 @@ module ClassDecorators = struct
               field_descriptors = [];
               keyword_only = false;
               has_slots = false;
+              frozen = false;
             }
           ~init:"init"
           ~repr:"repr"
@@ -481,6 +492,7 @@ module ClassDecorators = struct
           ~order:"cmp"
           ~keyword_only:"kw_only"
           ~has_slots:"slots"
+          ~frozen:"frozen"
 
 
   (* Is a decorator one of the spec-defined dataclass transform decorators.
@@ -516,6 +528,7 @@ module ClassDecorators = struct
         field_descriptors = [];
         keyword_only = false;
         has_slots = false;
+        frozen = false;
       }
     in
     extract_options
@@ -526,6 +539,7 @@ module ClassDecorators = struct
       ~order:"order_default"
       ~keyword_only:"kw_only_default"
       ~has_slots:"slots"
+      ~frozen:"frozen_default"
       decorator
 
 
@@ -548,6 +562,7 @@ module ClassDecorators = struct
       ~order:"order"
       ~keyword_only:"kw_only"
       ~has_slots:"slots"
+      ~frozen:"frozen"
       decorator
 
 
@@ -700,6 +715,7 @@ module ClassDecorators = struct
           }
           :: parameters
         in
+
         let callable =
           {
             Type.Callable.kind = Named (Reference.combine name (Reference.create attribute_name));
@@ -739,6 +755,7 @@ module ClassDecorators = struct
             field_descriptors;
             keyword_only = class_level_keyword_only;
             has_slots;
+            frozen;
           } ->
           let is_class_var attribute =
             match Node.value attribute with
@@ -791,7 +808,6 @@ module ClassDecorators = struct
                 false
             | _ -> true
           in
-
           let get_table_from_classsummary ({ Node.value = class_summary; _ } as parent) =
             let create attribute : AnnotatedAttribute.uninstantiated * Expression.t =
               let value =
@@ -804,6 +820,7 @@ module ClassDecorators = struct
                 | { Node.location; _ } ->
                     Node.create (Expression.Constant Constant.Ellipsis) ~location
               in
+
               ( create_attribute
                   ~parent
                   ?defined:None
@@ -923,8 +940,8 @@ module ClassDecorators = struct
             | keyword_only, not_keyword_only ->
                 not_keyword_only @ [Type.Callable.Parameter.dummy_star_parameter] @ keyword_only
           in
-
-          (* A method that processes parameters and specializes on __init__ and __match_args__ *)
+          (* A central method that processes parameters that abstracts over constructing methods. It
+             specializes on __init__ and __match_args__. *)
           let process_parameters ~implicitly_initialize process_potential_initvar_annotation =
             let collect_parameters parameters (attribute, value) =
               (* Parameters must be annotated attributes *)
@@ -990,6 +1007,24 @@ module ClassDecorators = struct
                     single_parameter, true
                 | _ -> original_annotation, false)
           in
+
+          (* Override the attribute table with respect to frozen attributes *)
+          let handle_frozen_attributes table frozen =
+            let frozen_attributes attribute name =
+              if frozen then begin
+                let frozen_visibility =
+                  AnnotatedAttribute.ReadOnly (AnnotatedAttribute.Refinable { overridable = true })
+                in
+                let frozen_attribute =
+                  AnnotatedAttribute.with_visibility attribute ~visibility:frozen_visibility
+                in
+                Stdlib.Hashtbl.replace table name frozen_attribute
+              end
+            in
+            Stdlib.Hashtbl.iter (fun name attribute -> frozen_attributes attribute name) table
+          in
+          handle_frozen_attributes table.attributes frozen;
+
           (* We are unable to use init_parameters because slots items can have different values
            * for ancestors and we do not want the dummy star argument.
            * TODO(T130663259) Inaccurate for ancestors *)
@@ -3794,7 +3829,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       let class_annotation = Type.Primitive parent_name in
       let annotation, class_variable, visibility, undecorated_signature, problem =
         match kind with
-        | Simple { annotation; values; frozen; toplevel; implicit; primitive; _ } ->
+        | Simple { annotation; values; toplevel; implicit; primitive; _ } ->
             let value = List.hd values >>| fun { value; _ } -> value in
             let parsed_annotation = annotation >>| self#parse_annotation ~assumptions in
             (* Account for class attributes. *)
@@ -3835,8 +3870,6 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                 let visibility =
                   if final then
                     AnnotatedAttribute.ReadOnly (Refinable { overridable = false })
-                  else if frozen then
-                    ReadOnly (Refinable { overridable = true })
                   else
                     ReadWrite
                 in
@@ -4866,26 +4899,27 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             {
               explicit_annotation = None;
               value =
-                {
-                  Node.value =
-                    Call
-                      {
-                        callee =
-                          {
-                            value =
-                              Name
-                                (Attribute
-                                  {
-                                    base = { Node.value = Name (Identifier "typing"); _ };
-                                    attribute = "TypeAlias";
-                                    _;
-                                  });
-                            _;
-                          };
-                        _;
-                      };
-                  _;
-                };
+                Some
+                  {
+                    Node.value =
+                      Call
+                        {
+                          callee =
+                            {
+                              value =
+                                Name
+                                  (Attribute
+                                    {
+                                      base = { Node.value = Name (Identifier "typing"); _ };
+                                      attribute = "TypeAlias";
+                                      _;
+                                    });
+                              _;
+                            };
+                          _;
+                        };
+                    _;
+                  };
               target_location = location;
             } ->
             let location = Location.strip_module location in
@@ -4896,7 +4930,14 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             |> Annotation.create_immutable
             |> fun annotation ->
             Some { Global.annotation; undecorated_signature = None; problem = None }
-        | SimpleAssign { explicit_annotation; value; _ } ->
+        | SimpleAssign { explicit_annotation; value; target_location = location } ->
+            (* TODO: T101298692 don't substitute ellipsis for missing RHS of assignment *)
+            let location = Location.strip_module location in
+            let value =
+              Option.value
+                value
+                ~default:(Ast.Expression.Expression.Constant Ellipsis |> Node.create ~location)
+            in
             let explicit_annotation =
               explicit_annotation
               >>| self#parse_annotation ~assumptions
@@ -4914,7 +4955,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             produce_assignment_global ~is_explicit ~is_final annotation
             |> fun annotation ->
             Some { Global.annotation; undecorated_signature = None; problem = None }
-        | TupleAssign { value; index; total_length; _ } ->
+        | TupleAssign { value = Some value; index; total_length; _ } ->
             let extracted =
               match self#resolve_literal ~assumptions value with
               | Type.Tuple (Concrete parameters) when List.length parameters = total_length ->
