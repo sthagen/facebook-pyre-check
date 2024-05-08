@@ -42,10 +42,8 @@ let test_create _ =
   assert_create
     "foo[bar, baz]"
     (Type.parametric "foo" ![Type.Primitive "bar"; Type.Primitive "baz"]);
-  assert_create "typing.List.__getitem__(int)" (Type.list Type.integer);
-  assert_create
-    "typing.Dict.__getitem__((int, str))"
-    (Type.dictionary ~key:Type.integer ~value:Type.string);
+  assert_create "typing.List[int]" (Type.list Type.integer);
+  assert_create "typing.Dict[int, str]" (Type.dictionary ~key:Type.integer ~value:Type.string);
 
   (* Type aliases in typeshed. *)
   assert_create "typing.Counter" (Type.Primitive "collections.Counter");
@@ -75,7 +73,6 @@ let test_create _ =
   assert_create "tuple" (Type.Primitive "tuple");
   assert_create "typing.Any" Type.Any;
   assert_create "typing.Optional[int]" (Type.optional Type.integer);
-  assert_create "typing.Optional.__getitem__(int)" (Type.optional Type.integer);
   assert_create "typing.Set[int]" (Type.set Type.integer);
   assert_create "typing.Union[int, str]" (Type.union [Type.integer; Type.string]);
   assert_create "typing.Union[int, typing.Any]" (Type.union [Type.integer; Type.Any]);
@@ -180,9 +177,6 @@ let test_create_callable _ =
   let open Type.Callable in
   assert_create "typing.Callable" (Type.Primitive "typing.Callable");
   assert_create "typing.Callable[..., int]" (Type.Callable.create ~annotation:Type.integer ());
-  assert_create
-    "typing.Callable.__getitem__((..., int))"
-    (Type.Callable.create ~annotation:Type.integer ());
   assert_create
     "typing.Callable[..., int][[..., str]]"
     (Type.Callable.create
@@ -1539,23 +1533,21 @@ let test_expression _ =
   assert_expression (Type.Primitive "foo") "foo";
   assert_expression (Type.Primitive "...") "...";
   assert_expression (Type.Primitive "foo.bar") "foo.bar";
-  assert_expression (Type.parametric "foo.bar" ![Type.Primitive "baz"]) "foo.bar.__getitem__(baz)";
+  assert_expression (Type.parametric "foo.bar" ![Type.Primitive "baz"]) "foo.bar[baz]";
   assert_expression
     (Type.Tuple (Type.OrderedTypes.Concrete [Type.integer; Type.string]))
-    "typing.Tuple.__getitem__((int, str))";
+    "typing.Tuple[int, str]";
   assert_expression
     (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.integer))
-    "typing.Tuple.__getitem__((int, ...))";
-  assert_expression (Type.parametric "list" ![Type.integer]) "typing.List.__getitem__(int)";
+    "typing.Tuple[int, ...]";
+  assert_expression (Type.parametric "list" ![Type.integer]) "typing.List[int]";
 
   (* Callables. *)
   let open Type.Callable in
-  assert_expression
-    (Type.Callable.create ~annotation:Type.integer ())
-    "typing.Callable.__getitem__((..., int))";
+  assert_expression (Type.Callable.create ~annotation:Type.integer ()) "typing.Callable[..., int]";
   assert_expression
     (Type.Callable.create ~name:!&"name" ~annotation:Type.integer ())
-    "typing.Callable.__getitem__((..., int))";
+    "typing.Callable[..., int]";
   assert_expression
     (Type.Callable.create
        ~overloads:
@@ -1565,7 +1557,7 @@ let test_expression _ =
          ]
        ~annotation:Type.integer
        ())
-    "typing.Callable[(..., int)].__getitem__(__getitem__((..., str))[(..., int)])";
+    "typing.Callable[(..., int)][[..., str][..., int]]";
   assert_expression
     (Type.Callable.create
        ~parameters:
@@ -1576,7 +1568,7 @@ let test_expression _ =
             ])
        ~annotation:Type.integer
        ())
-    "typing.Callable.__getitem__(([Named(__0, int), Named(__1, str)], int))";
+    "typing.Callable[[Named(__0, int), Named(__1, str)], int]";
   assert_expression
     (Type.Callable.create
        ~parameters:
@@ -1587,7 +1579,7 @@ let test_expression _ =
             ])
        ~annotation:Type.integer
        ())
-    "typing.Callable.__getitem__(([Named(a, int), Named(b, str)], int))";
+    "typing.Callable[[Named(a, int), Named(b, str)], int]";
   assert_expression
     (Type.Callable.create
        ~parameters:
@@ -1595,7 +1587,7 @@ let test_expression _ =
             [Parameter.Named { name = "a"; annotation = Type.integer; default = true }])
        ~annotation:Type.integer
        ())
-    "typing.Callable.__getitem__(([Named(a, int, default)], int))";
+    "typing.Callable[[Named(a, int, default)], int]";
   assert_expression
     (Type.parametric
        "G"
@@ -1697,7 +1689,7 @@ let test_expression _ =
             ])
        ~annotation:Type.integer
        ())
-    "typing.Callable.__getitem__(([Variable(int, typing.Unpack[Ts], str)], int))";
+    "typing.Callable[[Variable(int, typing.Unpack[Ts], str)], int]";
 
   (* Compose *)
   let callable1 =
@@ -6241,81 +6233,61 @@ let test_parameter_create _ =
     ]
 
 
-let test_resolve_getitem_callee _ =
-  let open Expression in
-  let assert_resolved_getitem_callee ?(resolve_aliases = Fn.id) actual expected =
-    let parse_callee given =
-      match parse_single_expression given |> Node.value with
-      | Expression.Call { callee = { Node.value = callee; _ }; _ } -> callee
-      | _ -> failwith "expected Call"
+let test_resolve_alias_before_handling_callable _ =
+  let assert_resolved_getitem_callee ~resolve_aliases aliased bare =
+    let aliases ?replace_unbound_parameters_with_any:_ (annotation : string) =
+      Some (Type.TypeAlias (resolve_aliases annotation))
     in
     assert_equal
-      ~cmp:(fun left right ->
-        Expression.location_insensitive_compare
-          (Node.create_with_default_location left)
-          (Node.create_with_default_location right)
-        = 0)
-      ~printer:[%show: Expression.expression]
-      (parse_callee expected)
-      (Type.Callable.resolve_getitem_callee ~resolve_aliases (parse_callee actual))
+      ~cmp:Type.equal
+      ~printer:Type.show
+      (parse_single_expression bare |> Type.create ~aliases:Type.empty_aliases)
+      (parse_single_expression aliased |> Type.create ~aliases)
   in
-  assert_resolved_getitem_callee "NotAlias[int]" "NotAlias[int]";
-  assert_resolved_getitem_callee "typing.Callable[[int], str]" "typing.Callable[[int], str]";
-  assert_resolved_getitem_callee
-    "typing.Callable[[int], str][[int], str]"
-    "typing.Callable[[int], str][[int], str]";
-  assert_resolved_getitem_callee
-    "typing.Callable[[int], str][[int], str][[int], str]"
-    "typing.Callable[[int], str][[int], str][[int], str]";
 
   assert_resolved_getitem_callee
     ~resolve_aliases:(function
-      | Type.Primitive "bar.baz.Callable" -> Type.Primitive "typing.Callable"
-      | annotation -> annotation)
+      | "bar.baz.Callable" -> Type.Primitive "typing.Callable"
+      | annotation -> Type.Primitive annotation)
     "bar.baz.Callable[[int], str]"
     "typing.Callable[[int], str]";
 
   assert_resolved_getitem_callee
     ~resolve_aliases:(function
-      | Type.Primitive "bar.baz.Callable" ->
-          Type.Callable.create ~annotation:Type.Any ~parameters:Undefined ()
-      | annotation -> annotation)
+      | "bar.baz.Callable" -> Type.Callable.create ~annotation:Type.Any ~parameters:Undefined ()
+      | annotation -> Type.Primitive annotation)
     "bar.baz.Callable[[int], str]"
     "typing.Callable[[int], str]";
 
   assert_resolved_getitem_callee
     ~resolve_aliases:(function
-      | Type.Primitive "bar.baz.CallableAlias" ->
+      | "bar.baz.CallableAlias" ->
           Type.Callable.create
             ~annotation:Type.integer
             ~parameters:
               (Defined
                  [PositionalOnly { index = 0; annotation = Type.variable "T"; default = false }])
             ()
-      | annotation -> annotation)
+      | annotation -> Type.Primitive annotation)
     "bar.baz.CallableAlias[str]"
-    "bar.baz.CallableAlias[str]";
+    "typing.Callable[[str], int]";
 
   assert_resolved_getitem_callee
     ~resolve_aliases:(function
-      | Type.Primitive "bar.baz.Callable" -> Type.Primitive "typing.Callable"
-      | annotation -> annotation)
+      | "bar.baz.Callable" -> Type.Primitive "typing.Callable"
+      | annotation -> Type.Primitive annotation)
     "bar.baz.Callable[[int], str][[int], str][[int], str]"
     "typing.Callable[[int], str][[int], str][[int], str]";
 
   assert_resolved_getitem_callee
-    ~resolve_aliases:(function
-      | Type.Primitive "bar.baz.Callable" -> Type.Primitive "typing.Callable"
-      | annotation -> annotation)
+    ~resolve_aliases:(fun annotation -> Type.Primitive annotation)
     "not_an_alias.Callable[[int], str]"
-    "not_an_alias.Callable[[int], str]";
+    "not_an_alias.Callable";
 
   assert_resolved_getitem_callee
-    ~resolve_aliases:(function
-      | Type.Primitive "bar.baz.Callable" -> Type.Primitive "typing.Callable"
-      | annotation -> annotation)
+    ~resolve_aliases:(fun annotation -> Type.Primitive annotation)
     "Foo[int].Callable[[int], str]"
-    "Foo[int].Callable[[int], str]";
+    "Foo.Callable";
   ()
 
 
@@ -6724,17 +6696,12 @@ let () =
          "show" >:: test_show;
          "is_truthy" >:: test_is_truthy;
          "is_falsy" >:: test_is_falsy;
-       ]
-  |> Test.run;
-  "primitive" >::: ["is unit test" >:: test_is_unit_test] |> Test.run;
-  "callable"
-  >::: [
+         "is_unit_test" >:: test_is_unit_test;
          "from_overloads" >:: test_from_overloads;
          "with_return_annotation" >:: test_with_return_annotation;
          "overload_parameters" >:: test_overload_parameters;
          "parameter_create" >:: test_parameter_create;
-         "resolve_getitem_callee" >:: test_resolve_getitem_callee;
+         "resolve_alias_before_handling_callable" >:: test_resolve_alias_before_handling_callable;
+         "lift_readonly_for_container" >:: test_lift_readonly_if_possible;
        ]
-  |> Test.run;
-  "readOnly" >::: ["lift_readonly_for_container" >:: test_lift_readonly_if_possible] |> Test.run;
-  ()
+  |> Test.run
