@@ -8,14 +8,10 @@
 (* TODO(T132410158) Add a module-level doc comment. *)
 
 
-module List = Hack_core.Hack_core_list
-module Daemon = Hack_utils.Daemon
-module Fork = Hack_utils.Fork
+module List = Core.List
 module Exit_status = Hack_utils.Exit_status
 module Measure = Hack_utils.Measure
 module PrintSignal = Hack_utils.PrintSignal
-module String_utils = Hack_utils.String_utils
-module Utils = Hack_utils.Utils
 open Hack_heap
 
 (*****************************************************************************
@@ -40,7 +36,6 @@ open Hack_heap
 
 exception Worker_exited_abnormally of int * Unix.process_status
 exception Worker_exception of string * Printexc.raw_backtrace
-exception Worker_oomed
 exception Worker_busy
 exception Worker_killed
 
@@ -68,7 +63,6 @@ let max_workers = 1000
 
 type request = Request of (serializer -> unit)
 and serializer = { send: 'a. 'a -> unit }
-and void (* an empty type *)
 
 (*****************************************************************************
  * Everything we need to know about a worker.
@@ -82,39 +76,15 @@ type t = {
   (* Sanity check: is the worker currently busy ? *)
   mutable busy: bool;
 
-  (* A reference to the worker process. *)
-  handle: (void, request) Daemon.handle;
+  pid: int;
+  ic: in_channel;
+  oc: out_channel;
 
-}
-
-
-
-(*****************************************************************************
- * The handle is what we get back when we start a job. It's a "future"
- * (sometimes called a "promise"). The scheduler uses the handle to retrieve
- * the result of the job when the task is done (cf multiWorker.ml).
- *
- *****************************************************************************)
-
-type 'a handle = 'a delayed ref
-
-and 'a delayed =
-  | Processing of 'a ephemeral_worker
-  | Cached of 'a
-  | Failed of exn
-
-and 'a ephemeral_worker = {
-
-  worker: t;      (* The associated worker *)
-
-  (* The file descriptor we might pass to select in order to
-     wait for the ephemeral worker to finish its job. *)
+  (* File descriptor corresponding to ic, used for `select`. *)
   infd: Unix.file_descr;
-
-  (* A blocking function that returns the job result. *)
-  result: unit -> 'a;
-
 }
+
+type 'a handle = t
 
 module Response = struct
   type 'a t =
@@ -133,8 +103,8 @@ let ephemeral_worker_main ic oc =
   let start_system_time = ref 0.0 in
   let send_response response =
     let s = Marshal.to_string response [Marshal.Closures] in
-    Daemon.output_string oc s;
-    Daemon.flush oc
+    output_string oc s;
+    flush oc
   in
   let send_result result =
     let tm = Unix.times () in
@@ -148,7 +118,7 @@ let ephemeral_worker_main ic oc =
   in
   try
     Measure.push_global ();
-    let Request do_process = Daemon.from_channel ic in
+    let Request do_process = Marshal.from_channel ic in
     let tm = Unix.times () in
     start_user_time := tm.Unix.tms_utime +. tm.Unix.tms_cutime;
     start_system_time := tm.Unix.tms_stime +. tm.Unix.tms_cstime;
@@ -176,19 +146,19 @@ let ephemeral_worker_main ic oc =
       send_response (Response.Failure { exn = Base.Exn.to_string exn; backtrace });
       exit 0
 
-let worker_main restore state (ic, oc) =
+let worker_main restore state infd outfd =
   restore state;
-  let in_fd = Daemon.descr_of_in_channel ic in
-  if !Utils.profile then Utils.log := prerr_endline;
+  let ic = Unix.in_channel_of_descr infd in
+  let oc = Unix.out_channel_of_descr outfd in
   try
     while true do
       (* Wait for an incoming job : is there something to read?
          But we don't read it yet. It will be read by the forked ephemeral worker. *)
-      let readyl, _, _ = Unix.select [in_fd] [] [] (-1.0) in
+      let readyl, _, _ = Unix.select [infd] [] [] (-1.0) in
       if readyl = [] then exit 0;
       (* We fork an ephemeral worker for every incoming request.
          And let it die after one request. This is the quickest GC. *)
-      match Fork.fork() with
+      match Unix.fork () with
       | 0 -> ephemeral_worker_main ic oc
       | pid ->
           (* Wait for the ephemeral worker termination... *)
@@ -228,14 +198,29 @@ let make ~nbr_procs ~gc_control ~heap_handle =
     SharedMemory.connect heap_handle;
     Gc.set gc_control
   in
-  let fork worker_id = Daemon.fork (Unix.stdout, Unix.stderr) (worker_main restore) worker_id in
+  let fork worker_id =
+    let parent_in, child_out = Unix.pipe () in
+    let child_in, parent_out = Unix.pipe () in
+    match Unix.fork () with
+    | 0 ->
+      Unix.close parent_in;
+      Unix.close parent_out;
+      worker_main restore worker_id child_in child_out
+    | pid ->
+      Unix.close child_in;
+      Unix.close child_out;
+      let ic = Unix.in_channel_of_descr parent_in in
+      let oc = Unix.out_channel_of_descr parent_out in
+      { busy = false; killed = false; pid; infd = parent_in; ic; oc }
+  in
   let rec loop acc n =
     if n = 0 then acc
     else
-      let handle = fork n in
-      let worker = { busy = false; killed = false; handle } in
+      let worker = fork n in
       loop (worker :: acc) (n - 1)
   in
+  (* Flush any buffers before forking workers, to avoid double output. *)
+  flush_all ();
   loop [] nbr_procs
 
 let current_worker_id () = !current_worker_id
@@ -248,44 +233,23 @@ let current_worker_id () = !current_worker_id
 let call w (type a) (type b) (f : a -> b) (x : a) : b handle =
   if w.killed then raise Worker_killed;
   if w.busy then raise Worker_busy;
-  let { Daemon.pid = worker_pid; channels = (inc, outc) } = w.handle in
-  (* Prepare ourself to read answer from the ephemeral_worker. *)
-  let result () : b =
-    match Daemon.input_value inc with
-    | Response.Success { result; stats } ->
-      Measure.merge ~from:(Measure.deserialize stats) ();
-      result
-    | Response.Failure { exn; backtrace } ->
-      raise (Worker_exception (exn, backtrace))
-    | exception exn ->
-      let backtrace = Printexc.get_raw_backtrace () in
-      match Unix.waitpid [Unix.WNOHANG] worker_pid with
-      | 0, _ -> Printexc.raise_with_backtrace exn backtrace
-      | _, Unix.WEXITED i when i = Exit_status.(exit_code Out_of_shared_memory) ->
-          raise SharedMemory.Out_of_shared_memory
-      | _, exit_status ->
-          raise (Worker_exited_abnormally (worker_pid, exit_status))
-  in
   (* Mark the worker as busy. *)
-  let infd = Daemon.descr_of_in_channel inc in
-  let ephemeral_worker = { result; infd; worker = w; } in
   w.busy <- true;
-  let request =
-    Request (fun { send } -> send (f x))
-  in
+  let request = Request (fun { send } -> send (f x)) in
   (* Send the job to the ephemeral worker. *)
-  let () = try Daemon.to_channel outc
-                 ~flush:true ~flags:[Marshal.Closures]
-                 request with
-  | e ->
-      match Unix.waitpid [Unix.WNOHANG] worker_pid with
+  let () =
+    try
+      Marshal.to_channel w.oc request [Marshal.Closures];
+      flush w.oc
+    with e ->
+      match Unix.waitpid [Unix.WNOHANG] w.pid with
       | 0, _ ->
           raise (Worker_failed_to_send_job (Other_send_job_failure e))
       | _, status ->
           raise (Worker_failed_to_send_job (Worker_already_exited status))
   in
   (* And returned the 'handle'. *)
-  ref (Processing ephemeral_worker)
+  w
 
 
 (**************************************************************************
@@ -294,28 +258,22 @@ let call w (type a) (type b) (f : a -> b) (x : a) : b handle =
  *
  **************************************************************************)
 
-let is_oom_failure msg =
-  (String_utils.string_starts_with msg "Subprocess") &&
-  (String_utils.is_substring "signaled -7" msg)
-
-let get_result d =
-  match !d with
-  | Cached x -> x
-  | Failed exn -> raise exn
-  | Processing s ->
-      try
-        let res = s.result () in
-        s.worker.busy <- false;
-        d := Cached res;
-        res
-      with
-      | Failure (msg) when is_oom_failure msg ->
-          raise Worker_oomed
-      | exn ->
-          s.worker.busy <- false;
-          d := Failed exn;
-          raise exn
-
+let get_result w =
+  w.busy <- false;
+  match Marshal.from_channel w.ic with
+  | Response.Success { result; stats } ->
+    Measure.merge ~from:(Measure.deserialize stats) ();
+    result
+  | Response.Failure { exn; backtrace } ->
+    raise (Worker_exception (exn, backtrace))
+  | exception exn ->
+    let backtrace = Printexc.get_raw_backtrace () in
+    match Unix.waitpid [Unix.WNOHANG] w.pid with
+    | 0, _ -> Printexc.raise_with_backtrace exn backtrace
+    | _, Unix.WEXITED i when i = Exit_status.(exit_code Out_of_shared_memory) ->
+        raise SharedMemory.Out_of_shared_memory
+    | _, exit_status ->
+        raise (Worker_exited_abnormally (w.pid, exit_status))
 
 (*****************************************************************************
  * Our polling primitive on workers
@@ -328,36 +286,25 @@ type 'a selected = {
   waiters: 'a handle list;
 }
 
-let get_processing ds =
-  List.rev_filter_map
-    ds
-    ~f:(fun d -> match !d with Processing p -> Some p | _ -> None)
-
-let select ds =
-  let processing = get_processing ds in
-  let fds = List.map ~f:(fun {infd; _} -> infd) processing in
+let select ws =
+  let fds = List.map ~f:(fun w -> w.infd) ws in
   let ready_fds, _, _ =
-    if fds = [] || List.length processing <> List.length ds then
+    if fds = [] then
       [], [], []
     else
-      Unix.select fds [] [] ~-.1. in
-  List.fold_right
-    ~f:(fun d { readys ; waiters } ->
-        match !d with
-        | Cached _ | Failed _ ->
-            { readys = d :: readys ; waiters }
-        | Processing s when List.mem ready_fds s.infd ->
-            { readys = d :: readys ; waiters }
-        | Processing _ ->
-            { readys ; waiters = d :: waiters})
-    ~init:{ readys = [] ; waiters = [] }
-    ds
+      Unix.select fds [] [] ~-.1.
+  in
+  let rec loop readys waiters = function
+    | [] -> { readys; waiters }
+    | w :: ws ->
+      if List.mem ~equal:(=) ready_fds w.infd then
+        loop (w :: readys) waiters ws
+      else
+        loop readys (w :: waiters) ws
+  in
+  loop [] [] ws
 
-let get_worker h =
-  match !h with
-  | Processing {worker; _} -> worker
-  | Cached _
-  | Failed _ -> invalid_arg "Worker.get_worker"
+let get_worker w = w
 
 (**************************************************************************
  * Worker termination
@@ -366,7 +313,14 @@ let get_worker h =
 let kill w =
   if not w.killed then begin
     w.killed <- true;
-    Daemon.kill_and_wait w.handle
+    close_in w.ic;
+    close_out w.oc;
+    Unix.kill w.pid Sys.sigkill;
+    let rec waitpid () =
+      try ignore (Unix.waitpid [] w.pid)
+      with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid ()
+    in
+    waitpid ()
   end
 
 let exception_backtrace = function
