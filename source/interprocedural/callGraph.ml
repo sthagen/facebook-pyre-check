@@ -1784,6 +1784,15 @@ let redirect_special_calls ~pyre_in_context call =
       PyrePysaApi.InContext.redirect_special_calls pyre_in_context call
 
 
+let redirect_expressions ~pyre_in_context = function
+  (* TODO(T101303314): Support rewriting Subscript nodes to __getitem__ once we have them in the
+     AST. *)
+  | Expression.Call call ->
+      let call = redirect_special_calls ~pyre_in_context call in
+      Expression.Call call
+  | expression -> expression
+
+
 let redirect_assignments = function
   | {
       Node.value =
@@ -1801,7 +1810,7 @@ let redirect_assignments = function
                               (Name.Attribute { base; attribute = "__getitem__"; special = true });
                           _;
                         };
-                      arguments = [key_argument];
+                      arguments = [{ Call.Argument.value = index; name = None }];
                     };
                 _;
               };
@@ -1813,6 +1822,7 @@ let redirect_assignments = function
       (* TODO(T187636576): For now, we translate assignments such as `d[a] = b` into
          `d.__setitem__(a, b)`. Unfortunately, this won't work for multi-target assignments such as
          `x, y[a], z = w`. In the future, we should implement proper logic to handle those. *)
+      let index_argument = { Call.Argument.value = index; name = None } in
       let value_argument = { Call.Argument.value = value_expression; name = None } in
       {
         Node.location;
@@ -1829,7 +1839,7 @@ let redirect_assignments = function
                           Name (Name.Attribute { base; attribute = "__setitem__"; special = true });
                         location;
                       };
-                    arguments = [key_argument; value_argument];
+                    arguments = [index_argument; value_argument];
                   };
             };
       }
@@ -2535,10 +2545,10 @@ struct
             | Some existing_callees ->
                 UnprocessedLocationCallees.add existing_callees ~expression_identifier ~callees)
       in
+      let value = redirect_expressions ~pyre_in_context value in
       let () =
         match value with
         | Expression.Call call ->
-            let call = redirect_special_calls ~pyre_in_context call in
             resolve_callees ~pyre_in_context ~override_graph ~call_indexer ~call
             |> add_unknown_callee ~expression
             |> ExpressionCallees.from_call
