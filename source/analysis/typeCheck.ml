@@ -4173,12 +4173,8 @@ module State (Context : Context) = struct
           in
           annotation_errors, is_final, Option.map final_annotation ~f:unwrap_type_qualifiers
     in
-    (* TODO: T101298692 don't substitute ellipsis for missing RHS of assignment *)
-    let value =
-      Option.value value ~default:(Node.create ~location (Expression.Constant Ellipsis))
-    in
-    match Node.value target with
-    | Expression.Name (Name.Identifier _)
+    match Node.value target, value with
+    | Expression.Name (Name.Identifier _), Some value
       when delocalize target
            |> Expression.show
            |> GlobalResolution.get_type_alias global_resolution
@@ -4251,10 +4247,13 @@ module State (Context : Context) = struct
     | _ ->
         (* Processing actual value assignments. *)
         let resolution, errors, resolved_value =
-          let { Resolved.resolution; errors = new_errors; resolved; _ } =
-            forward_expression ~resolution value
-          in
-          resolution, List.append new_errors errors, resolved
+          match value with
+          | Some value ->
+              let { Resolved.resolution; errors = new_errors; resolved; _ } =
+                forward_expression ~resolution value
+              in
+              resolution, List.append new_errors errors, resolved
+          | None -> resolution, errors, Type.Any
         in
         let guide =
           (* This is the annotation determining how we recursively break up the assignment. *)
@@ -4730,10 +4729,10 @@ module State (Context : Context) = struct
                   let insufficiently_annotated, thrown_at_source =
                     let is_reassignment =
                       (* Special-casing re-use of typed parameters as attributes *)
-                      match name, Node.value value with
+                      match name, value with
                       | ( Name.Attribute
                             { base = { Node.value = Name (Name.Identifier self); _ }; attribute; _ },
-                          Name _ )
+                          Some ({ Node.value = Name _; _ } as value) )
                         when String.equal (Identifier.sanitized self) "self" ->
                           let sanitized =
                             Ast.Transform.sanitize_expression value |> Expression.show
@@ -5331,7 +5330,7 @@ module State (Context : Context) = struct
                 resolution, errors
         in
         let resolution, errors =
-          forward_assign ~resolution ~errors ~target ~guide ~resolved_value (Some value)
+          forward_assign ~resolution ~errors ~target ~guide ~resolved_value value
         in
         Value resolution, errors
 
@@ -5549,9 +5548,85 @@ module State (Context : Context) = struct
           List.fold undefined_imports ~init:[] ~f:(fun errors undefined_import ->
               emit_error ~errors ~location ~kind:(Error.UndefinedImport undefined_import)) )
     | Class class_statement ->
+        let class_name = Reference.show class_statement.name in
+        let is_class_frozen = Class.is_frozen class_statement in
+
         (* Check that variance isn't widened on inheritence. Don't check for other errors. Nested
            classes and functions are analyzed separately. *)
         let check_base errors base =
+          let base_class_summary =
+            GlobalResolution.get_class_summary global_resolution (Expression.show base)
+          in
+          let find_frozen arguments =
+            let rec helper = function
+              | [] -> false
+              | {
+                  Call.Argument.name = Some { Node.value = argument_name; _ };
+                  value = { Node.value; _ };
+                }
+                :: _
+                when String.equal (Identifier.sanitized argument_name) "frozen" -> begin
+                  match value with
+                  | Expression.Constant True -> true
+                  | _ -> false
+                end
+              | _ :: rest -> helper rest
+            in
+            helper arguments
+          in
+          (*TODO T178998636: Generalize this by brining in the logic from attributeResolution to
+            reason about dataclass transforms *)
+          let frozen_arg_value =
+            match base_class_summary with
+            | Some summary ->
+                let decorator_option =
+                  GlobalResolution.first_matching_class_decorator
+                    ~names:["dataclasses.dataclass"; "dataclass"]
+                    global_resolution
+                    summary
+                in
+                begin
+                  match decorator_option with
+                  | Some decorator -> begin
+                      match decorator with
+                      | { Decorator.arguments = Some arguments; _ } -> Some (find_frozen arguments)
+                      | _ -> None
+                    end
+                  | None -> None
+                end
+            | None -> None
+          in
+          let errors =
+            begin
+              match is_class_frozen, frozen_arg_value with
+              | Some is_class_frozen, Some frozen_arg_value ->
+                  if is_class_frozen && not frozen_arg_value then
+                    emit_error
+                      ~errors
+                      ~location
+                      ~kind:
+                        (Error.InvalidInheritance
+                           (FrozenDataclassInheritingFromNonFrozen
+                              {
+                                frozen_child = class_name;
+                                non_frozen_parent = Expression.show base;
+                              }))
+                  else if (not is_class_frozen) && frozen_arg_value then
+                    emit_error
+                      ~errors
+                      ~location
+                      ~kind:
+                        (Error.InvalidInheritance
+                           (NonFrozenDataclassInheritingFromFrozen
+                              {
+                                non_frozen_child = class_name;
+                                frozen_parent = Expression.show base;
+                              }))
+                  else
+                    errors
+              | _, _ -> errors
+            end
+          in
           let check_pair errors extended actual =
             match extended, actual with
             | ( Type.Variable { Type.Record.Variable.RecordUnary.variance = left; _ },
