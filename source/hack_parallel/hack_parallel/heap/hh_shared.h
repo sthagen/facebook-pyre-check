@@ -16,7 +16,7 @@
 /*****************************************************************************/
 /* Initializes the shared heap. */
 /* Must be called by the master BEFORE forking the workers! */
-CAMLprim value hh_shared_init(value config_val, value shm_dir_val);
+CAMLprim value hh_shared_init(value config_val);
 value hh_check_heap_overflow(void);
 /* Must be called by every worker before any operation is performed. */
 value hh_connect(value connector);
@@ -40,13 +40,6 @@ CAMLprim value hh_hash_slots(void);
  * after hh_shared_init. Wraps around at the maximum value of an ocaml int.
  */
 CAMLprim value hh_counter_next(void);
-
-/*****************************************************************************/
-/* Global storage. */
-/*****************************************************************************/
-void hh_shared_store(value data);
-CAMLprim value hh_shared_load(void);
-void hh_shared_clear(void);
 
 /*****************************************************************************/
 /* Garbage collection. */
