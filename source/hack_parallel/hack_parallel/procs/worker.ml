@@ -49,6 +49,16 @@ exception Worker_failed_to_send_job of send_job_failure
 let max_workers = 1000
 
 
+let () =
+  let print_status () = function
+    | Unix.WEXITED code -> Printf.sprintf "exited with return code %d" code
+    | Unix.WSIGNALED signal -> Printf.sprintf "was killed with signal %d" signal
+    | Unix.WSTOPPED signal -> Printf.sprintf "was stopped with signal %d" signal
+  in
+  Printexc.register_printer (function
+    | Worker_exited_abnormally (pid, status) ->
+      Some (Printf.sprintf "Worker exited abnormally. Process %d %a" pid print_status status)
+    | _ -> None)
 
 (*****************************************************************************
  * The job executed by the worker.
@@ -158,15 +168,14 @@ let fork_handler ic oc =
     | Unix.WEXITED 1 ->
         raise End_of_file
     | Unix.WEXITED code ->
-        Printf.printf "Worker exited (code: %d)\n" code;
-        flush stdout;
+        Printf.eprintf "Worker exited (code: %d)\n" code;
         Stdlib.exit code
     | Unix.WSIGNALED x ->
         let sig_str = PrintSignal.string_of_signal x in
-        Printf.printf "Worker interrupted with signal: %s\n" sig_str;
+        Printf.eprintf "Worker interrupted with signal: %s\n" sig_str;
         exit 2
     | Unix.WSTOPPED x ->
-        Printf.printf "Worker stopped with signal: %d\n" x;
+        Printf.eprintf "Worker stopped with signal: %d\n" x;
         exit 3
 
 let worker_loop handler infd outfd =
@@ -325,14 +334,14 @@ let get_worker w = w
 let kill w =
   if not w.killed then begin
     w.killed <- true;
-    close_in w.ic;
-    close_out w.oc;
-    Unix.kill w.pid Sys.sigkill;
+    close_in_noerr w.ic;
+    close_out_noerr w.oc;
     let rec waitpid () =
       try ignore (Unix.waitpid [] w.pid)
       with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid ()
     in
-    waitpid ()
+    try Unix.kill w.pid Sys.sigkill; waitpid ()
+    with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
   end
 
 let exception_backtrace = function

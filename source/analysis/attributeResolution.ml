@@ -1963,51 +1963,82 @@ module ClassDecorators = struct
           let is_class_var attribute =
             match Node.value attribute with
             | {
-             Attribute.kind =
-               Attribute.Simple
-                 {
-                   annotation =
-                     Some
-                       {
-                         Node.value =
-                           Expression.Call
-                             {
-                               callee =
-                                 {
-                                   value =
-                                     Name
-                                       (Name.Attribute
-                                         {
-                                           attribute = "__getitem__";
-                                           base =
-                                             {
-                                               Node.value =
-                                                 Name
-                                                   (Name.Attribute
-                                                     {
-                                                       attribute = "ClassVar";
-                                                       base =
-                                                         {
-                                                           Node.value =
-                                                             Name (Name.Identifier "typing");
-                                                           _;
-                                                         };
-                                                       _;
-                                                     });
-                                               _;
-                                             };
-                                           _;
-                                         });
-                                   _;
-                                 };
-                               arguments = [_];
-                             };
-                         _;
-                       };
-                   _;
-                 };
-             _;
-            } ->
+                Attribute.kind =
+                  Attribute.Simple
+                    {
+                      annotation =
+                        Some
+                          {
+                            Node.value =
+                              Expression.Call
+                                {
+                                  callee =
+                                    {
+                                      value =
+                                        Name
+                                          (Name.Attribute
+                                            {
+                                              attribute = "__getitem__";
+                                              base =
+                                                {
+                                                  Node.value =
+                                                    Name
+                                                      (Name.Attribute
+                                                        {
+                                                          attribute = "ClassVar";
+                                                          base =
+                                                            {
+                                                              Node.value =
+                                                                Name (Name.Identifier "typing");
+                                                              _;
+                                                            };
+                                                          _;
+                                                        });
+                                                  _;
+                                                };
+                                              _;
+                                            });
+                                      _;
+                                    };
+                                  arguments = [_];
+                                };
+                            _;
+                          };
+                      _;
+                    };
+                _;
+              }
+            | {
+                Attribute.kind =
+                  Attribute.Simple
+                    {
+                      annotation =
+                        Some
+                          {
+                            Node.value =
+                              Expression.Subscript
+                                {
+                                  base =
+                                    {
+                                      Node.value =
+                                        Name
+                                          (Name.Attribute
+                                            {
+                                              attribute = "ClassVar";
+                                              base =
+                                                { Node.value = Name (Name.Identifier "typing"); _ };
+                                              _;
+                                            });
+                                      _;
+                                    };
+                                  _;
+                                };
+                            _;
+                          };
+                      _;
+                    };
+                _;
+              } ->
                 false
             | _ -> true
           in
@@ -4132,26 +4163,30 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               Some class_type
             else
               None
-        | {
-            Node.value =
-              Call
-                {
-                  callee =
-                    {
-                      value =
-                        Name
-                          (Name.Attribute
-                            {
-                              base = { Node.value = Name generic_name; _ };
-                              attribute = "__getitem__";
-                              special = true;
-                            });
-                      _;
-                    };
-                  _;
-                };
-            _;
-          } as annotation
+        (* TODO(T101303314) Eliminate this __getitem__ call case once the parser is cut over to
+           always producing Subscript nodes. *)
+        | ({
+             Node.value =
+               Call
+                 {
+                   callee =
+                     {
+                       value =
+                         Name
+                           (Name.Attribute
+                             {
+                               base = { Node.value = Name generic_name; _ };
+                               attribute = "__getitem__";
+                               special = true;
+                             });
+                       _;
+                     };
+                   _;
+                 };
+             _;
+           } as annotation)
+        | ({ Node.value = Subscript { base = { Node.value = Name generic_name; _ }; _ }; _ } as
+          annotation)
           when is_simple_name generic_name ->
             let class_type = self#parse_annotation ~assumptions annotation in
             if is_concrete_class class_type >>| not |> Option.value ~default:false then
@@ -4187,6 +4222,8 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               (self#resolve_literal ~assumptions right)
           in
           if Type.is_concrete annotation then annotation else Type.Any
+      (* TODO(T101303314) Eliminate this __getitem__ call case once the parser is cut over to always
+         producing Subscript nodes. *)
       | Call { callee; _ } -> (
           match fully_specified_type expression with
           | Some annotation ->
@@ -4196,6 +4233,15 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               (* Constructor on concrete class or fully specified generic,
                * e.g. global = GenericClass[int](x, y) or global = ConcreteClass(x) *)
               Option.value (fully_specified_type callee) ~default:Type.Any)
+      | Subscript { base; _ } -> (
+          match fully_specified_type expression with
+          | Some annotation ->
+              (* Literal generic type, e.g. global = List[int] *)
+              Type.meta annotation
+          | None ->
+              (* Constructor on concrete class or fully specified generic,
+               * e.g. global = GenericClass[int](x, y) or global = ConcreteClass(x) *)
+              Option.value (fully_specified_type base) ~default:Type.Any)
       | Constant Constant.NoneLiteral -> Type.Any
       | Constant (Constant.Complex _) -> Type.complex
       | Constant (Constant.False | Constant.True) -> Type.bool

@@ -2439,6 +2439,7 @@ let is_simple_name name = Option.is_some (name_to_identifiers name)
 let rec get_identifier_base expression =
   match Node.value expression with
   | Call { Call.callee; _ } -> get_identifier_base callee
+  | Subscript { Subscript.base; _ } -> get_identifier_base base
   | Name (Name.Attribute { Name.Attribute.base; _ }) -> get_identifier_base base
   | Name (Name.Identifier identifier) -> Some identifier
   | _ -> None
@@ -2653,6 +2654,16 @@ let get_item_call base arguments ~location =
         };
       arguments;
     }
+
+
+let subscript base indices ~location =
+  let create_name name = Name (create_name ~location name) in
+  let index =
+    match indices with
+    | [index] -> index
+    | multiple_indices -> Tuple multiple_indices |> Node.create_with_default_location
+  in
+  Subscript { Subscript.base = { Node.location; value = create_name base }; index }
 
 
 let is_dunder_attribute attribute_name =
