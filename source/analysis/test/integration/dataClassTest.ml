@@ -2146,6 +2146,18 @@ let test_check_dataclasses =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
            {|
+            from dataclasses import dataclass
+            from typing import assert_type, ClassVar, Final
+
+            @dataclass
+            class D:
+                final_classvar: ClassVar[Final[int]] = 4
+            D.final_classvar = 10
+         |}
+           ["Invalid assignment [41]: Cannot reassign final attribute `D.final_classvar`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
            from dataclasses import dataclass
            @dataclass
            class Foo():

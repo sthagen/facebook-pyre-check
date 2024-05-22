@@ -4202,10 +4202,12 @@ let contains_literal annotation =
   exists annotation ~predicate
 
 
-let final_value = function
+let rec final_value = function
   | Parametric
       { name = "typing.Final" | "typing_extensions.Final"; parameters = [Single parameter] } ->
       `Ok parameter
+  | Parametric { name = "typing.ClassVar"; parameters = [Single parameter] } ->
+      final_value parameter
   | Primitive ("typing.Final" | "typing_extensions.Final") -> `NoParameter
   | _ -> `NotFinal
 
@@ -4443,6 +4445,12 @@ let class_variable annotation = parametric "typing.ClassVar" [Single annotation]
 let class_variable_value = function
   | Parametric { name = "typing.ClassVar"; parameters = [Single parameter] } -> Some parameter
   | _ -> None
+
+
+let is_class_variable annotation =
+  match class_variable_value annotation with
+  | Some _ -> true
+  | None -> false
 
 
 (* Angelic assumption: Any occurrences of top indicate that we're dealing with Any instead of None.
