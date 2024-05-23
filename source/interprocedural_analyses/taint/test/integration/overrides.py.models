@@ -1230,24 +1230,11 @@
               {
                 "return_paths": { "[r]": 3 },
                 "length": 1,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [ { "line": 32, "start": 35, "end": 38 } ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "local_features": [ { "via": "tito" } ],
-            "tito_positions": [ { "line": 32, "start": 8, "end": 25 } ],
             "tito": null
           }
         ]
@@ -1336,24 +1323,11 @@
               {
                 "return_paths": { "[r]": 3 },
                 "length": 1,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [ { "line": 42, "start": 35, "end": 38 } ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "local_features": [ { "via": "tito" } ],
-            "tito_positions": [ { "line": 42, "start": 8, "end": 25 } ],
             "tito": null
           }
         ]
@@ -1439,18 +1413,10 @@
         "taint": [
           {
             "kinds": [
-              { "return_paths": { "[r]": 3 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
+              {
+                "return_paths": { "[r]": 3 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
             ],
             "tito": null
           }
@@ -1488,24 +1454,11 @@
               {
                 "return_paths": { "[r]": 3 },
                 "length": 2,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [ { "line": 56, "start": 32, "end": 35 } ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "local_features": [ { "via": "tito" } ],
-            "tito_positions": [ { "line": 56, "start": 8, "end": 22 } ],
             "tito": null
           }
         ]
@@ -1528,24 +1481,11 @@
               {
                 "return_paths": { "[r]": 3 },
                 "length": 3,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [ { "line": 68, "start": 32, "end": 35 } ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "local_features": [ { "via": "tito" } ],
-            "tito_positions": [ { "line": 68, "start": 8, "end": 22 } ],
             "tito": null
           }
         ]

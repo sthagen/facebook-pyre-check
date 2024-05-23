@@ -1499,27 +1499,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "private_variables.PrivateAttributeSinkModels.__init__",
-    "filename": "private_variables.py",
-    "callable_line": 116,
-    "tito": [
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "private_variables.PrivateAttributeSinkModels.set_model_mangled",
     "filename": "private_variables.py",
     "callable_line": 122,
@@ -1619,27 +1598,6 @@
             },
             "caller_interval": [ { "lower": 4, "upper": 5 } ],
             "is_self_call": false
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "private_variables.PrivateAttributeSourceModels.__init__",
-    "filename": "private_variables.py",
-    "callable_line": 90,
-    "tito": [
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
           }
         ]
       }
@@ -1801,7 +1759,7 @@
             "kinds": [
               {
                 "return_paths": { "[value]": 3 },
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "tito": null
@@ -1815,19 +1773,8 @@
             "kinds": [
               {
                 "return_paths": { "[_Simple__value]": 3 },
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
             ],
             "tito": null
           }

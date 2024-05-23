@@ -71,19 +71,8 @@
             "kinds": [
               {
                 "return_paths": { "[tainted]": 3 },
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
             ],
             "tito": null
           }

@@ -1097,19 +1097,6 @@
           }
         ]
       }
-    ],
-    "tito": [
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
-          }
-        ]
-      }
     ]
   }
 }
@@ -1139,19 +1126,6 @@
             },
             "caller_interval": [ { "lower": 6, "upper": 7 } ],
             "is_self_call": false
-          }
-        ]
-      }
-    ],
-    "tito": [
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
           }
         ]
       }
@@ -1255,7 +1229,7 @@
             "kinds": [
               {
                 "return_paths": { "[b]": 999999 },
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "tito": null
@@ -1269,7 +1243,7 @@
             "kinds": [
               {
                 "return_paths": { "[a]": 999999 },
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "tito": null
@@ -1291,19 +1265,6 @@
         "port": "formal(self, position=0)",
         "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]
       }
-    ],
-    "tito": [
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
-          }
-        ]
-      }
     ]
   }
 }
@@ -1319,18 +1280,10 @@
         "taint": [
           {
             "kinds": [
-              { "return_paths": { "": 0 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
+              {
+                "return_paths": { "": 0 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
             ],
             "tito": null
           }
@@ -1380,24 +1333,14 @@
         "taint": [
           {
             "kinds": [
-              { "return_paths": { "[y]": 3 }, "kind": "ParameterUpdate0" }
+              {
+                "return_paths": { "[y]": 3 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
             ],
             "local_features": [
               { "always-type": "integer" }, { "always-type": "scalar" }
             ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "local_features": [ { "via": "tito" } ],
-            "tito_positions": [ { "line": 85, "start": 8, "end": 15 } ],
             "tito": null
           }
         ]
@@ -1420,7 +1363,7 @@
               {
                 "return_paths": { "[b]": 3 },
                 "length": 1,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
@@ -1437,22 +1380,11 @@
               {
                 "return_paths": { "[a]": 3 },
                 "length": 1,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [ { "line": 151, "start": 25, "end": 26 } ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
             "tito": null
           }
         ]
@@ -1475,24 +1407,11 @@
               {
                 "return_paths": { "": 0 },
                 "length": 1,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [ { "line": 135, "start": 25, "end": 26 } ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "local_features": [ { "via": "tito" } ],
-            "tito_positions": [ { "line": 135, "start": 8, "end": 15 } ],
             "tito": null
           }
         ]
@@ -1512,7 +1431,10 @@
         "taint": [
           {
             "kinds": [
-              { "return_paths": { "": 0 }, "kind": "ParameterUpdate0" }
+              {
+                "return_paths": { "": 0 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
             ],
             "tito": null
           }
@@ -1545,27 +1467,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "constructors.ParentWithInit.__init__",
-    "filename": "constructors.py",
-    "callable_line": 50,
-    "tito": [
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "constructors.ParentWithNoConstructor.__init__",
     "filename": "constructors.py",
     "callable_line": 180,
@@ -1578,7 +1479,7 @@
               {
                 "return_paths": { "": 0 },
                 "length": 1,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [
@@ -1597,7 +1498,7 @@
               {
                 "return_paths": { "": 0 },
                 "length": 1,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [
@@ -1613,7 +1514,10 @@
         "taint": [
           {
             "kinds": [
-              { "return_paths": { "": 0 }, "kind": "ParameterUpdate0" }
+              {
+                "return_paths": { "": 0 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
             ],
             "local_features": [
               { "via": "obscure:model" }, { "via": "tito" }
@@ -1641,7 +1545,7 @@
               {
                 "return_paths": { "": 0 },
                 "length": 1,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [
@@ -1660,7 +1564,7 @@
               {
                 "return_paths": { "": 0 },
                 "length": 1,
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "local_features": [
@@ -1676,7 +1580,10 @@
         "taint": [
           {
             "kinds": [
-              { "return_paths": { "": 0 }, "kind": "ParameterUpdate0" }
+              {
+                "return_paths": { "": 0 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
             ],
             "local_features": [
               { "via": "obscure:model" }, { "via": "tito" }
@@ -1703,19 +1610,8 @@
             "kinds": [
               {
                 "return_paths": { "[foo]": 3 },
-                "kind": "NotSource[Test]@ParameterUpdate0"
+                "kind": "NotSource[Test]@ParameterUpdate[formal(self, position=0)]"
               }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
             ],
             "tito": null
           }
@@ -1744,21 +1640,7 @@
             "kinds": [
               {
                 "return_paths": { "[foo]": 3 },
-                "kind": "NotSource[Test]@ParameterUpdate0"
-              }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "": 4 },
-                "kind": "NotSource[Test]@ParameterUpdate0"
+                "kind": "NotSource[Test]@ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "tito": null
@@ -1775,19 +1657,6 @@
     "callable": "constructors.SanitizeSingleTraceSource.__init__",
     "filename": "constructors.py",
     "callable_line": 192,
-    "tito": [
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
-          }
-        ]
-      }
-    ],
     "global_sanitizer": { "sources": [ "Test" ] }
   }
 }
@@ -1805,21 +1674,7 @@
             "kinds": [
               {
                 "return_paths": { "[foo]": 3 },
-                "kind": "NotSource[Test]:NotSink[Test]@ParameterUpdate0"
-              }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "": 4 },
-                "kind": "NotSource[Test]:NotSink[Test]@ParameterUpdate0"
+                "kind": "NotSource[Test]:NotSink[Test]@ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "tito": null
@@ -1872,21 +1727,7 @@
             "kinds": [
               {
                 "return_paths": { "[foo]": 3 },
-                "kind": "NotSource[Test]@ParameterUpdate0"
-              }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "": 4 },
-                "kind": "NotSource[Test]@ParameterUpdate0"
+                "kind": "NotSource[Test]@ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "tito": null
@@ -1911,7 +1752,7 @@
             "kinds": [
               {
                 "return_paths": { "[oauth_token_secret]": 3 },
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "tito": null
@@ -1925,19 +1766,8 @@
             "kinds": [
               {
                 "return_paths": { "[oauth_token]": 3 },
-                "kind": "ParameterUpdate0"
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
             ],
             "tito": null
           }
@@ -2049,19 +1879,6 @@
             },
             "caller_interval": [ { "lower": 50, "upper": 51 } ],
             "is_self_call": false
-          }
-        ]
-      }
-    ],
-    "tito": [
-      {
-        "port": "formal(self, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": { "": 4 }, "kind": "ParameterUpdate0" }
-            ],
-            "tito": null
           }
         ]
       }
