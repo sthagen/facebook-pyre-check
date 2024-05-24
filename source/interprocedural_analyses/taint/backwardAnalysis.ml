@@ -2200,6 +2200,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let value = CallGraph.redirect_expressions ~pyre_in_context value in
     match value with
     | Await expression -> analyze_expression ~pyre_in_context ~taint ~state ~expression
+    | BinaryOperator _ -> failwith "T101299882"
     | BooleanOperator { left; operator = _; right } ->
         analyze_expression ~pyre_in_context ~taint ~state ~expression:right
         |> fun state -> analyze_expression ~pyre_in_context ~taint ~state ~expression:left
@@ -2439,6 +2440,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         { value = Some { Node.value = Expression.Constant Constant.Ellipsis; _ }; _ } ->
         state
     | Assign { value = None; _ } -> state
+    | AugmentedAssign _ -> failwith "T101299882"
     | Assign { target = { Node.location; value = target_value } as target; value = Some value; _ }
       -> (
         let target_global_model =

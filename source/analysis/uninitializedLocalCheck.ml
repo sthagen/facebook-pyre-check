@@ -64,6 +64,7 @@ module AccessCollector = struct
         | _ -> from_expression collected base)
     (* The rest is boilerplates to make sure that expressions are visited recursively *)
     | Await await -> from_expression collected await
+    | BinaryOperator { BinaryOperator.left; right; _ }
     | BooleanOperator { BooleanOperator.left; right; _ }
     | ComparisonOperator { ComparisonOperator.left; right; _ } ->
         let collected = from_expression collected left in
@@ -182,8 +183,10 @@ let extract_reads_in_statement { Node.value; _ } =
     match value with
     | Statement.Assign { Assign.value = Some expression; target; _ } ->
         expression :: extract_value_expressions_from_assignment_target target
-    | Statement.Assign { Assign.value = None; target; _ } ->
+    | Assign { Assign.value = None; target; _ } ->
         extract_value_expressions_from_assignment_target target
+    | AugmentedAssign { AugmentedAssign.value; target; _ } ->
+        value :: extract_value_expressions_from_assignment_target target
     | Expression expression
     | If { If.test = expression; _ }
     | While { While.test = expression; _ } ->

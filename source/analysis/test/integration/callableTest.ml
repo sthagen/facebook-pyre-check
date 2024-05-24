@@ -8,6 +8,119 @@
 open OUnit2
 open IntegrationTest
 
+let test_callable_parameters =
+  test_list
+    [
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(42, 42)
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(a=42, b=42)
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(b=42, a=42)
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(42, b=42)
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(42, *(42,))
+            |}
+           [];
+      (* This is a pre-existing bug, we shouldn't consume all the positional arguments if we know
+         the tuple has only 1 item *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(*(42,), 42)
+            |}
+           ["Too many arguments [19]: Call `foo` expects 2 positional arguments, 3 were provided."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(42, **{"b": 42})
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(a=42, 42)
+            |}
+           ["Parsing failure [404]: positional argument follows keyword argument"];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(**{"a": 42}, 42)
+            |}
+           ["Parsing failure [404]: positional argument follows keyword argument unpacking"];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(**{"a": 42}, *(42,))
+            |}
+           ["Parsing failure [404]: iterable argument unpacking follows keyword argument unpacking"];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, b:int) -> None:
+                pass
+              foo(a=42, a=42)
+            |}
+           ["Unexpected keyword [28]: Unexpected keyword argument `a` to call `foo`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, a:int) -> None:
+                pass
+            |}
+           ["Duplicate parameter [65]: Duplicate parameter name `a`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              def foo(a:int, a:int, b: int, b: int) -> None:
+                pass
+            |}
+           [
+             "Duplicate parameter [65]: Duplicate parameter name `a`.";
+             "Duplicate parameter [65]: Duplicate parameter name `b`.";
+           ];
+    ]
+
+
 let test_higher_order_callables =
   test_list
     [
@@ -484,5 +597,6 @@ let () =
          test_position_only_parameters;
          test_bound_method;
          test_reexported_callable;
+         test_callable_parameters;
        ]
   |> Test.run

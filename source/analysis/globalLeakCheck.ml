@@ -333,6 +333,7 @@ module State (Context : Context) = struct
             expressions
         in
         { empty_result with errors }
+    | BinaryOperator { left; right; _ }
     | BooleanOperator { left; right; _ }
     | ComparisonOperator { left; right; _ } ->
         let { errors = left_errors; _ } = forward_expression left in
@@ -496,6 +497,7 @@ module State (Context : Context) = struct
     | SetComprehension _
     | FormatString _
     | Lambda _
+    | BinaryOperator _
     | BooleanOperator _
     | ComparisonOperator _
     | Ternary _
@@ -574,6 +576,31 @@ module State (Context : Context) = struct
                   in
                   value_errors, value_reachable_globals
               | None -> [], []
+            in
+            let global_writes_to_locals =
+              append_errors_for_reachable_globals
+                ~resolution
+                ~location
+                (construct_global_write_to_local_variable target)
+                value_reachable_globals
+                []
+            in
+            value_errors, global_writes_to_locals
+          in
+          leaks_to_global_variables @ global_writes_to_locals @ value_errors @ errors
+      | AugmentedAssign { target; value; _ } ->
+          let { reachable_globals; errors } = forward_assignment_target ~resolution target in
+          let leaks_to_global_variables =
+            append_errors_for_reachable_globals
+              ~resolution
+              ~location
+              construct_write_to_global_variable_kind
+              reachable_globals
+              []
+          in
+          let value_errors, global_writes_to_locals =
+            let { errors = value_errors; reachable_globals = value_reachable_globals } =
+              forward_expression ~resolution value
             in
             let global_writes_to_locals =
               append_errors_for_reachable_globals

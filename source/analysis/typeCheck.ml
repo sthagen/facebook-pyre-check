@@ -1896,6 +1896,11 @@ module State (Context : Context) = struct
                 in
                 { resolution; resolved = Type.Any; errors; resolved_annotation = None; base = None }
             ))
+    | BinaryOperator operator ->
+        let resolved =
+          forward_expression ~resolution (BinaryOperator.override ~location operator)
+        in
+        { resolved with errors = resolved.errors }
     | BooleanOperator { BooleanOperator.left; operator; right } -> (
         let {
           Resolved.resolution = resolution_left;
@@ -5394,6 +5399,8 @@ module State (Context : Context) = struct
     match value with
     | Statement.Assign { Assign.target; annotation; value } ->
         forward_assignment ~resolution ~location ~target ~annotation ~value
+    | AugmentedAssign { AugmentedAssign.target; value; _ } ->
+        forward_assignment ~resolution ~location ~target ~annotation:None ~value:(Some value)
     | Assert { Assert.test; origin; message } ->
         let message_errors =
           Option.value
@@ -5472,7 +5479,8 @@ module State (Context : Context) = struct
             return_type
         in
         Value resolution, validate_return expression ~resolution ~errors ~actual ~is_implicit
-    | Define { signature = { Define.Signature.name; nesting_define; _ } as signature; _ } ->
+    | Define
+        { signature = { Define.Signature.name; nesting_define; parameters; _ } as signature; _ } ->
         let resolution =
           match nesting_define with
           | Some _ ->
@@ -5483,7 +5491,20 @@ module State (Context : Context) = struct
               |> fun annotation -> Resolution.new_local resolution ~reference:name ~annotation
           | None -> resolution
         in
-        Value resolution, []
+        let duplicate_parameters, _ =
+          List.fold
+            parameters
+            ~init:([], Identifier.Set.empty)
+            ~f:(fun (duplicates, seen) { Node.value = { Parameter.name; _ }; location } ->
+              match Set.mem seen name with
+              | true -> (name, location) :: duplicates, seen
+              | false -> duplicates, Set.add seen name)
+        in
+        let errors =
+          List.fold duplicate_parameters ~init:[] ~f:(fun errors (name, location) ->
+              emit_error ~errors ~location ~kind:(Error.DuplicateParameter name))
+        in
+        Value resolution, errors
     | Import { Import.from; imports } ->
         let get_export_kind = function
           | ResolvedReference.Exported export -> Some export

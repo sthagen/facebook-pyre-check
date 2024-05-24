@@ -466,7 +466,7 @@ module Qualify (Context : QualifyContext) = struct
     =
     let scope, value =
       let local_alias ~qualifier ~name = { name; qualifier } in
-      let qualify_assign { Assign.target; annotation; value } =
+      let qualify_assign ~target ~annotation ~value =
         let qualify_value ~qualify_potential_alias_strings ~scope value =
           match value with
           | { Node.value = Expression.Constant (Constant.String _); _ } ->
@@ -605,7 +605,7 @@ module Qualify (Context : QualifyContext) = struct
           in
           value >>| qualify_value ~scope:target_scope ~qualify_potential_alias_strings
         in
-        target_scope, { Assign.target; annotation = qualified_annotation; value = qualified_value }
+        target_scope, target, qualified_annotation, qualified_value
       in
       let qualify_define
           ({ qualifier; _ } as original_scope)
@@ -735,9 +735,15 @@ module Qualify (Context : QualifyContext) = struct
         }
       in
       match value with
-      | Statement.Assign assign ->
-          let scope, assign = qualify_assign assign in
-          scope, Statement.Assign assign
+      | Statement.Assign { Assign.target; annotation; value } ->
+          let scope, target, annotation, value = qualify_assign ~target ~annotation ~value in
+          scope, Statement.Assign { Assign.target; annotation; value }
+      | AugmentedAssign { AugmentedAssign.target; operator; value } ->
+          let scope, target, _, value =
+            qualify_assign ~target ~annotation:None ~value:(Some value)
+          in
+          let value = Option.value_exn value in
+          scope, Statement.AugmentedAssign { AugmentedAssign.target; operator; value }
       | Assert { Assert.test; message; origin } ->
           ( scope,
             Assert
@@ -1052,6 +1058,13 @@ module Qualify (Context : QualifyContext) = struct
       match value with
       | Expression.Await expression ->
           Expression.Await (qualify_expression ~qualify_strings ~scope expression)
+      | BinaryOperator { BinaryOperator.left; operator; right } ->
+          BinaryOperator
+            {
+              BinaryOperator.left = qualify_expression ~qualify_strings ~scope left;
+              operator;
+              right = qualify_expression ~qualify_strings ~scope right;
+            }
       | BooleanOperator { BooleanOperator.left; operator; right } ->
           BooleanOperator
             {
@@ -3038,6 +3051,7 @@ module AccessCollector = struct
         from_expression collected base
     (* The rest is boilerplates to make sure that expressions are visited recursively *)
     | Await await -> from_expression collected await
+    | BinaryOperator { BinaryOperator.left; right; _ }
     | BooleanOperator { BooleanOperator.left; right; _ }
     | ComparisonOperator { ComparisonOperator.left; right; _ } ->
         let collected = from_expression collected left in
@@ -3137,6 +3151,9 @@ module AccessCollector = struct
         let collected = from_expression collected target in
         let collected = from_optional_expression collected annotation in
         from_optional_expression collected value
+    | Statement.AugmentedAssign { AugmentedAssign.target; value; _ } ->
+        let collected = from_expression collected target in
+        from_expression collected value
     | Assert { Assert.test; message; _ } ->
         let collected = from_expression collected test in
         Option.value_map message ~f:(from_expression collected) ~default:collected

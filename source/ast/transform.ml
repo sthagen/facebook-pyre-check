@@ -116,6 +116,13 @@ module Make (Transformer : Transformer) = struct
         let open Expression in
         match value with
         | Await expression -> Expression.Await (transform_expression expression)
+        | BinaryOperator { BinaryOperator.left; operator; right } ->
+            BinaryOperator
+              {
+                BinaryOperator.left = transform_expression left;
+                operator;
+                right = transform_expression right;
+              }
         | BooleanOperator { BooleanOperator.left; operator; right } ->
             BooleanOperator
               {
@@ -247,6 +254,13 @@ module Make (Transformer : Transformer) = struct
                 Assert.test = transform_expression test;
                 message = message >>| transform_expression;
                 origin;
+              }
+        | AugmentedAssign { AugmentedAssign.target; operator; value } ->
+            Statement.AugmentedAssign
+              {
+                AugmentedAssign.target = transform_expression target;
+                operator;
+                value = transform_expression value;
               }
         | Break -> value
         | Class { Class.name; base_arguments; body; decorators; top_level_unbound_names } ->
@@ -452,6 +466,7 @@ module MakeStatementTransformer (Transformer : StatementTransformer) = struct
         match value with
         | Assign _
         | Assert _
+        | AugmentedAssign _
         | Break
         | Continue
         | Delete _

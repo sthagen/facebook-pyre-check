@@ -83,6 +83,7 @@ module Binding = struct
     | Expression.Yield (Some expression) ->
         of_expression sofar expression
     | Expression.YieldFrom expression -> of_expression sofar expression
+    | Expression.BinaryOperator { BinaryOperator.left; right; _ }
     | Expression.BooleanOperator { BooleanOperator.left; right; _ }
     | Expression.ComparisonOperator { ComparisonOperator.left; right; _ } ->
         let sofar = of_expression sofar left in
@@ -177,6 +178,9 @@ module Binding = struct
         { name; kind = Kind.AssignTarget (Some annotation); location } :: sofar
     | Statement.Assign { Assign.target; value; _ } ->
         let sofar = of_optional_expression sofar value in
+        of_unannotated_target ~kind:(Kind.AssignTarget None) sofar target
+    | Statement.AugmentedAssign { AugmentedAssign.target; value; _ } ->
+        let sofar = of_expression sofar value in
         of_unannotated_target ~kind:(Kind.AssignTarget None) sofar target
     | Statement.Class { Class.name; base_arguments; decorators; _ } ->
         let sofar = List.fold ~init:sofar ~f:of_expression decorators in
@@ -353,6 +357,7 @@ let rec globals_of_statement sofar { Node.value; _ } =
   | With { With.body; _ } -> globals_of_statements sofar body
   | Assign _
   | Assert _
+  | AugmentedAssign _
   | Break
   | Class _
   | Continue
@@ -394,6 +399,7 @@ let rec nonlocals_of_statement sofar { Node.value; _ } =
   | With { With.body; _ } -> nonlocals_of_statements sofar body
   | Assign _
   | Assert _
+  | AugmentedAssign _
   | Break
   | Class _
   | Continue
