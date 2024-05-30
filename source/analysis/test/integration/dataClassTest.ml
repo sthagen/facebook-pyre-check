@@ -2594,6 +2594,53 @@ let test_check_dataclasses =
              "Invalid inheritance [39]: Non-frozen dataclass `C` cannot inherit from frozen \
               dataclass `A`.";
            ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from typing import dataclass_transform
+
+            @dataclass_transform(frozen_default=False)
+            class Bar:
+                def __init_subclass__(
+                    cls,
+                    *,
+                    init: bool = True,
+                    frozen: bool = False,
+                ) -> None: ...
+
+            class Foo(Bar, frozen=False):
+                pass
+
+            class Baz(Foo, frozen=True):
+                pass
+         |}
+           [
+             "Invalid inheritance [39]: Frozen dataclass `Baz` cannot inherit from non-frozen \
+              dataclass `Foo`.";
+           ];
+      (* TODO T179013702: why is the following testcase emitting in a type error? in matcher:
+         Callable[[str], bool] = dataclasses.field(), matcher is a BoundMethod. If we remove the
+         dataclasses.field() assignment, matcher becomes a Callable and the typechecker succeeds.
+         Why is this? *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from typing import Callable
+            import dataclasses
+            @dataclasses.dataclass(frozen=False)
+            class C:
+                matcher: Callable[[str], bool] = dataclasses.field()
+                def matches(self) -> bool:
+                    reveal_type(self.matcher)
+                    return self.matcher("test")
+
+         |}
+           [
+             "Revealed type [-1]: Revealed type for `self.matcher` is \
+              `BoundMethod[typing.Callable[[str], bool], C]`.";
+             "Too many arguments [19]: PositionalOnly call expects 0 positional arguments, 1 was \
+              provided.";
+           ];
     ]
 
 

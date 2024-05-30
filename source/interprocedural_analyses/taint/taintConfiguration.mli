@@ -42,20 +42,23 @@ module ModelConstraints : sig
   val default : t
 end
 
-(* A map from partial sink kinds to the related labels *)
+(* A map from partial sink kinds to each multi-source rule's two partial sink labels. *)
 module PartialSinkLabelsMap : sig
-  type labels = {
-    main: string;
-    secondary: string;
-  }
+  type label = string
 
   type t
 
-  val find_opt : string -> t -> labels option
+  type label_registration_result =
+    | Yes
+    | PartialSinkNotRegistered
+    | LabelNotRegistered of
+        Data_structures.SerializableStringSet.t (* The set of registered labels *)
 
-  val of_alist_exn : (string * labels) list -> t
+  val is_label_registered : partial_sink:string -> label:string -> t -> label_registration_result
 
-  val to_alist : t -> (string * labels) list
+  val of_alist_exn : (string * (label * label) list) list -> t
+
+  val to_alist : t -> (string * (label * label) list) list
 end
 
 module PartialSinkConverter : sig
@@ -91,6 +94,8 @@ module Heap : sig
     string_combine_partial_sinks: StringOperationPartialSinks.t;
     find_missing_flows: Configuration.MissingFlowKind.t option;
     dump_model_query_results_path: PyrePath.t option;
+    infer_self_tito: bool;
+    infer_argument_tito: bool;
     analysis_model_constraints: ModelConstraints.t;
     source_sink_filter: SourceSinkFilter.t;
   }
@@ -136,11 +141,10 @@ module Error : sig
     | UnsupportedSink of string
     | UnsupportedTransform of string
     | UnexpectedCombinedSourceRule of JsonParsing.JsonAst.Json.t
-    | PartialSinkDuplicate of string
     | InvalidLabelMultiSink of {
         label: string;
         sink: string;
-        labels: string list;
+        labels: Data_structures.SerializableStringSet.t;
       }
     | InvalidMultiSink of string
     | RuleCodeDuplicate of {
@@ -199,6 +203,8 @@ val with_command_line_options
   transform_filter:string list option ->
   find_missing_flows:Configuration.MissingFlowKind.t option ->
   dump_model_query_results_path:PyrePath.t option ->
+  infer_self_tito:bool ->
+  infer_argument_tito:bool ->
   maximum_model_source_tree_width:int option ->
   maximum_model_sink_tree_width:int option ->
   maximum_model_tito_tree_width:int option ->

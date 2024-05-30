@@ -2,6 +2,160 @@
 {
   "kind": "issue",
   "data": {
+    "callable": "builder_pattern.test_class_setter",
+    "callable_line": 77,
+    "code": 5002,
+    "line": 81,
+    "start": 15,
+    "end": 29,
+    "filename": "builder_pattern.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [
+                  { "name": "_test_source", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "has": "first-field" },
+              { "first-field": "_saved" },
+              { "always-via": "tito" }
+            ],
+            "tito_positions": [ { "line": 79, "start": 32, "end": 46 } ],
+            "origin": {
+              "filename": "builder_pattern.py",
+              "line": 79,
+              "start": 32,
+              "end": 46
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "kind": "Test"
+              }
+            ],
+            "origin": {
+              "filename": "builder_pattern.py",
+              "line": 81,
+              "start": 15,
+              "end": 29
+            }
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "has": "first-field" },
+      { "first-field": "_saved" },
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 1,
+      "parameter": "formal(arg)"
+    },
+    "master_handle": "builder_pattern.test_class_setter:5002:0:Call|_test_sink|1|formal(arg):0dd0f029511085f1c04533692b4c0f0e"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "builder_pattern.test_class_setter",
+    "callable_line": 77,
+    "code": 5002,
+    "line": 80,
+    "start": 15,
+    "end": 22,
+    "filename": "builder_pattern.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [
+                  { "name": "_test_source", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-via": "tito" },
+              { "always-via": "broadening" },
+              { "always-via": "issue-broadening" }
+            ],
+            "tito_positions": [ { "line": 79, "start": 32, "end": 46 } ],
+            "origin": {
+              "filename": "builder_pattern.py",
+              "line": 79,
+              "start": 32,
+              "end": 46
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "kind": "Test"
+              }
+            ],
+            "origin": {
+              "filename": "builder_pattern.py",
+              "line": 80,
+              "start": 15,
+              "end": 22
+            }
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" },
+      { "always-via": "tito" },
+      { "always-via": "broadening" },
+      { "always-via": "issue-broadening" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle": "builder_pattern.test_class_setter:5002:0:Call|_test_sink|0|formal(arg):1a9ecd110ff9fa19c23c63b1a058cc07"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
     "callable": "builder_pattern.test_issue",
     "callable_line": 49,
     "code": 5002,
@@ -81,9 +235,9 @@
   "kind": "issue",
   "data": {
     "callable": "builder_pattern.test_issue_with_sub_builder",
-    "callable_line": 109,
+    "callable_line": 107,
     "code": 5002,
-    "line": 111,
+    "line": 109,
     "start": 4,
     "end": 5,
     "filename": "builder_pattern.py",
@@ -103,10 +257,10 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 112, "start": 8, "end": 22 } ],
+            "tito_positions": [ { "line": 110, "start": 8, "end": 22 } ],
             "origin": {
               "filename": "builder_pattern.py",
-              "line": 112,
+              "line": 110,
               "start": 8,
               "end": 22
             }
@@ -128,7 +282,7 @@
             "call": {
               "position": {
                 "filename": "builder_pattern.py",
-                "line": 111,
+                "line": 109,
                 "start": 4,
                 "end": 4
               },
@@ -236,76 +390,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Obj{ClassWithSinkAttribute.attribute}",
-    "sinks": [
-      {
-        "port": "formal($global, position=0)",
-        "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "Obj{taint._global_sink}",
-    "sinks": [
-      {
-        "port": "formal($global, position=0)",
-        "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "_cookies",
-    "sources": [
-      {
-        "port": "result",
-        "taint": [
-          { "kinds": [ { "kind": "Cookies" } ], "declaration": null }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "_rce",
-    "sinks": [
-      {
-        "port": "formal(argument, position=0)",
-        "taint": [
-          {
-            "kinds": [ { "kind": "RemoteCodeExecution" } ],
-            "declaration": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "_sql",
-    "sinks": [
-      {
-        "port": "formal(argument, position=0)",
-        "taint": [ { "kinds": [ { "kind": "SQL" } ], "declaration": null } ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "_test_sink",
     "sinks": [
       {
@@ -352,48 +436,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_tito",
-    "tito": [
-      {
-        "port": "formal(**kwargs)",
-        "taint": [
-          {
-            "kinds": [ { "return_paths": { "": 0 }, "kind": "LocalReturn" } ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(*args, position=0)",
-        "taint": [
-          {
-            "kinds": [ { "return_paths": { "": 0 }, "kind": "LocalReturn" } ],
-            "tito": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "_user_controlled",
-    "sources": [
-      {
-        "port": "result",
-        "taint": [
-          { "kinds": [ { "kind": "UserControlled" } ], "declaration": null }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "builder_pattern.Builder.async_save",
     "filename": "builder_pattern.py",
     "callable_line": 26,
@@ -420,7 +462,8 @@
           }
         ]
       }
-    ]
+    ],
+    "modes": [ "InferSelfTito" ]
   }
 }
 {
@@ -439,7 +482,8 @@
           }
         ]
       }
-    ]
+    ],
+    "modes": [ "InferSelfTito" ]
   }
 }
 {
@@ -457,6 +501,10 @@
               {
                 "return_paths": { "[_not_saved]": 3 },
                 "kind": "LocalReturn"
+              },
+              {
+                "return_paths": { "[_not_saved]": 3 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "tito": null
@@ -472,7 +520,8 @@
           }
         ]
       }
-    ]
+    ],
+    "modes": [ "InferSelfTito" ]
   }
 }
 {
@@ -490,6 +539,10 @@
               {
                 "return_paths": { "[_not_saved]": 3 },
                 "kind": "LocalReturn"
+              },
+              {
+                "return_paths": { "[_not_saved]": 3 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
               }
             ],
             "tito": null
@@ -505,7 +558,8 @@
           }
         ]
       }
-    ]
+    ],
+    "modes": [ "InferSelfTito" ]
   }
 }
 {
@@ -520,7 +574,11 @@
         "taint": [
           {
             "kinds": [
-              { "return_paths": { "[_saved]": 3 }, "kind": "LocalReturn" }
+              { "return_paths": { "[_saved]": 3 }, "kind": "LocalReturn" },
+              {
+                "return_paths": { "[_saved]": 3 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
             ],
             "tito": null
           }
@@ -535,7 +593,33 @@
           }
         ]
       }
-    ]
+    ],
+    "modes": [ "InferSelfTito" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "builder_pattern.Builder.set_saved_no_return",
+    "filename": "builder_pattern.py",
+    "callable_line": 40,
+    "tito": [
+      {
+        "port": "formal(saved, position=1)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[_saved]": 3 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
+            ],
+            "tito": null
+          }
+        ]
+      }
+    ],
+    "modes": [ "InferSelfTito" ]
   }
 }
 {
@@ -550,7 +634,11 @@
         "taint": [
           {
             "kinds": [
-              { "return_paths": { "[_saved]": 3 }, "kind": "LocalReturn" }
+              { "return_paths": { "[_saved]": 3 }, "kind": "LocalReturn" },
+              {
+                "return_paths": { "[_saved]": 3 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
             ],
             "tito": null
           }
@@ -565,95 +653,7 @@
           }
         ]
       }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "copy",
-    "tito": [
-      {
-        "port": "formal(obj, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "copy" } ],
-                "return_paths": { "": 0 },
-                "kind": "LocalReturn"
-              }
-            ],
-            "tito": null
-          }
-        ]
-      }
     ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "eval",
-    "sinks": [
-      {
-        "port": "formal(arg, position=0)",
-        "taint": [
-          {
-            "kinds": [ { "kind": "RemoteCodeExecution" } ],
-            "declaration": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "getattr",
-    "sinks": [
-      {
-        "port": "formal(name, position=1)",
-        "taint": [
-          { "kinds": [ { "kind": "GetAttr" } ], "declaration": null }
-        ]
-      }
-    ],
-    "tito": [
-      {
-        "port": "formal(default, position=2)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "default" } ],
-                "return_paths": { "": 0 },
-                "kind": "LocalReturn"
-              }
-            ],
-            "tito": null
-          }
-        ]
-      },
-      {
-        "port": "formal(o, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "object" } ],
-                "return_paths": { "": 0 },
-                "kind": "LocalReturn"
-              }
-            ],
-            "tito": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "SkipObscure" ]
+    "modes": [ "InferSelfTito" ]
   }
 }

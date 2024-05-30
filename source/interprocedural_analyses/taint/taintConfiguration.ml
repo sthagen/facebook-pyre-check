@@ -271,19 +271,21 @@ module ModelConstraints = struct
     }
 end
 
-(* A map from partial sink kinds to the related labels *)
+(* A map from partial sink kinds to each multi-source rule's two partial sink labels. *)
 module PartialSinkLabelsMap = struct
   include SerializableStringMap
 
-  type labels = {
-    main: string;
-    secondary: string;
-  }
-  [@@deriving eq, show]
+  type label = string
 
-  type t = labels SerializableStringMap.t
+  type t = (label * label) list SerializableStringMap.t
 
   let empty = SerializableStringMap.empty
+
+  let add ~partial_sink ~labels =
+    SerializableStringMap.update partial_sink (function
+        | Some existing_labels -> Some (labels :: existing_labels)
+        | None -> Some [labels])
+
 
   let merge left right =
     SerializableStringMap.merge
@@ -292,18 +294,35 @@ module PartialSinkLabelsMap = struct
         | Some value, None
         | None, Some value ->
             Some value
-        | Some left, Some right ->
-            if equal_labels left right then
-              Some left
-            else
-              Format.sprintf
-                "Merging different labels: %s %s"
-                (show_labels left)
-                (show_labels right)
-              |> failwith
+        | Some left, Some right -> Some (List.rev_append left right)
         | None, None -> None)
       left
       right
+
+
+  type label_registration_result =
+    | Yes
+    | PartialSinkNotRegistered
+    | LabelNotRegistered of
+        Data_structures.SerializableStringSet.t (* The set of registered labels *)
+
+  let is_label_registered ~partial_sink ~label map =
+    match find_opt partial_sink map with
+    | Some registered_labels ->
+        let registered_labels =
+          registered_labels
+          |> List.fold
+               ~f:(fun so_far (label_1, label_2) ->
+                 so_far
+                 |> Data_structures.SerializableStringSet.add label_1
+                 |> Data_structures.SerializableStringSet.add label_2)
+               ~init:Data_structures.SerializableStringSet.empty
+        in
+        if Data_structures.SerializableStringSet.mem label registered_labels then
+          Yes
+        else
+          LabelNotRegistered registered_labels
+    | None -> PartialSinkNotRegistered
 end
 
 module PartialSinkConverter = struct
@@ -315,13 +334,26 @@ module PartialSinkConverter = struct
     (* Trigger second sink when the first sink matches a source, and vice versa. *)
     let add_entry sink sources triggered_sink map =
       let sink = Sinks.show_partial_sink sink in
+      let triggered_sink = Sinks.TriggeredPartialSink triggered_sink in
       SerializableStringMap.update
         sink
         (function
-          | Some _ ->
-              Format.asprintf "Unexpected that partial sink %s already has an entry" sink
-              |> failwith
-          | None -> Some (sources, Sinks.TriggeredPartialSink triggered_sink))
+          | Some (existing_sources, existing_triggered_sink) ->
+              if not (Sinks.equal existing_triggered_sink triggered_sink) then
+                (* TODO: Allow multiple partial sink kinds in a rule. *)
+                Format.asprintf
+                  "Expect partial sink %s to pair with %a, but got %a"
+                  sink
+                  Sinks.pp
+                  existing_triggered_sink
+                  Sinks.pp
+                  triggered_sink
+                |> failwith
+              else
+                (* Since we allow a partial sink kind to be used in multiple rules, it can be
+                   matched against sources in all those rules. *)
+                Some (List.rev_append sources existing_sources, triggered_sink)
+          | None -> Some (sources, triggered_sink))
         map
     in
     map
@@ -457,6 +489,8 @@ module Heap = struct
     string_combine_partial_sinks: StringOperationPartialSinks.t;
     find_missing_flows: Configuration.MissingFlowKind.t option;
     dump_model_query_results_path: PyrePath.t option;
+    infer_self_tito: bool;
+    infer_argument_tito: bool;
     analysis_model_constraints: ModelConstraints.t;
     source_sink_filter: SourceSinkFilter.t;
   }
@@ -479,6 +513,8 @@ module Heap = struct
       string_combine_partial_sinks = StringOperationPartialSinks.empty;
       find_missing_flows = None;
       dump_model_query_results_path = None;
+      infer_self_tito = false;
+      infer_argument_tito = false;
       analysis_model_constraints = ModelConstraints.default;
       source_sink_filter = SourceSinkFilter.all;
     }
@@ -655,6 +691,8 @@ module Heap = struct
       string_combine_partial_sinks = StringOperationPartialSinks.empty;
       find_missing_flows = None;
       dump_model_query_results_path = None;
+      infer_self_tito = false;
+      infer_argument_tito = false;
       analysis_model_constraints = ModelConstraints.default;
       source_sink_filter =
         SourceSinkFilter.create
@@ -729,11 +767,10 @@ module Error = struct
     | UnsupportedSink of string
     | UnsupportedTransform of string
     | UnexpectedCombinedSourceRule of JsonAst.Json.t
-    | PartialSinkDuplicate of string
     | InvalidLabelMultiSink of {
         label: string;
         sink: string;
-        labels: string list;
+        labels: Data_structures.SerializableStringSet.t;
       }
     | InvalidMultiSink of string
     | RuleCodeDuplicate of {
@@ -799,18 +836,13 @@ module Error = struct
            got `%a`"
           JsonAst.Json.pp
           json
-    | PartialSinkDuplicate partial_sink ->
-        Format.fprintf
-          formatter
-          "Partial sinks must be unique - an entry for `%s` already exists"
-          partial_sink
     | InvalidLabelMultiSink { label; sink; labels } ->
         Format.fprintf
           formatter
           "`%s` is an invalid label For multi sink `%s` (choices: `%s`)"
           label
           sink
-          (String.concat labels ~sep:", ")
+          (labels |> Data_structures.SerializableStringSet.elements |> String.concat ~sep:", ")
     | InvalidMultiSink sink -> Format.fprintf formatter "`%s` is not a multi sink" sink
     | RuleCodeDuplicate { code; previous_location = None } ->
         Format.fprintf formatter "Multuple rules share the same code `%d`" code
@@ -864,7 +896,6 @@ module Error = struct
     | UnsupportedSource _ -> 8
     | UnsupportedSink _ -> 9
     | UnexpectedCombinedSourceRule _ -> 10
-    | PartialSinkDuplicate _ -> 11
     | InvalidLabelMultiSink _ -> 12
     | InvalidMultiSink _ -> 13
     | RuleCodeDuplicate _ -> 14
@@ -1265,33 +1296,29 @@ let from_json_list source_json_list =
       ~path
     =
     (* Register partial sinks. *)
-    (if
-     (* Disallow using the same partial sink in multiple multi-source rules *)
-     PartialSinkLabelsMap.mem partial_sink partial_sink_labels
-    then
-       Result.Error [Error.create ~path ~kind:(Error.PartialSinkDuplicate partial_sink)]
-    else
-      let partial_sink_labels =
-        PartialSinkLabelsMap.set
-          partial_sink_labels
-          ~key:partial_sink
-          ~data:{ PartialSinkLabelsMap.main = main_label; secondary = secondary_label }
-      in
-      Result.Ok partial_sink_labels)
+    let partial_sink_labels =
+      PartialSinkLabelsMap.add
+        ~partial_sink
+        ~labels:(main_label, secondary_label)
+        partial_sink_labels
+    in
+    Result.Ok partial_sink_labels
     >>= fun partial_sink_labels ->
     (* Create partial sinks. *)
     (let create_partial_sink label sink =
-       match PartialSinkLabelsMap.find_opt sink partial_sink_labels with
-       | Some { PartialSinkLabelsMap.main; secondary }
-         when not (String.equal main label || String.equal secondary label) ->
+       match
+         PartialSinkLabelsMap.is_label_registered ~partial_sink:sink ~label partial_sink_labels
+       with
+       | Yes -> Ok { Sinks.kind = sink; label }
+       | LabelNotRegistered registered_labels ->
            Result.Error
              [
                Error.create
                  ~path
-                 ~kind:(Error.InvalidLabelMultiSink { label; sink; labels = [main; secondary] });
+                 ~kind:(Error.InvalidLabelMultiSink { label; sink; labels = registered_labels });
              ]
-       | None -> Result.Error [Error.create ~path ~kind:(Error.InvalidMultiSink sink)]
-       | _ -> Ok { Sinks.kind = sink; label }
+       | PartialSinkNotRegistered ->
+           Result.Error [Error.create ~path ~kind:(Error.InvalidMultiSink sink)]
      in
      create_partial_sink main_label partial_sink
      >>= fun main_sink ->
@@ -1619,6 +1646,8 @@ let from_json_list source_json_list =
     string_combine_partial_sinks;
     find_missing_flows = None;
     dump_model_query_results_path = None;
+    infer_self_tito = false;
+    infer_argument_tito = false;
     analysis_model_constraints =
       ModelConstraints.override_with
         ~maximum_model_source_tree_width
@@ -1841,6 +1870,8 @@ let with_command_line_options
     ~transform_filter
     ~find_missing_flows
     ~dump_model_query_results_path
+    ~infer_self_tito
+    ~infer_argument_tito
     ~maximum_model_source_tree_width
     ~maximum_model_sink_tree_width
     ~maximum_model_tito_tree_width
@@ -1959,6 +1990,8 @@ let with_command_line_options
     rules;
     implicit_sources;
     implicit_sinks;
+    infer_self_tito = configuration.infer_self_tito || infer_self_tito;
+    infer_argument_tito = configuration.infer_argument_tito || infer_argument_tito;
     source_sink_filter;
   }
 

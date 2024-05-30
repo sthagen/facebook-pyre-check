@@ -170,6 +170,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     String.equal (Reference.last name) "__setitem__"
 
 
+  let is_instance_or_class_method =
+    let { Node.value = { Statement.Define.signature; _ }; _ } = FunctionContext.definition in
+    Statement.Define.Signature.is_method signature
+    && not (Statement.Define.Signature.is_static_method signature)
+
+
   let self_variable, self_parameter =
     if Interprocedural.Target.is_method FunctionContext.callable then
       let { Node.value = { Statement.Define.signature = { parameters; _ }; _ }; _ } =
@@ -192,11 +198,19 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
      paths for more precise tito. *)
   let initial_taint =
     let {
-      TaintConfiguration.Heap.analysis_model_constraints = { maximum_tito_collapse_depth; _ };
+      TaintConfiguration.Heap.infer_self_tito = configuration_infer_self_tito;
+      TaintConfiguration.Heap.infer_argument_tito = configuration_infer_argument_tito;
+      analysis_model_constraints = { maximum_tito_collapse_depth; _ };
       _;
     }
       =
       FunctionContext.taint_configuration
+    in
+    let mode_infer_self_tito =
+      Model.ModeSet.contains Model.Mode.InferSelfTito FunctionContext.existing_model.Model.modes
+    in
+    let mode_infer_argument_tito =
+      Model.ModeSet.contains Model.Mode.InferArgumentTito FunctionContext.existing_model.Model.modes
     in
     let make_tito_leaf kind =
       BackwardState.Tree.create_leaf
@@ -205,26 +219,47 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
            kind
            (Domains.local_return_frame ~output_path:[] ~collapse_depth:maximum_tito_collapse_depth))
     in
-    (* We infer tito to self for constructors, __setitem__ methods, and property setters. *)
-    if
-      is_constructor
-      || is_setitem
-      || Statement.Define.is_property_setter (Node.value FunctionContext.definition)
-    then
+    let taint =
       match self_variable, self_parameter with
-      | Some self_variable, Some self_parameter ->
+      | Some self_variable, Some self_parameter
+        when is_instance_or_class_method
+             && (configuration_infer_self_tito
+                || mode_infer_self_tito
+                || is_constructor
+                || is_setitem
+                || Statement.Define.is_property_setter (Node.value FunctionContext.definition)) ->
+          (* Infer tito from arguments to self. *)
           BackwardState.assign
             ~root:self_variable
             ~path:[]
             (make_tito_leaf (Sinks.ParameterUpdate self_parameter))
             BackwardState.bottom
       | _ -> BackwardState.bottom
-    else
-      BackwardState.assign
-        ~root:AccessPath.Root.LocalResult
-        ~path:[]
-        (make_tito_leaf Sinks.LocalReturn)
-        BackwardState.bottom
+    in
+    let taint =
+      if configuration_infer_argument_tito || mode_infer_argument_tito then
+        (* Infer tito between arguments. *)
+        let { Node.value = { Statement.Define.signature = { parameters; _ }; _ }; _ } =
+          FunctionContext.definition
+        in
+        parameters
+        |> AccessPath.normalize_parameters
+        |> List.fold
+             ~init:taint
+             ~f:(fun taint { AccessPath.NormalizedParameter.root; qualified_name; _ } ->
+               BackwardState.assign
+                 ~root:(AccessPath.Root.Variable qualified_name)
+                 ~path:[]
+                 (make_tito_leaf (Sinks.ParameterUpdate root))
+                 taint)
+      else
+        taint
+    in
+    BackwardState.assign
+      ~root:AccessPath.Root.LocalResult
+      ~path:[]
+      (make_tito_leaf Sinks.LocalReturn)
+      taint
 
 
   let transform_non_leaves new_path taint =
@@ -2629,16 +2664,31 @@ let extract_tito_and_sink_models
         (* Remove trivial taint-in-taint-out Argument(x) -> Argument(x) *)
         Map.Poly.change partition (Sinks.ParameterUpdate parameter) ~f:(function
             | Some tito_taint ->
+                (* Drop sanitizers. Since tito between arguments is implemented as a weak update, we
+                   will always assume Argument(x) -> Argument(x) is a valid flow. Adding sanitizers
+                   would create extra flows that are not interesting. *)
+                let tito_taint =
+                  BackwardState.Tree.transform
+                    BackwardTaint.kind
+                    Map
+                    ~f:Sinks.discard_sanitize_transforms
+                    tito_taint
+                in
+                let tito_for_comparison =
+                  BackwardState.Tree.essential ~preserve_return_access_paths:true tito_taint
+                in
                 let trivial_tito =
                   Domains.local_return_frame
                     ~output_path:[]
                     ~collapse_depth:maximum_tito_collapse_depth
                   |> BackwardTaint.singleton CallInfo.Tito (Sinks.ParameterUpdate parameter)
                   |> BackwardState.Tree.create_leaf
+                  |> BackwardState.Tree.essential ~preserve_return_access_paths:true
                 in
-                Option.some_if
-                  (not (BackwardState.Tree.less_or_equal ~left:tito_taint ~right:trivial_tito))
-                  tito_taint
+                let is_trivial_tito =
+                  BackwardState.Tree.less_or_equal ~left:tito_for_comparison ~right:trivial_tito
+                in
+                Option.some_if (not is_trivial_tito) tito_taint
             | None -> None)
       in
       let candidate_tree =
