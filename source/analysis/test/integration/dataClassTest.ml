@@ -2641,6 +2641,96 @@ let test_check_dataclasses =
              "Too many arguments [19]: PositionalOnly call expects 0 positional arguments, 1 was \
               provided.";
            ];
+      (* TODO: T190778258 The only type error here should be that that default value cannot be
+         followed by non-default value*)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            import dataclasses
+            from typing import Callable, assert_type
+
+            @dataclasses.dataclass  # E[DC1]
+            class DC1:
+                a: dataclasses.InitVar[int] = 0
+                b: int  # E[DC1]: field with no default cannot follow field with default.
+
+            def f(s: str) -> int:
+                return int(s)
+
+            @dataclasses.dataclass
+            class DC6:
+                c: Callable[[str], int] = f
+
+            dc6 = DC6()
+            assert_type(dc6.c, Callable[[str], int])
+         |}
+           [
+             "Undefined attribute [16]: `typing.Type` has no attribute `a`.";
+             "Incompatible parameter type [6]: In call `assert_type`, for 1st positional argument, \
+              expected `typing.Callable[[str], int]` but got `BoundMethod[typing.Callable[[str], \
+              int], DC6]`.";
+           ];
+      (* TODO: T190780655 Report when dataclasses are not compatible with hashable protocol *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from dataclasses import dataclass
+            from typing import Hashable
+
+
+            @dataclass
+            class DC1:
+                a: int
+            # This should generate an error because DC1 isn't hashable.
+            v1: Hashable = DC1(0)  # E
+         |}
+           [];
+      (* TODO: T190780655 The error here should be that y is missing from the __post_init__ argument
+         list. We do not report anything about that. The existing errors are also incorrect. *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              from dataclasses import dataclass, InitVar
+
+              @dataclass
+              class DC1:
+                  x: InitVar[int]
+                  y: InitVar[str]
+
+                  def __post_init__(self, x: int) -> None:
+                      pass
+
+         |}
+           [
+             "Undefined attribute [16]: `typing.Type` has no attribute `x`.";
+             "Undefined attribute [16]: `typing.Type` has no attribute `y`.";
+           ];
+      (* TODO: T190786456 We should not produce a type error here since Desc1 has a setter which
+         takes an int. *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from dataclasses import dataclass
+            from typing import Any, Generic, TypeVar, assert_type, overload
+
+            T = TypeVar("T")
+
+            class Desc1:
+
+                def __set__(self, __obj: object, __value: int) -> None:
+                    ...
+
+            @dataclass
+            class DC1:
+                y: Desc1 = Desc1()
+
+            dc1 = DC1(3)
+
+         |}
+           [
+             "Incompatible parameter type [6]: In call `DC1.__init__`, for 1st positional \
+              argument, expected `Desc1` but got `int`.";
+           ];
     ]
 
 
