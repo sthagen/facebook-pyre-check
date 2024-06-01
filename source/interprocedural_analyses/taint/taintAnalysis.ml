@@ -322,7 +322,8 @@ let parse_models_and_queries_from_configuration
 let initialize_models
     ~scheduler
     ~pyre_api
-    ~static_analysis_configuration
+    ~static_analysis_configuration:
+      ({ Configuration.StaticAnalysis.scheduler_policies; _ } as static_analysis_configuration)
     ~taint_configuration
     ~taint_configuration_shared_memory
     ~class_hierarchy_graph
@@ -369,6 +370,7 @@ let initialize_models
           ModelQueryExecution.generate_models_from_queries
             ~pyre_api
             ~scheduler
+            ~scheduler_policies
             ~class_hierarchy_graph
             ~verbose
             ~error_on_unexpected_models:true
@@ -438,6 +440,7 @@ let compact_ocaml_heap ~name =
 let compute_coverage
     ~pyre_api
     ~scheduler
+    ~scheduler_policies
     ~resolve_module_path
     ~callables_to_analyze
     ~all_callables
@@ -449,6 +452,7 @@ let compute_coverage
   let file_coverage =
     FileCoverage.from_callables
       ~scheduler
+      ~scheduler_policies
       ~pyre_api
       ~resolve_module_path
       ~callables:callables_to_analyze
@@ -469,15 +473,21 @@ let compute_coverage
            | None -> None)
     |> Algorithms.fold_balanced ~f:KindCoverage.union ~init:KindCoverage.empty
   in
-  let kind_coverage =
-    Scheduler.map_reduce
-      scheduler
-      ~policy:
+  let scheduler_policy =
+    Scheduler.Policy.from_configuration_or_default
+      scheduler_policies
+      Configuration.ScheduleIdentifier.TaintKindCoverage
+      ~default:
         (Scheduler.Policy.fixed_chunk_size
            ~minimum_chunks_per_worker:1
            ~minimum_chunk_size:50000
            ~preferred_chunk_size:100000
            ())
+  in
+  let kind_coverage =
+    Scheduler.map_reduce
+      scheduler
+      ~policy:scheduler_policy
       ~initial:KindCoverage.empty
       ~map:compute_kind_coverage
       ~reduce:KindCoverage.union
@@ -511,6 +521,7 @@ let run_taint_analysis
          compact_ocaml_heap = compact_ocaml_heap_flag;
          saved_state;
          compute_coverage = compute_coverage_flag;
+         scheduler_policies;
          _;
        } as static_analysis_configuration)
     ~lookup_source
@@ -535,6 +546,7 @@ let run_taint_analysis
   let cache =
     Cache.try_load
       ~scheduler
+      ~scheduler_policies
       ~saved_state
       ~configuration
       ~decorator_configuration
@@ -547,6 +559,7 @@ let run_taint_analysis
     Cache.pyre_read_write_api cache (fun () ->
         create_pyre_read_write_api_and_perform_type_analysis
           ~scheduler
+          ~scheduler_policies
           ~static_analysis_configuration
           ~lookup_source
           ~decorator_configuration
@@ -570,7 +583,11 @@ let run_taint_analysis
         let timer = Timer.start () in
         let () = Log.info "Computing class hierarchy graph..." in
         let class_hierarchy_graph =
-          Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers ~scheduler ~pyre_api ~qualifiers
+          Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers
+            ~scheduler
+            ~scheduler_policies
+            ~pyre_api
+            ~qualifiers
         in
         Statistics.performance
           ~name:"Computed class hierarchy graph"
@@ -606,6 +623,7 @@ let run_taint_analysis
         let initial_callables =
           Interprocedural.FetchCallables.from_qualifiers
             ~scheduler
+            ~scheduler_policies
             ~configuration
             ~pyre_api
             ~qualifiers
@@ -669,6 +687,7 @@ let run_taint_analysis
         Interprocedural.GlobalConstants.SharedMemory.from_qualifiers
           ~handle:(Interprocedural.GlobalConstants.SharedMemory.create ())
           ~scheduler
+          ~scheduler_policies
           ~pyre_api
           ~qualifiers)
   in
@@ -795,6 +814,7 @@ let run_taint_analysis
   let fixpoint_state =
     Taint.TaintFixpoint.compute
       ~scheduler
+      ~scheduler_policy:(Taint.TaintFixpoint.get_scheduler_policy scheduler_policies)
       ~pyre_api
       ~override_graph:override_graph_shared_memory_read_only
       ~dependency_graph
@@ -822,6 +842,7 @@ let run_taint_analysis
       compute_coverage
         ~pyre_api
         ~scheduler
+        ~scheduler_policies
         ~resolve_module_path
         ~callables_to_analyze
         ~all_callables
