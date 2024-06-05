@@ -601,25 +601,21 @@ let rec parse_annotations
           base = { Node.value = Expression.Name (Name.Identifier kind); _ };
           index = { Node.value = Name (Name.Identifier label); _ };
         } -> (
+        let partial_sink = TaintConfiguration.RegisteredPartialSinks.from_kind_label ~kind ~label in
         match
-          TaintConfiguration.PartialSinkLabelsMap.is_label_registered
-            ~partial_sink:kind
-            ~label
-            taint_configuration.partial_sink_labels
+          TaintConfiguration.RegisteredPartialSinks.is_registered
+            ~partial_sink
+            taint_configuration.registered_partial_sinks
         with
-        | Yes -> Ok (Sinks.PartialSink { kind; label })
-        | LabelNotRegistered registered_labels ->
+        | Yes -> Ok (Sinks.PartialSink partial_sink)
+        | No registered_sinks ->
             Error
               (annotation_error
                  (Format.sprintf
-                    "Unrecognized label `%s` for partial sink `%s` (choices: `%s`)"
-                    label
-                    kind
-                    (registered_labels
-                    |> Data_structures.SerializableStringSet.elements
-                    |> String.concat ~sep:", ")))
-        | PartialSinkNotRegistered ->
-            Error (annotation_error (Format.sprintf "Unrecognized partial sink `%s`." kind)))
+                    "Unrecognized partial sink `%s` (choices: `%s`)"
+                    partial_sink
+                    (registered_sinks |> Sinks.PartialSink.Set.elements |> String.concat ~sep:", ")))
+        )
     | _ -> invalid_annotation_error ()
   in
   let rec parse_annotation = function
@@ -968,7 +964,6 @@ let rec class_names_from_annotation = function
   | Type.NoneType
   | Type.TypeOperation _
   | Type.Variable _
-  | Type.IntExpression _
   | Type.RecursiveType _
   | Type.ParameterVariadicComponent _ ->
       []
@@ -1698,7 +1693,7 @@ let parse_format_string ~find_clause ~allow_parameter_name ~allow_parameter_posi
         | Sub -> ModelQuery.FormatString.IntegerExpression.Sub { left; right }
         | Mult -> ModelQuery.FormatString.IntegerExpression.Mul { left; right }
         | _ -> failwith "unreachable")
-    (* TODO: remove after T101299882 is complete *)
+    (* TODO: remove after T191035448 is complete *)
     | {
         Node.value =
           Expression.Call
@@ -1790,7 +1785,7 @@ let parse_format_string ~find_clause ~allow_parameter_name ~allow_parameter_posi
           _;
         } ->
         Ok (ModelQuery.FormatString.Substring.Capture name)
-    (* TODO: remove after T101299882 is complete *)
+    (* TODO: remove after T191035448 is complete *)
     | Ast.Expression.Substring.Format
         {
           value =
@@ -2617,7 +2612,7 @@ let parse_parameter_taint
 (* For each partial sink on a parameter, verify if there exists a least one matching partial sink on
    another parameter. Return either the first pre-existing model verification error, or each
    parameter's annotations when all partial sinks match, or the unmatched partial sink. *)
-let verify_matching_partial_sinks ~partial_sink_labels ~path ~location parameters_annotations =
+let verify_matching_partial_sinks ~registered_partial_sinks ~path ~location parameters_annotations =
   let extract_partial_sink = function
     | ModelAnnotation.ParameterAnnotation
         { annotation = TaintAnnotation.Sink { sink = Sinks.PartialSink partial_sink; _ }; _ } ->
@@ -2652,27 +2647,25 @@ let verify_matching_partial_sinks ~partial_sink_labels ~path ~location parameter
       (ModelVerificationError.UnmatchedPartialSinkKind partial_sink)
   in
   let remove_matching_partial_sink ~to_match ~to_remove_from
-      : (Sinks.partial_sink list, ModelVerificationError.t) result
+      : (Sinks.PartialSink.t list, ModelVerificationError.t) result
     =
     match
       ( to_remove_from,
-        TaintConfiguration.PartialSinkLabelsMap.find_matching_labels
-          ~partial_sink:to_match
-          partial_sink_labels )
+        TaintConfiguration.RegisteredPartialSinks.find_matches to_match registered_partial_sinks )
     with
     | [], _
     | _, None ->
         Error (unmatched_partial_sink_error to_match)
-    | _, Some matching_labels ->
+    | _, Some matching_sinks ->
         remove_matched_and_accumulate_unmatched
-          ~is_matched:(fun { Sinks.label; _ } -> List.mem matching_labels label ~equal:String.equal)
+          ~is_matched:(fun partial_sink -> Sinks.PartialSink.Set.mem partial_sink matching_sinks)
           ~unmatched_in_reverse:[]
           to_remove_from
         |> (* Provide a more detailed error. *)
         Result.map_error ~f:(fun _ -> unmatched_partial_sink_error to_match)
   in
   let rec remove_matching_partial_sinks
-      : Sinks.partial_sink list -> (unit, ModelVerificationError.t) result
+      : Sinks.PartialSink.t list -> (unit, ModelVerificationError.t) result
     = function
     | [] -> Ok ()
     | head :: tail -> (
@@ -3567,7 +3560,7 @@ let create_model_from_signature
          ~callable_parameter_names_to_roots)
   |> fun parameters_annotations ->
   verify_matching_partial_sinks
-    ~partial_sink_labels:taint_configuration.TaintConfiguration.Heap.partial_sink_labels
+    ~registered_partial_sinks:taint_configuration.TaintConfiguration.Heap.registered_partial_sinks
     ~path
     ~location
     parameters_annotations

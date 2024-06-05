@@ -15,7 +15,6 @@
  *)
 
 open Core
-open Data_structures
 module JsonAst = JsonParsing.JsonAst
 
 let ( >>= ) = Result.( >>= )
@@ -271,108 +270,101 @@ module ModelConstraints = struct
     }
 end
 
-(* A map from partial sink kinds to each multi-source rule's two partial sink labels. *)
-module PartialSinkLabelsMap = struct
-  include SerializableStringMap
+(* A map from partial sink kinds to other partial sinks that "match" them. Two partial sinks match
+   only if both appear in a multi-source rule. *)
+module RegisteredPartialSinks = struct
+  module PartialSink = Sinks.PartialSink
 
-  type label = string
+  type t = PartialSink.Set.t PartialSink.Map.t [@@deriving compare, show, equal]
 
-  type t = (label * label) list SerializableStringMap.t
+  let empty = PartialSink.Map.empty
 
-  let empty = SerializableStringMap.empty
+  let of_alist_exn list =
+    list
+    |> List.map ~f:(fun (key, values) -> key, PartialSink.Set.of_list values)
+    |> PartialSink.Map.of_alist_exn
 
-  let add ~partial_sink ~labels =
-    SerializableStringMap.update partial_sink (function
-        | Some existing_labels -> Some (labels :: existing_labels)
-        | None -> Some [labels])
+
+  (* TODO: Remove once the syntax no longer supports specifying labels. *)
+  let from_kind_label ~kind ~label = Format.asprintf "%s[%s]" kind label
+
+  let add partial_sink_1 partial_sink_2 map =
+    let update_matches partial_sink_1 partial_sink_2 =
+      PartialSink.Map.update partial_sink_1 (function
+          | Some existing_matches -> Some (PartialSink.Set.add partial_sink_2 existing_matches)
+          | None -> Some (PartialSink.Set.singleton partial_sink_2))
+    in
+    map
+    |> update_matches partial_sink_1 partial_sink_2
+    |> update_matches partial_sink_2 partial_sink_1
 
 
   let merge left right =
-    SerializableStringMap.merge
+    PartialSink.Map.merge
       (fun _ left right ->
         match left, right with
         | Some value, None
         | None, Some value ->
             Some value
-        | Some left, Some right -> Some (List.rev_append left right)
+        | Some left, Some right -> Some (PartialSink.Set.union left right)
         | None, None -> None)
       left
       right
 
 
-  type label_registration_result =
+  type registration_result =
     | Yes
-    | PartialSinkNotRegistered
-    | LabelNotRegistered of
-        Data_structures.SerializableStringSet.t (* The set of registered labels *)
+    | No of PartialSink.Set.t (* The set of registered partial sinks *)
 
-  let is_label_registered ~partial_sink ~label map =
-    match find_opt partial_sink map with
-    | Some registered_labels ->
-        let registered_labels =
-          registered_labels
-          |> List.fold
-               ~f:(fun so_far (label_1, label_2) ->
-                 so_far
-                 |> Data_structures.SerializableStringSet.add label_1
-                 |> Data_structures.SerializableStringSet.add label_2)
-               ~init:Data_structures.SerializableStringSet.empty
-        in
-        if Data_structures.SerializableStringSet.mem label registered_labels then
-          Yes
-        else
-          LabelNotRegistered registered_labels
-    | None -> PartialSinkNotRegistered
+  let is_registered ~partial_sink map =
+    if PartialSink.Map.mem partial_sink map then
+      Yes
+    else
+      No (map |> PartialSink.Map.keys |> PartialSink.Set.of_list)
 
 
-  let find_matching_labels ~partial_sink:{ Sinks.kind; label } map =
-    let extract_matching_label ~label (label_1, label_2) =
-      if String.equal label label_1 then
-        Some label_2
-      else if String.equal label label_2 then
-        Some label_1
-      else
-        None
-    in
-    find_opt kind map |> Option.map ~f:(List.filter_map ~f:(extract_matching_label ~label))
+  let find_matches = PartialSink.Map.find_opt
 end
 
 module PartialSinkConverter = struct
   (* A map from partial sinks, to the matching sources and the corresponding triggered sinks for
      each match. *)
-  type t = Sinks.Set.t Sources.Map.t SerializableStringMap.t
+  module PartialSink = Sinks.PartialSink
+  module TriggeringSource = Sources.TriggeringSource
 
-  let empty = SerializableStringMap.empty
+  type t = PartialSink.Triggered.Set.t TriggeringSource.Map.t PartialSink.Map.t
 
-  let key = Sinks.show_partial_sink
+  let empty = PartialSink.Map.empty
+
+  let of_alist_exn = PartialSink.Map.of_alist_exn
 
   let add map ~first_sources ~first_sink ~second_sources ~second_sink =
+    let update_triggering_source ~triggered_sink so_far triggering_source =
+      TriggeringSource.Map.update
+        triggering_source
+        (fun existing_triggered_sinks ->
+          Some
+            (existing_triggered_sinks
+            |> Option.value ~default:PartialSink.Triggered.Set.empty
+            |> PartialSink.Triggered.Set.add
+                 { PartialSink.Triggered.partial_sink = triggered_sink; triggering_source }))
+        so_far
+    in
     (* For each new matching source, add the corresponding triggered sink. *)
-    let update_sources_to_triggered_sinks ~sources ~triggered_sink sources_to_triggered_sinks =
-      List.fold
-        sources
-        ~f:(fun so_far source ->
-          Sources.Map.update
-            source
-            (fun existing_triggered_sinks ->
-              Some
-                (existing_triggered_sinks
-                |> Option.value ~default:Sinks.Set.empty
-                |> Sinks.Set.add triggered_sink))
-            so_far)
-        ~init:sources_to_triggered_sinks
+    let update_triggering_sources ~triggering_sources ~triggered_sink map =
+      List.fold ~f:(update_triggering_source ~triggered_sink) ~init:map triggering_sources
     in
     (* Trigger second sink when the first sink matches a source, and vice versa. *)
     let add_entry sink sources triggered_sink map =
-      SerializableStringMap.update
-        (key sink)
+      PartialSink.Map.update
+        sink
         (fun existing_sources_to_triggered_sinks ->
           Some
             (existing_sources_to_triggered_sinks
-            |> Option.value ~default:Sources.Map.empty
-            |> update_sources_to_triggered_sinks
-                 ~sources
-                 ~triggered_sink:(Sinks.TriggeredPartialSink triggered_sink)))
+            |> Option.value ~default:TriggeringSource.Map.empty
+            |> update_triggering_sources
+                 ~triggering_sources:(List.filter_map ~f:Sources.as_triggering_source sources)
+                 ~triggered_sink))
         map
     in
     map
@@ -381,7 +373,7 @@ module PartialSinkConverter = struct
 
 
   let merge left right =
-    SerializableStringMap.merge
+    PartialSink.Map.merge
       (fun partial_sink left right ->
         match left, right with
         | Some value, None
@@ -399,14 +391,31 @@ module PartialSinkConverter = struct
 
   let get_triggered_sinks_if_matched ~partial_sink ~source converter =
     let open Option.Monad_infix in
+    source
+    |> Sources.discard_sanitize_transforms
+    |> Sources.as_triggering_source
+    >>= (fun triggering_source ->
+          converter
+          |> PartialSink.Map.find_opt partial_sink
+          >>= TriggeringSource.Map.find_opt triggering_source)
+    |> Option.value ~default:PartialSink.Triggered.Set.empty
+
+
+  let all_triggered_sinks ~partial_sink converter =
+    let open Option.Monad_infix in
     converter
-    |> SerializableStringMap.find_opt (key partial_sink)
-    >>= Sources.Map.find_opt (Sources.discard_sanitize_transforms source)
-    |> Option.value ~default:Sinks.Set.empty
+    |> PartialSink.Map.find_opt partial_sink
+    >>| (fun sources_to_triggered_sinks ->
+          sources_to_triggered_sinks
+          |> TriggeringSource.Map.data
+          |> Algorithms.fold_balanced
+               ~f:PartialSink.Triggered.Set.union
+               ~init:PartialSink.Triggered.Set.empty)
+    |> Option.value ~default:PartialSink.Triggered.Set.empty
 end
 
 module StringOperationPartialSinks = struct
-  include SerializableStringSet
+  include Sinks.PartialSink.Set
 
   let main_label = "main"
 
@@ -414,11 +423,11 @@ module StringOperationPartialSinks = struct
 
   let get_partial_sinks kinds =
     let accumulate_sink_kinds kind so_far =
-      Sinks.PartialSink { kind; label = main_label }
-      :: Sinks.PartialSink { kind; label = secondary_label }
+      Sinks.PartialSink (RegisteredPartialSinks.from_kind_label ~kind ~label:main_label)
+      :: Sinks.PartialSink (RegisteredPartialSinks.from_kind_label ~kind ~label:secondary_label)
       :: so_far
     in
-    SerializableStringSet.fold accumulate_sink_kinds kinds []
+    Sinks.PartialSink.Set.fold accumulate_sink_kinds kinds []
 end
 
 (* The result of parsing combined source rules. *)
@@ -426,7 +435,7 @@ module CombinedSourceRules = struct
   type t = {
     generated_combined_rules: Rule.t list;
     partial_sink_converter: PartialSinkConverter.t;
-    partial_sink_labels: PartialSinkLabelsMap.t;
+    registered_partial_sinks: RegisteredPartialSinks.t;
     string_combine_partial_sinks: StringOperationPartialSinks.t;
   }
 
@@ -434,7 +443,7 @@ module CombinedSourceRules = struct
     {
       generated_combined_rules = [];
       partial_sink_converter = PartialSinkConverter.empty;
-      partial_sink_labels = PartialSinkLabelsMap.empty;
+      registered_partial_sinks = RegisteredPartialSinks.empty;
       string_combine_partial_sinks = StringOperationPartialSinks.empty;
     }
 
@@ -443,13 +452,13 @@ module CombinedSourceRules = struct
       {
         generated_combined_rules = generated_combined_rules_left;
         partial_sink_converter = partial_sink_converter_left;
-        partial_sink_labels = partial_sink_labels_left;
+        registered_partial_sinks = partial_sink_labels_left;
         string_combine_partial_sinks = string_combine_partial_sinks_left;
       }
       {
         generated_combined_rules = generated_combined_rules_right;
         partial_sink_converter = partial_sink_converter_right;
-        partial_sink_labels = partial_sink_labels_right;
+        registered_partial_sinks = partial_sink_labels_right;
         string_combine_partial_sinks = string_combine_partial_sinks_right;
       }
     =
@@ -458,8 +467,8 @@ module CombinedSourceRules = struct
         List.rev_append generated_combined_rules_left generated_combined_rules_right;
       partial_sink_converter =
         PartialSinkConverter.merge partial_sink_converter_left partial_sink_converter_right;
-      partial_sink_labels =
-        PartialSinkLabelsMap.merge partial_sink_labels_left partial_sink_labels_right;
+      registered_partial_sinks =
+        RegisteredPartialSinks.merge partial_sink_labels_left partial_sink_labels_right;
       string_combine_partial_sinks =
         StringOperationPartialSinks.union
           string_combine_partial_sinks_left
@@ -503,7 +512,7 @@ module Heap = struct
     implicit_sinks: implicit_sinks;
     implicit_sources: implicit_sources;
     partial_sink_converter: PartialSinkConverter.t;
-    partial_sink_labels: PartialSinkLabelsMap.t;
+    registered_partial_sinks: RegisteredPartialSinks.t;
     string_combine_partial_sinks: StringOperationPartialSinks.t;
     find_missing_flows: Configuration.MissingFlowKind.t option;
     dump_model_query_results_path: PyrePath.t option;
@@ -526,8 +535,8 @@ module Heap = struct
       filtered_rule_codes = None;
       implicit_sinks = empty_implicit_sinks;
       implicit_sources = empty_implicit_sources;
-      partial_sink_converter = SerializableStringMap.empty;
-      partial_sink_labels = PartialSinkLabelsMap.empty;
+      partial_sink_converter = PartialSinkConverter.empty;
+      registered_partial_sinks = RegisteredPartialSinks.empty;
       string_combine_partial_sinks = StringOperationPartialSinks.empty;
       find_missing_flows = None;
       dump_model_query_results_path = None;
@@ -704,8 +713,8 @@ module Heap = struct
       filtered_rule_codes = None;
       implicit_sinks = empty_implicit_sinks;
       implicit_sources = empty_implicit_sources;
-      partial_sink_converter = SerializableStringMap.empty;
-      partial_sink_labels = PartialSinkLabelsMap.empty;
+      partial_sink_converter = PartialSinkConverter.empty;
+      registered_partial_sinks = RegisteredPartialSinks.empty;
       string_combine_partial_sinks = StringOperationPartialSinks.empty;
       find_missing_flows = None;
       dump_model_query_results_path = None;
@@ -785,12 +794,10 @@ module Error = struct
     | UnsupportedSink of string
     | UnsupportedTransform of string
     | UnexpectedCombinedSourceRule of JsonAst.Json.t
-    | InvalidLabelMultiSink of {
-        label: string;
+    | InvalidMultiSink of {
         sink: string;
-        labels: Data_structures.SerializableStringSet.t;
+        registered: Sinks.PartialSink.Set.t;
       }
-    | InvalidMultiSink of string
     | RuleCodeDuplicate of {
         code: int;
         previous_location: JsonAst.LocationWithPath.t option;
@@ -854,14 +861,12 @@ module Error = struct
            got `%a`"
           JsonAst.Json.pp
           json
-    | InvalidLabelMultiSink { label; sink; labels } ->
+    | InvalidMultiSink { sink; registered } ->
         Format.fprintf
           formatter
-          "`%s` is an invalid label For multi sink `%s` (choices: `%s`)"
-          label
+          "`%s` is an invalid multi sink (choices: `%s`)"
           sink
-          (labels |> Data_structures.SerializableStringSet.elements |> String.concat ~sep:", ")
-    | InvalidMultiSink sink -> Format.fprintf formatter "`%s` is not a multi sink" sink
+          (registered |> Sinks.PartialSink.Set.elements |> String.concat ~sep:", ")
     | RuleCodeDuplicate { code; previous_location = None } ->
         Format.fprintf formatter "Multuple rules share the same code `%d`" code
     | RuleCodeDuplicate { code; previous_location = Some previous_location } ->
@@ -914,7 +919,6 @@ module Error = struct
     | UnsupportedSource _ -> 8
     | UnsupportedSink _ -> 9
     | UnexpectedCombinedSourceRule _ -> 10
-    | InvalidLabelMultiSink _ -> 12
     | InvalidMultiSink _ -> 13
     | RuleCodeDuplicate _ -> 14
     | OptionDuplicate _ -> 15
@@ -1306,47 +1310,28 @@ let from_json_list source_json_list =
   let create_combined_source_rules_and_update_partial_sinks
       ~partial_sink
       ~partial_sink_converter
-      ~partial_sink_labels
+      ~registered_partial_sinks
       ~rule_common_attributues:
         { RuleCommonAttributes.name; message_format; code; filters; location }
       ~combined_source_rule_sources:
         { CombinedSourceRuleSources.main_sources; secondary_sources; main_label; secondary_label }
-      ~path
     =
-    (* Register partial sinks. *)
-    let partial_sink_labels =
-      PartialSinkLabelsMap.add
-        ~partial_sink
-        ~labels:(main_label, secondary_label)
-        partial_sink_labels
+    let main_sink = RegisteredPartialSinks.from_kind_label ~kind:partial_sink ~label:main_label in
+    let secondary_sink =
+      RegisteredPartialSinks.from_kind_label ~kind:partial_sink ~label:secondary_label
     in
-    Result.Ok partial_sink_labels
-    >>= fun partial_sink_labels ->
-    (* Create partial sinks. *)
-    (let create_partial_sink label sink =
-       match
-         PartialSinkLabelsMap.is_label_registered ~partial_sink:sink ~label partial_sink_labels
-       with
-       | Yes -> Ok { Sinks.kind = sink; label }
-       | LabelNotRegistered registered_labels ->
-           Result.Error
-             [
-               Error.create
-                 ~path
-                 ~kind:(Error.InvalidLabelMultiSink { label; sink; labels = registered_labels });
-             ]
-       | PartialSinkNotRegistered ->
-           Result.Error [Error.create ~path ~kind:(Error.InvalidMultiSink sink)]
-     in
-     create_partial_sink main_label partial_sink
-     >>= fun main_sink ->
-     create_partial_sink secondary_label partial_sink
-     >>| fun secondary_sink -> main_sink, secondary_sink)
-    >>= fun (main_sink, secondary_sink) ->
+    let create_triggered_sinks ~partial_sink =
+      List.map ~f:(fun source ->
+          source
+          |> Sources.as_triggering_source
+          |> Option.value_exn
+               ~message:(Format.asprintf "Expect %a to be a triggering source" Sources.pp source)
+          |> fun triggering_source -> Sinks.TriggeredPartialSink { partial_sink; triggering_source })
+    in
     let main_rule =
       {
         Rule.sources = secondary_sources;
-        sinks = [Sinks.TriggeredPartialSink secondary_sink];
+        sinks = create_triggered_sinks ~partial_sink:secondary_sink main_sources;
         transforms = [];
         name;
         code;
@@ -1358,7 +1343,7 @@ let from_json_list source_json_list =
     let secondary_rule =
       {
         Rule.sources = main_sources;
-        sinks = [Sinks.TriggeredPartialSink main_sink];
+        sinks = create_triggered_sinks ~partial_sink:main_sink secondary_sources;
         transforms = [];
         name;
         code;
@@ -1375,7 +1360,10 @@ let from_json_list source_json_list =
         ~second_sources:secondary_sources
         ~second_sink:secondary_sink
     in
-    Result.Ok (main_rule, secondary_rule, partial_sink_converter, partial_sink_labels)
+    let registered_partial_sinks =
+      RegisteredPartialSinks.add main_sink secondary_sink registered_partial_sinks
+    in
+    Result.Ok (main_rule, secondary_rule, partial_sink_converter, registered_partial_sinks)
   in
   let parse_combined_source_rule
       ~path
@@ -1383,7 +1371,7 @@ let from_json_list source_json_list =
       {
         CombinedSourceRules.generated_combined_rules;
         partial_sink_converter;
-        partial_sink_labels;
+        registered_partial_sinks;
         string_combine_partial_sinks;
       }
       json
@@ -1397,17 +1385,16 @@ let from_json_list source_json_list =
     create_combined_source_rules_and_update_partial_sinks
       ~partial_sink
       ~partial_sink_converter
-      ~partial_sink_labels
+      ~registered_partial_sinks
       ~rule_common_attributues
       ~combined_source_rule_sources
-      ~path
-    >>= fun (main_rule, secondary_rule, partial_sink_converter, partial_sink_labels) ->
+    >>= fun (main_rule, secondary_rule, partial_sink_converter, registered_partial_sinks) ->
     Result.Ok
       {
         CombinedSourceRules.generated_combined_rules =
           main_rule :: secondary_rule :: generated_combined_rules;
         partial_sink_converter;
-        partial_sink_labels;
+        registered_partial_sinks;
         string_combine_partial_sinks;
       }
   in
@@ -1423,7 +1410,7 @@ let from_json_list source_json_list =
       {
         CombinedSourceRules.generated_combined_rules;
         partial_sink_converter;
-        partial_sink_labels;
+        registered_partial_sinks;
         string_combine_partial_sinks;
       }
       json
@@ -1437,11 +1424,10 @@ let from_json_list source_json_list =
     create_combined_source_rules_and_update_partial_sinks
       ~partial_sink
       ~partial_sink_converter
-      ~partial_sink_labels
+      ~registered_partial_sinks
       ~rule_common_attributues
       ~combined_source_rule_sources
-      ~path
-    >>= fun (main_rule, secondary_rule, partial_sink_converter, partial_sink_labels) ->
+    >>= fun (main_rule, secondary_rule, partial_sink_converter, registered_partial_sinks) ->
     let string_combine_partial_sinks =
       StringOperationPartialSinks.add partial_sink string_combine_partial_sinks
     in
@@ -1450,7 +1436,7 @@ let from_json_list source_json_list =
         CombinedSourceRules.generated_combined_rules =
           main_rule :: secondary_rule :: generated_combined_rules;
         partial_sink_converter;
-        partial_sink_labels;
+        registered_partial_sinks;
         string_combine_partial_sinks;
       }
   in
@@ -1572,7 +1558,7 @@ let from_json_list source_json_list =
   let {
     CombinedSourceRules.generated_combined_rules;
     partial_sink_converter;
-    partial_sink_labels;
+    registered_partial_sinks;
     string_combine_partial_sinks;
   }
     =
@@ -1660,7 +1646,7 @@ let from_json_list source_json_list =
     implicit_sinks;
     implicit_sources;
     partial_sink_converter;
-    partial_sink_labels;
+    registered_partial_sinks;
     string_combine_partial_sinks;
     find_missing_flows = None;
     dump_model_query_results_path = None;
@@ -2022,10 +2008,6 @@ let conditional_test_sinks { Heap.implicit_sinks = { conditional_test; _ }; _ } 
 
 let literal_string_sinks { Heap.implicit_sinks = { literal_string_sinks; _ }; _ } =
   literal_string_sinks
-
-
-let get_triggered_sinks_if_matched { Heap.partial_sink_converter; _ } ~partial_sink ~source =
-  PartialSinkConverter.get_triggered_sinks_if_matched ~partial_sink ~source partial_sink_converter
 
 
 let is_missing_flow_analysis { Heap.find_missing_flows; _ } kind =

@@ -42,31 +42,47 @@ module ModelConstraints : sig
   val default : t
 end
 
-(* A map from partial sink kinds to each multi-source rule's two partial sink labels. *)
-module PartialSinkLabelsMap : sig
-  type label = string
+(* A map from partial sink kinds to other partial sinks that "match" them. Two partial sinks match
+   only if both appear in a multi-source rule. *)
+module RegisteredPartialSinks : sig
+  type t [@@deriving compare, show, equal]
 
-  type t
+  val from_kind_label : kind:string -> label:string -> Sinks.PartialSink.t
 
-  type label_registration_result =
+  type registration_result =
     | Yes
-    | PartialSinkNotRegistered
-    | LabelNotRegistered of
-        Data_structures.SerializableStringSet.t (* The set of registered labels *)
+    | No of Sinks.PartialSink.Set.t (* The set of registered labels *)
 
-  val is_label_registered : partial_sink:string -> label:string -> t -> label_registration_result
+  val is_registered : partial_sink:Sinks.PartialSink.t -> t -> registration_result
 
-  val find_matching_labels : partial_sink:Sinks.partial_sink -> t -> label list option
+  val find_matches : Sinks.PartialSink.t -> t -> Sinks.PartialSink.Set.t option
 
-  val of_alist_exn : (string * (label * label) list) list -> t
-
-  val to_alist : t -> (string * (label * label) list) list
+  (* For test purpose only. *)
+  val of_alist_exn : (string * string list) list -> t
 end
 
 (* A map from partial sinks, to the matching sources and the corresponding triggered sinks for each
    match. *)
 module PartialSinkConverter : sig
   type t
+
+  val empty : t
+
+  val get_triggered_sinks_if_matched
+    :  partial_sink:Sinks.PartialSink.t ->
+    source:Sources.t ->
+    t ->
+    Sinks.PartialSink.Triggered.Set.t
+
+  val all_triggered_sinks
+    :  partial_sink:Sinks.PartialSink.t ->
+    t ->
+    Sinks.PartialSink.Triggered.Set.t
+
+  (* For test purpose only. *)
+  val of_alist_exn
+    :  (Sinks.PartialSink.t * Sinks.PartialSink.Triggered.Set.t Sources.TriggeringSource.Map.t) list ->
+    t
 end
 
 module StringOperationPartialSinks : sig
@@ -74,7 +90,7 @@ module StringOperationPartialSinks : sig
 
   val equal : t -> t -> bool
 
-  val singleton : string -> t
+  val singleton : Sinks.PartialSink.t -> t
 
   val get_partial_sinks : t -> Sinks.t list
 end
@@ -94,7 +110,7 @@ module Heap : sig
     implicit_sinks: implicit_sinks;
     implicit_sources: implicit_sources;
     partial_sink_converter: PartialSinkConverter.t;
-    partial_sink_labels: PartialSinkLabelsMap.t;
+    registered_partial_sinks: RegisteredPartialSinks.t;
     string_combine_partial_sinks: StringOperationPartialSinks.t;
     find_missing_flows: Configuration.MissingFlowKind.t option;
     dump_model_query_results_path: PyrePath.t option;
@@ -145,12 +161,10 @@ module Error : sig
     | UnsupportedSink of string
     | UnsupportedTransform of string
     | UnexpectedCombinedSourceRule of JsonParsing.JsonAst.Json.t
-    | InvalidLabelMultiSink of {
-        label: string;
+    | InvalidMultiSink of {
         sink: string;
-        labels: Data_structures.SerializableStringSet.t;
+        registered: Sinks.PartialSink.Set.t;
       }
-    | InvalidMultiSink of string
     | RuleCodeDuplicate of {
         code: int;
         previous_location: JsonParsing.JsonAst.LocationWithPath.t option;
@@ -238,12 +252,6 @@ val conditional_test_sinks : Heap.t -> Sinks.t list
 val literal_string_sinks : Heap.t -> literal_string_sink list
 
 val literal_string_sources : Heap.t -> literal_string_source list
-
-val get_triggered_sinks_if_matched
-  :  Heap.t ->
-  partial_sink:Sinks.partial_sink ->
-  source:Sources.t ->
-  Sinks.Set.t
 
 val is_missing_flow_analysis : Heap.t -> Configuration.MissingFlowKind.t -> bool
 
