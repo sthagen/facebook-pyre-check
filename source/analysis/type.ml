@@ -1023,216 +1023,234 @@ let rec is_truthy = function
   | _ -> false
 
 
-let reverse_substitute name =
-  match name with
-  | "collections.defaultdict" -> "typing.DefaultDict"
-  | "dict" -> "typing.Dict"
-  | "frozenset" -> "typing.FrozenSet"
-  | "list" -> "typing.List"
-  | "set" -> "typing.Set"
-  | "type" -> "typing.Type"
-  | _ -> name
+(* The Cannonicalization module contains logic related to representing types. Pretty printing uses
+   the cannonicalizations, but so does some other logic like the `Type.t -> Expression.t`
+   conversion. *)
+module Cannonicalization = struct
+  let reverse_substitute name =
+    match name with
+    | "collections.defaultdict" -> "typing.DefaultDict"
+    | "dict" -> "typing.Dict"
+    | "frozenset" -> "typing.FrozenSet"
+    | "list" -> "typing.List"
+    | "set" -> "typing.Set"
+    | "type" -> "typing.Type"
+    | _ -> name
 
 
-let parameter_variable_type_representation = function
-  | { head = []; variable = { name; _ } } -> Primitive name
-  | { head; variable = { name; _ } } ->
-      let concretes = head @ [Primitive name] in
-      Parametric
-        {
-          name = List.hd_exn Record.OrderedTypes.concatenate_public_names;
-          parameters = List.map concretes ~f:(fun concrete -> Record.Parameter.Single concrete);
-        }
+  let parameter_variable_type_representation = function
+    | { head = []; variable = { name; _ } } -> Primitive name
+    | { head; variable = { name; _ } } ->
+        let concretes = head @ [Primitive name] in
+        Parametric
+          {
+            name = List.hd_exn Record.OrderedTypes.concatenate_public_names;
+            parameters = List.map concretes ~f:(fun concrete -> Record.Parameter.Single concrete);
+          }
+end
+
+module PrettyPrinting = struct
+  let show_callable_parameters ~pp_type = function
+    | Record.Callable.Undefined -> "..."
+    | ParameterVariadicTypeVariable variable ->
+        Cannonicalization.parameter_variable_type_representation variable
+        |> Format.asprintf "%a" pp_type
+    | Defined parameters ->
+        List.map parameters ~f:(CallableParameter.show_concise ~pp_type)
+        |> String.concat ~sep:", "
+        |> fun parameters -> Format.asprintf "[%s]" parameters
 
 
-let show_callable_parameters ~pp_type = function
-  | Record.Callable.Undefined -> "..."
-  | ParameterVariadicTypeVariable variable ->
-      parameter_variable_type_representation variable |> Format.asprintf "%a" pp_type
-  | Defined parameters ->
-      List.map parameters ~f:(CallableParameter.show_concise ~pp_type)
-      |> String.concat ~sep:", "
-      |> fun parameters -> Format.asprintf "[%s]" parameters
+  let pp_parameters ~pp_type format = function
+    | parameters
+      when List.for_all parameters ~f:(function
+               | Record.Parameter.Single parameter -> is_unbound parameter || is_top parameter
+               | _ -> false) ->
+        Format.fprintf format ""
+    | parameters ->
+        let s format = function
+          | Record.Parameter.Single parameter -> Format.fprintf format "%a" pp_type parameter
+          | CallableParameters parameters ->
+              Format.fprintf format "%s" (show_callable_parameters parameters ~pp_type)
+          | Unpacked unpackable ->
+              Format.fprintf
+                format
+                "%a"
+                (Record.OrderedTypes.Concatenation.pp_unpackable ~pp_type)
+                unpackable
+        in
+        Format.pp_print_list
+          ~pp_sep:(fun format () -> Format.fprintf format ", ")
+          s
+          format
+          parameters
 
 
-let pp_parameters ~pp_type format = function
-  | parameters
-    when List.for_all parameters ~f:(function
-             | Record.Parameter.Single parameter -> is_unbound parameter || is_top parameter
-             | _ -> false) ->
-      Format.fprintf format ""
-  | parameters ->
-      let s format = function
-        | Record.Parameter.Single parameter -> Format.fprintf format "%a" pp_type parameter
-        | CallableParameters parameters ->
-            Format.fprintf format "%s" (show_callable_parameters parameters ~pp_type)
-        | Unpacked unpackable ->
-            Format.fprintf
-              format
-              "%a"
-              (Record.OrderedTypes.Concatenation.pp_unpackable ~pp_type)
-              unpackable
-      in
-      Format.pp_print_list ~pp_sep:(fun format () -> Format.fprintf format ", ") s format parameters
+  let pp_typed_dictionary_field
+      ~pp_type
+      format
+      { Record.TypedDictionary.name; annotation; required }
+    =
+    Format.fprintf format "%s%s: %a" name (if required then "" else "?") pp_type annotation
 
 
-let pp_typed_dictionary_field ~pp_type format { Record.TypedDictionary.name; annotation; required } =
-  Format.fprintf format "%s%s: %a" name (if required then "" else "?") pp_type annotation
-
-
-let rec pp format annotation =
-  let pp_ordered_type ordered_type =
-    match ordered_type with
-    | Record.OrderedTypes.Concatenation
-        { middle = UnboundedElements annotation; prefix = []; suffix = [] } ->
-        Format.asprintf "%a, ..." pp annotation
-    | ordered_type -> Format.asprintf "%a" (Record.OrderedTypes.pp_concise ~pp_type:pp) ordered_type
-  in
-  match annotation with
-  | Bottom -> Format.fprintf format "undefined"
-  | Callable { kind; implementation; overloads; _ } ->
-      let kind =
-        match kind with
-        | Anonymous -> ""
-        | Named name -> Format.asprintf "(%a)" Reference.pp name
-      in
-      let signature_to_string { annotation; parameters; _ } =
-        Format.asprintf "%s, %a" (show_callable_parameters parameters ~pp_type:pp) pp annotation
-      in
-      let implementation = signature_to_string implementation in
-      let overloads =
-        let overloads = List.map overloads ~f:signature_to_string in
-        if List.is_empty overloads then
-          ""
-        else
-          String.concat ~sep:"][" overloads |> Format.sprintf "[[%s]]"
-      in
-      Format.fprintf format "typing.Callable%s[%s]%s" kind implementation overloads
-  | Any -> Format.fprintf format "typing.Any"
-  | Literal (Boolean literal) ->
-      Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
-  | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
-  | Literal (String (LiteralValue literal)) ->
-      Format.fprintf format "typing_extensions.Literal['%s']" literal
-  | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
-  | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
-  | Literal (EnumerationMember { enumeration_type; member_name }) ->
-      Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
-  | NoneType -> Format.fprintf format "None"
-  | Parametric { name; parameters } ->
-      let name = reverse_substitute name in
-      Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
-  | ParameterVariadicComponent component ->
-      Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
-  | Primitive name -> Format.fprintf format "%s" name
-  | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
-  | RecursiveType { name; body } -> Format.fprintf format "%s (resolves to %a)" name pp body
-  | Top -> Format.fprintf format "unknown"
-  | Tuple ordered_type -> Format.fprintf format "typing.Tuple[%s]" (pp_ordered_type ordered_type)
-  | TypeOperation (Compose ordered_type) ->
-      Format.fprintf format "pyre_extensions.Compose[%s]" (pp_ordered_type ordered_type)
-  | Union [NoneType; parameter]
-  | Union [parameter; NoneType] ->
-      Format.fprintf format "typing.Optional[%a]" pp parameter
-  | Union parameters ->
-      Format.fprintf
-        format
-        "typing.Union[%s]"
-        (List.map parameters ~f:show |> String.concat ~sep:", ")
-  | Variable unary -> Record.Variable.RecordUnary.pp_concise format unary ~pp_type:pp
-
-
-and show annotation = Format.asprintf "%a" pp annotation
-
-and pp_concise format annotation =
-  let pp_comma_separated =
-    Format.pp_print_list ~pp_sep:(fun format () -> Format.fprintf format ", ") pp_concise
-  in
-  let strip_qualification identifier =
-    String.split ~on:'.' identifier |> List.last |> Option.value ~default:identifier
-  in
-  let signature_to_string { annotation; parameters; _ } =
-    let parameters =
-      match parameters with
-      | Undefined -> "..."
-      | ParameterVariadicTypeVariable variable ->
-          parameter_variable_type_representation variable |> Format.asprintf "%a" pp_concise
-      | Defined parameters ->
-          let parameter = function
-            | CallableParameter.PositionalOnly { annotation; default; _ } ->
-                if default then
-                  Format.asprintf "%a=..." pp_concise annotation
-                else
-                  Format.asprintf "%a" pp_concise annotation
-            | KeywordOnly { name; annotation; default }
-            | Named { name; annotation; default } ->
-                let name = Identifier.sanitized name in
-                if default then
-                  Format.asprintf "%s: %a = ..." name pp_concise annotation
-                else
-                  Format.asprintf "%s: %a" name pp_concise annotation
-            | Variable (Concrete annotation) -> Format.asprintf "*(%a)" pp_concise annotation
-            | Variable (Concatenation concatenation) ->
-                Format.asprintf
-                  "*(%a)"
-                  (Record.OrderedTypes.Concatenation.pp_concatenation ~pp_type:pp_concise)
-                  concatenation
-            | Keywords annotation -> Format.asprintf "**(%a)" pp_concise annotation
-          in
-          List.map parameters ~f:parameter |> String.concat ~sep:", "
+  let rec pp format annotation =
+    let pp_ordered_type ordered_type =
+      match ordered_type with
+      | Record.OrderedTypes.Concatenation
+          { middle = UnboundedElements annotation; prefix = []; suffix = [] } ->
+          Format.asprintf "%a, ..." pp annotation
+      | ordered_type ->
+          Format.asprintf "%a" (Record.OrderedTypes.pp_concise ~pp_type:pp) ordered_type
     in
-    Format.asprintf "(%s) -> %a" parameters pp_concise annotation
-  in
-  match annotation with
-  | Bottom -> Format.fprintf format "?"
-  | Callable { implementation; _ } ->
-      Format.fprintf format "%s" (signature_to_string implementation)
-  | Parametric
-      { name = "BoundMethod"; parameters = [Single (Callable { implementation; _ }); Single _] } ->
-      Format.fprintf format "%s" (signature_to_string implementation)
-  | Any -> Format.fprintf format "Any"
-  | Literal (Boolean literal) ->
-      Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
-  | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
-  | Literal (String (LiteralValue literal)) ->
-      Format.fprintf format "typing_extensions.Literal['%s']" literal
-  | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
-  | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
-  | Literal (EnumerationMember { enumeration_type; member_name }) ->
-      Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
-  | NoneType -> Format.fprintf format "None"
-  | Parametric { name; parameters } ->
-      let name = strip_qualification (reverse_substitute name) in
-      Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
-  | ParameterVariadicComponent component ->
-      Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
-  | Primitive "..." -> Format.fprintf format "..."
-  | Primitive name -> Format.fprintf format "%s" (strip_qualification name)
-  | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
-  | RecursiveType { name; _ } -> Format.fprintf format "%s" name
-  | Top -> Format.fprintf format "unknown"
-  | Tuple (Concatenation { middle = UnboundedElements parameter; prefix = []; suffix = [] }) ->
-      Format.fprintf format "Tuple[%a, ...]" pp_concise parameter
-  | Tuple ordered_type ->
-      Format.fprintf
-        format
-        "Tuple[%a]"
-        (Record.OrderedTypes.pp_concise ~pp_type:pp_concise)
-        ordered_type
-  | TypeOperation (Compose ordered_type) ->
-      Format.fprintf
-        format
-        "Compose[%a]"
-        (Record.OrderedTypes.pp_concise ~pp_type:pp_concise)
-        ordered_type
-  | Union [NoneType; parameter]
-  | Union [parameter; NoneType] ->
-      Format.fprintf format "Optional[%a]" pp_concise parameter
-  | Union parameters -> Format.fprintf format "Union[%a]" pp_comma_separated parameters
-  | Variable { variable; _ } -> Format.fprintf format "%s" (strip_qualification variable)
+    match annotation with
+    | Bottom -> Format.fprintf format "undefined"
+    | Callable { kind; implementation; overloads; _ } ->
+        let kind =
+          match kind with
+          | Anonymous -> ""
+          | Named name -> Format.asprintf "(%a)" Reference.pp name
+        in
+        let signature_to_string { annotation; parameters; _ } =
+          Format.asprintf "%s, %a" (show_callable_parameters parameters ~pp_type:pp) pp annotation
+        in
+        let implementation = signature_to_string implementation in
+        let overloads =
+          let overloads = List.map overloads ~f:signature_to_string in
+          if List.is_empty overloads then
+            ""
+          else
+            String.concat ~sep:"][" overloads |> Format.sprintf "[[%s]]"
+        in
+        Format.fprintf format "typing.Callable%s[%s]%s" kind implementation overloads
+    | Any -> Format.fprintf format "typing.Any"
+    | Literal (Boolean literal) ->
+        Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
+    | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
+    | Literal (String (LiteralValue literal)) ->
+        Format.fprintf format "typing_extensions.Literal['%s']" literal
+    | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
+    | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
+    | Literal (EnumerationMember { enumeration_type; member_name }) ->
+        Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
+    | NoneType -> Format.fprintf format "None"
+    | Parametric { name; parameters } ->
+        let name = Cannonicalization.reverse_substitute name in
+        Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
+    | ParameterVariadicComponent component ->
+        Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
+    | Primitive name -> Format.fprintf format "%s" name
+    | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
+    | RecursiveType { name; body } -> Format.fprintf format "%s (resolves to %a)" name pp body
+    | Top -> Format.fprintf format "unknown"
+    | Tuple ordered_type -> Format.fprintf format "typing.Tuple[%s]" (pp_ordered_type ordered_type)
+    | TypeOperation (Compose ordered_type) ->
+        Format.fprintf format "pyre_extensions.Compose[%s]" (pp_ordered_type ordered_type)
+    | Union [NoneType; parameter]
+    | Union [parameter; NoneType] ->
+        Format.fprintf format "typing.Optional[%a]" pp parameter
+    | Union parameters ->
+        Format.fprintf
+          format
+          "typing.Union[%s]"
+          (List.map parameters ~f:show |> String.concat ~sep:", ")
+    | Variable unary -> Record.Variable.RecordUnary.pp_concise format unary ~pp_type:pp
 
 
-and show_concise annotation = Format.asprintf "%a" pp_concise annotation
+  and show annotation = Format.asprintf "%a" pp annotation
+
+  and pp_concise format annotation =
+    let pp_comma_separated =
+      Format.pp_print_list ~pp_sep:(fun format () -> Format.fprintf format ", ") pp_concise
+    in
+    let strip_qualification identifier =
+      String.split ~on:'.' identifier |> List.last |> Option.value ~default:identifier
+    in
+    let signature_to_string { annotation; parameters; _ } =
+      let parameters =
+        match parameters with
+        | Undefined -> "..."
+        | ParameterVariadicTypeVariable variable ->
+            Cannonicalization.parameter_variable_type_representation variable
+            |> Format.asprintf "%a" pp_concise
+        | Defined parameters ->
+            let parameter = function
+              | CallableParameter.PositionalOnly { annotation; default; _ } ->
+                  if default then
+                    Format.asprintf "%a=..." pp_concise annotation
+                  else
+                    Format.asprintf "%a" pp_concise annotation
+              | KeywordOnly { name; annotation; default }
+              | Named { name; annotation; default } ->
+                  let name = Identifier.sanitized name in
+                  if default then
+                    Format.asprintf "%s: %a = ..." name pp_concise annotation
+                  else
+                    Format.asprintf "%s: %a" name pp_concise annotation
+              | Variable (Concrete annotation) -> Format.asprintf "*(%a)" pp_concise annotation
+              | Variable (Concatenation concatenation) ->
+                  Format.asprintf
+                    "*(%a)"
+                    (Record.OrderedTypes.Concatenation.pp_concatenation ~pp_type:pp_concise)
+                    concatenation
+              | Keywords annotation -> Format.asprintf "**(%a)" pp_concise annotation
+            in
+            List.map parameters ~f:parameter |> String.concat ~sep:", "
+      in
+      Format.asprintf "(%s) -> %a" parameters pp_concise annotation
+    in
+    match annotation with
+    | Bottom -> Format.fprintf format "?"
+    | Callable { implementation; _ } ->
+        Format.fprintf format "%s" (signature_to_string implementation)
+    | Parametric
+        { name = "BoundMethod"; parameters = [Single (Callable { implementation; _ }); Single _] }
+      ->
+        Format.fprintf format "%s" (signature_to_string implementation)
+    | Any -> Format.fprintf format "Any"
+    | Literal (Boolean literal) ->
+        Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
+    | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
+    | Literal (String (LiteralValue literal)) ->
+        Format.fprintf format "typing_extensions.Literal['%s']" literal
+    | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
+    | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
+    | Literal (EnumerationMember { enumeration_type; member_name }) ->
+        Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
+    | NoneType -> Format.fprintf format "None"
+    | Parametric { name; parameters } ->
+        let name = strip_qualification (Cannonicalization.reverse_substitute name) in
+        Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
+    | ParameterVariadicComponent component ->
+        Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
+    | Primitive "..." -> Format.fprintf format "..."
+    | Primitive name -> Format.fprintf format "%s" (strip_qualification name)
+    | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
+    | RecursiveType { name; _ } -> Format.fprintf format "%s" name
+    | Top -> Format.fprintf format "unknown"
+    | Tuple (Concatenation { middle = UnboundedElements parameter; prefix = []; suffix = [] }) ->
+        Format.fprintf format "Tuple[%a, ...]" pp_concise parameter
+    | Tuple ordered_type ->
+        Format.fprintf
+          format
+          "Tuple[%a]"
+          (Record.OrderedTypes.pp_concise ~pp_type:pp_concise)
+          ordered_type
+    | TypeOperation (Compose ordered_type) ->
+        Format.fprintf
+          format
+          "Compose[%a]"
+          (Record.OrderedTypes.pp_concise ~pp_type:pp_concise)
+          ordered_type
+    | Union [NoneType; parameter]
+    | Union [parameter; NoneType] ->
+        Format.fprintf format "Optional[%a]" pp_concise parameter
+    | Union parameters -> Format.fprintf format "Union[%a]" pp_comma_separated parameters
+    | Variable { variable; _ } -> Format.fprintf format "%s" (strip_qualification variable)
+
+
+  and show_concise annotation = Format.asprintf "%a" pp_concise annotation
+end
 
 module Constructors = struct
   let parametric name parameters = Parametric { name; parameters }
@@ -1354,25 +1372,21 @@ module Constructors = struct
 
 
   let yield parameter = Parametric { name = "Yield"; parameters = [Single parameter] }
+
+  let rec read_only = function
+    | ReadOnly _ as type_ -> type_
+    | NoneType -> NoneType
+    | Union elements -> Union (List.map ~f:read_only elements)
+    | (Primitive class_name as type_)
+    | (Parametric { name = class_name; _ } as type_)
+      when Core.Set.mem Recognized.classes_safe_to_coerce_readonly_to_mutable class_name ->
+        (* We trust that it is safe to ignore the `ReadOnly` wrapper on these classes. This helps
+           reduce noisy errors on classes that are never mutated and reduces the adoption burden on
+           users. *)
+        type_
+    | Any -> Any
+    | type_ -> ReadOnly type_
 end
-
-let alternate_name_to_canonical_name_map =
-  [
-    "typing.ChainMap", "collections.ChainMap";
-    "typing.Counter", "collections.Counter";
-    "typing.DefaultDict", "collections.defaultdict";
-    "typing.Deque", "collections.deque";
-    "typing.Dict", "dict";
-    "typing.FrozenSet", "frozenset";
-    "typing.List", "list";
-    "typing.Set", "set";
-    "typing.Type", "type";
-    "typing_extensions.Protocol", "typing.Protocol";
-    "pyre_extensions.Generic", "typing.Generic";
-    "pyre_extensions.generic.Generic", "typing.Generic";
-  ]
-  |> Identifier.Table.of_alist_exn
-
 
 let are_fields_total = List.for_all ~f:(fun { Record.TypedDictionary.required; _ } -> required)
 
@@ -1444,7 +1458,7 @@ let rec expression annotation =
         Expression.List (List.map ~f:convert_parameter parameters) |> Node.create ~location
     | Undefined -> Node.create ~location (Expression.Constant Constant.Ellipsis)
     | ParameterVariadicTypeVariable variable ->
-        parameter_variable_type_representation variable |> expression
+        Cannonicalization.parameter_variable_type_representation variable |> expression
   in
   let convert_annotation annotation =
     let convert_ordered_type ordered_type =
@@ -1526,7 +1540,7 @@ let rec expression annotation =
           match parameters with
           | parameters -> List.map parameters ~f:expression_of_parameter
         in
-        subscript (reverse_substitute name) parameters
+        subscript (Cannonicalization.reverse_substitute name) parameters
     | ParameterVariadicComponent { component; variable_name; _ } ->
         let attribute =
           Record.Variable.RecordVariadic.RecordParameters.RecordComponents.component_name component
@@ -1553,21 +1567,6 @@ let rec expression annotation =
     | _ -> convert_annotation annotation
   in
   Node.create_with_default_location value
-
-
-let rec create_readonly = function
-  | ReadOnly _ as type_ -> type_
-  | NoneType -> NoneType
-  | Union elements -> Union (List.map ~f:create_readonly elements)
-  | (Primitive class_name as type_)
-  | (Parametric { name = class_name; _ } as type_)
-    when Core.Set.mem Recognized.classes_safe_to_coerce_readonly_to_mutable class_name ->
-      (* We trust that it is safe to ignore the `ReadOnly` wrapper on these classes. This helps
-         reduce noisy errors on classes that are never mutated and reduces the adoption burden on
-         users. *)
-      type_
-  | Any -> Any
-  | type_ -> ReadOnly type_
 
 
 module Transform = struct
@@ -1656,7 +1655,7 @@ module Transform = struct
                   Unpacked (UnboundedElements (visit_annotation annotation ~state))
             in
             Parametric { name; parameters = List.map parameters ~f:visit }
-        | ReadOnly type_ -> create_readonly (visit_annotation type_ ~state)
+        | ReadOnly type_ -> Constructors.read_only (visit_annotation type_ ~state)
         | RecursiveType { name; body } ->
             RecursiveType { name; body = visit_annotation ~state body }
         | Tuple ordered_type -> Tuple (visit_ordered_types ordered_type)
@@ -1760,8 +1759,6 @@ let contains_unknown annotation = exists annotation ~predicate:is_top
 
 let contains_undefined annotation = exists annotation ~predicate:is_unbound
 
-let pp_type = pp
-
 module Callable = struct
   module Parameter = struct
     include Record.Callable.RecordParameter
@@ -1816,7 +1813,7 @@ module Callable = struct
       |> snd
 
 
-    let show_concise = show_concise ~pp_type
+    let show_concise = show_concise ~pp_type:PrettyPrinting.pp
 
     let default = function
       | PositionalOnly { default; _ }
@@ -2203,7 +2200,7 @@ module OrderedTypes = struct
 
   type ordered_types_t = t
 
-  let pp_concise = pp_concise ~pp_type
+  let pp_concise = pp_concise ~pp_type:PrettyPrinting.pp
 
   let union_upper_bound = function
     | Concrete concretes -> Constructors.union concretes
@@ -2413,7 +2410,7 @@ module TypeOperation = struct
 end
 
 module ReadOnly = struct
-  let create = create_readonly
+  let create = Constructors.read_only
 
   let unpack_readonly = function
     | ReadOnly type_ -> Some type_
@@ -2434,6 +2431,24 @@ module ReadOnly = struct
     >>| (fun inner_type -> create (make_container inner_type))
     |> Option.value ~default:(make_container element_type)
 end
+
+let alternate_name_to_canonical_name_map =
+  [
+    "typing.ChainMap", "collections.ChainMap";
+    "typing.Counter", "collections.Counter";
+    "typing.DefaultDict", "collections.defaultdict";
+    "typing.Deque", "collections.deque";
+    "typing.Dict", "dict";
+    "typing.FrozenSet", "frozenset";
+    "typing.List", "list";
+    "typing.Set", "set";
+    "typing.Type", "type";
+    "typing_extensions.Protocol", "typing.Protocol";
+    "pyre_extensions.Generic", "typing.Generic";
+    "pyre_extensions.generic.Generic", "typing.Generic";
+  ]
+  |> Identifier.Table.of_alist_exn
+
 
 let parameters_from_unpacked_annotation annotation ~variable_aliases =
   let open Record.OrderedTypes.Concatenation in
@@ -2908,7 +2923,7 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
            `pyre_extensions` is part of a project. *)
         | "typing._PyreReadOnly_", Some [head]
         | "pyre_extensions.ReadOnly", Some [head] ->
-            ReadOnly.create head
+            Constructors.read_only head
         | _ -> result
       in
       match Hashtbl.find alternate_name_to_canonical_name_map name with
@@ -4158,8 +4173,6 @@ end = struct
     module TupleVariadic = Make (Variadic.Tuple)
   end
 
-  let pp_type = pp
-
   type t = type_t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
 
   type variable_t = t
@@ -4177,7 +4190,7 @@ end = struct
   [@@deriving compare, eq, sexp, show, hash]
 
   let pp_concise format = function
-    | Unary variable -> Unary.pp_concise format variable ~pp_type
+    | Unary variable -> Unary.pp_concise format variable ~pp_type:PrettyPrinting.pp
     | ParameterVariadic { name; _ } ->
         Format.fprintf format "CallableParameterTypeVariable[%s]" name
     | TupleVariadic { name; _ } -> Format.fprintf format "TypeVarTuple[%s]" name
@@ -4640,7 +4653,11 @@ let dequalify map annotation =
             Parametric
               { name = dequalify_string "typing.Optional"; parameters = [Single parameter] }
         | Parametric { name; parameters } ->
-            Parametric { name = dequalify_identifier map (reverse_substitute name); parameters }
+            Parametric
+              {
+                name = dequalify_identifier map (Cannonicalization.reverse_substitute name);
+                parameters;
+              }
         | Union parameters ->
             Parametric
               {
@@ -5127,8 +5144,6 @@ let contains_prohibited_any annotation =
   fst (Exists.visit false annotation)
 
 
-let to_yojson annotation = `String (show annotation)
-
 type class_data_for_attribute_lookup = {
   class_name: Primitive.t;
   instantiated: t;
@@ -5284,3 +5299,7 @@ let equivalent_for_assert_type left right =
 
 
 include Constructors
+include PrettyPrinting
+
+(* We always send types in the pretty printed form *)
+let to_yojson annotation = `String (PrettyPrinting.show annotation)
