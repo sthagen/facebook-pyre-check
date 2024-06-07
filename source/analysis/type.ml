@@ -15,6 +15,22 @@ open Expression
 open Pyre
 module ExpressionParameter = Parameter
 
+let dequalify_reference map reference =
+  let rec fold accumulator reference =
+    if Core.Map.mem map reference then
+      Reference.combine (Core.Map.find_exn map reference) (Reference.create_from_list accumulator)
+    else
+      match Reference.prefix reference with
+      | Some prefix -> fold (Reference.last reference :: accumulator) prefix
+      | None -> Reference.create_from_list accumulator
+  in
+  fold [] reference
+
+
+let dequalify_identifier map identifier =
+  Reference.create identifier |> dequalify_reference map |> Reference.show
+
+
 module Record = struct
   module Variable = struct
     type state =
@@ -765,7 +781,6 @@ module Record = struct
   end
 end
 
-open Record.Callable
 module CallableParameter = Record.Callable.RecordParameter
 
 module Primitive = struct
@@ -821,438 +836,15 @@ module T = struct
   [@@deriving compare, eq, sexp, show, hash]
 end
 
-include T
-
-type type_t = t [@@deriving compare, eq, sexp, show, hash]
-
-let _ = show (* shadowed below *)
-
-module Map = Map.Make (T)
-
-let default_to_bottom map keys =
-  let to_bottom solution key =
-    Core.Map.update solution key ~f:(function
-        | None -> Bottom
-        | Some value -> value)
-  in
-  List.fold keys ~f:to_bottom ~init:map
-
-
-module Set = Set.Make (T)
-include Hashable.Make (T)
-
-module Parameter = struct
-  include Record.Parameter
-
-  type t = type_t record [@@deriving compare, eq, sexp, show, hash]
-
-  let all_singles parameters = List.map parameters ~f:is_single |> Option.all
-
-  let to_variable = function
-    | Single (Variable variable) -> Some (Record.Variable.Unary variable)
-    | CallableParameters (ParameterVariadicTypeVariable { head = []; variable }) ->
-        Some (ParameterVariadic variable)
-    | Unpacked (Variadic variadic) -> Some (TupleVariadic variadic)
-    | _ -> None
-
-
-  let is_unpacked = function
-    | Unpacked _ -> true
-    | _ -> false
-end
-
-let is_any = function
-  | Any -> true
-  | _ -> false
-
-
-let is_async_iterator = function
-  | Parametric { name = "typing.AsyncIterator"; _ } -> true
-  | _ -> false
-
-
-let is_callable = function
-  | Callable _ -> true
-  | _ -> false
-
-
-let is_dictionary ?(with_key = None) = function
-  | Parametric { name = "dict"; parameters } -> (
-      match with_key, parameters with
-      | Some key, [Single key_parameter; _] -> equal key key_parameter
-      | _ -> true)
-  | _ -> false
-
-
-let is_dictionary_or_mapping = function
-  | Parametric { name = "typing.Mapping" | "dict"; _ } -> true
-  | _ -> false
-
-
-let is_ellipsis = function
-  | Primitive "..." -> true
-  | _ -> false
-
-
-let is_generic_primitive = function
-  | Primitive "typing.Generic" -> true
-  | _ -> false
-
-
-let is_iterable = function
-  | Parametric { name = "typing.Iterable"; _ } -> true
-  | _ -> false
-
-
-let is_iterator = function
-  | Parametric { name = "typing.Iterator"; _ } -> true
-  | _ -> false
-
-
-let is_list = function
-  | Parametric { name = "list"; _ } -> true
-  | _ -> false
-
-
-let is_meta = function
-  | Parametric { name = "type"; _ } -> true
-  | _ -> false
-
-
-let is_none = function
-  | NoneType -> true
-  | _ -> false
-
-
-let is_noreturn_or_never = function
-  | Primitive "typing.NoReturn"
-  | Primitive "NoReturn"
-  | Primitive "Never"
-  | Primitive "typing_extensions.Never"
-  | Primitive "typing.Never" ->
-      true
-  | _ -> false
-
-
-let is_object = function
-  | Primitive "object" -> true
-  | _ -> false
-
-
-let is_optional = function
-  | Union [NoneType; _]
-  | Union [_; NoneType] ->
-      true
-  | Parametric { name = "typing.Optional" | "Optional"; _ } -> true
-  | _ -> false
-
-
-let is_optional_primitive = function
-  | Primitive "typing.Optional" -> true
-  | _ -> false
-
-
-let is_primitive = function
-  | Primitive _ -> true
-  | _ -> false
-
-
-let is_primitive_string = function
-  | Primitive "str" -> true
-  | _ -> false
-
-
-let is_literal_string = function
-  | Literal (String _) -> true
-  | _ -> false
-
-
-let is_top = function
-  | Top -> true
-  | _ -> false
-
-
-let is_tuple = function
-  | Tuple _ -> true
-  | Parametric { name = "typing.Tuple" | "Tuple"; _ } -> true
-  | _ -> false
-
-
-let is_type_alias = function
-  | Primitive "typing_extensions.TypeAlias" -> true
-  | _ -> false
-
-
-let is_unbound = function
-  | Bottom -> true
-  | _ -> false
-
-
-let is_union = function
-  | Union _ -> true
-  | _ -> false
-
-
-let is_variable = function
-  | Variable _ -> true
-  | _ -> false
-
-
-let rec is_falsy = function
-  | NoneType
-  | Literal (Boolean false)
-  | Literal (Integer 0)
-  | Literal (String (LiteralValue ""))
-  | Literal (Bytes "") ->
-      true
-  | ReadOnly annotated -> is_falsy annotated
-  | Union types -> List.for_all types ~f:is_falsy
-  | _ -> false
-
-
-let rec is_truthy = function
-  | Literal (Boolean true)
-  | Callable _ ->
-      true
-  | Literal (Integer i) -> not (Int.equal i 0)
-  | Literal (String (LiteralValue value))
-  | Literal (Bytes value) ->
-      not (String.is_empty value)
-  | ReadOnly annotated -> is_truthy annotated
-  | Union types -> List.for_all types ~f:is_truthy
-  | _ -> false
-
-
-(* The Cannonicalization module contains logic related to representing types. Pretty printing uses
-   the cannonicalizations, but so does some other logic like the `Type.t -> Expression.t`
-   conversion. *)
-module Cannonicalization = struct
-  let reverse_substitute name =
-    match name with
-    | "collections.defaultdict" -> "typing.DefaultDict"
-    | "dict" -> "typing.Dict"
-    | "frozenset" -> "typing.FrozenSet"
-    | "list" -> "typing.List"
-    | "set" -> "typing.Set"
-    | "type" -> "typing.Type"
-    | _ -> name
-
-
-  let parameter_variable_type_representation = function
-    | { head = []; variable = { name; _ } } -> Primitive name
-    | { head; variable = { name; _ } } ->
-        let concretes = head @ [Primitive name] in
-        Parametric
-          {
-            name = List.hd_exn Record.OrderedTypes.concatenate_public_names;
-            parameters = List.map concretes ~f:(fun concrete -> Record.Parameter.Single concrete);
-          }
-end
-
-module PrettyPrinting = struct
-  let show_callable_parameters ~pp_type = function
-    | Record.Callable.Undefined -> "..."
-    | ParameterVariadicTypeVariable variable ->
-        Cannonicalization.parameter_variable_type_representation variable
-        |> Format.asprintf "%a" pp_type
-    | Defined parameters ->
-        List.map parameters ~f:(CallableParameter.show_concise ~pp_type)
-        |> String.concat ~sep:", "
-        |> fun parameters -> Format.asprintf "[%s]" parameters
-
-
-  let pp_parameters ~pp_type format = function
-    | parameters
-      when List.for_all parameters ~f:(function
-               | Record.Parameter.Single parameter -> is_unbound parameter || is_top parameter
-               | _ -> false) ->
-        Format.fprintf format ""
-    | parameters ->
-        let s format = function
-          | Record.Parameter.Single parameter -> Format.fprintf format "%a" pp_type parameter
-          | CallableParameters parameters ->
-              Format.fprintf format "%s" (show_callable_parameters parameters ~pp_type)
-          | Unpacked unpackable ->
-              Format.fprintf
-                format
-                "%a"
-                (Record.OrderedTypes.Concatenation.pp_unpackable ~pp_type)
-                unpackable
-        in
-        Format.pp_print_list
-          ~pp_sep:(fun format () -> Format.fprintf format ", ")
-          s
-          format
-          parameters
-
-
-  let pp_typed_dictionary_field
-      ~pp_type
-      format
-      { Record.TypedDictionary.name; annotation; required }
-    =
-    Format.fprintf format "%s%s: %a" name (if required then "" else "?") pp_type annotation
-
-
-  let rec pp format annotation =
-    let pp_ordered_type ordered_type =
-      match ordered_type with
-      | Record.OrderedTypes.Concatenation
-          { middle = UnboundedElements annotation; prefix = []; suffix = [] } ->
-          Format.asprintf "%a, ..." pp annotation
-      | ordered_type ->
-          Format.asprintf "%a" (Record.OrderedTypes.pp_concise ~pp_type:pp) ordered_type
-    in
-    match annotation with
-    | Bottom -> Format.fprintf format "undefined"
-    | Callable { kind; implementation; overloads; _ } ->
-        let kind =
-          match kind with
-          | Anonymous -> ""
-          | Named name -> Format.asprintf "(%a)" Reference.pp name
-        in
-        let signature_to_string { annotation; parameters; _ } =
-          Format.asprintf "%s, %a" (show_callable_parameters parameters ~pp_type:pp) pp annotation
-        in
-        let implementation = signature_to_string implementation in
-        let overloads =
-          let overloads = List.map overloads ~f:signature_to_string in
-          if List.is_empty overloads then
-            ""
-          else
-            String.concat ~sep:"][" overloads |> Format.sprintf "[[%s]]"
-        in
-        Format.fprintf format "typing.Callable%s[%s]%s" kind implementation overloads
-    | Any -> Format.fprintf format "typing.Any"
-    | Literal (Boolean literal) ->
-        Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
-    | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
-    | Literal (String (LiteralValue literal)) ->
-        Format.fprintf format "typing_extensions.Literal['%s']" literal
-    | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
-    | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
-    | Literal (EnumerationMember { enumeration_type; member_name }) ->
-        Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
-    | NoneType -> Format.fprintf format "None"
-    | Parametric { name; parameters } ->
-        let name = Cannonicalization.reverse_substitute name in
-        Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
-    | ParameterVariadicComponent component ->
-        Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
-    | Primitive name -> Format.fprintf format "%s" name
-    | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
-    | RecursiveType { name; body } -> Format.fprintf format "%s (resolves to %a)" name pp body
-    | Top -> Format.fprintf format "unknown"
-    | Tuple ordered_type -> Format.fprintf format "typing.Tuple[%s]" (pp_ordered_type ordered_type)
-    | TypeOperation (Compose ordered_type) ->
-        Format.fprintf format "pyre_extensions.Compose[%s]" (pp_ordered_type ordered_type)
-    | Union [NoneType; parameter]
-    | Union [parameter; NoneType] ->
-        Format.fprintf format "typing.Optional[%a]" pp parameter
-    | Union parameters ->
-        Format.fprintf
-          format
-          "typing.Union[%s]"
-          (List.map parameters ~f:show |> String.concat ~sep:", ")
-    | Variable unary -> Record.Variable.RecordUnary.pp_concise format unary ~pp_type:pp
-
-
-  and show annotation = Format.asprintf "%a" pp annotation
-
-  and pp_concise format annotation =
-    let pp_comma_separated =
-      Format.pp_print_list ~pp_sep:(fun format () -> Format.fprintf format ", ") pp_concise
-    in
-    let strip_qualification identifier =
-      String.split ~on:'.' identifier |> List.last |> Option.value ~default:identifier
-    in
-    let signature_to_string { annotation; parameters; _ } =
-      let parameters =
-        match parameters with
-        | Undefined -> "..."
-        | ParameterVariadicTypeVariable variable ->
-            Cannonicalization.parameter_variable_type_representation variable
-            |> Format.asprintf "%a" pp_concise
-        | Defined parameters ->
-            let parameter = function
-              | CallableParameter.PositionalOnly { annotation; default; _ } ->
-                  if default then
-                    Format.asprintf "%a=..." pp_concise annotation
-                  else
-                    Format.asprintf "%a" pp_concise annotation
-              | KeywordOnly { name; annotation; default }
-              | Named { name; annotation; default } ->
-                  let name = Identifier.sanitized name in
-                  if default then
-                    Format.asprintf "%s: %a = ..." name pp_concise annotation
-                  else
-                    Format.asprintf "%s: %a" name pp_concise annotation
-              | Variable (Concrete annotation) -> Format.asprintf "*(%a)" pp_concise annotation
-              | Variable (Concatenation concatenation) ->
-                  Format.asprintf
-                    "*(%a)"
-                    (Record.OrderedTypes.Concatenation.pp_concatenation ~pp_type:pp_concise)
-                    concatenation
-              | Keywords annotation -> Format.asprintf "**(%a)" pp_concise annotation
-            in
-            List.map parameters ~f:parameter |> String.concat ~sep:", "
-      in
-      Format.asprintf "(%s) -> %a" parameters pp_concise annotation
-    in
-    match annotation with
-    | Bottom -> Format.fprintf format "?"
-    | Callable { implementation; _ } ->
-        Format.fprintf format "%s" (signature_to_string implementation)
-    | Parametric
-        { name = "BoundMethod"; parameters = [Single (Callable { implementation; _ }); Single _] }
-      ->
-        Format.fprintf format "%s" (signature_to_string implementation)
-    | Any -> Format.fprintf format "Any"
-    | Literal (Boolean literal) ->
-        Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
-    | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
-    | Literal (String (LiteralValue literal)) ->
-        Format.fprintf format "typing_extensions.Literal['%s']" literal
-    | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
-    | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
-    | Literal (EnumerationMember { enumeration_type; member_name }) ->
-        Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
-    | NoneType -> Format.fprintf format "None"
-    | Parametric { name; parameters } ->
-        let name = strip_qualification (Cannonicalization.reverse_substitute name) in
-        Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
-    | ParameterVariadicComponent component ->
-        Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
-    | Primitive "..." -> Format.fprintf format "..."
-    | Primitive name -> Format.fprintf format "%s" (strip_qualification name)
-    | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
-    | RecursiveType { name; _ } -> Format.fprintf format "%s" name
-    | Top -> Format.fprintf format "unknown"
-    | Tuple (Concatenation { middle = UnboundedElements parameter; prefix = []; suffix = [] }) ->
-        Format.fprintf format "Tuple[%a, ...]" pp_concise parameter
-    | Tuple ordered_type ->
-        Format.fprintf
-          format
-          "Tuple[%a]"
-          (Record.OrderedTypes.pp_concise ~pp_type:pp_concise)
-          ordered_type
-    | TypeOperation (Compose ordered_type) ->
-        Format.fprintf
-          format
-          "Compose[%a]"
-          (Record.OrderedTypes.pp_concise ~pp_type:pp_concise)
-          ordered_type
-    | Union [NoneType; parameter]
-    | Union [parameter; NoneType] ->
-        Format.fprintf format "Optional[%a]" pp_concise parameter
-    | Union parameters -> Format.fprintf format "Union[%a]" pp_comma_separated parameters
-    | Variable { variable; _ } -> Format.fprintf format "%s" (strip_qualification variable)
-
-
-  and show_concise annotation = Format.asprintf "%a" pp_concise annotation
+module Containers = struct
+  module Map = Map.Make (T)
+  module Set = Set.Make (T)
+  include Hashable.Make (T)
 end
 
 module Constructors = struct
+  open T
+
   let parametric name parameters = Parametric { name; parameters }
 
   let awaitable parameter =
@@ -1339,7 +931,7 @@ module Constructors = struct
 
   let union parameters =
     let parameters =
-      let parameter_set = Hash_set.create () in
+      let parameter_set = Containers.Hash_set.create () in
       let rec add_parameter = function
         | Union parameters -> List.iter parameters ~f:add_parameter
         | Bottom -> ()
@@ -1347,6 +939,14 @@ module Constructors = struct
       in
       List.iter parameters ~f:add_parameter;
       Base.Hash_set.to_list parameter_set |> List.sort ~compare
+    in
+    let is_top = function
+      | Top -> true
+      | _ -> false
+    in
+    let is_any = function
+      | Any -> true
+      | _ -> false
     in
     if List.exists ~f:is_top parameters then
       Top
@@ -1388,194 +988,15 @@ module Constructors = struct
     | type_ -> ReadOnly type_
 end
 
-let are_fields_total = List.for_all ~f:(fun { Record.TypedDictionary.required; _ } -> required)
+module VisitWithTransform = struct
+  open T
 
-let rec expression annotation =
-  let location = Location.any in
-  let create_name name = Expression.Name (create_name ~location name) in
-  let subscript = subscript ~location in
-  let concatenation_to_expressions
-      { Record.OrderedTypes.Concatenation.prefix; middle = unpackable; suffix }
-    =
-    List.map ~f:expression prefix
-    @ [Record.OrderedTypes.Concatenation.unpackable_to_expression ~expression ~location unpackable]
-    @ List.map ~f:expression suffix
-  in
-  let callable_parameters_expression = function
-    | Defined parameters ->
-        let convert_parameter parameter =
-          let call ?(default = false) ?name kind annotation =
-            let arguments =
-              let annotation = [{ Call.Argument.name = None; value = annotation }] in
-              let default =
-                if default then
-                  [
-                    {
-                      Call.Argument.name = None;
-                      value = Node.create ~location (create_name "default");
-                    };
-                  ]
-                else
-                  []
-              in
-              let name =
-                name
-                >>| (fun name ->
-                      [
-                        {
-                          Call.Argument.name = None;
-                          value = Node.create ~location (create_name name);
-                        };
-                      ])
-                |> Option.value ~default:[]
-              in
-              name @ annotation @ default
-            in
-            Expression.Call
-              { callee = Node.create ~location (Expression.Name (Name.Identifier kind)); arguments }
-            |> Node.create ~location
-          in
-          match parameter with
-          | CallableParameter.PositionalOnly { annotation; default; _ } ->
-              call ~default "PositionalOnly" (expression annotation)
-          | Keywords annotation -> call "Keywords" (expression annotation)
-          | Named { name; annotation; default } ->
-              call ~default ~name "Named" (expression annotation)
-          | KeywordOnly { name; annotation; default } ->
-              call ~default ~name "KeywordOnly" (expression annotation)
-          | Variable (Concrete annotation) -> call "Variable" (expression annotation)
-          | Variable (Concatenation concatenation) ->
-              Expression.Call
-                {
-                  callee = Node.create ~location (Expression.Name (Name.Identifier "Variable"));
-                  arguments =
-                    concatenation_to_expressions concatenation
-                    |> List.map ~f:(fun annotation ->
-                           { Call.Argument.name = None; value = annotation });
-                }
-              |> Node.create ~location
-        in
-        Expression.List (List.map ~f:convert_parameter parameters) |> Node.create ~location
-    | Undefined -> Node.create ~location (Expression.Constant Constant.Ellipsis)
-    | ParameterVariadicTypeVariable variable ->
-        Cannonicalization.parameter_variable_type_representation variable |> expression
-  in
-  let convert_annotation annotation =
-    let convert_ordered_type ordered_type =
-      match ordered_type with
-      | Record.OrderedTypes.Concatenation
-          { middle = UnboundedElements parameter; prefix = []; suffix = [] } ->
-          List.map ~f:expression [parameter; Primitive "..."]
-      | Concatenation concatenation -> concatenation_to_expressions concatenation
-      | Concrete parameters -> List.map ~f:expression parameters
-    in
-    match annotation with
-    | Bottom -> create_name "$bottom"
-    | Callable { implementation; overloads; _ } -> (
-        (* Pyre currently allows writing (and pretty-printing) overload types using a closed-form
-           expression written like `Callable[[Any], Any][[[str], str][[int],int]]`. *)
-        let convert_signature_as_leftmost_overload { annotation; parameters; _ } =
-          Node.create
-            ~location
-            (Expression.List [callable_parameters_expression parameters; expression annotation])
-        in
-        let convert_signature_as_index { annotation; parameters; _ } =
-          Node.create
-            ~location
-            (Expression.Tuple [callable_parameters_expression parameters; expression annotation])
-        in
-        let base_value =
-          Expression.Subscript
-            {
-              base = { Node.location; value = create_name "typing.Callable" };
-              index = convert_signature_as_index implementation;
-            }
-        in
-        let overloads =
-          let convert_overload sofar overload =
-            match sofar with
-            | None -> Some (convert_signature_as_leftmost_overload overload)
-            | Some expression ->
-                Expression.Subscript
-                  { base = expression; index = convert_signature_as_index overload }
-                |> Node.create ~location
-                |> Option.some
-          in
-          List.fold ~init:None ~f:convert_overload overloads
-        in
-        match overloads with
-        | Some overloads ->
-            Expression.Subscript { base = { Node.location; value = base_value }; index = overloads }
-        | None -> base_value)
-    | Any -> create_name "typing.Any"
-    | Literal literal ->
-        let literal =
-          match literal with
-          | Boolean true -> Expression.Constant Constant.True
-          | Boolean false -> Expression.Constant Constant.False
-          | Integer literal -> Expression.Constant (Constant.Integer literal)
-          | String (LiteralValue literal) ->
-              Expression.Constant (Constant.String { value = literal; kind = StringLiteral.String })
-          | String AnyLiteral -> create_name "str"
-          | Bytes literal ->
-              Expression.Constant (Constant.String { value = literal; kind = StringLiteral.Bytes })
-          | EnumerationMember { enumeration_type; member_name } ->
-              Expression.Name
-                (Attribute
-                   { base = expression enumeration_type; attribute = member_name; special = false })
-        in
-        subscript "typing_extensions.Literal" [Node.create ~location literal]
-    | NoneType -> Expression.Constant Constant.NoneLiteral
-    | Parametric { name; parameters } ->
-        let parameters =
-          let expression_of_parameter = function
-            | Record.Parameter.Single single -> expression single
-            | CallableParameters parameters -> callable_parameters_expression parameters
-            | Unpacked unpackable ->
-                Record.OrderedTypes.Concatenation.unpackable_to_expression
-                  ~expression
-                  ~location
-                  unpackable
-          in
-          match parameters with
-          | parameters -> List.map parameters ~f:expression_of_parameter
-        in
-        subscript (Cannonicalization.reverse_substitute name) parameters
-    | ParameterVariadicComponent { component; variable_name; _ } ->
-        let attribute =
-          Record.Variable.RecordVariadic.RecordParameters.RecordComponents.component_name component
-        in
-        Expression.Name
-          (Attribute { base = expression (Primitive variable_name); attribute; special = false })
-    | Primitive name -> create_name name
-    | ReadOnly type_ -> subscript "pyre_extensions.ReadOnly" [expression type_]
-    | RecursiveType { name; _ } -> create_name name
-    | Top -> create_name "$unknown"
-    | Tuple (Concrete []) -> subscript "typing.Tuple" [Node.create ~location (Expression.Tuple [])]
-    | Tuple ordered_type -> subscript "typing.Tuple" (convert_ordered_type ordered_type)
-    | TypeOperation (Compose ordered_type) ->
-        subscript "pyre_extensions.Compose" (convert_ordered_type ordered_type)
-    | Union [NoneType; parameter]
-    | Union [parameter; NoneType] ->
-        subscript "typing.Optional" [expression parameter]
-    | Union parameters -> subscript "typing.Union" (List.map ~f:expression parameters)
-    | Variable { variable; _ } -> create_name variable
-  in
-  let value =
-    match annotation with
-    | Primitive "..." -> Expression.Constant Constant.Ellipsis
-    | _ -> convert_annotation annotation
-  in
-  Node.create_with_default_location value
-
-
-module Transform = struct
   type 'state visit_result = {
     transformed_annotation: t;
     new_state: 'state;
   }
 
-  module type Transformer = sig
+  module type Implementation = sig
     type state
 
     val visit : state -> t -> state visit_result
@@ -1585,7 +1006,7 @@ module Transform = struct
     val visit_children_after : bool
   end
 
-  module Make (Transformer : Transformer) = struct
+  module Make (Implementation : Implementation) = struct
     let rec visit_annotation ~state annotation =
       let visit_children annotation =
         let visit_all = List.map ~f:(visit_annotation ~state) in
@@ -1606,6 +1027,7 @@ module Transform = struct
           | Concatenation concatenation -> Concatenation (visit_concatenation concatenation)
         in
         let visit_parameters parameter =
+          let open Record.Callable in
           let visit_defined = function
             | RecordParameter.Named ({ annotation; _ } as named) ->
                 RecordParameter.Named { named with annotation = visit_annotation annotation ~state }
@@ -1688,14 +1110,14 @@ module Transform = struct
             annotation
       in
       let annotation =
-        if Transformer.visit_children_before !state annotation then
+        if Implementation.visit_children_before !state annotation then
           visit_children annotation
         else
           annotation
       in
-      let { transformed_annotation; new_state } = Transformer.visit !state annotation in
+      let { transformed_annotation; new_state } = Implementation.visit !state annotation in
       state := new_state;
-      if Transformer.visit_children_after then
+      if Implementation.visit_children_after then
         visit_children transformed_annotation
       else
         transformed_annotation
@@ -1708,62 +1130,681 @@ module Transform = struct
   end
 end
 
-let exists annotation ~predicate =
-  let module ExistsTransform = Transform.Make (struct
-    type state = bool
+module Visitors = struct
+  open T
 
-    let visit_children_before _ _ = true
+  let exists annotation ~predicate =
+    let module ExistsVisitor = VisitWithTransform.Make (struct
+      type state = bool
 
-    let visit_children_after = false
+      let visit_children_before _ _ = true
 
-    let visit sofar annotation =
-      let new_state = sofar || predicate annotation in
-      { Transform.transformed_annotation = annotation; new_state }
-  end)
-  in
-  fst (ExistsTransform.visit false annotation)
+      let visit_children_after = false
 
-
-(* Apply a `type_map` that replaces some types with other types recursively. Use cases of this
-   include applying constraint solver results for type variables and replacing types coming from
-   empty stubs with `Any`. The `visit_children_before` flag controls whether we apply the mapping to
-   inner types before attempting to map a complex type. If it is false, we'll try both before and
-   after mapping inner types (preferring the before case if both produce results). *)
-let apply_type_map ?(visit_children_before = false) annotation ~type_map =
-  let module ApplyTypeMapTransform = Transform.Make (struct
-    type state = unit
-
-    let visit_children_before _ annotation =
-      visit_children_before || type_map annotation |> Option.is_none
+      let visit sofar annotation =
+        let new_state = sofar || predicate annotation in
+        { VisitWithTransform.transformed_annotation = annotation; new_state }
+    end)
+    in
+    fst (ExistsVisitor.visit false annotation)
 
 
-    let visit_children_after = false
+  let collect_types annotation ~predicate =
+    let module TypeCollector = VisitWithTransform.Make (struct
+      type state = t list
 
-    let visit _ annotation =
-      let transformed_annotation =
-        match type_map annotation with
-        | Some replacement -> replacement
-        | None -> annotation
+      let visit_children_before _ _ = true
+
+      let visit_children_after = false
+
+      let visit sofar annotation =
+        let new_state = if predicate annotation then sofar @ [annotation] else sofar in
+        { VisitWithTransform.transformed_annotation = annotation; new_state }
+    end)
+    in
+    fst (TypeCollector.visit [] annotation)
+
+
+  let collect_primitive_types annotation =
+    let predicate = function
+      | Primitive _ -> true
+      | _ -> false
+    in
+    collect_types annotation ~predicate
+
+
+  let collect_names annotation =
+    let module NameCollectorImplementation = struct
+      type state = {
+        names: Primitive.t list;
+        recursive_type_names: Primitive.t list;
+      }
+
+      let visit_children_before _ _ =
+        match annotation with
+        | Literal _ -> false
+        | _ -> true
+
+
+      let visit_children_after = false
+
+      let visit { names = sofar; recursive_type_names } annotation =
+        let names, recursive_type_names =
+          match annotation with
+          | Callable _ -> "typing.Callable" :: sofar, recursive_type_names
+          | Literal literal ->
+              let sofar =
+                match literal with
+                | String AnyLiteral -> "str" :: sofar
+                | _ -> sofar
+              in
+              "typing_extensions.Literal" :: sofar, recursive_type_names
+          | Union [NoneType; _]
+          | Union [_; NoneType] ->
+              "typing.Optional" :: sofar, recursive_type_names
+          | Parametric { name; _ } -> name :: sofar, recursive_type_names
+          | Primitive annotation -> annotation :: sofar, recursive_type_names
+          | Tuple _ -> "tuple" :: sofar, recursive_type_names
+          | TypeOperation (Compose _) -> "pyre_extensions.Compose" :: sofar, recursive_type_names
+          | Union _ -> "typing.Union" :: sofar, recursive_type_names
+          | ReadOnly _ -> "pyre_extensions.ReadOnly" :: sofar, recursive_type_names
+          | RecursiveType { name; _ } -> sofar, name :: recursive_type_names
+          | ParameterVariadicComponent _
+          | Bottom
+          | Any
+          | Top
+          | NoneType
+          | Variable _ ->
+              sofar, recursive_type_names
+        in
+        {
+          VisitWithTransform.transformed_annotation = annotation;
+          new_state = { names; recursive_type_names };
+        }
+    end
+    in
+    let module NameCollector = VisitWithTransform.Make (NameCollectorImplementation) in
+    let { NameCollectorImplementation.names; recursive_type_names } =
+      fst (NameCollector.visit { names = []; recursive_type_names = [] } annotation)
+    in
+    let name_set = Identifier.Set.of_list recursive_type_names in
+    (* The recursive alias name is untracked, which would lead to spurious "Annotation is not
+       defined" errors. So, filter out any references to it. consider the name as an "element". *)
+    List.filter names ~f:(fun element -> not (Core.Set.mem name_set element)) |> List.rev
+end
+
+module Parameter = struct
+  open T
+  include Record.Parameter
+
+  type t = T.t record [@@deriving compare, eq, sexp, show, hash]
+
+  let all_singles parameters = List.map parameters ~f:is_single |> Option.all
+
+  let to_variable = function
+    | Single (Variable variable) -> Some (Record.Variable.Unary variable)
+    | CallableParameters (ParameterVariadicTypeVariable { head = []; variable }) ->
+        Some (ParameterVariadic variable)
+    | Unpacked (Variadic variadic) -> Some (TupleVariadic variadic)
+    | _ -> None
+
+
+  let is_unpacked = function
+    | Unpacked _ -> true
+    | _ -> false
+end
+
+(* Helper functions that extract an inner type if the outer type matches some pattern *)
+module Extractions = struct
+  open T
+
+  let optional_value = function
+    | Union [NoneType; annotation]
+    | Union [annotation; NoneType] ->
+        Some annotation
+    | _ -> None
+
+
+  let awaitable_value = function
+    | Parametric { name = "typing.Awaitable"; parameters = [Single parameter] } -> Some parameter
+    | _ -> None
+
+
+  let coroutine_value = function
+    | Parametric { name = "typing.Coroutine"; parameters = [_; _; Single parameter] } ->
+        Some parameter
+    | _ -> None
+
+
+  let class_variable_value = function
+    | Parametric { name = "typing.ClassVar"; parameters = [Single parameter] } -> Some parameter
+    | _ -> None
+
+
+  let rec final_value = function
+    | Parametric
+        { name = "typing.Final" | "typing_extensions.Final"; parameters = [Single parameter] } ->
+        `Ok parameter
+    | Parametric { name = "typing.ClassVar"; parameters = [Single parameter] } ->
+        final_value parameter
+    | Primitive ("typing.Final" | "typing_extensions.Final") -> `NoParameter
+    | _ -> `NotFinal
+end
+
+module Predicates = struct
+  open T
+
+  let is_any = function
+    | Any -> true
+    | _ -> false
+
+
+  let is_async_iterator = function
+    | Parametric { name = "typing.AsyncIterator"; _ } -> true
+    | _ -> false
+
+
+  let is_callable = function
+    | Callable _ -> true
+    | _ -> false
+
+
+  let is_dictionary ?(with_key = None) = function
+    | Parametric { name = "dict"; parameters } -> (
+        match with_key, parameters with
+        | Some key, [Single key_parameter; _] -> equal key key_parameter
+        | _ -> true)
+    | _ -> false
+
+
+  let is_dictionary_or_mapping = function
+    | Parametric { name = "typing.Mapping" | "dict"; _ } -> true
+    | _ -> false
+
+
+  let is_ellipsis = function
+    | Primitive "..." -> true
+    | _ -> false
+
+
+  let is_generic_primitive = function
+    | Primitive "typing.Generic" -> true
+    | _ -> false
+
+
+  let is_iterable = function
+    | Parametric { name = "typing.Iterable"; _ } -> true
+    | _ -> false
+
+
+  let is_iterator = function
+    | Parametric { name = "typing.Iterator"; _ } -> true
+    | _ -> false
+
+
+  let is_list = function
+    | Parametric { name = "list"; _ } -> true
+    | _ -> false
+
+
+  let is_meta = function
+    | Parametric { name = "type"; _ } -> true
+    | _ -> false
+
+
+  let is_none = function
+    | NoneType -> true
+    | _ -> false
+
+
+  let is_noreturn_or_never = function
+    | Primitive "typing.NoReturn"
+    | Primitive "NoReturn"
+    | Primitive "Never"
+    | Primitive "typing_extensions.Never"
+    | Primitive "typing.Never" ->
+        true
+    | _ -> false
+
+
+  let is_object = function
+    | Primitive "object" -> true
+    | _ -> false
+
+
+  let is_optional = function
+    | Union [NoneType; _]
+    | Union [_; NoneType] ->
+        true
+    | Parametric { name = "typing.Optional" | "Optional"; _ } -> true
+    | _ -> false
+
+
+  let is_optional_primitive = function
+    | Primitive "typing.Optional" -> true
+    | _ -> false
+
+
+  let is_primitive = function
+    | Primitive _ -> true
+    | _ -> false
+
+
+  let is_primitive_string = function
+    | Primitive "str" -> true
+    | _ -> false
+
+
+  let is_literal_string = function
+    | Literal (String _) -> true
+    | _ -> false
+
+
+  let is_top = function
+    | Top -> true
+    | _ -> false
+
+
+  let is_tuple = function
+    | Tuple _ -> true
+    | Parametric { name = "typing.Tuple" | "Tuple"; _ } -> true
+    | _ -> false
+
+
+  let is_type_alias = function
+    | Primitive "typing_extensions.TypeAlias" -> true
+    | _ -> false
+
+
+  let is_unbound = function
+    | Bottom -> true
+    | _ -> false
+
+
+  let is_union = function
+    | Union _ -> true
+    | _ -> false
+
+
+  let is_variable = function
+    | Variable _ -> true
+    | _ -> false
+
+
+  let rec is_falsy = function
+    | NoneType
+    | Literal (Boolean false)
+    | Literal (Integer 0)
+    | Literal (String (LiteralValue ""))
+    | Literal (Bytes "") ->
+        true
+    | ReadOnly annotated -> is_falsy annotated
+    | Union types -> List.for_all types ~f:is_falsy
+    | _ -> false
+
+
+  let rec is_truthy = function
+    | Literal (Boolean true)
+    | Callable _ ->
+        true
+    | Literal (Integer i) -> not (Int.equal i 0)
+    | Literal (String (LiteralValue value))
+    | Literal (Bytes value) ->
+        not (String.is_empty value)
+    | ReadOnly annotated -> is_truthy annotated
+    | Union types -> List.for_all types ~f:is_truthy
+    | _ -> false
+
+
+  let is_not_instantiated annotation =
+    let predicate = function
+      | Bottom -> true
+      | Variable { constraints = Unconstrained; _ } -> true
+      | _ -> false
+    in
+    Visitors.exists annotation ~predicate
+
+
+  let is_untyped = function
+    | Any
+    | Bottom
+    | Top ->
+        true
+    | _ -> false
+
+
+  let is_partially_typed annotation = Visitors.exists annotation ~predicate:is_untyped
+
+  let is_class_variable annotation =
+    match Extractions.class_variable_value annotation with
+    | Some _ -> true
+    | None -> false
+
+
+  let contains_callable annotation = Visitors.exists annotation ~predicate:is_callable
+
+  let contains_any annotation = Visitors.exists annotation ~predicate:is_any
+
+  let contains_unknown annotation = Visitors.exists annotation ~predicate:is_top
+
+  let contains_undefined annotation = Visitors.exists annotation ~predicate:is_unbound
+
+  let contains_literal annotation =
+    let predicate = function
+      | Literal _ -> true
+      | _ -> false
+    in
+    Visitors.exists annotation ~predicate
+
+
+  let contains_final annotation =
+    let predicate annotation =
+      match Extractions.final_value annotation with
+      | `Ok _
+      | `NoParameter ->
+          true
+      | `NotFinal -> false
+    in
+    Visitors.exists annotation ~predicate
+
+
+  let contains_variable = Visitors.exists ~predicate:is_variable
+
+  let contains_prohibited_any annotation =
+    let is_string_to_any_mapping
+      = (* TODO(T40377122): Remove special-casing of Dict[str, Any] in strict. *)
+      function
+      | Parametric { name = "typing.Mapping"; parameters = [Single (Primitive "str"); Single Any] }
+      | Parametric { name = "dict"; parameters = [Single (Primitive "str"); Single Any] } ->
+          true
+      | _ -> false
+    in
+    let module ProhibitedAnyCollector = VisitWithTransform.Make (struct
+      type state = bool
+
+      let visit_children_before _ annotation = not (is_string_to_any_mapping annotation)
+
+      let visit_children_after = false
+
+      let visit sofar annotation =
+        {
+          VisitWithTransform.transformed_annotation = annotation;
+          new_state = sofar || is_any annotation;
+        }
+    end)
+    in
+    fst (ProhibitedAnyCollector.visit false annotation)
+end
+
+(* The Canonicalization module contains logic related to representing types. Pretty printing uses
+   the cannonicalizations, but so does some other logic like the `Type.t -> Expression.t`
+   conversion. *)
+module Canonicalization = struct
+  open T
+
+  let reverse_substitute name =
+    match name with
+    | "collections.defaultdict" -> "typing.DefaultDict"
+    | "dict" -> "typing.Dict"
+    | "frozenset" -> "typing.FrozenSet"
+    | "list" -> "typing.List"
+    | "set" -> "typing.Set"
+    | "type" -> "typing.Type"
+    | _ -> name
+
+
+  let parameter_variable_type_representation = function
+    | { Record.Callable.head = []; variable = { name; _ } } -> Primitive name
+    | { head; variable = { name; _ } } ->
+        let concretes = head @ [Primitive name] in
+        Parametric
+          {
+            name = List.hd_exn Record.OrderedTypes.concatenate_public_names;
+            parameters = List.map concretes ~f:(fun concrete -> Record.Parameter.Single concrete);
+          }
+end
+
+module PrettyPrinting = struct
+  open T
+
+  let show_callable_parameters ~pp_type = function
+    | Record.Callable.Undefined -> "..."
+    | ParameterVariadicTypeVariable variable ->
+        Canonicalization.parameter_variable_type_representation variable
+        |> Format.asprintf "%a" pp_type
+    | Defined parameters ->
+        List.map parameters ~f:(CallableParameter.show_concise ~pp_type)
+        |> String.concat ~sep:", "
+        |> fun parameters -> Format.asprintf "[%s]" parameters
+
+
+  let pp_parameters ~pp_type format = function
+    | parameters
+      when List.for_all parameters ~f:(function
+               | Record.Parameter.Single parameter ->
+                   Predicates.is_unbound parameter || Predicates.is_top parameter
+               | _ -> false) ->
+        Format.fprintf format ""
+    | parameters ->
+        let s format = function
+          | Record.Parameter.Single parameter -> Format.fprintf format "%a" pp_type parameter
+          | CallableParameters parameters ->
+              Format.fprintf format "%s" (show_callable_parameters parameters ~pp_type)
+          | Unpacked unpackable ->
+              Format.fprintf
+                format
+                "%a"
+                (Record.OrderedTypes.Concatenation.pp_unpackable ~pp_type)
+                unpackable
+        in
+        Format.pp_print_list
+          ~pp_sep:(fun format () -> Format.fprintf format ", ")
+          s
+          format
+          parameters
+
+
+  let pp_typed_dictionary_field
+      ~pp_type
+      format
+      { Record.TypedDictionary.name; annotation; required }
+    =
+    Format.fprintf format "%s%s: %a" name (if required then "" else "?") pp_type annotation
+
+
+  let rec pp format annotation =
+    let pp_ordered_type ordered_type =
+      match ordered_type with
+      | Record.OrderedTypes.Concatenation
+          { middle = UnboundedElements annotation; prefix = []; suffix = [] } ->
+          Format.asprintf "%a, ..." pp annotation
+      | ordered_type ->
+          Format.asprintf "%a" (Record.OrderedTypes.pp_concise ~pp_type:pp) ordered_type
+    in
+    match annotation with
+    | Bottom -> Format.fprintf format "undefined"
+    | Callable { kind; implementation; overloads; _ } ->
+        let kind =
+          match kind with
+          | Anonymous -> ""
+          | Named name -> Format.asprintf "(%a)" Reference.pp name
+        in
+        let signature_to_string { Record.Callable.annotation; parameters; _ } =
+          Format.asprintf "%s, %a" (show_callable_parameters parameters ~pp_type:pp) pp annotation
+        in
+        let implementation = signature_to_string implementation in
+        let overloads =
+          let overloads = List.map overloads ~f:signature_to_string in
+          if List.is_empty overloads then
+            ""
+          else
+            String.concat ~sep:"][" overloads |> Format.sprintf "[[%s]]"
+        in
+        Format.fprintf format "typing.Callable%s[%s]%s" kind implementation overloads
+    | Any -> Format.fprintf format "typing.Any"
+    | Literal (Boolean literal) ->
+        Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
+    | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
+    | Literal (String (LiteralValue literal)) ->
+        Format.fprintf format "typing_extensions.Literal['%s']" literal
+    | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
+    | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
+    | Literal (EnumerationMember { enumeration_type; member_name }) ->
+        Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
+    | NoneType -> Format.fprintf format "None"
+    | Parametric { name; parameters } ->
+        let name = Canonicalization.reverse_substitute name in
+        Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
+    | ParameterVariadicComponent component ->
+        Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
+    | Primitive name -> Format.fprintf format "%s" name
+    | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
+    | RecursiveType { name; body } -> Format.fprintf format "%s (resolves to %a)" name pp body
+    | Top -> Format.fprintf format "unknown"
+    | Tuple ordered_type -> Format.fprintf format "typing.Tuple[%s]" (pp_ordered_type ordered_type)
+    | TypeOperation (Compose ordered_type) ->
+        Format.fprintf format "pyre_extensions.Compose[%s]" (pp_ordered_type ordered_type)
+    | Union [NoneType; parameter]
+    | Union [parameter; NoneType] ->
+        Format.fprintf format "typing.Optional[%a]" pp parameter
+    | Union parameters ->
+        Format.fprintf
+          format
+          "typing.Union[%s]"
+          (List.map parameters ~f:show |> String.concat ~sep:", ")
+    | Variable unary -> Record.Variable.RecordUnary.pp_concise format unary ~pp_type:pp
+
+
+  and show annotation = Format.asprintf "%a" pp annotation
+
+  and pp_concise format annotation =
+    let pp_comma_separated =
+      Format.pp_print_list ~pp_sep:(fun format () -> Format.fprintf format ", ") pp_concise
+    in
+    let strip_qualification identifier =
+      String.split ~on:'.' identifier |> List.last |> Option.value ~default:identifier
+    in
+    let signature_to_string { Record.Callable.annotation; parameters; _ } =
+      let parameters =
+        match parameters with
+        | Undefined -> "..."
+        | ParameterVariadicTypeVariable variable ->
+            Canonicalization.parameter_variable_type_representation variable
+            |> Format.asprintf "%a" pp_concise
+        | Defined parameters ->
+            let parameter = function
+              | CallableParameter.PositionalOnly { annotation; default; _ } ->
+                  if default then
+                    Format.asprintf "%a=..." pp_concise annotation
+                  else
+                    Format.asprintf "%a" pp_concise annotation
+              | KeywordOnly { name; annotation; default }
+              | Named { name; annotation; default } ->
+                  let name = Identifier.sanitized name in
+                  if default then
+                    Format.asprintf "%s: %a = ..." name pp_concise annotation
+                  else
+                    Format.asprintf "%s: %a" name pp_concise annotation
+              | Variable (Concrete annotation) -> Format.asprintf "*(%a)" pp_concise annotation
+              | Variable (Concatenation concatenation) ->
+                  Format.asprintf
+                    "*(%a)"
+                    (Record.OrderedTypes.Concatenation.pp_concatenation ~pp_type:pp_concise)
+                    concatenation
+              | Keywords annotation -> Format.asprintf "**(%a)" pp_concise annotation
+            in
+            List.map parameters ~f:parameter |> String.concat ~sep:", "
       in
-      { Transform.transformed_annotation; new_state = () }
-  end)
-  in
-  snd (ApplyTypeMapTransform.visit () annotation)
+      Format.asprintf "(%s) -> %a" parameters pp_concise annotation
+    in
+    match annotation with
+    | Bottom -> Format.fprintf format "?"
+    | Callable { implementation; _ } ->
+        Format.fprintf format "%s" (signature_to_string implementation)
+    | Parametric
+        { name = "BoundMethod"; parameters = [Single (Callable { implementation; _ }); Single _] }
+      ->
+        Format.fprintf format "%s" (signature_to_string implementation)
+    | Any -> Format.fprintf format "Any"
+    | Literal (Boolean literal) ->
+        Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
+    | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
+    | Literal (String (LiteralValue literal)) ->
+        Format.fprintf format "typing_extensions.Literal['%s']" literal
+    | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
+    | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
+    | Literal (EnumerationMember { enumeration_type; member_name }) ->
+        Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
+    | NoneType -> Format.fprintf format "None"
+    | Parametric { name; parameters } ->
+        let name = strip_qualification (Canonicalization.reverse_substitute name) in
+        Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
+    | ParameterVariadicComponent component ->
+        Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
+    | Primitive "..." -> Format.fprintf format "..."
+    | Primitive name -> Format.fprintf format "%s" (strip_qualification name)
+    | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
+    | RecursiveType { name; _ } -> Format.fprintf format "%s" name
+    | Top -> Format.fprintf format "unknown"
+    | Tuple (Concatenation { middle = UnboundedElements parameter; prefix = []; suffix = [] }) ->
+        Format.fprintf format "Tuple[%a, ...]" pp_concise parameter
+    | Tuple ordered_type ->
+        Format.fprintf
+          format
+          "Tuple[%a]"
+          (Record.OrderedTypes.pp_concise ~pp_type:pp_concise)
+          ordered_type
+    | TypeOperation (Compose ordered_type) ->
+        Format.fprintf
+          format
+          "Compose[%a]"
+          (Record.OrderedTypes.pp_concise ~pp_type:pp_concise)
+          ordered_type
+    | Union [NoneType; parameter]
+    | Union [parameter; NoneType] ->
+        Format.fprintf format "Optional[%a]" pp_concise parameter
+    | Union parameters -> Format.fprintf format "Union[%a]" pp_comma_separated parameters
+    | Variable { variable; _ } -> Format.fprintf format "%s" (strip_qualification variable)
 
 
-let contains_callable annotation = exists annotation ~predicate:is_callable
+  and show_concise annotation = Format.asprintf "%a" pp_concise annotation
+end
 
-let contains_any annotation = exists annotation ~predicate:is_any
+module Transforms = struct
+  (* Apply a `type_map` that replaces some types with other types recursively. Use cases of this
+     include applying constraint solver results for type variables and replacing types coming from
+     empty stubs with `Any`. The `visit_children_before` flag controls whether we apply the mapping
+     to inner types before attempting to map a complex type. If it is false, we'll try both before
+     and after mapping inner types (preferring the before case if both produce results). *)
+  let apply_type_map ?(visit_children_before = false) annotation ~type_map =
+    let module ApplyTypeMapTransform = VisitWithTransform.Make (struct
+      type state = unit
 
-let contains_unknown annotation = exists annotation ~predicate:is_top
+      let visit_children_before _ annotation =
+        visit_children_before || type_map annotation |> Option.is_none
 
-let contains_undefined annotation = exists annotation ~predicate:is_unbound
+
+      let visit_children_after = false
+
+      let visit _ annotation =
+        let transformed_annotation =
+          match type_map annotation with
+          | Some replacement -> replacement
+          | None -> annotation
+        in
+        { VisitWithTransform.transformed_annotation; new_state = () }
+    end)
+    in
+    snd (ApplyTypeMapTransform.visit () annotation)
+end
 
 module Callable = struct
+  open T
+
   module Parameter = struct
     include Record.Callable.RecordParameter
 
-    type parameter = type_t t [@@deriving compare, eq, sexp, show, hash]
+    type parameter = T.t t [@@deriving compare, eq, sexp, show, hash]
 
     module Map = Core.Map.Make (struct
       type t = parameter [@@deriving compare, sexp]
@@ -1921,10 +1962,9 @@ module Callable = struct
 
   include Record.Callable
 
-  type t = type_t Record.Callable.record [@@deriving compare, eq, sexp, show, hash]
+  type t = T.t Record.Callable.record [@@deriving compare, eq, sexp, show, hash]
 
-  type parameters = type_t Record.Callable.record_parameters
-  [@@deriving compare, eq, sexp, show, hash]
+  type parameters = T.t Record.Callable.record_parameters [@@deriving compare, eq, sexp, show, hash]
 
   module Overload = struct
     let parameters { parameters; _ } =
@@ -1939,7 +1979,7 @@ module Callable = struct
 
     let is_undefined { parameters; annotation; _ } =
       match parameters with
-      | Undefined -> contains_unknown annotation
+      | Undefined -> Predicates.contains_unknown annotation
       | _ -> false
   end
 
@@ -2046,93 +2086,13 @@ module Callable = struct
     | _ -> None
 end
 
-let lambda ~parameters ~return_annotation =
-  let parameters =
-    List.map parameters ~f:(fun (name, annotation) ->
-        { CallableParameter.name; annotation; default = false })
-    |> Callable.Parameter.create
-  in
-  Callable
-    {
-      kind = Anonymous;
-      implementation = { annotation = return_annotation; parameters = Defined parameters };
-      overloads = [];
-    }
-
-
-let primitive_substitution_map =
-  [
-    "$bottom", Bottom;
-    "$unknown", Top;
-    "function", Callable.create ~annotation:Any ();
-    "typing.Any", Any;
-    "typing.ChainMap", Primitive "collections.ChainMap";
-    "typing.Counter", Primitive "collections.Counter";
-    "typing.DefaultDict", Primitive "collections.defaultdict";
-    "typing.Deque", Primitive "collections.deque";
-    "typing.Dict", Primitive "dict";
-    "typing.FrozenSet", Primitive "frozenset";
-    "typing.List", Primitive "list";
-    "typing.OrderedDict", Primitive "collections.OrderedDict";
-    "typing.Set", Primitive "set";
-    "typing.Tuple", Primitive "tuple";
-    "typing.Type", Primitive "type";
-    "typing_extensions.Protocol", Primitive "typing.Protocol";
-    (* This is broken in typeshed:
-       https://github.com/python/typeshed/pull/991#issuecomment-288160993 *)
-    "PathLike", Primitive "_PathLike";
-    "TSelf", Constructors.variable "_PathLike";
-    (* This inherits from Any, and is expected to act just like Any *)
-    "_NotImplementedType", Any;
-    "typing_extensions.LiteralString", Literal (String AnyLiteral);
-    "typing.LiteralString", Literal (String AnyLiteral);
-  ]
-  |> Identifier.Table.of_alist_exn
-
-
-let primitive_name = function
-  | Primitive name -> Some name
-  | _ -> None
-
-
-let create_literal = function
-  | Expression.Constant Constant.True -> Some (Literal (Boolean true))
-  | Expression.Constant Constant.False -> Some (Literal (Boolean false))
-  | Expression.Constant (Constant.Integer literal) -> Some (Literal (Integer literal))
-  | Expression.Constant (Constant.String { StringLiteral.kind = StringLiteral.String; value }) ->
-      Some (Literal (String (LiteralValue value)))
-  | Expression.Constant (Constant.String { StringLiteral.kind = StringLiteral.Bytes; value }) ->
-      Some (Literal (Bytes value))
-  | Expression.Name
-      (Attribute { base = { Node.value = Expression.Name base_name; _ }; attribute; _ }) -> (
-      match name_to_reference base_name with
-      | Some reference ->
-          Some
-            (Literal
-               (EnumerationMember
-                  {
-                    enumeration_type = Primitive (Reference.show_sanitized reference);
-                    member_name = attribute;
-                  }))
-      | _ -> None)
-  | Expression.Constant Constant.NoneLiteral -> Some Constructors.none
-  | Expression.Name (Identifier "str") -> Some (Literal (String AnyLiteral))
-  | _ -> None
-
-
-type alias =
-  | TypeAlias of t
-  | VariableAlias of t Record.Variable.record
-[@@deriving compare, eq, sexp, show, hash]
-
-let empty_aliases ?replace_unbound_parameters_with_any:_ _ = None
-
 module RecursiveType = struct
+  open T
   include Record.RecursiveType
 
   let contains_recursive_type_with_name ~name =
-    exists ~predicate:(function
-        | RecursiveType { name = inner_name; _ } -> Identifier.equal inner_name name
+    Visitors.exists ~predicate:(function
+        | T.RecursiveType { name = inner_name; _ } -> Identifier.equal inner_name name
         | _ -> false)
 
 
@@ -2143,7 +2103,7 @@ module RecursiveType = struct
 
 
   let is_recursive_alias_reference ~alias_name =
-    exists ~predicate:(function
+    Visitors.exists ~predicate:(function
         | Primitive name
         | Parametric { name; _ }
           when Identifier.equal name alias_name ->
@@ -2154,7 +2114,7 @@ module RecursiveType = struct
   (* We assume that recursive alias names are unique. So, we don't need to worry about accidentally
      renaming a nested recursive type here. *)
   let unfold_recursive_type { name; body } =
-    apply_type_map
+    Transforms.apply_type_map
       ~type_map:(function
         | Primitive primitive_name when Identifier.equal primitive_name name ->
             Some (RecursiveType { name; body })
@@ -2163,7 +2123,7 @@ module RecursiveType = struct
 
 
   let body_with_replaced_name ~new_name { name; body } =
-    apply_type_map
+    Transforms.apply_type_map
       ~type_map:(function
         | Primitive primitive_name when Identifier.equal primitive_name name ->
             Some (Primitive new_name)
@@ -2172,7 +2132,7 @@ module RecursiveType = struct
 
 
   let replace_references_with_recursive_type ~recursive_type:{ name; body } =
-    apply_type_map ~type_map:(function
+    Transforms.apply_type_map ~type_map:(function
         | Primitive primitive_name when Identifier.equal primitive_name name ->
             Some (RecursiveType { name; body })
         | _ -> None)
@@ -2194,9 +2154,10 @@ module RecursiveType = struct
 end
 
 module OrderedTypes = struct
+  open T
   include Record.OrderedTypes
 
-  type t = type_t record [@@deriving compare, eq, sexp, show, hash]
+  type t = T.t record [@@deriving compare, eq, sexp, show, hash]
 
   type ordered_types_t = t
 
@@ -2348,12 +2309,13 @@ module OrderedTypes = struct
 end
 
 module TypeOperation = struct
+  open T
   include Record.TypeOperation
 
   module Compose = struct
     include Record.TypeOperation.Compose
 
-    type t = type_t Record.TypeOperation.Compose.t
+    type t = T.t Record.TypeOperation.Compose.t
 
     let flatten_record input =
       let record_to_list = function
@@ -2406,10 +2368,12 @@ module TypeOperation = struct
       >>| fun result -> TypeOperation (Compose result)
   end
 
-  type t = type_t Record.TypeOperation.record
+  type t = T.t Record.TypeOperation.record
 end
 
 module ReadOnly = struct
+  open T
+
   let create = Constructors.read_only
 
   let unpack_readonly = function
@@ -2419,9 +2383,9 @@ module ReadOnly = struct
 
   let is_readonly type_ = unpack_readonly type_ |> Option.is_some
 
-  let strip_readonly type_ = apply_type_map type_ ~type_map:unpack_readonly
+  let strip_readonly type_ = Transforms.apply_type_map type_ ~type_map:unpack_readonly
 
-  let contains_readonly type_ = exists type_ ~predicate:is_readonly
+  let contains_readonly type_ = Visitors.exists type_ ~predicate:is_readonly
 
   (* Lift `ReadOnly` from `element_type` to the overall container.
 
@@ -2431,6 +2395,1879 @@ module ReadOnly = struct
     >>| (fun inner_type -> create (make_container inner_type))
     |> Option.value ~default:(make_container element_type)
 end
+
+module Alias = struct
+  type t =
+    | TypeAlias of T.t
+    | VariableAlias of T.t Record.Variable.record
+  [@@deriving compare, eq, sexp, show, hash]
+end
+
+module Variable : sig
+  module Namespace : sig
+    include module type of struct
+      include Record.Variable.RecordNamespace
+    end
+
+    val reset : unit -> unit
+
+    val create_fresh : unit -> t
+  end
+
+  type unary_t = T.t Record.Variable.RecordUnary.record [@@deriving compare, eq, sexp, show, hash]
+
+  type unary_domain = T.t [@@deriving compare, eq, sexp, show, hash]
+
+  type parameter_variadic_t = T.t Record.Variable.RecordVariadic.RecordParameters.record
+  [@@deriving compare, eq, sexp, show, hash]
+
+  type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
+
+  type tuple_variadic_t = T.t Record.Variable.RecordVariadic.Tuple.record
+  [@@deriving compare, eq, sexp, show, hash]
+
+  type tuple_variadic_domain = T.t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
+
+  type pair =
+    | UnaryPair of unary_t * unary_domain
+    | ParameterVariadicPair of parameter_variadic_t * parameter_variadic_domain
+    | TupleVariadicPair of tuple_variadic_t * tuple_variadic_domain
+  [@@deriving compare, eq, sexp, show, hash]
+
+  type t = T.t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
+
+  type variable_t = t
+
+  module type VariableKind = sig
+    type t [@@deriving compare, eq, sexp, show, hash]
+
+    module Map : Core.Map.S with type Key.t = t
+
+    val is_free : t -> bool
+
+    val is_escaped_and_free : t -> bool
+
+    val mark_as_bound : t -> t
+
+    val mark_as_escaped : t -> t
+
+    val mark_as_free : t -> t
+
+    val namespace : t -> namespace:Namespace.t -> t
+
+    val dequalify : t -> dequalify_map:Reference.t Reference.Map.t -> t
+
+    type domain [@@deriving compare, eq, sexp, show, hash]
+
+    val any : domain
+
+    (* The value in the domain directly corresponding to the variable, i.e. the replacement that
+       would leave a type unchanged *)
+    val self_reference : t -> domain
+
+    val pair : t -> domain -> pair
+  end
+
+  module Unary : sig
+    include module type of struct
+      include Record.Variable.RecordUnary
+    end
+
+    include VariableKind with type t = unary_t and type domain = T.t
+
+    val create
+      :  ?constraints:T.t Record.Variable.constraints ->
+      ?variance:Record.Variable.variance ->
+      string ->
+      t
+
+    val is_contravariant : t -> bool
+
+    val is_covariant : t -> bool
+
+    val upper_bound : t -> T.t
+
+    val is_escaped_and_free : t -> bool
+
+    val contains_subvariable : t -> bool
+  end
+
+  module Variadic : sig
+    module Parameters : sig
+      include VariableKind with type t = parameter_variadic_t and type domain = Callable.parameters
+
+      val name : t -> Identifier.t
+
+      val create : ?variance:Record.Variable.variance -> string -> t
+
+      val parse_instance_annotation
+        :  create_type:
+             (aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
+             Expression.t ->
+             T.t) ->
+        variable_parameter_annotation:Expression.t ->
+        keywords_parameter_annotation:Expression.t ->
+        aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
+        t option
+
+      module Components : sig
+        include module type of struct
+          include Record.Variable.RecordVariadic.RecordParameters.RecordComponents
+        end
+
+        type decomposition = {
+          positional_component: T.t;
+          keyword_component: T.t;
+        }
+
+        val combine : decomposition -> parameter_variadic_t option
+
+        val component : t -> component
+      end
+
+      val decompose : t -> Components.decomposition
+    end
+
+    module Tuple : sig
+      include VariableKind with type t = tuple_variadic_t and type domain = tuple_variadic_domain
+
+      val name : t -> Identifier.t
+
+      val create : string -> t
+
+      val synthetic_class_name_for_error : string
+    end
+  end
+
+  module GlobalTransforms : sig
+    module type S = sig
+      type t
+
+      type domain
+
+      val replace_all : (t -> domain option) -> T.t -> T.t
+
+      val collect_all : T.t -> t list
+    end
+
+    module Unary : S with type t = unary_t and type domain = T.t
+
+    module ParameterVariadic :
+      S with type t = parameter_variadic_t and type domain = Callable.parameters
+
+    module TupleVariadic :
+      S with type t = tuple_variadic_t and type domain = T.t OrderedTypes.record
+  end
+
+  include module type of struct
+    include Record.Variable
+  end
+
+  module Set : Core.Set.S with type Elt.t = t
+
+  type variable_zip_result = {
+    variable_pair: pair;
+    received_parameter: Parameter.t;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
+
+  val pp_concise : Format.formatter -> t -> unit
+
+  val parse_declaration : Expression.t -> target:Reference.t -> t option
+
+  val dequalify : Reference.t Reference.Map.t -> t -> t
+
+  val namespace : t -> namespace:Namespace.t -> t
+
+  val mark_all_variables_as_bound : ?specific:t list -> T.t -> T.t
+
+  val mark_all_variables_as_free : ?specific:t list -> T.t -> T.t
+
+  val mark_as_bound : t -> t
+
+  val namespace_all_free_variables : T.t -> namespace:Namespace.t -> T.t
+
+  val all_free_variables : T.t -> t list
+
+  val all_variables_are_resolved : T.t -> bool
+
+  val mark_all_free_variables_as_escaped : ?specific:t list -> T.t -> T.t
+
+  val collapse_all_escaped_variable_unions : T.t -> T.t
+
+  val contains_escaped_free_variable : T.t -> bool
+
+  val convert_all_escaped_free_variables_to_anys : T.t -> T.t
+
+  val converge_all_variable_namespaces : T.t -> T.t
+
+  val zip_variables_with_parameters : parameters:Parameter.t list -> t list -> pair list option
+
+  val zip_variables_with_parameters_including_mismatches
+    :  parameters:Parameter.t list ->
+    t list ->
+    variable_zip_result list option
+
+  val zip_variables_with_two_parameter_lists
+    :  left_parameters:Parameter.t list ->
+    right_parameters:Parameter.t list ->
+    t list ->
+    (pair * pair) list option
+
+  val all_unary : t list -> Unary.t list option
+
+  val to_parameter : t -> Parameter.t
+end = struct
+  open T
+
+  module Namespace = struct
+    include Record.Variable.RecordNamespace
+
+    let fresh = ref 1
+
+    let reset () = fresh := 1
+
+    let create_fresh () =
+      let namespace = !fresh in
+      fresh := namespace + 1;
+      namespace
+  end
+
+  type unary_t = T.t Record.Variable.RecordUnary.record [@@deriving compare, eq, sexp, show, hash]
+
+  type unary_domain = T.t [@@deriving compare, eq, sexp, show, hash]
+
+  type parameter_variadic_t = T.t Record.Variable.RecordVariadic.RecordParameters.record
+  [@@deriving compare, eq, sexp, show, hash]
+
+  type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
+
+  type tuple_variadic_t = T.t Record.Variable.RecordVariadic.Tuple.record
+  [@@deriving compare, eq, sexp, show, hash]
+
+  type tuple_variadic_domain = T.t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
+
+  type pair =
+    | UnaryPair of unary_t * unary_domain
+    | ParameterVariadicPair of parameter_variadic_t * parameter_variadic_domain
+    | TupleVariadicPair of tuple_variadic_t * tuple_variadic_domain
+  [@@deriving compare, eq, sexp, show, hash]
+
+  module type VariableKind = sig
+    type t [@@deriving compare, eq, sexp, show, hash]
+
+    module Map : Core.Map.S with type Key.t = t
+
+    val is_free : t -> bool
+
+    val is_escaped_and_free : t -> bool
+
+    val mark_as_bound : t -> t
+
+    val mark_as_escaped : t -> t
+
+    val mark_as_free : t -> t
+
+    val namespace : t -> namespace:Namespace.t -> t
+
+    val dequalify : t -> dequalify_map:Reference.t Reference.Map.t -> t
+
+    type domain [@@deriving compare, eq, sexp, show, hash]
+
+    val any : domain
+
+    val self_reference : t -> domain
+
+    val pair : t -> domain -> pair
+  end
+
+  module Unary = struct
+    include Record.Variable.RecordUnary
+
+    type t = T.t record [@@deriving compare, eq, sexp, show, hash]
+
+    type domain = T.t [@@deriving compare, eq, sexp, show, hash]
+
+    module Map = Core.Map.Make (struct
+      type t = T.t record [@@deriving compare, sexp]
+    end)
+
+    let any = Any
+
+    let self_reference variable = Variable variable
+
+    let pair variable value = UnaryPair (variable, value)
+
+    let is_contravariant = function
+      | { variance = Contravariant; _ } -> true
+      | _ -> false
+
+
+    let is_covariant = function
+      | { variance = Covariant; _ } -> true
+      | _ -> false
+
+
+    let is_free = function
+      | { state = Free _; _ } -> true
+      | _ -> false
+
+
+    let namespace variable ~namespace = { variable with namespace }
+
+    let mark_as_bound variable = { variable with state = InFunction }
+
+    let upper_bound { constraints; _ } =
+      let open Constructors in
+      match constraints with
+      | Unconstrained -> object_primitive
+      | Bound bound -> bound
+      | Explicit explicits -> union explicits
+      | LiteralIntegers -> integer
+
+
+    let is_escaped_and_free = function
+      | { state = Free { escaped }; _ } -> escaped
+      | _ -> false
+
+
+    let contains_subvariable { constraints; _ } =
+      match constraints with
+      | Unconstrained -> false
+      | Bound bound -> Predicates.contains_variable bound
+      | Explicit explicits -> List.exists explicits ~f:Predicates.contains_variable
+      | LiteralIntegers -> false
+
+
+    let mark_as_escaped variable = { variable with state = Free { escaped = true } }
+
+    let mark_as_free variable = { variable with state = Free { escaped = false } }
+
+    let local_collect = function
+      | Variable variable -> [variable]
+      | _ -> []
+
+
+    let local_replace replacement = function
+      | Variable variable -> replacement variable
+      | _ -> None
+
+
+    let dequalify ({ variable = name; _ } as variable) ~dequalify_map =
+      { variable with variable = dequalify_identifier dequalify_map name }
+  end
+
+  module Variadic = struct
+    module Parameters = struct
+      include Record.Variable.RecordVariadic.RecordParameters
+
+      type t = T.t record [@@deriving compare, eq, sexp, show, hash]
+
+      type domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
+
+      module Map = Core.Map.Make (struct
+        type t = T.t record [@@deriving compare, sexp]
+      end)
+
+      let name { name; _ } = name
+
+      let any = Callable.Undefined
+
+      let self_reference variable = Callable.ParameterVariadicTypeVariable { head = []; variable }
+
+      let pair variable value = ParameterVariadicPair (variable, value)
+
+      let is_free = function
+        | { state = Free _; _ } -> true
+        | _ -> false
+
+
+      let is_escaped_and_free = function
+        | { state = Free { escaped }; _ } -> escaped
+        | _ -> false
+
+
+      let mark_as_bound variable = { variable with state = InFunction }
+
+      let namespace variable ~namespace = { variable with namespace }
+
+      let local_replace replacement annotation =
+        let map = function
+          | Record.Callable.ParameterVariadicTypeVariable { head; variable } ->
+              let open Record.Callable in
+              let apply_head ~head = function
+                | ParameterVariadicTypeVariable { head = inner_head; variable } ->
+                    ParameterVariadicTypeVariable { head = head @ inner_head; variable }
+                | Undefined -> Undefined
+                | Defined tail -> Defined (Callable.prepend_anonymous_parameters ~head ~tail)
+              in
+              replacement variable
+              >>| apply_head ~head
+              |> Option.value ~default:(ParameterVariadicTypeVariable { head; variable })
+          | parameters -> parameters
+        in
+        match annotation with
+        | Callable callable ->
+            Callable.map_parameters callable ~f:map
+            |> (fun callable -> Callable callable)
+            |> Option.some
+        | Parametric { name; parameters } ->
+            let parameters =
+              let map_parameter = function
+                | Parameter.CallableParameters parameters ->
+                    Parameter.CallableParameters (map parameters)
+                | parameter -> parameter
+              in
+              List.map parameters ~f:map_parameter
+            in
+            Some (Parametric { name; parameters })
+        | _ -> None
+
+
+      let mark_as_escaped variable = { variable with state = Free { escaped = true } }
+
+      let mark_as_free variable = { variable with state = Free { escaped = false } }
+
+      let local_collect = function
+        | Callable { implementation; overloads; _ } ->
+            let extract = function
+              | { Record.Callable.parameters = ParameterVariadicTypeVariable { variable; _ }; _ } ->
+                  Some variable
+              | _ -> None
+            in
+            List.filter_map (implementation :: overloads) ~f:extract
+        | Parametric { parameters; _ } ->
+            let extract = function
+              | Parameter.CallableParameters (ParameterVariadicTypeVariable { variable; _ }) ->
+                  Some variable
+              | _ -> None
+            in
+            List.filter_map parameters ~f:extract
+        | _ -> []
+
+
+      let dequalify ({ name; _ } as variable) ~dequalify_map =
+        { variable with name = dequalify_identifier dequalify_map name }
+
+
+      let parse_declaration value ~target =
+        match value with
+        | {
+            Node.value =
+              Expression.Call
+                {
+                  callee =
+                    {
+                      Node.value =
+                        Name
+                          (Name.Attribute
+                            {
+                              base = { Node.value = Name (Name.Identifier "pyre_extensions"); _ };
+                              attribute = "ParameterSpecification";
+                              special = false;
+                            });
+                      _;
+                    };
+                  arguments =
+                    [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+                };
+            _;
+          }
+        | {
+            Node.value =
+              Expression.Call
+                {
+                  callee =
+                    {
+                      Node.value =
+                        Name
+                          (Name.Attribute
+                            {
+                              base =
+                                {
+                                  Node.value =
+                                    Name (Name.Identifier ("typing" | "typing_extensions"));
+                                  _;
+                                };
+                              attribute = "ParamSpec";
+                              special = false;
+                            });
+                      _;
+                    };
+                  arguments =
+                    [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+                };
+            _;
+          } ->
+            Some (create (Reference.show target))
+        | _ -> None
+
+
+      let parse_instance_annotation
+          ~create_type
+          ~variable_parameter_annotation
+          ~keywords_parameter_annotation
+          ~aliases
+        =
+        let get_variable name =
+          match aliases ?replace_unbound_parameters_with_any:(Some false) name with
+          | Some (Alias.VariableAlias (ParameterVariadic variable)) -> Some variable
+          | _ -> None
+        in
+        let open Record.Variable.RecordVariadic.RecordParameters.RecordComponents in
+        match variable_parameter_annotation, keywords_parameter_annotation with
+        | ( {
+              Node.value =
+                Expression.Name
+                  (Attribute
+                    { base = variable_parameter_base; attribute = variable_parameter_attribute; _ });
+              _;
+            },
+            {
+              Node.value =
+                Expression.Name
+                  (Attribute
+                    { base = keywords_parameter_base; attribute = keywords_parameter_attribute; _ });
+              _;
+            } )
+          when Identifier.equal variable_parameter_attribute (component_name PositionalArguments)
+               && Identifier.equal keywords_parameter_attribute (component_name KeywordArguments)
+          -> (
+            match
+              ( create_type ~aliases variable_parameter_base,
+                create_type ~aliases keywords_parameter_base )
+            with
+            | Primitive positionals_base, Primitive keywords_base
+              when Identifier.equal positionals_base keywords_base ->
+                get_variable positionals_base
+            | _ -> None)
+        | _ -> None
+
+
+      module Components = struct
+        include Record.Variable.RecordVariadic.RecordParameters.RecordComponents
+
+        type decomposition = {
+          positional_component: T.t;
+          keyword_component: T.t;
+        }
+
+        let combine { positional_component; keyword_component } =
+          let component_agnostic_equal left right =
+            equal
+              { left with component = KeywordArguments }
+              { right with component = KeywordArguments }
+          in
+          match positional_component, keyword_component with
+          | ( ParameterVariadicComponent
+                ({ component = PositionalArguments; _ } as positional_component),
+              ParameterVariadicComponent ({ component = KeywordArguments; _ } as keyword_component)
+            )
+            when component_agnostic_equal positional_component keyword_component ->
+              let { variance; variable_name = name; variable_namespace = namespace; _ } =
+                positional_component
+              in
+              Some { name; namespace; variance; state = InFunction }
+          | _ -> None
+
+
+        let component { component; _ } = component
+      end
+
+      let decompose { name = variable_name; variance; namespace = variable_namespace; _ } =
+        {
+          Components.positional_component =
+            ParameterVariadicComponent
+              { component = PositionalArguments; variable_name; variance; variable_namespace };
+          keyword_component =
+            ParameterVariadicComponent
+              { component = KeywordArguments; variable_name; variance; variable_namespace };
+        }
+    end
+
+    module Tuple = struct
+      include Record.Variable.RecordVariadic.Tuple
+
+      type t = T.t record [@@deriving compare, eq, sexp, show, hash]
+
+      type domain = T.t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
+
+      module Map = Core.Map.Make (struct
+        type t = T.t record [@@deriving compare, sexp]
+      end)
+
+      let synthetic_class_name_for_error = "$synthetic_class_for_variadic_error"
+
+      let any = OrderedTypes.create_unbounded_concatenation Any
+
+      let name { name; _ } = name
+
+      let self_reference variadic =
+        OrderedTypes.Concatenation (OrderedTypes.Concatenation.create variadic)
+
+
+      let pair variable value = TupleVariadicPair (variable, value)
+
+      let is_free = function
+        | { state = Free _; _ } -> true
+        | _ -> false
+
+
+      let namespace variable ~namespace = { variable with namespace }
+
+      let mark_as_bound variable = { variable with state = InFunction }
+
+      let is_escaped_and_free = function
+        | { state = Free { escaped }; _ } -> escaped
+        | _ -> false
+
+
+      let mark_as_escaped variable = { variable with state = Free { escaped = true } }
+
+      let mark_as_free variable = { variable with state = Free { escaped = false } }
+
+      let local_collect annotation =
+        let collect_unpackable = function
+          | Record.OrderedTypes.Concatenation.Variadic variadic -> [variadic]
+          | _ -> []
+        in
+        match annotation with
+        | Parametric { parameters; _ } ->
+            let extract = function
+              | Parameter.Unpacked unpackable -> collect_unpackable unpackable
+              | _ -> []
+            in
+            List.concat_map parameters ~f:extract
+        | Tuple (Concatenation { middle = unpackable; _ }) -> collect_unpackable unpackable
+        | Callable { implementation; overloads; _ } ->
+            let extract = function
+              | { Record.Callable.parameters = Defined parameters; _ } ->
+                  List.find_map parameters ~f:(function
+                      | Variable (Concatenation { middle = unpackable; _ }) ->
+                          Some (collect_unpackable unpackable)
+                      | _ -> None)
+                  |> Option.value ~default:[]
+              | _ -> []
+            in
+            List.concat_map (implementation :: overloads) ~f:extract
+        | TypeOperation (Compose (Concatenation { middle = unpackable; _ })) ->
+            collect_unpackable unpackable
+        | _ -> []
+
+
+      let local_replace replacement annotation =
+        let map_tuple ~f = function
+          | Tuple record -> f record
+          | other -> other
+        in
+        let replace_unpackable = function
+          | OrderedTypes.Concatenation.Variadic variadic ->
+              replacement variadic >>| fun result -> Tuple result
+          | _ -> None
+        in
+        match annotation with
+        | Parametric ({ parameters; _ } as parametric) ->
+            let replace parameter =
+              let replaced =
+                match parameter with
+                | Parameter.Unpacked unpackable -> (
+                    replace_unpackable unpackable
+                    >>| function
+                    | Tuple record -> OrderedTypes.to_parameters record
+                    | other -> [Parameter.Single other])
+                | _ -> None
+              in
+              Option.value ~default:[parameter] replaced
+            in
+            let parameters = List.concat_map parameters ~f:replace in
+            let default = Parametric { parametric with parameters } |> Option.some in
+            let extract_broadcast_error = function
+              | Parameter.Single
+                  (Parametric { name = "pyre_extensions.BroadcastError"; _ } as parametric) ->
+                  Some parametric
+              | _ -> None
+            in
+            List.find_map ~f:extract_broadcast_error parameters
+            |> fun result -> Option.first_some result default
+        | Tuple (Concatenation { prefix; middle = unpackable; suffix }) ->
+            replace_unpackable unpackable
+            >>| map_tuple ~f:(OrderedTypes.expand_in_concatenation ~prefix ~suffix)
+        | Callable callable -> (
+            let replace_variadic parameters_so_far parameters =
+              let expanded_parameters =
+                match parameters with
+                | Callable.Parameter.Variable
+                    (Concatenation ({ prefix; middle = unpackable; suffix } as concatenation)) ->
+                    let encode_ordered_types_into_parameters = function
+                      | OrderedTypes.Concrete concretes ->
+                          let start_index = List.length parameters_so_far in
+                          let make_anonymous_parameter index annotation =
+                            Callable.Parameter.PositionalOnly
+                              { index = start_index + index; annotation; default = false }
+                          in
+                          List.mapi (prefix @ concretes @ suffix) ~f:make_anonymous_parameter
+                          @ parameters_so_far
+                      | Concatenation { prefix = new_prefix; middle; suffix = new_suffix } ->
+                          [
+                            Variable
+                              (Concatenation
+                                 {
+                                   prefix = prefix @ new_prefix;
+                                   middle;
+                                   suffix = new_suffix @ suffix;
+                                 });
+                          ]
+                    in
+                    let handle_potential_error = function
+                      | Parametric { name = "pyre_extensions.BroadcastError"; _ } as broadcast_error
+                        ->
+                          Error broadcast_error
+                      | Tuple record -> Ok (encode_ordered_types_into_parameters record)
+                      | other ->
+                          Ok
+                            [
+                              Callable.Parameter.PositionalOnly
+                                {
+                                  index = List.length parameters_so_far;
+                                  annotation = other;
+                                  default = false;
+                                };
+                            ]
+                    in
+                    replace_unpackable unpackable
+                    >>| handle_potential_error
+                    |> Option.value
+                         ~default:(Ok [Callable.Parameter.Variable (Concatenation concatenation)])
+                | parameter -> Ok [parameter]
+              in
+              expanded_parameters
+              |> Result.map ~f:(fun result -> List.rev_append result parameters_so_far)
+            in
+            let map_defined = function
+              | Record.Callable.Defined parameters ->
+                  Result.map
+                    ~f:(fun result -> Record.Callable.Defined (List.rev result))
+                    (List.fold_result ~init:[] ~f:replace_variadic parameters)
+              | parameters -> Ok parameters
+            in
+            match Callable.map_parameters_with_result ~f:map_defined callable with
+            | Ok result_callable -> Some (Callable result_callable)
+            | Error broadcast_error -> Some broadcast_error)
+        | TypeOperation (Compose (Concatenation { prefix; middle; suffix })) -> (
+            replace_unpackable middle
+            >>| map_tuple ~f:(OrderedTypes.expand_in_concatenation ~prefix ~suffix)
+            >>= function
+            | Tuple results -> Some (TypeOperation (Compose results))
+            | _ -> None)
+        | _ -> None
+
+
+      let dequalify ({ name; _ } as variable) ~dequalify_map =
+        { variable with name = dequalify_identifier dequalify_map name }
+
+
+      let parse_declaration value ~target =
+        match value with
+        | {
+         Node.value =
+           Expression.Call
+             {
+               callee =
+                 {
+                   Node.value =
+                     Name
+                       (Name.Attribute
+                         {
+                           base =
+                             {
+                               Node.value =
+                                 ( Name (Name.Identifier "pyre_extensions")
+                                 | Name (Name.Identifier "typing_extensions")
+                                 | Name (Name.Identifier "typing") );
+                               _;
+                             };
+                           attribute = "TypeVarTuple";
+                           special = false;
+                         });
+                   _;
+                 };
+               arguments =
+                 [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+             };
+         _;
+        } ->
+            Some (create (Reference.show target))
+        | _ -> None
+    end
+  end
+
+  module GlobalTransforms = struct
+    module type VariableKind = sig
+      include VariableKind
+
+      (* We don't want these to be part of the public interface for Unary or Variadic.Parameters *)
+      val local_replace : (t -> domain option) -> T.t -> T.t option
+
+      val local_collect : T.t -> t list
+    end
+
+    module Make (Variable : VariableKind) = struct
+      include Variable
+
+      let replace_all operation =
+        Transforms.apply_type_map
+          ~visit_children_before:true
+          ~type_map:(Variable.local_replace operation)
+
+
+      let map operation =
+        replace_all (fun variable -> operation variable |> Variable.self_reference |> Option.some)
+
+
+      let mark_all_as_bound ?specific =
+        let in_list variable =
+          match specific with
+          | Some variables -> List.mem variables ~equal:Variable.equal variable
+          | None -> true
+        in
+        let mark_as_bound_if_in_list variable =
+          if in_list variable then
+            Variable.mark_as_bound variable
+          else
+            variable
+        in
+        map mark_as_bound_if_in_list
+
+
+      let mark_all_as_free ?specific =
+        let in_list variable =
+          match specific with
+          | Some variables -> List.mem variables ~equal:Variable.equal variable
+          | None -> true
+        in
+        let mark_as_free_if_in_list variable =
+          if in_list variable then
+            Variable.mark_as_free variable
+          else
+            variable
+        in
+        map mark_as_free_if_in_list
+
+
+      let namespace_all_free_variables annotation ~namespace =
+        let namespace_if_free variable =
+          if Variable.is_free variable then
+            Variable.namespace variable ~namespace
+          else
+            variable
+        in
+        map namespace_if_free annotation
+
+
+      let mark_as_escaped annotation ~variables ~namespace =
+        let mark_as_escaped_if_in_list variable =
+          if List.mem variables variable ~equal:Variable.equal then
+            Variable.mark_as_escaped variable |> Variable.namespace ~namespace
+          else
+            variable
+        in
+        map mark_as_escaped_if_in_list annotation
+
+
+      (* Sets all of the variables of type Variable.t to the same namespace (-1). This should only
+         be used to implement namespace_insensitive_compare *)
+      let converge_all_variable_namespaces = map (Variable.namespace ~namespace:(-1))
+
+      let convert_all_escaped_free_variables_to_anys =
+        let convert_if_escaped variable =
+          if Variable.is_escaped_and_free variable then
+            Some Variable.any
+          else
+            Some (Variable.self_reference variable)
+        in
+        replace_all convert_if_escaped
+
+
+      let collect_all annotation =
+        let module Collector = VisitWithTransform.Make (struct
+          type state = Variable.t list
+
+          let visit_children_before _ _ = true
+
+          let visit_children_after = false
+
+          let visit sofar annotation =
+            let new_state = Variable.local_collect annotation @ sofar in
+            { VisitWithTransform.transformed_annotation = annotation; new_state }
+        end)
+        in
+        fst (Collector.visit [] annotation) |> List.rev
+
+
+      let all_free_variables annotation = collect_all annotation |> List.filter ~f:Variable.is_free
+
+      let contains_escaped_free_variable annotation =
+        collect_all annotation |> List.exists ~f:Variable.is_escaped_and_free
+    end
+
+    module type S = sig
+      type t
+
+      type domain
+
+      val replace_all : (t -> domain option) -> T.t -> T.t
+
+      val collect_all : T.t -> t list
+    end
+
+    module Unary = Make (Unary)
+    module ParameterVariadic = Make (Variadic.Parameters)
+    module TupleVariadic = Make (Variadic.Tuple)
+  end
+
+  type t = T.t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
+
+  type variable_t = t
+
+  include Record.Variable
+
+  module Set = Core.Set.Make (struct
+    type t = T.t Record.Variable.record [@@deriving compare, sexp]
+  end)
+
+  type variable_zip_result = {
+    variable_pair: pair;
+    received_parameter: Parameter.t;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
+
+  let pp_concise format = function
+    | Unary variable -> Unary.pp_concise format variable ~pp_type:PrettyPrinting.pp
+    | ParameterVariadic { name; _ } ->
+        Format.fprintf format "CallableParameterTypeVariable[%s]" name
+    | TupleVariadic { name; _ } -> Format.fprintf format "TypeVarTuple[%s]" name
+
+
+  let parse_declaration expression ~target =
+    match Variadic.Parameters.parse_declaration expression ~target with
+    | Some variable -> Some (ParameterVariadic variable)
+    | None -> (
+        match Variadic.Tuple.parse_declaration expression ~target with
+        | Some variable -> Some (TupleVariadic variable)
+        | None -> None)
+
+
+  let dequalify dequalify_map = function
+    | Unary variable -> Unary (Unary.dequalify variable ~dequalify_map)
+    | ParameterVariadic variable ->
+        ParameterVariadic (Variadic.Parameters.dequalify variable ~dequalify_map)
+    | TupleVariadic variable -> TupleVariadic (Variadic.Tuple.dequalify variable ~dequalify_map)
+
+
+  let namespace variable ~namespace =
+    match variable with
+    | Unary variable -> Unary (Unary.namespace variable ~namespace)
+    | ParameterVariadic variable ->
+        ParameterVariadic (Variadic.Parameters.namespace variable ~namespace)
+    | TupleVariadic variable -> TupleVariadic (Variadic.Tuple.namespace variable ~namespace)
+
+
+  let partition =
+    let partitioner = function
+      | Unary variable -> `Fst variable
+      | ParameterVariadic variable -> `Snd variable
+      | TupleVariadic variable -> `Trd variable
+    in
+    List.partition3_map ~f:partitioner
+
+
+  let mark_all_variables_as_bound ?specific annotation =
+    let specific_unaries, specific_parameters_variadics, specific_tuple_variadics =
+      match specific >>| partition with
+      | None -> None, None, None
+      | Some (unaries, parameters, tuples) -> Some unaries, Some parameters, Some tuples
+    in
+    GlobalTransforms.Unary.mark_all_as_bound ?specific:specific_unaries annotation
+    |> GlobalTransforms.ParameterVariadic.mark_all_as_bound ?specific:specific_parameters_variadics
+    |> GlobalTransforms.TupleVariadic.mark_all_as_bound ?specific:specific_tuple_variadics
+
+
+  let mark_as_bound = function
+    | Unary variable -> Unary (GlobalTransforms.Unary.mark_as_bound variable)
+    | ParameterVariadic variable ->
+        ParameterVariadic (GlobalTransforms.ParameterVariadic.mark_as_bound variable)
+    | TupleVariadic variable ->
+        TupleVariadic (GlobalTransforms.TupleVariadic.mark_as_bound variable)
+
+
+  let mark_all_variables_as_free ?specific annotation =
+    let specific_unaries, specific_parameters_variadics, specific_tuple_variadics =
+      match specific >>| partition with
+      | None -> None, None, None
+      | Some (unaries, parameters, tuples) -> Some unaries, Some parameters, Some tuples
+    in
+    GlobalTransforms.Unary.mark_all_as_free ?specific:specific_unaries annotation
+    |> GlobalTransforms.ParameterVariadic.mark_all_as_free ?specific:specific_parameters_variadics
+    |> GlobalTransforms.TupleVariadic.mark_all_as_free ?specific:specific_tuple_variadics
+
+
+  let namespace_all_free_variables annotation ~namespace =
+    GlobalTransforms.Unary.namespace_all_free_variables annotation ~namespace
+    |> GlobalTransforms.ParameterVariadic.namespace_all_free_variables ~namespace
+    |> GlobalTransforms.TupleVariadic.namespace_all_free_variables ~namespace
+
+
+  let all_free_variables annotation =
+    let unaries =
+      GlobalTransforms.Unary.all_free_variables annotation
+      |> List.map ~f:(fun variable -> Unary variable)
+    in
+    let callable_variadics =
+      GlobalTransforms.ParameterVariadic.all_free_variables annotation
+      |> List.map ~f:(fun variable -> ParameterVariadic variable)
+    in
+    let tuple_variadics =
+      GlobalTransforms.TupleVariadic.all_free_variables annotation
+      |> List.map ~f:(fun variable -> TupleVariadic variable)
+    in
+    unaries @ callable_variadics @ tuple_variadics
+
+
+  let all_variables_are_resolved annotation = all_free_variables annotation |> List.is_empty
+
+  let mark_all_free_variables_as_escaped ?specific annotation =
+    let fresh_namespace = Namespace.create_fresh () in
+    let variables =
+      match specific with
+      | Some variables -> variables
+      | None -> all_free_variables annotation
+    in
+    let specific_unaries, specific_parameters_variadics, specific_tuple_variadics =
+      partition variables
+    in
+    GlobalTransforms.Unary.mark_as_escaped
+      annotation
+      ~variables:specific_unaries
+      ~namespace:fresh_namespace
+    |> GlobalTransforms.ParameterVariadic.mark_as_escaped
+         ~variables:specific_parameters_variadics
+         ~namespace:fresh_namespace
+    |> GlobalTransforms.TupleVariadic.mark_as_escaped
+         ~variables:specific_tuple_variadics
+         ~namespace:fresh_namespace
+
+
+  let collapse_all_escaped_variable_unions annotation =
+    let module ConcreteTransform = VisitWithTransform.Make (struct
+      type state = unit
+
+      let visit_children_before _ _ = true
+
+      let visit_children_after = false
+
+      let visit new_state annotation =
+        let transformed_annotation =
+          match annotation with
+          | Union parameters ->
+              let not_escaped_free_variable = function
+                | Variable variable -> not (Unary.is_escaped_and_free variable)
+                | _ -> true
+              in
+              List.filter parameters ~f:not_escaped_free_variable |> Constructors.union
+          | _ -> annotation
+        in
+        { VisitWithTransform.transformed_annotation; new_state }
+    end)
+    in
+    snd (ConcreteTransform.visit () annotation)
+
+
+  let contains_escaped_free_variable annotation =
+    GlobalTransforms.Unary.contains_escaped_free_variable annotation
+    || GlobalTransforms.ParameterVariadic.contains_escaped_free_variable annotation
+    || GlobalTransforms.TupleVariadic.contains_escaped_free_variable annotation
+
+
+  let convert_all_escaped_free_variables_to_anys annotation =
+    GlobalTransforms.Unary.convert_all_escaped_free_variables_to_anys annotation
+    |> GlobalTransforms.ParameterVariadic.convert_all_escaped_free_variables_to_anys
+    |> GlobalTransforms.TupleVariadic.convert_all_escaped_free_variables_to_anys
+
+
+  let converge_all_variable_namespaces annotation =
+    GlobalTransforms.Unary.converge_all_variable_namespaces annotation
+    |> GlobalTransforms.ParameterVariadic.converge_all_variable_namespaces
+    |> GlobalTransforms.TupleVariadic.converge_all_variable_namespaces
+
+
+  let coalesce_if_all_single parameters =
+    Parameter.all_singles parameters
+    >>| (fun singles ->
+          [
+            Parameter.CallableParameters
+              (Defined (Callable.prepend_anonymous_parameters ~head:singles ~tail:[]));
+          ])
+    |> Option.value ~default:parameters
+
+
+  let make_variable_pair variable received_parameter =
+    let variable_pair =
+      match variable, received_parameter with
+      | Unary unary, Parameter.Single annotation -> UnaryPair (unary, annotation)
+      | ParameterVariadic parameter_variadic, CallableParameters callable_parameters ->
+          ParameterVariadicPair (parameter_variadic, callable_parameters)
+      | Unary unary, _ -> UnaryPair (unary, Unary.any)
+      | ParameterVariadic parameter_variadic, _ ->
+          ParameterVariadicPair (parameter_variadic, Variadic.Parameters.any)
+      | TupleVariadic tuple_variadic, _ ->
+          (* We should not hit this case at all. *)
+          TupleVariadicPair (tuple_variadic, Variadic.Tuple.any)
+    in
+    { variable_pair; received_parameter }
+
+
+  let pairs_for_variadic_class ~non_variadic_prefix_length variables parameters =
+    let variables_prefix, variables_rest = List.split_n variables non_variadic_prefix_length in
+    match variables_rest with
+    | TupleVariadic variadic :: variables_suffix ->
+        let parameters_prefix, parameters_rest =
+          List.split_n parameters non_variadic_prefix_length
+        in
+        let parameters_middle, parameters_suffix =
+          List.split_n parameters_rest (List.length parameters_rest - List.length variables_suffix)
+        in
+        let pairs () =
+          match
+            ( List.map2 variables_prefix parameters_prefix ~f:make_variable_pair,
+              List.map2 variables_suffix parameters_suffix ~f:make_variable_pair )
+          with
+          | Ok prefix_pairs, Ok suffix_pairs ->
+              let variadic_pair =
+                let ordered_type =
+                  match OrderedTypes.concatenation_from_parameters parameters_middle with
+                  | Some ordered_type -> Some ordered_type
+                  | None ->
+                      Parameter.all_singles parameters_middle
+                      >>| fun singles -> OrderedTypes.Concrete singles
+                in
+                ordered_type
+                >>| (fun ordered_type ->
+                      {
+                        variable_pair = TupleVariadicPair (variadic, ordered_type);
+                        received_parameter = Single (Tuple ordered_type);
+                      })
+                |> Option.value
+                     ~default:
+                       {
+                         variable_pair = TupleVariadicPair (variadic, Variadic.Tuple.any);
+                         received_parameter =
+                           Single
+                             (Constructors.parametric
+                                Variadic.Tuple.synthetic_class_name_for_error
+                                parameters_middle);
+                       }
+              in
+              prefix_pairs @ [variadic_pair] @ suffix_pairs |> Option.some
+          | _ -> None
+        in
+        let has_variadic_in_prefix_or_suffix =
+          List.exists parameters_prefix ~f:Parameter.is_unpacked
+          || List.exists parameters_suffix ~f:Parameter.is_unpacked
+        in
+        if has_variadic_in_prefix_or_suffix then
+          None
+        else
+          pairs ()
+    | _ -> None
+
+
+  (* Zip the generic variables `Generic[T1, T2]` of a class with its parameters Foo[int, str]. *)
+  let zip_variables_with_parameters_including_mismatches ~parameters variables =
+    let parameters =
+      match variables with
+      | [ParameterVariadic _] -> coalesce_if_all_single parameters
+      | _ -> parameters
+    in
+    let variadic_index index = function
+      | TupleVariadic _ -> Some index
+      | _ -> None
+    in
+    match List.filter_mapi variables ~f:variadic_index with
+    | [unpacked_index] ->
+        pairs_for_variadic_class ~non_variadic_prefix_length:unpacked_index variables parameters
+    | [] -> (
+        match List.map2 variables parameters ~f:make_variable_pair with
+        | Ok pairs -> Some pairs
+        | Unequal_lengths -> None)
+    | _ ->
+        (* Reject multiple variadic generics. *)
+        None
+
+
+  let zip_variables_with_parameters ~parameters variables =
+    zip_variables_with_parameters_including_mismatches ~parameters variables
+    >>| List.map ~f:(function { variable_pair; _ } -> variable_pair)
+
+
+  let zip_variables_with_two_parameter_lists ~left_parameters ~right_parameters variables =
+    let left_pairs, right_pairs =
+      ( zip_variables_with_parameters ~parameters:left_parameters variables,
+        zip_variables_with_parameters ~parameters:right_parameters variables )
+    in
+    Option.map2 left_pairs right_pairs ~f:List.zip
+    >>= function
+    | Ok pairs -> Some pairs
+    | Unequal_lengths -> None
+
+
+  let all_unary variables =
+    List.map variables ~f:(function
+        | Unary unary -> Some unary
+        | ParameterVariadic _
+        | TupleVariadic _ ->
+            None)
+    |> Option.all
+
+
+  let to_parameter = function
+    | Unary variable -> Parameter.Single (Unary.self_reference variable)
+    | ParameterVariadic variable ->
+        Parameter.CallableParameters (Variadic.Parameters.self_reference variable)
+    | TupleVariadic variadic -> Parameter.Unpacked (Variadic variadic)
+end
+
+module ToExpression = struct
+  open T
+
+  let location = Location.any
+
+  let subscript = subscript ~location
+
+  let create_name name = Expression.Name (create_name ~location name)
+
+  let rec callable_parameters_expression = function
+    | Record.Callable.Defined parameters ->
+        let convert_parameter parameter =
+          let call ?(default = false) ?name kind annotation =
+            let arguments =
+              let annotation = [{ Call.Argument.name = None; value = annotation }] in
+              let default =
+                if default then
+                  [
+                    {
+                      Call.Argument.name = None;
+                      value = Node.create ~location (create_name "default");
+                    };
+                  ]
+                else
+                  []
+              in
+              let name =
+                name
+                >>| (fun name ->
+                      [
+                        {
+                          Call.Argument.name = None;
+                          value = Node.create ~location (create_name name);
+                        };
+                      ])
+                |> Option.value ~default:[]
+              in
+              name @ annotation @ default
+            in
+            Expression.Call
+              { callee = Node.create ~location (Expression.Name (Name.Identifier kind)); arguments }
+            |> Node.create ~location
+          in
+          match parameter with
+          | CallableParameter.PositionalOnly { annotation; default; _ } ->
+              call ~default "PositionalOnly" (expression annotation)
+          | Keywords annotation -> call "Keywords" (expression annotation)
+          | Named { name; annotation; default } ->
+              call ~default ~name "Named" (expression annotation)
+          | KeywordOnly { name; annotation; default } ->
+              call ~default ~name "KeywordOnly" (expression annotation)
+          | Variable (Concrete annotation) -> call "Variable" (expression annotation)
+          | Variable (Concatenation concatenation) ->
+              Expression.Call
+                {
+                  callee = Node.create ~location (Expression.Name (Name.Identifier "Variable"));
+                  arguments =
+                    concatenation_to_expressions concatenation
+                    |> List.map ~f:(fun annotation ->
+                           { Call.Argument.name = None; value = annotation });
+                }
+              |> Node.create ~location
+        in
+        Expression.List (List.map ~f:convert_parameter parameters) |> Node.create ~location
+    | Undefined -> Node.create ~location (Expression.Constant Constant.Ellipsis)
+    | ParameterVariadicTypeVariable variable ->
+        Canonicalization.parameter_variable_type_representation variable |> expression
+
+
+  and concatenation_to_expressions
+      { Record.OrderedTypes.Concatenation.prefix; middle = unpackable; suffix }
+    =
+    List.map ~f:expression prefix
+    @ [Record.OrderedTypes.Concatenation.unpackable_to_expression ~expression ~location unpackable]
+    @ List.map ~f:expression suffix
+
+
+  and convert_type annotation =
+    let convert_ordered_type ordered_type =
+      match ordered_type with
+      | Record.OrderedTypes.Concatenation
+          { middle = UnboundedElements parameter; prefix = []; suffix = [] } ->
+          List.map ~f:expression [parameter; Primitive "..."]
+      | Concatenation concatenation -> concatenation_to_expressions concatenation
+      | Concrete parameters -> List.map ~f:expression parameters
+    in
+    match annotation with
+    | Bottom -> create_name "$bottom"
+    | Callable { implementation; overloads; _ } -> (
+        (* Pyre currently allows writing (and pretty-printing) overload types using a closed-form
+           expression written like `Callable[[Any], Any][[[str], str][[int],int]]`. *)
+        let convert_signature_as_leftmost_overload { Record.Callable.annotation; parameters; _ } =
+          Node.create
+            ~location
+            (Expression.List [callable_parameters_expression parameters; expression annotation])
+        in
+        let convert_signature_as_index { Record.Callable.annotation; parameters; _ } =
+          Node.create
+            ~location
+            (Expression.Tuple [callable_parameters_expression parameters; expression annotation])
+        in
+        let base_value =
+          Expression.Subscript
+            {
+              base = { Node.location; value = create_name "typing.Callable" };
+              index = convert_signature_as_index implementation;
+            }
+        in
+        let overloads =
+          let convert_overload sofar overload =
+            match sofar with
+            | None -> Some (convert_signature_as_leftmost_overload overload)
+            | Some expression ->
+                Expression.Subscript
+                  { base = expression; index = convert_signature_as_index overload }
+                |> Node.create ~location
+                |> Option.some
+          in
+          List.fold ~init:None ~f:convert_overload overloads
+        in
+        match overloads with
+        | Some overloads ->
+            Expression.Subscript { base = { Node.location; value = base_value }; index = overloads }
+        | None -> base_value)
+    | Any -> create_name "typing.Any"
+    | Literal literal ->
+        let literal =
+          match literal with
+          | Boolean true -> Expression.Constant Constant.True
+          | Boolean false -> Expression.Constant Constant.False
+          | Integer literal -> Expression.Constant (Constant.Integer literal)
+          | String (LiteralValue literal) ->
+              Expression.Constant (Constant.String { value = literal; kind = StringLiteral.String })
+          | String AnyLiteral -> create_name "str"
+          | Bytes literal ->
+              Expression.Constant (Constant.String { value = literal; kind = StringLiteral.Bytes })
+          | EnumerationMember { enumeration_type; member_name } ->
+              Expression.Name
+                (Attribute
+                   { base = expression enumeration_type; attribute = member_name; special = false })
+        in
+        subscript "typing_extensions.Literal" [Node.create ~location literal]
+    | NoneType -> Expression.Constant Constant.NoneLiteral
+    | Parametric { name; parameters } ->
+        let parameters =
+          let expression_of_parameter = function
+            | Record.Parameter.Single single -> expression single
+            | CallableParameters parameters -> callable_parameters_expression parameters
+            | Unpacked unpackable ->
+                Record.OrderedTypes.Concatenation.unpackable_to_expression
+                  ~expression
+                  ~location
+                  unpackable
+          in
+          match parameters with
+          | parameters -> List.map parameters ~f:expression_of_parameter
+        in
+        subscript (Canonicalization.reverse_substitute name) parameters
+    | ParameterVariadicComponent { component; variable_name; _ } ->
+        let attribute =
+          Record.Variable.RecordVariadic.RecordParameters.RecordComponents.component_name component
+        in
+        Expression.Name
+          (Attribute { base = expression (Primitive variable_name); attribute; special = false })
+    | Primitive name -> create_name name
+    | ReadOnly type_ -> subscript "pyre_extensions.ReadOnly" [expression type_]
+    | RecursiveType { name; _ } -> create_name name
+    | Top -> create_name "$unknown"
+    | Tuple (Concrete []) -> subscript "typing.Tuple" [Node.create ~location (Expression.Tuple [])]
+    | Tuple ordered_type -> subscript "typing.Tuple" (convert_ordered_type ordered_type)
+    | TypeOperation (Compose ordered_type) ->
+        subscript "pyre_extensions.Compose" (convert_ordered_type ordered_type)
+    | Union [NoneType; parameter]
+    | Union [parameter; NoneType] ->
+        subscript "typing.Optional" [expression parameter]
+    | Union parameters -> subscript "typing.Union" (List.map ~f:expression parameters)
+    | Variable { variable; _ } -> create_name variable
+
+
+  and expression annotation =
+    let value =
+      match annotation with
+      | Primitive "..." -> Expression.Constant Constant.Ellipsis
+      | _ -> convert_type annotation
+    in
+    Node.create_with_default_location value
+end
+
+module TypedDictionary = struct
+  open T
+  open Record.TypedDictionary
+
+  let anonymous fields = { name = "$anonymous"; fields }
+
+  let create_field ~annotation ~has_non_total_typed_dictionary_base_class name =
+    let annotation, required =
+      match annotation with
+      | Parametric
+          {
+            name = "typing_extensions.NotRequired" | "typing.NotRequired";
+            parameters = [Single annotation];
+          } ->
+          annotation, false
+      | Parametric
+          {
+            name = "typing_extensions.Required" | "typing.Required";
+            parameters = [Single annotation];
+          } ->
+          annotation, true
+      | _ -> annotation, not has_non_total_typed_dictionary_base_class
+    in
+    { name; annotation; required }
+
+
+  let are_fields_total = List.for_all ~f:(fun { Record.TypedDictionary.required; _ } -> required)
+
+  let same_name { name = left_name; required = _; _ } { name = right_name; required = _; _ } =
+    String.equal left_name right_name
+
+
+  let same_name_different_requiredness
+      { name = left_name; required = left_required; _ }
+      { name = right_name; required = right_required; _ }
+    =
+    String.equal left_name right_name && not (Bool.equal left_required right_required)
+
+
+  let same_name_different_annotation
+      { name = left_name; annotation = left_annotation; _ }
+      { name = right_name; annotation = right_annotation; _ }
+    =
+    String.equal left_name right_name && not (equal left_annotation right_annotation)
+
+
+  let fields_have_colliding_keys left_fields right_fields =
+    let found_collision
+        { name = needle_name; annotation = needle_annotation; required = needle_required }
+      =
+      let same_name_different_annotation_or_requiredness { name; annotation; required } =
+        String.equal name needle_name
+        && ((not (equal annotation needle_annotation)) || not (Bool.equal required needle_required))
+      in
+      List.exists left_fields ~f:same_name_different_annotation_or_requiredness
+    in
+    List.exists right_fields ~f:found_collision
+
+
+  let self_parameter class_name =
+    CallableParameter.Named { name = "self"; annotation = Primitive class_name; default = false }
+
+
+  let field_named_parameters ?(all_default = false) ~class_name fields =
+    let field_to_argument { name; annotation; required } =
+      Record.Callable.RecordParameter.KeywordOnly
+        {
+          name = Format.asprintf "$parameter$%s" name;
+          annotation;
+          default = all_default || not required;
+        }
+    in
+    let required_fields, non_required_fields =
+      List.partition_tf fields ~f:(fun { required; _ } -> required)
+    in
+    required_fields @ non_required_fields
+    |> List.map ~f:field_to_argument
+    |> fun parameters -> Record.Callable.Defined (self_parameter class_name :: parameters)
+
+
+  let constructor ~name ~fields =
+    {
+      Callable.kind = Named (Reference.create ~prefix:(Reference.create name) "__init__");
+      implementation = { annotation = Top; parameters = Undefined };
+      overloads =
+        [
+          {
+            annotation = Constructors.none;
+            parameters = field_named_parameters ~class_name:name fields;
+          };
+          {
+            annotation = Constructors.none;
+            parameters =
+              Defined
+                [
+                  Record.Callable.RecordParameter.PositionalOnly
+                    { index = 0; annotation = Primitive name; default = false };
+                  Record.Callable.RecordParameter.PositionalOnly
+                    { index = 1; annotation = Primitive name; default = false };
+                ];
+          };
+        ];
+    }
+
+
+  let fields_from_constructor = function
+    | {
+        Callable.kind = Named name;
+        overloads = [{ parameters = Defined (_self :: parameters); _ }; _];
+        _;
+      }
+      when String.equal (Reference.last name) "__init__" ->
+        let parameter_to_field = function
+          | Record.Callable.RecordParameter.KeywordOnly { name; annotation; default } ->
+              Some
+                {
+                  name = String.split ~on:'$' name |> List.last_exn;
+                  annotation;
+                  required = not default;
+                }
+          | _ -> None
+        in
+        List.map ~f:parameter_to_field parameters |> Option.all
+    | _ -> None
+
+
+  type special_method = {
+    name: string;
+    special_index: int option;
+    overloads: t typed_dictionary_field list -> t Callable.overload list;
+  }
+
+  let key_parameter name =
+    CallableParameter.Named
+      { name = "k"; annotation = Constructors.literal_string name; default = false }
+
+
+  let common_special_methods ~class_name =
+    let getitem_overloads =
+      let overload { name; annotation; _ } =
+        {
+          Record.Callable.annotation;
+          parameters = Defined [self_parameter class_name; key_parameter name];
+        }
+      in
+      List.map ~f:overload
+    in
+    let setitem_overloads =
+      let overload { name; annotation; _ } =
+        {
+          Record.Callable.annotation = Constructors.none;
+          parameters =
+            Defined
+              [
+                self_parameter class_name;
+                key_parameter name;
+                Named { name = "v"; annotation; default = false };
+              ];
+        }
+      in
+      List.map ~f:overload
+    in
+    let get_overloads =
+      let overloads { name; annotation; _ } =
+        [
+          {
+            Record.Callable.annotation = Constructors.union [annotation; NoneType];
+            parameters = Defined [self_parameter class_name; key_parameter name];
+          };
+          {
+            annotation = Union [annotation; Variable (Variable.Unary.create "_T")];
+            parameters =
+              Defined
+                [
+                  self_parameter class_name;
+                  key_parameter name;
+                  Named
+                    {
+                      name = "default";
+                      annotation = Variable (Variable.Unary.create "_T");
+                      default = false;
+                    };
+                ];
+          };
+        ]
+      in
+      List.concat_map ~f:overloads
+    in
+    let setdefault_overloads =
+      let overload { name; annotation; _ } =
+        {
+          Record.Callable.annotation;
+          parameters =
+            Defined
+              [
+                self_parameter class_name;
+                key_parameter name;
+                Named { name = "default"; annotation; default = false };
+              ];
+        }
+      in
+      List.map ~f:overload
+    in
+    let update_overloads fields =
+      [
+        {
+          Record.Callable.annotation = Constructors.none;
+          parameters = field_named_parameters ~all_default:true ~class_name fields;
+        };
+        {
+          annotation = Constructors.none;
+          parameters =
+            Defined
+              [
+                Record.Callable.RecordParameter.PositionalOnly
+                  { index = 0; annotation = Primitive class_name; default = false };
+                Record.Callable.RecordParameter.PositionalOnly
+                  { index = 1; annotation = Primitive class_name; default = false };
+              ];
+        };
+      ]
+    in
+    [
+      { name = "__getitem__"; special_index = Some 1; overloads = getitem_overloads };
+      { name = "__setitem__"; special_index = Some 1; overloads = setitem_overloads };
+      { name = "get"; special_index = Some 1; overloads = get_overloads };
+      { name = "setdefault"; special_index = Some 1; overloads = setdefault_overloads };
+      { name = "update"; special_index = None; overloads = update_overloads };
+    ]
+
+
+  let non_total_special_methods class_name =
+    let pop_overloads =
+      let overloads { name; annotation; required; _ } =
+        if required then
+          []
+        else
+          [
+            {
+              Record.Callable.annotation;
+              parameters = Defined [self_parameter class_name; key_parameter name];
+            };
+            {
+              annotation = Union [annotation; Variable (Variable.Unary.create "_T")];
+              parameters =
+                Defined
+                  [
+                    self_parameter class_name;
+                    key_parameter name;
+                    Named
+                      {
+                        name = "default";
+                        annotation = Variable (Variable.Unary.create "_T");
+                        default = false;
+                      };
+                  ];
+            };
+          ]
+      in
+      List.concat_map ~f:overloads
+    in
+    let delitem_overloads fields =
+      let overload { name; annotation = _; required } =
+        Option.some_if
+          (not required)
+          {
+            Record.Callable.annotation = Constructors.none;
+            parameters = Defined [self_parameter class_name; key_parameter name];
+          }
+      in
+      List.filter_map ~f:overload fields
+    in
+    [
+      { name = "pop"; special_index = Some 1; overloads = pop_overloads };
+      { name = "__delitem__"; special_index = Some 1; overloads = delitem_overloads };
+    ]
+
+
+  let special_overloads ~class_name ~fields ~method_name =
+    let total = are_fields_total fields in
+    let special_methods =
+      if total then
+        common_special_methods ~class_name
+      else
+        non_total_special_methods class_name @ common_special_methods ~class_name
+    in
+    List.find special_methods ~f:(fun { name; _ } -> String.equal name method_name)
+    >>| fun { overloads; _ } -> overloads fields
+
+
+  let is_special_mismatch ~class_name ~total ~method_name ~position =
+    let special_methods =
+      if total then
+        common_special_methods ~class_name
+      else
+        non_total_special_methods class_name @ common_special_methods ~class_name
+    in
+    List.find special_methods ~f:(fun { name; _ } -> String.equal name method_name)
+    >>= (fun { special_index; _ } -> special_index)
+    >>| ( = ) position
+    |> Option.value ~default:false
+
+
+  (** typing.TypedDict gets preprocessed into TypedDictionary *)
+  let class_name ~total =
+    if total then
+      "TypedDictionary"
+    else
+      "NonTotalTypedDictionary"
+
+
+  let base_typed_dictionary = Primitive (class_name ~total:true)
+
+  let is_builtin_typed_dictionary_class base_name =
+    List.mem [class_name ~total:true; class_name ~total:false] base_name ~equal:String.equal
+
+
+  let defines ~total ~t_self_expression =
+    let open Statement in
+    let class_name = class_name ~total in
+    let define ?self_parameter ?return_annotation name =
+      Statement.Define
+        {
+          signature =
+            {
+              name = Reference.create_from_list [class_name; name];
+              parameters =
+                [
+                  { ExpressionParameter.name = "self"; value = None; annotation = self_parameter }
+                  |> Node.create_with_default_location;
+                ];
+              decorators = [];
+              return_annotation;
+              async = false;
+              generator = false;
+              parent = Some (Reference.create class_name);
+              nesting_define = None;
+            };
+          captures = [];
+          unbound_names = [];
+          body = [];
+        }
+      |> Node.create_with_default_location
+    in
+    let common_methods =
+      [
+        define ~self_parameter:t_self_expression ~return_annotation:t_self_expression "copy";
+        define
+          ~self_parameter:t_self_expression
+          ~return_annotation:(ToExpression.expression Constructors.integer)
+          "__len__";
+        define
+          ~self_parameter:t_self_expression
+          ~return_annotation:(ToExpression.expression (Constructors.iterator Constructors.string))
+          "__iter__";
+      ]
+      @ List.map (common_special_methods ~class_name) ~f:(fun { name; _ } -> define name)
+    in
+    if total then
+      common_methods
+    else
+      common_methods
+      @ (non_total_special_methods class_name |> List.map ~f:(fun { name; _ } -> define name))
+end
+
+include T
+
+let _ = show (* shadowed below *)
+
+let lambda ~parameters ~return_annotation =
+  let parameters =
+    List.map parameters ~f:(fun (name, annotation) ->
+        { CallableParameter.name; annotation; default = false })
+    |> Callable.Parameter.create
+  in
+  Callable
+    {
+      kind = Anonymous;
+      implementation = { annotation = return_annotation; parameters = Defined parameters };
+      overloads = [];
+    }
+
+
+let primitive_substitution_map =
+  [
+    "$bottom", Bottom;
+    "$unknown", Top;
+    "function", Callable.create ~annotation:Any ();
+    "typing.Any", Any;
+    "typing.ChainMap", Primitive "collections.ChainMap";
+    "typing.Counter", Primitive "collections.Counter";
+    "typing.DefaultDict", Primitive "collections.defaultdict";
+    "typing.Deque", Primitive "collections.deque";
+    "typing.Dict", Primitive "dict";
+    "typing.FrozenSet", Primitive "frozenset";
+    "typing.List", Primitive "list";
+    "typing.OrderedDict", Primitive "collections.OrderedDict";
+    "typing.Set", Primitive "set";
+    "typing.Tuple", Primitive "tuple";
+    "typing.Type", Primitive "type";
+    "typing_extensions.Protocol", Primitive "typing.Protocol";
+    (* This is broken in typeshed:
+       https://github.com/python/typeshed/pull/991#issuecomment-288160993 *)
+    "PathLike", Primitive "_PathLike";
+    "TSelf", Constructors.variable "_PathLike";
+    (* This inherits from Any, and is expected to act just like Any *)
+    "_NotImplementedType", Any;
+    "typing_extensions.LiteralString", Literal (String AnyLiteral);
+    "typing.LiteralString", Literal (String AnyLiteral);
+  ]
+  |> Identifier.Table.of_alist_exn
+
+
+let primitive_name = function
+  | Primitive name -> Some name
+  | _ -> None
+
+
+let create_literal = function
+  | Expression.Constant Constant.True -> Some (Literal (Boolean true))
+  | Expression.Constant Constant.False -> Some (Literal (Boolean false))
+  | Expression.Constant (Constant.Integer literal) -> Some (Literal (Integer literal))
+  | Expression.Constant (Constant.String { StringLiteral.kind = StringLiteral.String; value }) ->
+      Some (Literal (String (LiteralValue value)))
+  | Expression.Constant (Constant.String { StringLiteral.kind = StringLiteral.Bytes; value }) ->
+      Some (Literal (Bytes value))
+  | Expression.Name
+      (Attribute { base = { Node.value = Expression.Name base_name; _ }; attribute; _ }) -> (
+      match name_to_reference base_name with
+      | Some reference ->
+          Some
+            (Literal
+               (EnumerationMember
+                  {
+                    enumeration_type = Primitive (Reference.show_sanitized reference);
+                    member_name = attribute;
+                  }))
+      | _ -> None)
+  | Expression.Constant Constant.NoneLiteral -> Some Constructors.none
+  | Expression.Name (Identifier "str") -> Some (Literal (String AnyLiteral))
+  | _ -> None
+
+
+let empty_aliases ?replace_unbound_parameters_with_any:_ _ = None
 
 let alternate_name_to_canonical_name_map =
   [
@@ -2628,6 +4465,7 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
       | _ -> false
     in
     let parse_callable ~resolved_base ~subscript_index =
+      let open Record.Callable in
       let modifiers, implementation_signature, overload_signatures =
         let get_from_base base implementation_argument overloads_argument =
           match Node.value base with
@@ -2931,7 +4769,7 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
       | None -> replace_with_special_form ~name parameters)
   | Union elements -> Constructors.union elements
   | Callable ({ implementation; overloads; _ } as callable) ->
-      let collect_unpacked_parameters_if_any ({ parameters; _ } as overload) =
+      let collect_unpacked_parameters_if_any ({ Record.Callable.parameters; _ } as overload) =
         match parameters with
         | Defined parameters ->
             let all_positional_only_parameters =
@@ -2958,162 +4796,11 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
 
 (* Check if there is a literal Any provided, not including type aliases to Any. *)
 let expression_contains_any expression =
-  let primitives_with_any_map = Hashtbl.filter ~f:contains_any primitive_substitution_map in
+  let primitives_with_any_map =
+    Hashtbl.filter ~f:Predicates.contains_any primitive_substitution_map
+  in
   Visit.collect_non_generic_type_names expression
   |> List.exists ~f:(Hashtbl.mem primitives_with_any_map)
-
-
-let is_not_instantiated annotation =
-  let predicate = function
-    | Bottom -> true
-    | Variable { constraints = Unconstrained; _ } -> true
-    | _ -> false
-  in
-  exists annotation ~predicate
-
-
-let contains_literal annotation =
-  let predicate = function
-    | Literal _ -> true
-    | _ -> false
-  in
-  exists annotation ~predicate
-
-
-let rec final_value = function
-  | Parametric
-      { name = "typing.Final" | "typing_extensions.Final"; parameters = [Single parameter] } ->
-      `Ok parameter
-  | Parametric { name = "typing.ClassVar"; parameters = [Single parameter] } ->
-      final_value parameter
-  | Primitive ("typing.Final" | "typing_extensions.Final") -> `NoParameter
-  | _ -> `NotFinal
-
-
-let contains_final annotation =
-  let predicate annotation =
-    match final_value annotation with
-    | `Ok _
-    | `NoParameter ->
-        true
-    | `NotFinal -> false
-  in
-  exists annotation ~predicate
-
-
-let collect annotation ~predicate =
-  let module CollectorTransform = Transform.Make (struct
-    type state = t list
-
-    let visit_children_before _ _ = true
-
-    let visit_children_after = false
-
-    let visit sofar annotation =
-      let new_state = if predicate annotation then sofar @ [annotation] else sofar in
-      { Transform.transformed_annotation = annotation; new_state }
-  end)
-  in
-  fst (CollectorTransform.visit [] annotation)
-
-
-let primitives annotation =
-  let predicate = function
-    | Primitive _ -> true
-    | _ -> false
-  in
-  collect annotation ~predicate
-
-
-type elements_state = {
-  elements: Primitive.t list;
-  recursive_type_names: Primitive.t list;
-}
-
-let elements annotation =
-  let module CollectorTransform = Transform.Make (struct
-    type state = elements_state
-
-    let visit_children_before _ _ =
-      match annotation with
-      | Literal _ -> false
-      | _ -> true
-
-
-    let visit_children_after = false
-
-    let visit { elements = sofar; recursive_type_names } annotation =
-      let elements, recursive_type_names =
-        match annotation with
-        | Callable _ -> "typing.Callable" :: sofar, recursive_type_names
-        | Literal literal ->
-            let sofar =
-              match literal with
-              | String AnyLiteral -> "str" :: sofar
-              | _ -> sofar
-            in
-            "typing_extensions.Literal" :: sofar, recursive_type_names
-        | Union [NoneType; _]
-        | Union [_; NoneType] ->
-            "typing.Optional" :: sofar, recursive_type_names
-        | Parametric { name; _ } -> name :: sofar, recursive_type_names
-        | Primitive annotation -> annotation :: sofar, recursive_type_names
-        | Tuple _ -> "tuple" :: sofar, recursive_type_names
-        | TypeOperation (Compose _) -> "pyre_extensions.Compose" :: sofar, recursive_type_names
-        | Union _ -> "typing.Union" :: sofar, recursive_type_names
-        | ReadOnly _ -> "pyre_extensions.ReadOnly" :: sofar, recursive_type_names
-        | RecursiveType { name; _ } -> sofar, name :: recursive_type_names
-        | ParameterVariadicComponent _
-        | Bottom
-        | Any
-        | Top
-        | NoneType
-        | Variable _ ->
-            sofar, recursive_type_names
-      in
-      {
-        Transform.transformed_annotation = annotation;
-        new_state = { elements; recursive_type_names };
-      }
-  end)
-  in
-  let { elements; recursive_type_names } =
-    fst (CollectorTransform.visit { elements = []; recursive_type_names = [] } annotation)
-  in
-  let name_set = Identifier.Set.of_list recursive_type_names in
-  (* The recursive alias name is untracked, which would lead to spurious "Annotation is not defined"
-     errors. So, filter out any references to it. consider the name as an "element". *)
-  List.filter elements ~f:(fun element -> not (Core.Set.mem name_set element)) |> List.rev
-
-
-let is_untyped = function
-  | Any
-  | Bottom
-  | Top ->
-      true
-  | _ -> false
-
-
-let is_partially_typed annotation = exists annotation ~predicate:is_untyped
-
-let contains_variable = exists ~predicate:is_variable
-
-let optional_value = function
-  | Union [NoneType; annotation]
-  | Union [annotation; NoneType] ->
-      Some annotation
-  | _ -> None
-
-
-let awaitable_value = function
-  | Parametric { name = "typing.Awaitable"; parameters = [Single parameter] } -> Some parameter
-  | _ -> None
-
-
-let coroutine_value = function
-  | Parametric { name = "typing.Coroutine"; parameters = [_; _; Single parameter] } ->
-      Some parameter
-  | _ -> None
 
 
 let typeguard_annotation = function
@@ -3159,7 +4846,7 @@ let weaken_literals annotation =
     | Literal (EnumerationMember { enumeration_type; _ }) -> Some enumeration_type
     | _ -> None
   in
-  apply_type_map ~type_map annotation
+  Transforms.apply_type_map ~type_map annotation
 
 
 (* Weaken specific literal to arbitrary literal before weakening to `str`. *)
@@ -3210,7 +4897,7 @@ let class_name annotation =
   in
   split annotation
   |> fst
-  |> expression
+  |> ToExpression.expression
   |> strip_calls
   |> fun identifiers ->
   if List.is_empty identifiers then
@@ -3221,17 +4908,6 @@ let class_name annotation =
 
 let class_variable annotation = Constructors.parametric "typing.ClassVar" [Single annotation]
 
-let class_variable_value = function
-  | Parametric { name = "typing.ClassVar"; parameters = [Single parameter] } -> Some parameter
-  | _ -> None
-
-
-let is_class_variable annotation =
-  match class_variable_value annotation with
-  | Some _ -> true
-  | None -> false
-
-
 (* Angelic assumption: Any occurrences of top indicate that we're dealing with Any instead of None.
    See T22792667. *)
 let assume_any = function
@@ -3239,1254 +4915,9 @@ let assume_any = function
   | annotation -> annotation
 
 
-let dequalify_reference map reference =
-  let rec fold accumulator reference =
-    if Core.Map.mem map reference then
-      Reference.combine (Core.Map.find_exn map reference) (Reference.create_from_list accumulator)
-    else
-      match Reference.prefix reference with
-      | Some prefix -> fold (Reference.last reference :: accumulator) prefix
-      | None -> Reference.create_from_list accumulator
-  in
-  fold [] reference
-
-
-let dequalify_identifier map identifier =
-  Reference.create identifier |> dequalify_reference map |> Reference.show
-
-
-module Variable : sig
-  module Namespace : sig
-    include module type of struct
-      include Record.Variable.RecordNamespace
-    end
-
-    val reset : unit -> unit
-
-    val create_fresh : unit -> t
-  end
-
-  type unary_t = type_t Record.Variable.RecordUnary.record
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type unary_domain = type_t [@@deriving compare, eq, sexp, show, hash]
-
-  type parameter_variadic_t = type_t Record.Variable.RecordVariadic.RecordParameters.record
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
-
-  type tuple_variadic_t = type_t Record.Variable.RecordVariadic.Tuple.record
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type tuple_variadic_domain = type_t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
-
-  type pair =
-    | UnaryPair of unary_t * unary_domain
-    | ParameterVariadicPair of parameter_variadic_t * parameter_variadic_domain
-    | TupleVariadicPair of tuple_variadic_t * tuple_variadic_domain
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type t = type_t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
-
-  type variable_t = t
-
-  module type VariableKind = sig
-    type t [@@deriving compare, eq, sexp, show, hash]
-
-    module Map : Core.Map.S with type Key.t = t
-
-    val is_free : t -> bool
-
-    val is_escaped_and_free : t -> bool
-
-    val mark_as_bound : t -> t
-
-    val mark_as_escaped : t -> t
-
-    val mark_as_free : t -> t
-
-    val namespace : t -> namespace:Namespace.t -> t
-
-    val dequalify : t -> dequalify_map:Reference.t Reference.Map.t -> t
-
-    type domain [@@deriving compare, eq, sexp, show, hash]
-
-    val any : domain
-
-    (* The value in the domain directly corresponding to the variable, i.e. the replacement that
-       would leave a type unchanged *)
-    val self_reference : t -> domain
-
-    val pair : t -> domain -> pair
-  end
-
-  module Unary : sig
-    include module type of struct
-      include Record.Variable.RecordUnary
-    end
-
-    include VariableKind with type t = unary_t and type domain = type_t
-
-    val create
-      :  ?constraints:type_t Record.Variable.constraints ->
-      ?variance:Record.Variable.variance ->
-      string ->
-      t
-
-    val is_contravariant : t -> bool
-
-    val is_covariant : t -> bool
-
-    val upper_bound : t -> type_t
-
-    val is_escaped_and_free : t -> bool
-
-    val contains_subvariable : t -> bool
-  end
-
-  module Variadic : sig
-    module Parameters : sig
-      include VariableKind with type t = parameter_variadic_t and type domain = Callable.parameters
-
-      val name : t -> Identifier.t
-
-      val create : ?variance:Record.Variable.variance -> string -> t
-
-      val parse_instance_annotation
-        :  create_type:
-             (aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> alias option) ->
-             Expression.t ->
-             type_t) ->
-        variable_parameter_annotation:Expression.t ->
-        keywords_parameter_annotation:Expression.t ->
-        aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> alias option) ->
-        t option
-
-      module Components : sig
-        include module type of struct
-          include Record.Variable.RecordVariadic.RecordParameters.RecordComponents
-        end
-
-        type decomposition = {
-          positional_component: type_t;
-          keyword_component: type_t;
-        }
-
-        val combine : decomposition -> parameter_variadic_t option
-
-        val component : t -> component
-      end
-
-      val decompose : t -> Components.decomposition
-    end
-
-    module Tuple : sig
-      include VariableKind with type t = tuple_variadic_t and type domain = tuple_variadic_domain
-
-      val name : t -> Identifier.t
-
-      val create : string -> t
-
-      val synthetic_class_name_for_error : string
-    end
-  end
-
-  module GlobalTransforms : sig
-    module type S = sig
-      type t
-
-      type domain
-
-      val replace_all : (t -> domain option) -> type_t -> type_t
-
-      val collect_all : type_t -> t list
-    end
-
-    module Unary : S with type t = unary_t and type domain = type_t
-
-    module ParameterVariadic :
-      S with type t = parameter_variadic_t and type domain = Callable.parameters
-
-    module TupleVariadic :
-      S with type t = tuple_variadic_t and type domain = type_t OrderedTypes.record
-  end
-
-  include module type of struct
-    include Record.Variable
-  end
-
-  module Set : Core.Set.S with type Elt.t = t
-
-  type variable_zip_result = {
-    variable_pair: pair;
-    received_parameter: Parameter.t;
-  }
-  [@@deriving compare, eq, sexp, show, hash]
-
-  val pp_concise : Format.formatter -> t -> unit
-
-  val parse_declaration : Expression.t -> target:Reference.t -> t option
-
-  val dequalify : Reference.t Reference.Map.t -> t -> t
-
-  val namespace : t -> namespace:Namespace.t -> t
-
-  val mark_all_variables_as_bound : ?specific:t list -> type_t -> type_t
-
-  val mark_all_variables_as_free : ?specific:t list -> type_t -> type_t
-
-  val mark_as_bound : t -> t
-
-  val namespace_all_free_variables : type_t -> namespace:Namespace.t -> type_t
-
-  val all_free_variables : type_t -> t list
-
-  val all_variables_are_resolved : type_t -> bool
-
-  val mark_all_free_variables_as_escaped : ?specific:t list -> type_t -> type_t
-
-  val collapse_all_escaped_variable_unions : type_t -> type_t
-
-  val contains_escaped_free_variable : type_t -> bool
-
-  val convert_all_escaped_free_variables_to_anys : type_t -> type_t
-
-  val converge_all_variable_namespaces : type_t -> type_t
-
-  val zip_variables_with_parameters : parameters:Parameter.t list -> t list -> pair list option
-
-  val zip_variables_with_parameters_including_mismatches
-    :  parameters:Parameter.t list ->
-    t list ->
-    variable_zip_result list option
-
-  val zip_variables_with_two_parameter_lists
-    :  left_parameters:Parameter.t list ->
-    right_parameters:Parameter.t list ->
-    t list ->
-    (pair * pair) list option
-
-  val all_unary : t list -> Unary.t list option
-
-  val to_parameter : t -> Parameter.t
-end = struct
-  module Namespace = struct
-    include Record.Variable.RecordNamespace
-
-    let fresh = ref 1
-
-    let reset () = fresh := 1
-
-    let create_fresh () =
-      let namespace = !fresh in
-      fresh := namespace + 1;
-      namespace
-  end
-
-  type unary_t = type_t Record.Variable.RecordUnary.record
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type unary_domain = type_t [@@deriving compare, eq, sexp, show, hash]
-
-  type parameter_variadic_t = type_t Record.Variable.RecordVariadic.RecordParameters.record
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
-
-  type tuple_variadic_t = type_t Record.Variable.RecordVariadic.Tuple.record
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type tuple_variadic_domain = type_t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
-
-  type pair =
-    | UnaryPair of unary_t * unary_domain
-    | ParameterVariadicPair of parameter_variadic_t * parameter_variadic_domain
-    | TupleVariadicPair of tuple_variadic_t * tuple_variadic_domain
-  [@@deriving compare, eq, sexp, show, hash]
-
-  module type VariableKind = sig
-    type t [@@deriving compare, eq, sexp, show, hash]
-
-    module Map : Core.Map.S with type Key.t = t
-
-    val is_free : t -> bool
-
-    val is_escaped_and_free : t -> bool
-
-    val mark_as_bound : t -> t
-
-    val mark_as_escaped : t -> t
-
-    val mark_as_free : t -> t
-
-    val namespace : t -> namespace:Namespace.t -> t
-
-    val dequalify : t -> dequalify_map:Reference.t Reference.Map.t -> t
-
-    type domain [@@deriving compare, eq, sexp, show, hash]
-
-    val any : domain
-
-    val self_reference : t -> domain
-
-    val pair : t -> domain -> pair
-  end
-
-  module Unary = struct
-    include Record.Variable.RecordUnary
-
-    type t = type_t record [@@deriving compare, eq, sexp, show, hash]
-
-    type domain = type_t [@@deriving compare, eq, sexp, show, hash]
-
-    module Map = Core.Map.Make (struct
-      type t = type_t record [@@deriving compare, sexp]
-    end)
-
-    let any = Any
-
-    let self_reference variable = Variable variable
-
-    let pair variable value = UnaryPair (variable, value)
-
-    let is_contravariant = function
-      | { variance = Contravariant; _ } -> true
-      | _ -> false
-
-
-    let is_covariant = function
-      | { variance = Covariant; _ } -> true
-      | _ -> false
-
-
-    let is_free = function
-      | { state = Free _; _ } -> true
-      | _ -> false
-
-
-    let namespace variable ~namespace = { variable with namespace }
-
-    let mark_as_bound variable = { variable with state = InFunction }
-
-    let upper_bound { constraints; _ } =
-      let open Constructors in
-      match constraints with
-      | Unconstrained -> object_primitive
-      | Bound bound -> bound
-      | Explicit explicits -> union explicits
-      | LiteralIntegers -> integer
-
-
-    let is_escaped_and_free = function
-      | { state = Free { escaped }; _ } -> escaped
-      | _ -> false
-
-
-    let contains_subvariable { constraints; _ } =
-      match constraints with
-      | Unconstrained -> false
-      | Bound bound -> contains_variable bound
-      | Explicit explicits -> List.exists explicits ~f:contains_variable
-      | LiteralIntegers -> false
-
-
-    let mark_as_escaped variable = { variable with state = Free { escaped = true } }
-
-    let mark_as_free variable = { variable with state = Free { escaped = false } }
-
-    let local_collect = function
-      | Variable variable -> [variable]
-      | _ -> []
-
-
-    let local_replace replacement = function
-      | Variable variable -> replacement variable
-      | _ -> None
-
-
-    let dequalify ({ variable = name; _ } as variable) ~dequalify_map =
-      { variable with variable = dequalify_identifier dequalify_map name }
-  end
-
-  module Variadic = struct
-    module Parameters = struct
-      include Record.Variable.RecordVariadic.RecordParameters
-
-      type t = type_t record [@@deriving compare, eq, sexp, show, hash]
-
-      type domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
-
-      module Map = Core.Map.Make (struct
-        type t = type_t record [@@deriving compare, sexp]
-      end)
-
-      let name { name; _ } = name
-
-      let any = Callable.Undefined
-
-      let self_reference variable = Callable.ParameterVariadicTypeVariable { head = []; variable }
-
-      let pair variable value = ParameterVariadicPair (variable, value)
-
-      let is_free = function
-        | { state = Free _; _ } -> true
-        | _ -> false
-
-
-      let is_escaped_and_free = function
-        | { state = Free { escaped }; _ } -> escaped
-        | _ -> false
-
-
-      let mark_as_bound variable = { variable with state = InFunction }
-
-      let namespace variable ~namespace = { variable with namespace }
-
-      let local_replace replacement annotation =
-        let map = function
-          | ParameterVariadicTypeVariable { head; variable } ->
-              let apply_head ~head = function
-                | ParameterVariadicTypeVariable { head = inner_head; variable } ->
-                    ParameterVariadicTypeVariable { head = head @ inner_head; variable }
-                | Undefined -> Undefined
-                | Defined tail -> Defined (Callable.prepend_anonymous_parameters ~head ~tail)
-              in
-              replacement variable
-              >>| apply_head ~head
-              |> Option.value ~default:(ParameterVariadicTypeVariable { head; variable })
-          | parameters -> parameters
-        in
-        match annotation with
-        | Callable callable ->
-            Callable.map_parameters callable ~f:map
-            |> (fun callable -> Callable callable)
-            |> Option.some
-        | Parametric { name; parameters } ->
-            let parameters =
-              let map_parameter = function
-                | Parameter.CallableParameters parameters ->
-                    Parameter.CallableParameters (map parameters)
-                | parameter -> parameter
-              in
-              List.map parameters ~f:map_parameter
-            in
-            Some (Parametric { name; parameters })
-        | _ -> None
-
-
-      let mark_as_escaped variable = { variable with state = Free { escaped = true } }
-
-      let mark_as_free variable = { variable with state = Free { escaped = false } }
-
-      let local_collect = function
-        | Callable { implementation; overloads; _ } ->
-            let extract = function
-              | { parameters = ParameterVariadicTypeVariable { variable; _ }; _ } -> Some variable
-              | _ -> None
-            in
-            List.filter_map (implementation :: overloads) ~f:extract
-        | Parametric { parameters; _ } ->
-            let extract = function
-              | Parameter.CallableParameters (ParameterVariadicTypeVariable { variable; _ }) ->
-                  Some variable
-              | _ -> None
-            in
-            List.filter_map parameters ~f:extract
-        | _ -> []
-
-
-      let dequalify ({ name; _ } as variable) ~dequalify_map =
-        { variable with name = dequalify_identifier dequalify_map name }
-
-
-      let parse_declaration value ~target =
-        match value with
-        | {
-            Node.value =
-              Expression.Call
-                {
-                  callee =
-                    {
-                      Node.value =
-                        Name
-                          (Name.Attribute
-                            {
-                              base = { Node.value = Name (Name.Identifier "pyre_extensions"); _ };
-                              attribute = "ParameterSpecification";
-                              special = false;
-                            });
-                      _;
-                    };
-                  arguments =
-                    [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-                };
-            _;
-          }
-        | {
-            Node.value =
-              Expression.Call
-                {
-                  callee =
-                    {
-                      Node.value =
-                        Name
-                          (Name.Attribute
-                            {
-                              base =
-                                {
-                                  Node.value =
-                                    Name (Name.Identifier ("typing" | "typing_extensions"));
-                                  _;
-                                };
-                              attribute = "ParamSpec";
-                              special = false;
-                            });
-                      _;
-                    };
-                  arguments =
-                    [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-                };
-            _;
-          } ->
-            Some (create (Reference.show target))
-        | _ -> None
-
-
-      let parse_instance_annotation
-          ~create_type
-          ~variable_parameter_annotation
-          ~keywords_parameter_annotation
-          ~aliases
-        =
-        let get_variable name =
-          match aliases ?replace_unbound_parameters_with_any:(Some false) name with
-          | Some (VariableAlias (ParameterVariadic variable)) -> Some variable
-          | _ -> None
-        in
-        let open Record.Variable.RecordVariadic.RecordParameters.RecordComponents in
-        match variable_parameter_annotation, keywords_parameter_annotation with
-        | ( {
-              Node.value =
-                Expression.Name
-                  (Attribute
-                    { base = variable_parameter_base; attribute = variable_parameter_attribute; _ });
-              _;
-            },
-            {
-              Node.value =
-                Expression.Name
-                  (Attribute
-                    { base = keywords_parameter_base; attribute = keywords_parameter_attribute; _ });
-              _;
-            } )
-          when Identifier.equal variable_parameter_attribute (component_name PositionalArguments)
-               && Identifier.equal keywords_parameter_attribute (component_name KeywordArguments)
-          -> (
-            match
-              ( create_type ~aliases variable_parameter_base,
-                create_type ~aliases keywords_parameter_base )
-            with
-            | Primitive positionals_base, Primitive keywords_base
-              when Identifier.equal positionals_base keywords_base ->
-                get_variable positionals_base
-            | _ -> None)
-        | _ -> None
-
-
-      module Components = struct
-        include Record.Variable.RecordVariadic.RecordParameters.RecordComponents
-
-        type decomposition = {
-          positional_component: type_t;
-          keyword_component: type_t;
-        }
-
-        let combine { positional_component; keyword_component } =
-          let component_agnostic_equal left right =
-            equal
-              { left with component = KeywordArguments }
-              { right with component = KeywordArguments }
-          in
-          match positional_component, keyword_component with
-          | ( ParameterVariadicComponent
-                ({ component = PositionalArguments; _ } as positional_component),
-              ParameterVariadicComponent ({ component = KeywordArguments; _ } as keyword_component)
-            )
-            when component_agnostic_equal positional_component keyword_component ->
-              let { variance; variable_name = name; variable_namespace = namespace; _ } =
-                positional_component
-              in
-              Some { name; namespace; variance; state = InFunction }
-          | _ -> None
-
-
-        let component { component; _ } = component
-      end
-
-      let decompose { name = variable_name; variance; namespace = variable_namespace; _ } =
-        {
-          Components.positional_component =
-            ParameterVariadicComponent
-              { component = PositionalArguments; variable_name; variance; variable_namespace };
-          keyword_component =
-            ParameterVariadicComponent
-              { component = KeywordArguments; variable_name; variance; variable_namespace };
-        }
-    end
-
-    module Tuple = struct
-      include Record.Variable.RecordVariadic.Tuple
-
-      type t = type_t record [@@deriving compare, eq, sexp, show, hash]
-
-      type domain = type_t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
-
-      module Map = Core.Map.Make (struct
-        type t = type_t record [@@deriving compare, sexp]
-      end)
-
-      let synthetic_class_name_for_error = "$synthetic_class_for_variadic_error"
-
-      let any = OrderedTypes.create_unbounded_concatenation Any
-
-      let name { name; _ } = name
-
-      let self_reference variadic =
-        OrderedTypes.Concatenation (OrderedTypes.Concatenation.create variadic)
-
-
-      let pair variable value = TupleVariadicPair (variable, value)
-
-      let is_free = function
-        | { state = Free _; _ } -> true
-        | _ -> false
-
-
-      let namespace variable ~namespace = { variable with namespace }
-
-      let mark_as_bound variable = { variable with state = InFunction }
-
-      let is_escaped_and_free = function
-        | { state = Free { escaped }; _ } -> escaped
-        | _ -> false
-
-
-      let mark_as_escaped variable = { variable with state = Free { escaped = true } }
-
-      let mark_as_free variable = { variable with state = Free { escaped = false } }
-
-      let local_collect annotation =
-        let collect_unpackable = function
-          | Record.OrderedTypes.Concatenation.Variadic variadic -> [variadic]
-          | _ -> []
-        in
-        match annotation with
-        | Parametric { parameters; _ } ->
-            let extract = function
-              | Parameter.Unpacked unpackable -> collect_unpackable unpackable
-              | _ -> []
-            in
-            List.concat_map parameters ~f:extract
-        | Tuple (Concatenation { middle = unpackable; _ }) -> collect_unpackable unpackable
-        | Callable { implementation; overloads; _ } ->
-            let extract = function
-              | { parameters = Defined parameters; _ } ->
-                  List.find_map parameters ~f:(function
-                      | Variable (Concatenation { middle = unpackable; _ }) ->
-                          Some (collect_unpackable unpackable)
-                      | _ -> None)
-                  |> Option.value ~default:[]
-              | _ -> []
-            in
-            List.concat_map (implementation :: overloads) ~f:extract
-        | TypeOperation (Compose (Concatenation { middle = unpackable; _ })) ->
-            collect_unpackable unpackable
-        | _ -> []
-
-
-      let local_replace replacement annotation =
-        let map_tuple ~f = function
-          | Tuple record -> f record
-          | other -> other
-        in
-        let replace_unpackable = function
-          | OrderedTypes.Concatenation.Variadic variadic ->
-              replacement variadic >>| fun result -> Tuple result
-          | _ -> None
-        in
-        match annotation with
-        | Parametric ({ parameters; _ } as parametric) ->
-            let replace parameter =
-              let replaced =
-                match parameter with
-                | Parameter.Unpacked unpackable -> (
-                    replace_unpackable unpackable
-                    >>| function
-                    | Tuple record -> OrderedTypes.to_parameters record
-                    | other -> [Parameter.Single other])
-                | _ -> None
-              in
-              Option.value ~default:[parameter] replaced
-            in
-            let parameters = List.concat_map parameters ~f:replace in
-            let default = Parametric { parametric with parameters } |> Option.some in
-            let extract_broadcast_error = function
-              | Parameter.Single
-                  (Parametric { name = "pyre_extensions.BroadcastError"; _ } as parametric) ->
-                  Some parametric
-              | _ -> None
-            in
-            List.find_map ~f:extract_broadcast_error parameters
-            |> fun result -> Option.first_some result default
-        | Tuple (Concatenation { prefix; middle = unpackable; suffix }) ->
-            replace_unpackable unpackable
-            >>| map_tuple ~f:(OrderedTypes.expand_in_concatenation ~prefix ~suffix)
-        | Callable callable -> (
-            let replace_variadic parameters_so_far parameters =
-              let expanded_parameters =
-                match parameters with
-                | Callable.Parameter.Variable
-                    (Concatenation ({ prefix; middle = unpackable; suffix } as concatenation)) ->
-                    let encode_ordered_types_into_parameters = function
-                      | OrderedTypes.Concrete concretes ->
-                          let start_index = List.length parameters_so_far in
-                          let make_anonymous_parameter index annotation =
-                            Callable.Parameter.PositionalOnly
-                              { index = start_index + index; annotation; default = false }
-                          in
-                          List.mapi (prefix @ concretes @ suffix) ~f:make_anonymous_parameter
-                          @ parameters_so_far
-                      | Concatenation { prefix = new_prefix; middle; suffix = new_suffix } ->
-                          [
-                            Variable
-                              (Concatenation
-                                 {
-                                   prefix = prefix @ new_prefix;
-                                   middle;
-                                   suffix = new_suffix @ suffix;
-                                 });
-                          ]
-                    in
-                    let handle_potential_error = function
-                      | Parametric { name = "pyre_extensions.BroadcastError"; _ } as broadcast_error
-                        ->
-                          Error broadcast_error
-                      | Tuple record -> Ok (encode_ordered_types_into_parameters record)
-                      | other ->
-                          Ok
-                            [
-                              Callable.Parameter.PositionalOnly
-                                {
-                                  index = List.length parameters_so_far;
-                                  annotation = other;
-                                  default = false;
-                                };
-                            ]
-                    in
-                    replace_unpackable unpackable
-                    >>| handle_potential_error
-                    |> Option.value
-                         ~default:(Ok [Callable.Parameter.Variable (Concatenation concatenation)])
-                | parameter -> Ok [parameter]
-              in
-              expanded_parameters
-              |> Result.map ~f:(fun result -> List.rev_append result parameters_so_far)
-            in
-            let map_defined = function
-              | Defined parameters ->
-                  Result.map
-                    ~f:(fun result -> Defined (List.rev result))
-                    (List.fold_result ~init:[] ~f:replace_variadic parameters)
-              | parameters -> Ok parameters
-            in
-            match Callable.map_parameters_with_result ~f:map_defined callable with
-            | Ok result_callable -> Some (Callable result_callable)
-            | Error broadcast_error -> Some broadcast_error)
-        | TypeOperation (Compose (Concatenation { prefix; middle; suffix })) -> (
-            replace_unpackable middle
-            >>| map_tuple ~f:(OrderedTypes.expand_in_concatenation ~prefix ~suffix)
-            >>= function
-            | Tuple results -> Some (TypeOperation (Compose results))
-            | _ -> None)
-        | _ -> None
-
-
-      let dequalify ({ name; _ } as variable) ~dequalify_map =
-        { variable with name = dequalify_identifier dequalify_map name }
-
-
-      let parse_declaration value ~target =
-        match value with
-        | {
-         Node.value =
-           Expression.Call
-             {
-               callee =
-                 {
-                   Node.value =
-                     Name
-                       (Name.Attribute
-                         {
-                           base =
-                             {
-                               Node.value =
-                                 ( Name (Name.Identifier "pyre_extensions")
-                                 | Name (Name.Identifier "typing_extensions")
-                                 | Name (Name.Identifier "typing") );
-                               _;
-                             };
-                           attribute = "TypeVarTuple";
-                           special = false;
-                         });
-                   _;
-                 };
-               arguments =
-                 [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-             };
-         _;
-        } ->
-            Some (create (Reference.show target))
-        | _ -> None
-    end
-  end
-
-  module GlobalTransforms = struct
-    module type VariableKind = sig
-      include VariableKind
-
-      (* We don't want these to be part of the public interface for Unary or Variadic.Parameters *)
-      val local_replace : (t -> domain option) -> type_t -> type_t option
-
-      val local_collect : type_t -> t list
-    end
-
-    module Make (Variable : VariableKind) = struct
-      include Variable
-
-      let replace_all operation =
-        apply_type_map ~visit_children_before:true ~type_map:(Variable.local_replace operation)
-
-
-      let map operation =
-        replace_all (fun variable -> operation variable |> Variable.self_reference |> Option.some)
-
-
-      let mark_all_as_bound ?specific =
-        let in_list variable =
-          match specific with
-          | Some variables -> List.mem variables ~equal:Variable.equal variable
-          | None -> true
-        in
-        let mark_as_bound_if_in_list variable =
-          if in_list variable then
-            Variable.mark_as_bound variable
-          else
-            variable
-        in
-        map mark_as_bound_if_in_list
-
-
-      let mark_all_as_free ?specific =
-        let in_list variable =
-          match specific with
-          | Some variables -> List.mem variables ~equal:Variable.equal variable
-          | None -> true
-        in
-        let mark_as_free_if_in_list variable =
-          if in_list variable then
-            Variable.mark_as_free variable
-          else
-            variable
-        in
-        map mark_as_free_if_in_list
-
-
-      let namespace_all_free_variables annotation ~namespace =
-        let namespace_if_free variable =
-          if Variable.is_free variable then
-            Variable.namespace variable ~namespace
-          else
-            variable
-        in
-        map namespace_if_free annotation
-
-
-      let mark_as_escaped annotation ~variables ~namespace =
-        let mark_as_escaped_if_in_list variable =
-          if List.mem variables variable ~equal:Variable.equal then
-            Variable.mark_as_escaped variable |> Variable.namespace ~namespace
-          else
-            variable
-        in
-        map mark_as_escaped_if_in_list annotation
-
-
-      (* Sets all of the variables of type Variable.t to the same namespace (-1). This should only
-         be used to implement namespace_insensitive_compare *)
-      let converge_all_variable_namespaces = map (Variable.namespace ~namespace:(-1))
-
-      let convert_all_escaped_free_variables_to_anys =
-        let convert_if_escaped variable =
-          if Variable.is_escaped_and_free variable then
-            Some Variable.any
-          else
-            Some (Variable.self_reference variable)
-        in
-        replace_all convert_if_escaped
-
-
-      let collect_all annotation =
-        let module CollectorTransform = Transform.Make (struct
-          type state = Variable.t list
-
-          let visit_children_before _ _ = true
-
-          let visit_children_after = false
-
-          let visit sofar annotation =
-            let new_state = Variable.local_collect annotation @ sofar in
-            { Transform.transformed_annotation = annotation; new_state }
-        end)
-        in
-        fst (CollectorTransform.visit [] annotation) |> List.rev
-
-
-      let all_free_variables annotation = collect_all annotation |> List.filter ~f:Variable.is_free
-
-      let contains_escaped_free_variable annotation =
-        collect_all annotation |> List.exists ~f:Variable.is_escaped_and_free
-    end
-
-    module type S = sig
-      type t
-
-      type domain
-
-      val replace_all : (t -> domain option) -> type_t -> type_t
-
-      val collect_all : type_t -> t list
-    end
-
-    module Unary = Make (Unary)
-    module ParameterVariadic = Make (Variadic.Parameters)
-    module TupleVariadic = Make (Variadic.Tuple)
-  end
-
-  type t = type_t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
-
-  type variable_t = t
-
-  include Record.Variable
-
-  module Set = Core.Set.Make (struct
-    type t = type_t Record.Variable.record [@@deriving compare, sexp]
-  end)
-
-  type variable_zip_result = {
-    variable_pair: pair;
-    received_parameter: Parameter.t;
-  }
-  [@@deriving compare, eq, sexp, show, hash]
-
-  let pp_concise format = function
-    | Unary variable -> Unary.pp_concise format variable ~pp_type:PrettyPrinting.pp
-    | ParameterVariadic { name; _ } ->
-        Format.fprintf format "CallableParameterTypeVariable[%s]" name
-    | TupleVariadic { name; _ } -> Format.fprintf format "TypeVarTuple[%s]" name
-
-
-  let parse_declaration expression ~target =
-    match Variadic.Parameters.parse_declaration expression ~target with
-    | Some variable -> Some (ParameterVariadic variable)
-    | None -> (
-        match Variadic.Tuple.parse_declaration expression ~target with
-        | Some variable -> Some (TupleVariadic variable)
-        | None -> None)
-
-
-  let dequalify dequalify_map = function
-    | Unary variable -> Unary (Unary.dequalify variable ~dequalify_map)
-    | ParameterVariadic variable ->
-        ParameterVariadic (Variadic.Parameters.dequalify variable ~dequalify_map)
-    | TupleVariadic variable -> TupleVariadic (Variadic.Tuple.dequalify variable ~dequalify_map)
-
-
-  let namespace variable ~namespace =
-    match variable with
-    | Unary variable -> Unary (Unary.namespace variable ~namespace)
-    | ParameterVariadic variable ->
-        ParameterVariadic (Variadic.Parameters.namespace variable ~namespace)
-    | TupleVariadic variable -> TupleVariadic (Variadic.Tuple.namespace variable ~namespace)
-
-
-  let partition =
-    let partitioner = function
-      | Unary variable -> `Fst variable
-      | ParameterVariadic variable -> `Snd variable
-      | TupleVariadic variable -> `Trd variable
-    in
-    List.partition3_map ~f:partitioner
-
-
-  let mark_all_variables_as_bound ?specific annotation =
-    let specific_unaries, specific_parameters_variadics, specific_tuple_variadics =
-      match specific >>| partition with
-      | None -> None, None, None
-      | Some (unaries, parameters, tuples) -> Some unaries, Some parameters, Some tuples
-    in
-    GlobalTransforms.Unary.mark_all_as_bound ?specific:specific_unaries annotation
-    |> GlobalTransforms.ParameterVariadic.mark_all_as_bound ?specific:specific_parameters_variadics
-    |> GlobalTransforms.TupleVariadic.mark_all_as_bound ?specific:specific_tuple_variadics
-
-
-  let mark_as_bound = function
-    | Unary variable -> Unary (GlobalTransforms.Unary.mark_as_bound variable)
-    | ParameterVariadic variable ->
-        ParameterVariadic (GlobalTransforms.ParameterVariadic.mark_as_bound variable)
-    | TupleVariadic variable ->
-        TupleVariadic (GlobalTransforms.TupleVariadic.mark_as_bound variable)
-
-
-  let mark_all_variables_as_free ?specific annotation =
-    let specific_unaries, specific_parameters_variadics, specific_tuple_variadics =
-      match specific >>| partition with
-      | None -> None, None, None
-      | Some (unaries, parameters, tuples) -> Some unaries, Some parameters, Some tuples
-    in
-    GlobalTransforms.Unary.mark_all_as_free ?specific:specific_unaries annotation
-    |> GlobalTransforms.ParameterVariadic.mark_all_as_free ?specific:specific_parameters_variadics
-    |> GlobalTransforms.TupleVariadic.mark_all_as_free ?specific:specific_tuple_variadics
-
-
-  let namespace_all_free_variables annotation ~namespace =
-    GlobalTransforms.Unary.namespace_all_free_variables annotation ~namespace
-    |> GlobalTransforms.ParameterVariadic.namespace_all_free_variables ~namespace
-    |> GlobalTransforms.TupleVariadic.namespace_all_free_variables ~namespace
-
-
-  let all_free_variables annotation =
-    let unaries =
-      GlobalTransforms.Unary.all_free_variables annotation
-      |> List.map ~f:(fun variable -> Unary variable)
-    in
-    let callable_variadics =
-      GlobalTransforms.ParameterVariadic.all_free_variables annotation
-      |> List.map ~f:(fun variable -> ParameterVariadic variable)
-    in
-    let tuple_variadics =
-      GlobalTransforms.TupleVariadic.all_free_variables annotation
-      |> List.map ~f:(fun variable -> TupleVariadic variable)
-    in
-    unaries @ callable_variadics @ tuple_variadics
-
-
-  let all_variables_are_resolved annotation = all_free_variables annotation |> List.is_empty
-
-  let mark_all_free_variables_as_escaped ?specific annotation =
-    let fresh_namespace = Namespace.create_fresh () in
-    let variables =
-      match specific with
-      | Some variables -> variables
-      | None -> all_free_variables annotation
-    in
-    let specific_unaries, specific_parameters_variadics, specific_tuple_variadics =
-      partition variables
-    in
-    GlobalTransforms.Unary.mark_as_escaped
-      annotation
-      ~variables:specific_unaries
-      ~namespace:fresh_namespace
-    |> GlobalTransforms.ParameterVariadic.mark_as_escaped
-         ~variables:specific_parameters_variadics
-         ~namespace:fresh_namespace
-    |> GlobalTransforms.TupleVariadic.mark_as_escaped
-         ~variables:specific_tuple_variadics
-         ~namespace:fresh_namespace
-
-
-  let collapse_all_escaped_variable_unions annotation =
-    let module ConcreteTransform = Transform.Make (struct
-      type state = unit
-
-      let visit_children_before _ _ = true
-
-      let visit_children_after = false
-
-      let visit new_state annotation =
-        let transformed_annotation =
-          match annotation with
-          | Union parameters ->
-              let not_escaped_free_variable = function
-                | Variable variable -> not (Unary.is_escaped_and_free variable)
-                | _ -> true
-              in
-              List.filter parameters ~f:not_escaped_free_variable |> Constructors.union
-          | _ -> annotation
-        in
-        { Transform.transformed_annotation; new_state }
-    end)
-    in
-    snd (ConcreteTransform.visit () annotation)
-
-
-  let contains_escaped_free_variable annotation =
-    GlobalTransforms.Unary.contains_escaped_free_variable annotation
-    || GlobalTransforms.ParameterVariadic.contains_escaped_free_variable annotation
-    || GlobalTransforms.TupleVariadic.contains_escaped_free_variable annotation
-
-
-  let convert_all_escaped_free_variables_to_anys annotation =
-    GlobalTransforms.Unary.convert_all_escaped_free_variables_to_anys annotation
-    |> GlobalTransforms.ParameterVariadic.convert_all_escaped_free_variables_to_anys
-    |> GlobalTransforms.TupleVariadic.convert_all_escaped_free_variables_to_anys
-
-
-  let converge_all_variable_namespaces annotation =
-    GlobalTransforms.Unary.converge_all_variable_namespaces annotation
-    |> GlobalTransforms.ParameterVariadic.converge_all_variable_namespaces
-    |> GlobalTransforms.TupleVariadic.converge_all_variable_namespaces
-
-
-  let coalesce_if_all_single parameters =
-    Parameter.all_singles parameters
-    >>| (fun singles ->
-          [
-            Parameter.CallableParameters
-              (Defined (Callable.prepend_anonymous_parameters ~head:singles ~tail:[]));
-          ])
-    |> Option.value ~default:parameters
-
-
-  let make_variable_pair variable received_parameter =
-    let variable_pair =
-      match variable, received_parameter with
-      | Unary unary, Parameter.Single annotation -> UnaryPair (unary, annotation)
-      | ParameterVariadic parameter_variadic, CallableParameters callable_parameters ->
-          ParameterVariadicPair (parameter_variadic, callable_parameters)
-      | Unary unary, _ -> UnaryPair (unary, Unary.any)
-      | ParameterVariadic parameter_variadic, _ ->
-          ParameterVariadicPair (parameter_variadic, Variadic.Parameters.any)
-      | TupleVariadic tuple_variadic, _ ->
-          (* We should not hit this case at all. *)
-          TupleVariadicPair (tuple_variadic, Variadic.Tuple.any)
-    in
-    { variable_pair; received_parameter }
-
-
-  let pairs_for_variadic_class ~non_variadic_prefix_length variables parameters =
-    let variables_prefix, variables_rest = List.split_n variables non_variadic_prefix_length in
-    match variables_rest with
-    | TupleVariadic variadic :: variables_suffix ->
-        let parameters_prefix, parameters_rest =
-          List.split_n parameters non_variadic_prefix_length
-        in
-        let parameters_middle, parameters_suffix =
-          List.split_n parameters_rest (List.length parameters_rest - List.length variables_suffix)
-        in
-        let pairs () =
-          match
-            ( List.map2 variables_prefix parameters_prefix ~f:make_variable_pair,
-              List.map2 variables_suffix parameters_suffix ~f:make_variable_pair )
-          with
-          | Ok prefix_pairs, Ok suffix_pairs ->
-              let variadic_pair =
-                let ordered_type =
-                  match OrderedTypes.concatenation_from_parameters parameters_middle with
-                  | Some ordered_type -> Some ordered_type
-                  | None ->
-                      Parameter.all_singles parameters_middle
-                      >>| fun singles -> OrderedTypes.Concrete singles
-                in
-                ordered_type
-                >>| (fun ordered_type ->
-                      {
-                        variable_pair = TupleVariadicPair (variadic, ordered_type);
-                        received_parameter = Single (Tuple ordered_type);
-                      })
-                |> Option.value
-                     ~default:
-                       {
-                         variable_pair = TupleVariadicPair (variadic, Variadic.Tuple.any);
-                         received_parameter =
-                           Single
-                             (Constructors.parametric
-                                Variadic.Tuple.synthetic_class_name_for_error
-                                parameters_middle);
-                       }
-              in
-              prefix_pairs @ [variadic_pair] @ suffix_pairs |> Option.some
-          | _ -> None
-        in
-        let has_variadic_in_prefix_or_suffix =
-          List.exists parameters_prefix ~f:Parameter.is_unpacked
-          || List.exists parameters_suffix ~f:Parameter.is_unpacked
-        in
-        if has_variadic_in_prefix_or_suffix then
-          None
-        else
-          pairs ()
-    | _ -> None
-
-
-  (* Zip the generic variables `Generic[T1, T2]` of a class with its parameters Foo[int, str]. *)
-  let zip_variables_with_parameters_including_mismatches ~parameters variables =
-    let parameters =
-      match variables with
-      | [ParameterVariadic _] -> coalesce_if_all_single parameters
-      | _ -> parameters
-    in
-    let variadic_index index = function
-      | TupleVariadic _ -> Some index
-      | _ -> None
-    in
-    match List.filter_mapi variables ~f:variadic_index with
-    | [unpacked_index] ->
-        pairs_for_variadic_class ~non_variadic_prefix_length:unpacked_index variables parameters
-    | [] -> (
-        match List.map2 variables parameters ~f:make_variable_pair with
-        | Ok pairs -> Some pairs
-        | Unequal_lengths -> None)
-    | _ ->
-        (* Reject multiple variadic generics. *)
-        None
-
-
-  let zip_variables_with_parameters ~parameters variables =
-    zip_variables_with_parameters_including_mismatches ~parameters variables
-    >>| List.map ~f:(function { variable_pair; _ } -> variable_pair)
-
-
-  let zip_variables_with_two_parameter_lists ~left_parameters ~right_parameters variables =
-    let left_pairs, right_pairs =
-      ( zip_variables_with_parameters ~parameters:left_parameters variables,
-        zip_variables_with_parameters ~parameters:right_parameters variables )
-    in
-    Option.map2 left_pairs right_pairs ~f:List.zip
-    >>= function
-    | Ok pairs -> Some pairs
-    | Unequal_lengths -> None
-
-
-  let all_unary variables =
-    List.map variables ~f:(function
-        | Unary unary -> Some unary
-        | ParameterVariadic _
-        | TupleVariadic _ ->
-            None)
-    |> Option.all
-
-
-  let to_parameter = function
-    | Unary variable -> Parameter.Single (Unary.self_reference variable)
-    | ParameterVariadic variable ->
-        Parameter.CallableParameters (Variadic.Parameters.self_reference variable)
-    | TupleVariadic variadic -> Parameter.Unpacked (Variadic variadic)
-end
-
 let resolve_aliases ~aliases annotation =
-  let visited = Hash_set.create () in
-  let module ResolveTransform = Transform.Make (struct
+  let visited = Containers.Hash_set.create () in
+  let module ResolveAliasesTransform = VisitWithTransform.Make (struct
     type state = unit
 
     let visit_children_before _ _ = false
@@ -4508,7 +4939,7 @@ let resolve_aliases ~aliases annotation =
           match annotation with
           | Primitive name -> (
               match aliases ?replace_unbound_parameters_with_any:(Some true) name with
-              | Some (TypeAlias alias) ->
+              | Some (Alias.TypeAlias alias) ->
                   let alias =
                     match alias with
                     (* Type variables are stored as `_T aliases to _T`. Don't replace them. *)
@@ -4574,7 +5005,7 @@ let resolve_aliases ~aliases annotation =
                    We will not find any free type variables in Foo[Any] and simply resolve it as
                    Foo[Any]. *)
                 match aliases ?replace_unbound_parameters_with_any:(Some false) alias_name with
-                | Some (TypeAlias uninstantiated_alias_annotation) ->
+                | Some (Alias.TypeAlias uninstantiated_alias_annotation) ->
                     instantiate ~given_parameters uninstantiated_alias_annotation
                 | _ -> annotation
               in
@@ -4586,16 +5017,16 @@ let resolve_aliases ~aliases annotation =
           | _ -> annotation)
       in
       let transformed_annotation = resolve annotation in
-      { Transform.transformed_annotation; new_state = () }
+      { VisitWithTransform.transformed_annotation; new_state = () }
   end)
   in
-  snd (ResolveTransform.visit () annotation)
+  snd (ResolveAliasesTransform.visit () annotation)
 
 
 let create ~aliases =
   let variable_aliases name =
     match aliases ?replace_unbound_parameters_with_any:(Some false) name with
-    | Some (VariableAlias variable) -> Some variable
+    | Some (Alias.VariableAlias variable) -> Some variable
     | _ -> None
   in
   create_logic ~resolve_aliases:(resolve_aliases ~aliases) ~variable_aliases
@@ -4607,37 +5038,9 @@ let namespace_insensitive_compare left right =
     (Variable.converge_all_variable_namespaces right)
 
 
-let is_concrete annotation =
-  let module ConcreteTransform = Transform.Make (struct
-    type state = bool
-
-    let visit_children_before _ = function
-      | NoneType -> false
-      | Parametric { name = "typing.Optional" | "Optional"; parameters = [Single Bottom] } -> false
-      | _ -> true
-
-
-    let visit_children_after = false
-
-    let visit sofar annotation =
-      let new_state =
-        match annotation with
-        | Bottom
-        | Top
-        | Any ->
-            false
-        | _ -> sofar
-      in
-      { Transform.transformed_annotation = annotation; new_state }
-  end)
-  in
-  fst (ConcreteTransform.visit true annotation)
-  && not (Variable.contains_escaped_free_variable annotation)
-
-
 let dequalify map annotation =
   let dequalify_string string = string |> dequalify_identifier map in
-  let module DequalifyTransform = Transform.Make (struct
+  let module DequalifyTransform = VisitWithTransform.Make (struct
     type state = unit
 
     let visit_children_before _ _ = true
@@ -4655,7 +5058,7 @@ let dequalify map annotation =
         | Parametric { name; parameters } ->
             Parametric
               {
-                name = dequalify_identifier map (Cannonicalization.reverse_substitute name);
+                name = dequalify_identifier map (Canonicalization.reverse_substitute name);
                 parameters;
               }
         | Union parameters ->
@@ -4684,374 +5087,16 @@ let dequalify map annotation =
             Callable { callable with kind }
         | _ -> annotation
       in
-      { Transform.transformed_annotation; new_state = () }
+      { VisitWithTransform.transformed_annotation; new_state = () }
   end)
   in
   snd (DequalifyTransform.visit () annotation)
 
 
-module TypedDictionary = struct
-  open Record.TypedDictionary
-
-  let anonymous fields = { name = "$anonymous"; fields }
-
-  let create_field ~annotation ~has_non_total_typed_dictionary_base_class name =
-    let annotation, required =
-      match annotation with
-      | Parametric
-          {
-            name = "typing_extensions.NotRequired" | "typing.NotRequired";
-            parameters = [Single annotation];
-          } ->
-          annotation, false
-      | Parametric
-          {
-            name = "typing_extensions.Required" | "typing.Required";
-            parameters = [Single annotation];
-          } ->
-          annotation, true
-      | _ -> annotation, not has_non_total_typed_dictionary_base_class
-    in
-    { name; annotation; required }
-
-
-  let are_fields_total = are_fields_total
-
-  let same_name { name = left_name; required = _; _ } { name = right_name; required = _; _ } =
-    String.equal left_name right_name
-
-
-  let same_name_different_requiredness
-      { name = left_name; required = left_required; _ }
-      { name = right_name; required = right_required; _ }
-    =
-    String.equal left_name right_name && not (Bool.equal left_required right_required)
-
-
-  let same_name_different_annotation
-      { name = left_name; annotation = left_annotation; _ }
-      { name = right_name; annotation = right_annotation; _ }
-    =
-    String.equal left_name right_name && not (equal left_annotation right_annotation)
-
-
-  let fields_have_colliding_keys left_fields right_fields =
-    let found_collision
-        { name = needle_name; annotation = needle_annotation; required = needle_required }
-      =
-      let same_name_different_annotation_or_requiredness { name; annotation; required } =
-        String.equal name needle_name
-        && ((not (equal annotation needle_annotation)) || not (Bool.equal required needle_required))
-      in
-      List.exists left_fields ~f:same_name_different_annotation_or_requiredness
-    in
-    List.exists right_fields ~f:found_collision
-
-
-  let self_parameter class_name =
-    CallableParameter.Named { name = "self"; annotation = Primitive class_name; default = false }
-
-
-  let field_named_parameters ?(all_default = false) ~class_name fields =
-    let field_to_argument { name; annotation; required } =
-      Record.Callable.RecordParameter.KeywordOnly
-        {
-          name = Format.asprintf "$parameter$%s" name;
-          annotation;
-          default = all_default || not required;
-        }
-    in
-    let required_fields, non_required_fields =
-      List.partition_tf fields ~f:(fun { required; _ } -> required)
-    in
-    required_fields @ non_required_fields
-    |> List.map ~f:field_to_argument
-    |> fun parameters -> Defined (self_parameter class_name :: parameters)
-
-
-  let constructor ~name ~fields =
-    {
-      Callable.kind = Named (Reference.create ~prefix:(Reference.create name) "__init__");
-      implementation = { annotation = Top; parameters = Undefined };
-      overloads =
-        [
-          {
-            annotation = Constructors.none;
-            parameters = field_named_parameters ~class_name:name fields;
-          };
-          {
-            annotation = Constructors.none;
-            parameters =
-              Defined
-                [
-                  Record.Callable.RecordParameter.PositionalOnly
-                    { index = 0; annotation = Primitive name; default = false };
-                  Record.Callable.RecordParameter.PositionalOnly
-                    { index = 1; annotation = Primitive name; default = false };
-                ];
-          };
-        ];
-    }
-
-
-  let fields_from_constructor = function
-    | {
-        Callable.kind = Named name;
-        overloads = [{ parameters = Defined (_self :: parameters); _ }; _];
-        _;
-      }
-      when String.equal (Reference.last name) "__init__" ->
-        let parameter_to_field = function
-          | Record.Callable.RecordParameter.KeywordOnly { name; annotation; default } ->
-              Some
-                {
-                  name = String.split ~on:'$' name |> List.last_exn;
-                  annotation;
-                  required = not default;
-                }
-          | _ -> None
-        in
-        List.map ~f:parameter_to_field parameters |> Option.all
-    | _ -> None
-
-
-  type special_method = {
-    name: string;
-    special_index: int option;
-    overloads: t typed_dictionary_field list -> t Callable.overload list;
-  }
-
-  let key_parameter name =
-    CallableParameter.Named
-      { name = "k"; annotation = Constructors.literal_string name; default = false }
-
-
-  let common_special_methods ~class_name =
-    let getitem_overloads =
-      let overload { name; annotation; _ } =
-        { annotation; parameters = Defined [self_parameter class_name; key_parameter name] }
-      in
-      List.map ~f:overload
-    in
-    let setitem_overloads =
-      let overload { name; annotation; _ } =
-        {
-          annotation = Constructors.none;
-          parameters =
-            Defined
-              [
-                self_parameter class_name;
-                key_parameter name;
-                Named { name = "v"; annotation; default = false };
-              ];
-        }
-      in
-      List.map ~f:overload
-    in
-    let get_overloads =
-      let overloads { name; annotation; _ } =
-        [
-          {
-            annotation = Constructors.union [annotation; NoneType];
-            parameters = Defined [self_parameter class_name; key_parameter name];
-          };
-          {
-            annotation = Union [annotation; Variable (Variable.Unary.create "_T")];
-            parameters =
-              Defined
-                [
-                  self_parameter class_name;
-                  key_parameter name;
-                  Named
-                    {
-                      name = "default";
-                      annotation = Variable (Variable.Unary.create "_T");
-                      default = false;
-                    };
-                ];
-          };
-        ]
-      in
-      List.concat_map ~f:overloads
-    in
-    let setdefault_overloads =
-      let overload { name; annotation; _ } =
-        {
-          annotation;
-          parameters =
-            Defined
-              [
-                self_parameter class_name;
-                key_parameter name;
-                Named { name = "default"; annotation; default = false };
-              ];
-        }
-      in
-      List.map ~f:overload
-    in
-    let update_overloads fields =
-      [
-        {
-          annotation = Constructors.none;
-          parameters = field_named_parameters ~all_default:true ~class_name fields;
-        };
-        {
-          annotation = Constructors.none;
-          parameters =
-            Defined
-              [
-                Record.Callable.RecordParameter.PositionalOnly
-                  { index = 0; annotation = Primitive class_name; default = false };
-                Record.Callable.RecordParameter.PositionalOnly
-                  { index = 1; annotation = Primitive class_name; default = false };
-              ];
-        };
-      ]
-    in
-    [
-      { name = "__getitem__"; special_index = Some 1; overloads = getitem_overloads };
-      { name = "__setitem__"; special_index = Some 1; overloads = setitem_overloads };
-      { name = "get"; special_index = Some 1; overloads = get_overloads };
-      { name = "setdefault"; special_index = Some 1; overloads = setdefault_overloads };
-      { name = "update"; special_index = None; overloads = update_overloads };
-    ]
-
-
-  let non_total_special_methods class_name =
-    let pop_overloads =
-      let overloads { name; annotation; required; _ } =
-        if required then
-          []
-        else
-          [
-            { annotation; parameters = Defined [self_parameter class_name; key_parameter name] };
-            {
-              annotation = Union [annotation; Variable (Variable.Unary.create "_T")];
-              parameters =
-                Defined
-                  [
-                    self_parameter class_name;
-                    key_parameter name;
-                    Named
-                      {
-                        name = "default";
-                        annotation = Variable (Variable.Unary.create "_T");
-                        default = false;
-                      };
-                  ];
-            };
-          ]
-      in
-      List.concat_map ~f:overloads
-    in
-    let delitem_overloads fields =
-      let overload { name; annotation = _; required } =
-        Option.some_if
-          (not required)
-          {
-            annotation = Constructors.none;
-            parameters = Defined [self_parameter class_name; key_parameter name];
-          }
-      in
-      List.filter_map ~f:overload fields
-    in
-    [
-      { name = "pop"; special_index = Some 1; overloads = pop_overloads };
-      { name = "__delitem__"; special_index = Some 1; overloads = delitem_overloads };
-    ]
-
-
-  let special_overloads ~class_name ~fields ~method_name =
-    let total = are_fields_total fields in
-    let special_methods =
-      if total then
-        common_special_methods ~class_name
-      else
-        non_total_special_methods class_name @ common_special_methods ~class_name
-    in
-    List.find special_methods ~f:(fun { name; _ } -> String.equal name method_name)
-    >>| fun { overloads; _ } -> overloads fields
-
-
-  let is_special_mismatch ~class_name ~total ~method_name ~position =
-    let special_methods =
-      if total then
-        common_special_methods ~class_name
-      else
-        non_total_special_methods class_name @ common_special_methods ~class_name
-    in
-    List.find special_methods ~f:(fun { name; _ } -> String.equal name method_name)
-    >>= (fun { special_index; _ } -> special_index)
-    >>| ( = ) position
-    |> Option.value ~default:false
-
-
-  (** typing.TypedDict gets preprocessed into TypedDictionary *)
-  let class_name ~total =
-    if total then
-      "TypedDictionary"
-    else
-      "NonTotalTypedDictionary"
-
-
-  let base_typed_dictionary = Primitive (class_name ~total:true)
-
-  let is_builtin_typed_dictionary_class base_name =
-    List.mem [class_name ~total:true; class_name ~total:false] base_name ~equal:String.equal
-
-
-  let defines ~total ~t_self_expression =
-    let open Statement in
-    let class_name = class_name ~total in
-    let define ?self_parameter ?return_annotation name =
-      Statement.Define
-        {
-          signature =
-            {
-              name = Reference.create_from_list [class_name; name];
-              parameters =
-                [
-                  { ExpressionParameter.name = "self"; value = None; annotation = self_parameter }
-                  |> Node.create_with_default_location;
-                ];
-              decorators = [];
-              return_annotation;
-              async = false;
-              generator = false;
-              parent = Some (Reference.create class_name);
-              nesting_define = None;
-            };
-          captures = [];
-          unbound_names = [];
-          body = [];
-        }
-      |> Node.create_with_default_location
-    in
-    let common_methods =
-      [
-        define ~self_parameter:t_self_expression ~return_annotation:t_self_expression "copy";
-        define
-          ~self_parameter:t_self_expression
-          ~return_annotation:(expression Constructors.integer)
-          "__len__";
-        define
-          ~self_parameter:t_self_expression
-          ~return_annotation:(expression (Constructors.iterator Constructors.string))
-          "__iter__";
-      ]
-      @ List.map (common_special_methods ~class_name) ~f:(fun { name; _ } -> define name)
-    in
-    if total then
-      common_methods
-    else
-      common_methods
-      @ (non_total_special_methods class_name |> List.map ~f:(fun { name; _ } -> define name))
-end
-
 (* Transform tuples and callables so they are printed correctly when running infer and click to
    fix. *)
 let infer_transform annotation =
-  let module InferTransform = Transform.Make (struct
+  let module InferTransform = VisitWithTransform.Make (struct
     type state = unit
 
     let visit_children_before _ _ = true
@@ -5115,33 +5160,10 @@ let infer_transform annotation =
             |> Option.value ~default:annotation
         | _ -> annotation
       in
-      { Transform.transformed_annotation; new_state = () }
+      { VisitWithTransform.transformed_annotation; new_state = () }
   end)
   in
   snd (InferTransform.visit () annotation)
-
-
-let contains_prohibited_any annotation =
-  let is_string_to_any_mapping
-    = (* TODO(T40377122): Remove special-casing of Dict[str, Any] in strict. *)
-    function
-    | Parametric { name = "typing.Mapping"; parameters = [Single (Primitive "str"); Single Any] }
-    | Parametric { name = "dict"; parameters = [Single (Primitive "str"); Single Any] } ->
-        true
-    | _ -> false
-  in
-  let module Exists = Transform.Make (struct
-    type state = bool
-
-    let visit_children_before _ annotation = not (is_string_to_any_mapping annotation)
-
-    let visit_children_after = false
-
-    let visit sofar annotation =
-      { Transform.transformed_annotation = annotation; new_state = sofar || is_any annotation }
-  end)
-  in
-  fst (Exists.visit false annotation)
 
 
 type class_data_for_attribute_lookup = {
@@ -5220,7 +5242,7 @@ let class_data_for_attribute_lookup type_ =
                       instantiated;
                 })
     | ReadOnly type_ -> extract_class_data ~meta ~accessed_through_readonly:true type_
-    | type_ when is_meta type_ ->
+    | type_ when Predicates.is_meta type_ ->
         (* Metaclasses return accessed_through_class=true since they allow looking up only class
            attribute, etc. *)
         single_parameter type_ |> extract_class_data ~meta:true ~accessed_through_readonly
@@ -5252,7 +5274,7 @@ let callable_name = function
 
 let equivalent_for_assert_type left right =
   let canonicalize original_type =
-    let module Canonicalize = Transform.Make (struct
+    let module CanonicalizeForAssertType = VisitWithTransform.Make (struct
       type state = unit
 
       let visit_children_before _ _ = true
@@ -5290,16 +5312,61 @@ let equivalent_for_assert_type left right =
               Callable (simplify_callable_in_bound_method callable)
           | needs_no_changes -> needs_no_changes
         in
-        { Transform.transformed_annotation; new_state }
+        { VisitWithTransform.transformed_annotation; new_state }
     end)
     in
-    snd (Canonicalize.visit () original_type)
+    snd (CanonicalizeForAssertType.visit () original_type)
   in
   equal (canonicalize left) (canonicalize right)
 
 
+let is_concrete annotation =
+  let module ConcreteVisitor = VisitWithTransform.Make (struct
+    type state = bool
+
+    let visit_children_before _ = function
+      | NoneType -> false
+      | Parametric { name = "typing.Optional" | "Optional"; parameters = [Single Bottom] } -> false
+      | _ -> true
+
+
+    let visit_children_after = false
+
+    let visit sofar annotation =
+      let new_state =
+        match annotation with
+        | Bottom
+        | Top
+        | Any ->
+            false
+        | _ -> sofar
+      in
+      { VisitWithTransform.transformed_annotation = annotation; new_state }
+  end)
+  in
+  fst (ConcreteVisitor.visit true annotation)
+  && not (Variable.contains_escaped_free_variable annotation)
+
+
+let exists = Visitors.exists
+
+let collect_types = Visitors.collect_types
+
+let collect_primitive_types = Visitors.collect_primitive_types
+
+let collect_names = Visitors.collect_names
+
+let apply_type_map = Transforms.apply_type_map
+
+include Containers
 include Constructors
 include PrettyPrinting
+include Extractions
+include Predicates
 
 (* We always send types in the pretty printed form *)
 let to_yojson annotation = `String (PrettyPrinting.show annotation)
+
+type type_t = T.t [@@deriving compare, eq, sexp, show, hash]
+
+let expression = ToExpression.expression

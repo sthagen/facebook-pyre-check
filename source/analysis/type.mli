@@ -280,8 +280,6 @@ type type_t = t [@@deriving compare, eq, sexp, show]
 
 module Map : Map.S with type Key.t = t
 
-val default_to_bottom : t Map.t -> t list -> t Map.t
-
 module Set : Set.S with type Elt.t = t
 
 include Hashable with type t := t
@@ -390,13 +388,13 @@ val yield : t -> t
 
 val expression : t -> Expression.t
 
-module Transform : sig
+module VisitWithTransform : sig
   type 'state visit_result = {
     transformed_annotation: t;
     new_state: 'state;
   }
 
-  module type Transformer = sig
+  module type Implementation = sig
     type state
 
     val visit : state -> t -> state visit_result
@@ -406,12 +404,27 @@ module Transform : sig
     val visit_children_after : bool
   end
 
-  module Make (Transformer : Transformer) : sig
-    val visit : Transformer.state -> t -> Transformer.state * t
+  module Make (Implementation : Implementation) : sig
+    val visit : Implementation.state -> t -> Implementation.state * t
   end
 end
 
 val exists : t -> predicate:(t -> bool) -> bool
+
+val collect_primitive_types : t -> t list
+
+val collect_names : t -> Primitive.t list
+
+val collect_types : t -> predicate:(t -> bool) -> t list
+
+val apply_type_map : ?visit_children_before:bool -> t -> type_map:(t -> t option) -> t
+
+module Alias : sig
+  type t =
+    | TypeAlias of type_t
+    | VariableAlias of type_t Record.Variable.record
+  [@@deriving compare, eq, sexp, show, hash]
+end
 
 module Callable : sig
   module Parameter : sig
@@ -492,22 +505,17 @@ module Callable : sig
   val name : t -> Reference.t option
 end
 
-type alias =
-  | TypeAlias of t
-  | VariableAlias of t Record.Variable.record
-[@@deriving compare, eq, sexp, show, hash]
-
 val resolve_aliases
-  :  aliases:(?replace_unbound_parameters_with_any:bool -> string -> alias option) ->
+  :  aliases:(?replace_unbound_parameters_with_any:bool -> string -> Alias.t option) ->
   t ->
   t
 
 val create
-  :  aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> alias option) ->
+  :  aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
   Expression.t ->
   t
 
-val empty_aliases : ?replace_unbound_parameters_with_any:bool -> Primitive.t -> alias option
+val empty_aliases : ?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option
 
 module RecursiveType : sig
   include module type of struct
@@ -547,7 +555,15 @@ module TypeOperation : sig
   type t = type_t Record.TypeOperation.record
 end
 
-val contains_callable : t -> bool
+val optional_value : t -> t option
+
+val awaitable_value : t -> t option
+
+val coroutine_value : t -> t option
+
+val class_variable_value : t -> t option
+
+val final_value : t -> [> `NoParameter | `NotFinal | `Ok of t ]
 
 val is_any : t -> bool
 
@@ -601,6 +617,8 @@ val is_falsy : t -> bool
 
 val is_truthy : t -> bool
 
+val contains_callable : t -> bool
+
 val contains_any : t -> bool
 
 val contains_unknown : t -> bool
@@ -614,29 +632,17 @@ val is_not_instantiated : t -> bool
 
 val contains_literal : t -> bool
 
-val collect : t -> predicate:(t -> bool) -> t list
-
 val contains_final : t -> bool
 
 val primitive_name : t -> Identifier.t option
 
 val create_literal : Expression.expression -> t option
 
-val primitives : t -> t list
-
-val elements : t -> Primitive.t list
-
 val is_partially_typed : t -> bool
 
 val is_untyped : t -> bool
 
 val contains_variable : t -> bool
-
-val optional_value : t -> t option
-
-val awaitable_value : t -> t option
-
-val coroutine_value : t -> t option
 
 val typeguard_annotation : t -> t option
 
@@ -645,8 +651,6 @@ val parameters : t -> Parameter.t list option
 val type_parameters_for_bounded_tuple_union : t -> t list option
 
 val single_parameter : t -> t
-
-val apply_type_map : ?visit_children_before:bool -> t -> type_map:(t -> t option) -> t
 
 val weaken_literals : t -> t
 
@@ -689,11 +693,7 @@ val class_name : t -> Reference.t
 
 val class_variable : t -> t
 
-val class_variable_value : t -> t option
-
 val is_class_variable : t -> bool
-
-val final_value : t -> [> `NoParameter | `NotFinal | `Ok of t ]
 
 val assume_any : t -> t
 
@@ -804,12 +804,12 @@ module Variable : sig
 
       val parse_instance_annotation
         :  create_type:
-             (aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> alias option) ->
+             (aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
              Expression.t ->
              type_t) ->
         variable_parameter_annotation:Expression.t ->
         keywords_parameter_annotation:Expression.t ->
-        aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> alias option) ->
+        aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
         t option
 
       module Components : sig

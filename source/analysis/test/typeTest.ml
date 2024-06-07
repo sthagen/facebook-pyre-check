@@ -291,7 +291,7 @@ let test_create_alias _ =
               () );
         ]
       |> (fun table -> Hashtbl.find table primitive)
-      >>| fun alias -> Type.TypeAlias alias
+      >>| fun alias -> Type.Alias.TypeAlias alias
     in
     assert_create ~aliases source resolved
   in
@@ -760,8 +760,8 @@ let test_resolve_aliases _ =
       (Type.resolve_aliases ~aliases annotation)
   in
   let aliases = function
-    | "MyInt" -> Some (Type.TypeAlias Type.integer)
-    | "IntList" -> Some (Type.TypeAlias (Type.list Type.integer))
+    | "MyInt" -> Some (Type.Alias.TypeAlias Type.integer)
+    | "IntList" -> Some (Type.Alias.TypeAlias (Type.list Type.integer))
     | _ -> None
   in
   assert_resolved ~aliases (Type.Primitive "NotAlias") (Type.Primitive "NotAlias");
@@ -774,9 +774,9 @@ let test_resolve_aliases _ =
   let variable_k = Type.Variable (Type.Variable.Unary.create "K") in
   let variable_v = Type.Variable (Type.Variable.Unary.create "V") in
   let aliases = function
-    | "IntList" -> Some (Type.TypeAlias (Type.list Type.integer))
-    | "foo.Optional" -> Some (Type.TypeAlias (Type.optional variable_t))
-    | "foo.Dict" -> Some (Type.TypeAlias (Type.dictionary ~key:variable_k ~value:variable_v))
+    | "IntList" -> Some (Type.Alias.TypeAlias (Type.list Type.integer))
+    | "foo.Optional" -> Some (Type.Alias.TypeAlias (Type.optional variable_t))
+    | "foo.Dict" -> Some (Type.Alias.TypeAlias (Type.dictionary ~key:variable_k ~value:variable_v))
     | _ -> None
   in
   assert_resolved
@@ -789,7 +789,7 @@ let test_resolve_aliases _ =
   let tree_body = Type.union [Type.integer; Type.list (Type.Primitive "Tree")] in
   let aliases ?replace_unbound_parameters_with_any:_ name =
     match name with
-    | "Tree" -> Some (Type.TypeAlias (Type.RecursiveType.create ~name:"Tree" ~body:tree_body))
+    | "Tree" -> Some (Type.Alias.TypeAlias (Type.RecursiveType.create ~name:"Tree" ~body:tree_body))
     | _ -> None
   in
   assert_resolved
@@ -811,7 +811,7 @@ let test_resolve_aliases _ =
     (Type.parametric "Tree" [Single Type.integer])
     (Type.RecursiveType.create ~name:"Tree" ~body:tree_body);
   let aliases = function
-    | "MyDict" -> Some (Type.TypeAlias (Type.dictionary ~key:variable_t ~value:variable_k))
+    | "MyDict" -> Some (Type.Alias.TypeAlias (Type.dictionary ~key:variable_t ~value:variable_k))
     | _ -> None
   in
   assert_resolved
@@ -821,7 +821,7 @@ let test_resolve_aliases _ =
   let aliases = function
     | "Mix" ->
         Some
-          (Type.TypeAlias
+          (Type.Alias.TypeAlias
              (Type.parametric
                 "Foo"
                 ![variable_t; Type.list variable_v; Type.union [variable_k; variable_v]]))
@@ -834,16 +834,17 @@ let test_resolve_aliases _ =
        "Foo"
        ![Type.integer; Type.list Type.string; Type.union [Type.bool; Type.string]]);
   let aliases = function
-    | "Foo" -> Some (Type.TypeAlias (Type.parametric "Bar" ![variable_t; variable_v]))
+    | "Foo" -> Some (Type.Alias.TypeAlias (Type.parametric "Bar" ![variable_t; variable_v]))
     | _ -> None
   in
   assert_resolved ~aliases (Type.Primitive "Foo") (Type.parametric "Bar" ![Type.Any; Type.Any]);
   let parameter_variadic = Type.Variable.Variadic.Parameters.create "TParams" in
   let aliases = function
-    | "TParams" -> Some (Type.VariableAlias (Type.Variable.ParameterVariadic parameter_variadic))
+    | "TParams" ->
+        Some (Type.Alias.VariableAlias (Type.Variable.ParameterVariadic parameter_variadic))
     | "FooParamSpec" ->
         Some
-          (Type.TypeAlias
+          (Type.Alias.TypeAlias
              (Type.parametric
                 "Bar"
                 [
@@ -871,10 +872,10 @@ let test_resolve_aliases _ =
     (Type.parametric "Bar" [CallableParameters Undefined]);
   let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
   let aliases = function
-    | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
+    | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
     | "FloatTensor" ->
         Some
-          (Type.TypeAlias
+          (Type.Alias.TypeAlias
              (Type.parametric
                 "Tensor"
                 [
@@ -1212,95 +1213,104 @@ let test_union _ =
 
 
 let test_primitives _ =
-  assert_equal [] (Type.primitives (Type.Callable.create ~annotation:Type.Top ()));
-  assert_equal [Type.integer] (Type.primitives (Type.Callable.create ~annotation:Type.integer ()));
-  assert_equal [] (Type.primitives (Type.optional Type.Top));
-  assert_equal [Type.integer] (Type.primitives (Type.optional Type.integer));
+  assert_equal [] (Type.collect_primitive_types (Type.Callable.create ~annotation:Type.Top ()));
+  assert_equal
+    [Type.integer]
+    (Type.collect_primitive_types (Type.Callable.create ~annotation:Type.integer ()));
+  assert_equal [] (Type.collect_primitive_types (Type.optional Type.Top));
+  assert_equal [Type.integer] (Type.collect_primitive_types (Type.optional Type.integer));
   assert_equal
     []
-    (Type.primitives (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.Top)));
+    (Type.collect_primitive_types
+       (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.Top)));
   assert_equal
     [Type.integer]
-    (Type.primitives (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.integer)));
+    (Type.collect_primitive_types
+       (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.integer)));
   assert_equal
     []
-    (Type.primitives (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T"));
+    (Type.collect_primitive_types
+       (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T"));
   assert_equal
     [Type.integer]
-    (Type.primitives (Type.variable ~constraints:(Type.Variable.Explicit [Type.integer]) "T"));
+    (Type.collect_primitive_types
+       (Type.variable ~constraints:(Type.Variable.Explicit [Type.integer]) "T"));
   assert_equal
     [Type.integer]
-    (Type.primitives (Type.parametric "parametric" ![Type.integer; Type.Top]));
+    (Type.collect_primitive_types (Type.parametric "parametric" ![Type.integer; Type.Top]));
   assert_equal
     [Type.integer; Type.string]
-    (Type.primitives (Type.parametric "parametric" ![Type.integer; Type.string]));
-  assert_equal [Type.string] (Type.primitives (Type.tuple [Type.Top; Type.string]));
+    (Type.collect_primitive_types (Type.parametric "parametric" ![Type.integer; Type.string]));
+  assert_equal [Type.string] (Type.collect_primitive_types (Type.tuple [Type.Top; Type.string]));
   assert_equal
     [Type.integer; Type.string]
-    (Type.primitives (Type.tuple [Type.integer; Type.string]));
+    (Type.collect_primitive_types (Type.tuple [Type.integer; Type.string]));
   assert_equal
     [Type.integer; Type.string]
-    (Type.primitives (Type.union [Type.integer; Type.string]));
-  assert_equal [] (Type.primitives Type.Top);
-  assert_equal [] (Type.primitives Type.Bottom);
-  assert_equal [Type.integer] (Type.primitives Type.integer);
-  assert_equal [] (Type.primitives Type.Any);
+    (Type.collect_primitive_types (Type.union [Type.integer; Type.string]));
+  assert_equal [] (Type.collect_primitive_types Type.Top);
+  assert_equal [] (Type.collect_primitive_types Type.Bottom);
+  assert_equal [Type.integer] (Type.collect_primitive_types Type.integer);
+  assert_equal [] (Type.collect_primitive_types Type.Any);
   ()
 
 
 let test_elements _ =
   let assert_equal = assert_equal ~printer:(List.to_string ~f:Fn.id) in
-  assert_equal ["typing.Callable"] (Type.elements (Type.Callable.create ~annotation:Type.Top ()));
+  assert_equal
+    ["typing.Callable"]
+    (Type.collect_names (Type.Callable.create ~annotation:Type.Top ()));
   assert_equal
     ["int"; "typing.Callable"]
-    (Type.elements (Type.Callable.create ~annotation:Type.integer ()));
-  assert_equal ["int"; "typing.Optional"] (Type.elements (Type.optional Type.integer));
+    (Type.collect_names (Type.Callable.create ~annotation:Type.integer ()));
+  assert_equal ["int"; "typing.Optional"] (Type.collect_names (Type.optional Type.integer));
   assert_equal
     ["tuple"]
-    (Type.elements (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.Top)));
+    (Type.collect_names (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.Top)));
   assert_equal
     ["int"; "tuple"]
-    (Type.elements (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.integer)));
+    (Type.collect_names
+       (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.integer)));
   assert_equal
     []
-    (Type.elements (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T"));
+    (Type.collect_names (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T"));
   assert_equal
     ["int"]
-    (Type.elements (Type.variable ~constraints:(Type.Variable.Explicit [Type.integer]) "T"));
+    (Type.collect_names (Type.variable ~constraints:(Type.Variable.Explicit [Type.integer]) "T"));
   assert_equal
     ["int"; "parametric"]
-    (Type.elements (Type.parametric "parametric" ![Type.integer; Type.Top]));
+    (Type.collect_names (Type.parametric "parametric" ![Type.integer; Type.Top]));
   assert_equal
     ["int"; "str"; "parametric"]
-    (Type.elements (Type.parametric "parametric" ![Type.integer; Type.string]));
-  assert_equal ["str"; "tuple"] (Type.elements (Type.tuple [Type.Top; Type.string]));
-  assert_equal ["int"; "str"; "tuple"] (Type.elements (Type.tuple [Type.integer; Type.string]));
+    (Type.collect_names (Type.parametric "parametric" ![Type.integer; Type.string]));
+  assert_equal ["str"; "tuple"] (Type.collect_names (Type.tuple [Type.Top; Type.string]));
+  assert_equal ["int"; "str"; "tuple"] (Type.collect_names (Type.tuple [Type.integer; Type.string]));
   assert_equal
     ["int"; "str"; "typing.Union"]
-    (Type.elements (Type.union [Type.integer; Type.string]));
-  assert_equal [] (Type.elements Type.Top);
-  assert_equal [] (Type.elements Type.Bottom);
-  assert_equal ["int"] (Type.elements Type.integer);
-  assert_equal [] (Type.elements Type.Any);
+    (Type.collect_names (Type.union [Type.integer; Type.string]));
+  assert_equal [] (Type.collect_names Type.Top);
+  assert_equal [] (Type.collect_names Type.Bottom);
+  assert_equal ["int"] (Type.collect_names Type.integer);
+  assert_equal [] (Type.collect_names Type.Any);
   assert_equal
     ["int"; "tuple"]
-    (Type.elements
+    (Type.collect_names
        (Type.RecursiveType.create
           ~name:"Tree"
           ~body:(Type.tuple [Type.integer; Type.Primitive "Tree"])));
   ();
   assert_equal
     ["typing_extensions.Literal"]
-    (Type.elements
+    (Type.collect_names
        (Type.Literal
           (Type.EnumerationMember
              { enumeration_type = Type.Primitive "A.B.C.MyEnum"; member_name = "ONE" })));
   assert_equal
     ["str"; "typing_extensions.Literal"]
-    (Type.elements (Type.Literal (Type.String AnyLiteral)));
+    (Type.collect_names (Type.Literal (Type.String AnyLiteral)));
   assert_equal
     ["int"; "list"; "pyre_extensions.ReadOnly"]
-    (Type.elements (Type.ReadOnly (Type.list Type.integer)));
+    (Type.collect_names (Type.ReadOnly (Type.list Type.integer)));
   ()
 
 
@@ -1830,11 +1840,11 @@ let test_visit _ =
   let assert_types_equal annotation expected =
     assert_equal ~printer:Type.show ~cmp:Type.equal expected annotation
   in
-  let module CountTransform = Type.Transform.Make (struct
+  let module CountTransform = Type.VisitWithTransform.Make (struct
     type state = int
 
     let visit state _ =
-      { Type.Transform.transformed_annotation = Type.integer; new_state = state + 1 }
+      { Type.VisitWithTransform.transformed_annotation = Type.integer; new_state = state + 1 }
 
 
     let visit_children_before _ _ = true
@@ -1871,7 +1881,7 @@ let test_visit _ =
   in
   assert_equal ~printer:string_of_int 7 end_state;
 
-  let module SubstitutionTransform = Type.Transform.Make (struct
+  let module SubstitutionTransform = Type.VisitWithTransform.Make (struct
     type state = int
 
     let visit state annotation =
@@ -1881,7 +1891,7 @@ let test_visit _ =
             state - 1, Type.string
         | _ -> state, annotation
       in
-      { Type.Transform.transformed_annotation; new_state }
+      { Type.VisitWithTransform.transformed_annotation; new_state }
 
 
     let visit_children_before _ = function
@@ -1904,7 +1914,7 @@ let test_visit _ =
   in
   assert_types_equal transformed (create "typing.Callable[[typing.Optional[int], str], int]");
   assert_equal ~printer:string_of_int 0 end_state;
-  let module ConcatenateTransform = Type.Transform.Make (struct
+  let module ConcatenateTransform = Type.VisitWithTransform.Make (struct
     type state = string
 
     let visit state annotation =
@@ -1914,7 +1924,7 @@ let test_visit _ =
         | Type.Parametric { name; parameters } -> "", Type.parametric (name ^ state) parameters
         | _ -> state, annotation
       in
-      { Type.Transform.transformed_annotation; new_state }
+      { Type.VisitWithTransform.transformed_annotation; new_state }
 
 
     let visit_children_before _ _ = true
@@ -1929,7 +1939,7 @@ let test_visit _ =
     transformed
     (create "Foo[BarBazBop[Baz, Bop], BroLoopLand[Loop, typing.Optional[Land]]]");
   assert_equal "" end_state;
-  let module TopDownConcatenateTransform = Type.Transform.Make (struct
+  let module TopDownConcatenateTransform = Type.VisitWithTransform.Make (struct
     type state = string
 
     let visit state annotation =
@@ -1939,7 +1949,7 @@ let test_visit _ =
         | Type.Parametric { name; parameters } -> state ^ name, Type.parametric name parameters
         | _ -> state, annotation
       in
-      { Type.Transform.transformed_annotation; new_state }
+      { Type.VisitWithTransform.transformed_annotation; new_state }
 
 
     let visit_children_before _ _ = false
@@ -1952,11 +1962,14 @@ let test_visit _ =
   in
   assert_types_equal transformed (create "Foo[Bar[Bro[typing.Optional[FooBarBroLand]]]]");
   assert_equal "" end_state;
-  let module CollectAnnotations = Type.Transform.Make (struct
+  let module CollectAnnotations = Type.VisitWithTransform.Make (struct
     type state = Type.t list
 
     let visit state annotation =
-      { Type.Transform.transformed_annotation = annotation; new_state = annotation :: state }
+      {
+        Type.VisitWithTransform.transformed_annotation = annotation;
+        new_state = annotation :: state;
+      }
 
 
     let visit_children_before _ _ = false
@@ -2309,8 +2322,8 @@ let test_replace_all _ =
   let variadic2 = Type.Variable.Variadic.Tuple.create "Ts2" in
   let assert_replaced ~replace annotation expected =
     let aliases ?replace_unbound_parameters_with_any:_ = function
-      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
-      | "Ts2" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic2))
+      | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | "Ts2" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic2))
       | _ -> None
     in
     assert_equal
@@ -2362,8 +2375,8 @@ let test_replace_all _ =
 
   let parse_string string =
     let aliases ?replace_unbound_parameters_with_any:_ = function
-      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
-      | "Ts2" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic2))
+      | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | "Ts2" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic2))
       | _ -> None
     in
     Type.create ~aliases (parse_single_expression ~preprocess:true string)
@@ -2499,8 +2512,8 @@ let test_collect_all _ =
   let variadic2 = Type.Variable.Variadic.Tuple.create "Ts2" in
   let assert_collected annotation expected =
     let aliases ?replace_unbound_parameters_with_any:_ = function
-      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
-      | "Ts2" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic2))
+      | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | "Ts2" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic2))
       | _ -> None
     in
     assert_equal
@@ -2602,7 +2615,7 @@ let test_concatenation_from_unpack_expression _ =
   let assert_concatenation expression concatenation =
     let parse_annotation expression =
       let aliases ?replace_unbound_parameters_with_any:_ = function
-        | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
+        | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
         | _ -> None
       in
       Type.create ~aliases (parse_single_expression ~preprocess:true (Expression.show expression))
@@ -2633,7 +2646,7 @@ let test_split_ordered_types _ =
   let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
   let assert_split ?(split_both_ways = true) left right expected =
     let aliases ?replace_unbound_parameters_with_any:_ = function
-      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
       | _ -> None
     in
     let left =
@@ -2882,7 +2895,7 @@ let test_coalesce_ordered_types _ =
   let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
   let assert_coalesce ordered_types expected =
     let aliases ?replace_unbound_parameters_with_any:_ = function
-      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
       | _ -> None
     in
     let parse_ordered_type type_ =
@@ -2930,7 +2943,7 @@ let test_drop_prefix_ordered_type _ =
   let assert_drop_prefix ~length actual expected_tuple =
     let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
     let aliases ?replace_unbound_parameters_with_any:_ = function
-      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
       | _ -> None
     in
     let extract_ordered_type string =
@@ -2976,7 +2989,7 @@ let test_index_ordered_type _ =
   let assert_index ~python_index tuple expected =
     let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
     let aliases ?replace_unbound_parameters_with_any:_ = function
-      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
       | _ -> None
     in
     let extract_ordered_type string =
@@ -3035,11 +3048,12 @@ let test_zip_variables_with_parameters _ =
   let parameter_variadic = Type.Variable.Variadic.Parameters.create "TParams" in
   let assert_zipped ~generic_class ~instantiation expected =
     let aliases ?replace_unbound_parameters_with_any:_ = function
-      | "T" -> Some (Type.TypeAlias (Type.Variable unary))
-      | "T2" -> Some (Type.TypeAlias (Type.Variable unary2))
-      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
-      | "Ts2" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic2))
-      | "TParams" -> Some (Type.VariableAlias (Type.Variable.ParameterVariadic parameter_variadic))
+      | "T" -> Some (Type.Alias.TypeAlias (Type.Variable unary))
+      | "T2" -> Some (Type.Alias.TypeAlias (Type.Variable unary2))
+      | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | "Ts2" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic2))
+      | "TParams" ->
+          Some (Type.Alias.VariableAlias (Type.Variable.ParameterVariadic parameter_variadic))
       | _ -> None
     in
     let parameters =
@@ -3372,11 +3386,12 @@ let test_zip_on_two_parameter_lists _ =
   let parameter_variadic = Type.Variable.Variadic.Parameters.create "TParams" in
   let assert_zipped ~generic_class ~left ~right expected =
     let aliases ?replace_unbound_parameters_with_any:_ = function
-      | "T" -> Some (Type.TypeAlias (Type.Variable unary))
-      | "T2" -> Some (Type.TypeAlias (Type.Variable unary2))
-      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
-      | "Ts2" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic2))
-      | "TParams" -> Some (Type.VariableAlias (Type.Variable.ParameterVariadic parameter_variadic))
+      | "T" -> Some (Type.Alias.TypeAlias (Type.Variable unary))
+      | "T2" -> Some (Type.Alias.TypeAlias (Type.Variable unary2))
+      | "Ts" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | "Ts2" -> Some (Type.Alias.VariableAlias (Type.Variable.TupleVariadic variadic2))
+      | "TParams" ->
+          Some (Type.Alias.VariableAlias (Type.Variable.ParameterVariadic parameter_variadic))
       | _ -> None
     in
     let left_parameters =
@@ -3536,7 +3551,7 @@ let test_parameter_create _ =
 let test_resolve_alias_before_handling_callable _ =
   let assert_resolved_getitem_callee ~resolve_aliases aliased bare =
     let aliases ?replace_unbound_parameters_with_any:_ (annotation : string) =
-      Some (Type.TypeAlias (resolve_aliases annotation))
+      Some (Type.Alias.TypeAlias (resolve_aliases annotation))
     in
     assert_equal
       ~cmp:Type.equal

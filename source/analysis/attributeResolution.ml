@@ -2246,7 +2246,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         annotation =
       let Queries.{ variables; _ } = queries in
       let open TypeParameterValidationTypes in
-      let module InvalidTypeParametersTransform = Type.Transform.Make (struct
+      let module InvalidTypeParametersTransform = Type.VisitWithTransform.Make (struct
         type state = type_parameters_mismatch list
 
         let visit_children_before _ _ = false
@@ -2407,7 +2407,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                 invalid_type_parameters ~name ~given:parameters
             | _ -> annotation, sofar
           in
-          { Type.Transform.transformed_annotation; new_state }
+          { Type.VisitWithTransform.transformed_annotation; new_state }
       end)
       in
       InvalidTypeParametersTransform.visit [] annotation
@@ -2418,13 +2418,13 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         expression =
       let { Queries.parse_annotation_without_validating_type_parameters; _ } = queries in
       let modify_aliases ?replace_unbound_parameters_with_any = function
-        | Type.TypeAlias alias ->
+        | Type.Alias.TypeAlias alias ->
             self#check_invalid_type_parameters
               ?replace_unbound_parameters_with_any
               alias
               ~assumptions
             |> snd
-            |> fun alias -> Type.TypeAlias alias
+            |> fun alias -> Type.Alias.TypeAlias alias
         | result -> result
       in
       let allow_untracked =

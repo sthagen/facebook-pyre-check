@@ -490,7 +490,7 @@ module State (Context : Context) = struct
               not (GlobalResolution.class_exists resolution full_name)
         in
         let add_untracked_errors errors =
-          Type.elements annotation
+          Type.collect_names annotation
           |> List.dedup_and_sort ~compare:String.compare
           |> List.filter ~f:is_untracked_name
           |> List.fold ~init:errors ~f:(fun errors name ->
@@ -505,7 +505,7 @@ module State (Context : Context) = struct
               | Type.Literal (Type.EnumerationMember _) -> true
               | _ -> false
             in
-            Type.collect annotation ~predicate:is_literal_enumeration
+            Type.collect_types annotation ~predicate:is_literal_enumeration
           in
           let add_literal_error errors literal =
             match literal with
@@ -2569,7 +2569,7 @@ module State (Context : Context) = struct
                       true
                   | _ -> false
                 in
-                match Type.collect resolved ~predicate:is_broadcast_error with
+                match Type.collect_types resolved ~predicate:is_broadcast_error with
                 | [] -> input
                 | broadcast_errors ->
                     let new_errors =
@@ -5385,7 +5385,7 @@ module State (Context : Context) = struct
             not (is_enumeration && is_member_of_enumeration)
         | _ -> false
       in
-      Type.collect annotation ~predicate:is_invalid_enumeration_member
+      Type.collect_types annotation ~predicate:is_invalid_enumeration_member
     in
     List.fold invalid_enumeration_literals ~init:errors ~f:(fun errors annotation ->
         emit_error
@@ -5696,10 +5696,84 @@ module State (Context : Context) = struct
           | _ -> errors
         in
         Value resolution, List.fold (Class.base_classes class_statement) ~f:check_base ~init:[]
+    | Try { Try.handlers; handles_exception_group; _ } ->
+        (* We only need to check the type annotations of the exception handlers here, since try
+           statements are broken up into multiple nodes in the CFG the other parts are checked
+           elsewhere *)
+        let base_exception_type = Type.Primitive "BaseException" in
+        let base_exception_group_type = Type.Primitive "BaseExceptionGroup" in
+        let errors =
+          List.fold handlers ~init:[] ~f:(fun errors handler ->
+              match handler with
+              | { Try.Handler.kind = Some ({ Node.location; _ } as annotation); _ } ->
+                  (* extract all types from exception handlers, which may specify a single exception
+                     or a tuple of exceptions *)
+                  let handler_types =
+                    let rec extract_handler_types type_ =
+                      match type_ with
+                      | Type.Tuple (Concrete types) -> types
+                      | Tuple (Concatenation concatenation) ->
+                          [
+                            Type.Record.OrderedTypes.Concatenation.extract_sole_unbounded_annotation
+                              concatenation
+                            |> Option.value ~default:type_;
+                          ]
+                      | Union types -> List.map types ~f:extract_handler_types |> List.concat
+                      | _ -> [type_]
+                    in
+                    let parsed_annotation =
+                      GlobalResolution.parse_annotation global_resolution annotation
+                    in
+                    let annotation_type =
+                      match parsed_annotation with
+                      | Type.Top ->
+                          (* handle type variables and ClassVar *)
+                          let resolved_type = resolve_expression_type ~resolution annotation in
+                          Type.class_variable_value resolved_type
+                          |> Option.value ~default:resolved_type
+                      | _ -> parsed_annotation
+                    in
+                    extract_handler_types annotation_type
+                  in
+                  List.fold handler_types ~init:errors ~f:(fun errors exception_type ->
+                      let exception_type =
+                        Type.extract_meta exception_type |> Option.value ~default:exception_type
+                      in
+                      (* all handlers must extend BaseException *)
+                      let errors =
+                        if
+                          GlobalResolution.less_or_equal
+                            ~left:exception_type
+                            ~right:base_exception_type
+                            global_resolution
+                        then
+                          errors
+                        else
+                          emit_error
+                            ~errors
+                            ~location
+                            ~kind:(Error.InvalidExceptionHandler exception_type)
+                      in
+                      (* except* may not extend BaseExceptionGroup *)
+                      if
+                        handles_exception_group
+                        && GlobalResolution.less_or_equal
+                             ~left:exception_type
+                             ~right:base_exception_group_type
+                             global_resolution
+                      then
+                        emit_error
+                          ~errors
+                          ~location
+                          ~kind:(Error.InvalidExceptionGroupHandler exception_type)
+                      else
+                        errors)
+              | _ -> errors)
+        in
+        Value resolution, errors
     | For _
     | If _
     | Match _
-    | Try _
     | With _
     | While _ ->
         (* Check happens implicitly in the resulting control flow. *)

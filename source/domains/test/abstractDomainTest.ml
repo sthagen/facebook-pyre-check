@@ -1914,13 +1914,16 @@ module PathDomain = struct
     type t =
       | Bottom
       | Path of string
+    [@@deriving eq]
 
     let name = "path"
 
-    let show = function
-      | Bottom -> "<bottom>"
-      | Path p -> p
+    let pp formatter = function
+      | Bottom -> Format.fprintf formatter "<bottom>"
+      | Path p -> Format.fprintf formatter "%s" p
 
+
+    let show = Format.asprintf "%a" pp
 
     let less_or_equal ~(left : t) ~(right : t) =
       match left, right with

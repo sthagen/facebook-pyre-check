@@ -19,7 +19,7 @@ type sanitize = {
 
 module T = struct
   include Abstract.SimpleDomain.Make (struct
-    type t = sanitize
+    type t = sanitize [@@deriving show, equal]
 
     let name = "sanitize"
 
@@ -137,8 +137,6 @@ module RootMap = struct
         let absence_implicitly_maps_to_bottom = true
       end)
       (T)
-
-  let equal left right = less_or_equal ~left ~right && less_or_equal ~left:right ~right:left
 
   let roots map = fold Key ~f:List.cons ~init:[] map
 

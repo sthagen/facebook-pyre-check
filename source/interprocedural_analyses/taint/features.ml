@@ -168,7 +168,7 @@ end
 module TitoPosition = struct
   let name = "tito positions"
 
-  type t = Location.t [@@deriving show, compare]
+  type t = Location.t [@@deriving show, compare, equal]
 
   let max_count =
     let on_first_call =
@@ -513,15 +513,24 @@ Abstract.SimpleDomain.Make (struct
 
   let name = Name.name
 
-  let join = min
+  let equal = Int.equal
 
-  let meet = max
+  let join = Int.min
+
+  let meet = Int.max
 
   let less_or_equal ~left ~right = left >= right
 
   let bottom = Int.max_value
 
-  let show length = if Int.equal length Int.min_value then "<bottom>" else string_of_int length
+  let pp formatter length =
+    if Int.equal length Int.min_value then
+      Format.fprintf formatter "<bottom>"
+    else
+      Format.fprintf formatter "%d" length
+
+
+  let show = Format.asprintf "%a" pp
 end)
 
 module CollapseDepth = struct
