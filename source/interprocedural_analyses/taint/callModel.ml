@@ -33,7 +33,7 @@ let at_callsite ~pyre_in_context ~get_callee_model ~call_target ~arguments =
         let expand_frame_via_features frame =
           let breadcrumbs =
             Frame.get Frame.Slots.ViaFeature frame
-            |> Features.expand_via_features ~pyre_in_context ~callees:[call_target] ~arguments
+            |> Features.expand_via_features ~pyre_in_context ~callee:call_target ~arguments
           in
           Frame.add_propagated_breadcrumbs breadcrumbs frame
         in
@@ -353,7 +353,7 @@ let sink_trees_of_argument
       |> BackwardState.Tree.apply_call
            ~pyre_in_context
            ~location
-           ~callee:(Some target)
+           ~callee:target
            ~arguments
            ~port:root
            ~is_class_method
@@ -386,7 +386,7 @@ let source_tree_of_argument
   |> ForwardState.Tree.apply_call
        ~pyre_in_context
        ~location
-       ~callee:(Some target)
+       ~callee:target
        ~arguments
        ~port:root
        ~is_class_method
@@ -501,12 +501,17 @@ module StringFormatCall = struct
     string_literal: string_literal;
     (* If a triggered flow exists on any expression used in the string formatting, this is the
        responsible call site. *)
-    call_target: CallGraph.CallTarget.t option;
+    call_target: CallGraph.CallTarget.t;
     (* Location of the string formatting operation. *)
     location: Location.t;
   }
 
-  let implicit_string_literal_sources ~implicit_sources ~module_reference { value; location } =
+  let implicit_string_literal_sources
+      ~pyre_in_context
+      ~implicit_sources
+      ~module_reference
+      { value; location }
+    =
     let literal_string_regular_expressions = implicit_sources.TaintConfiguration.literal_strings in
     if String.is_empty value || List.is_empty literal_string_regular_expressions then
       ForwardTaint.bottom
@@ -514,7 +519,17 @@ module StringFormatCall = struct
       let value_location = Location.with_module ~module_reference location in
       let add_matching_source_kind so_far { TaintConfiguration.pattern; source_kind = kind } =
         if Re2.matches pattern value then
-          ForwardTaint.singleton (CallInfo.origin value_location) kind Frame.initial
+          ForwardTaint.singleton CallInfo.declaration kind Frame.initial
+          |> ForwardTaint.apply_call
+               ~pyre_in_context
+               ~location:value_location
+               ~callee:Target.ArtificialTargets.str_literal
+               ~arguments:[]
+               ~port:AccessPath.Root.LocalResult
+               ~path:[]
+               ~is_class_method:false
+               ~is_static_method:false
+               ~call_info_intervals:Domains.ClassIntervals.top
           |> ForwardTaint.join so_far
         else
           so_far
@@ -525,7 +540,12 @@ module StringFormatCall = struct
         ~init:ForwardTaint.bottom
 
 
-  let implicit_string_literal_sinks ~implicit_sinks ~module_reference { value; location } =
+  let implicit_string_literal_sinks
+      ~pyre_in_context
+      ~implicit_sinks
+      ~module_reference
+      { value; location }
+    =
     let literal_string_regular_expressions =
       implicit_sinks.TaintConfiguration.literal_string_sinks
     in
@@ -535,7 +555,17 @@ module StringFormatCall = struct
       let value_location = Location.with_module ~module_reference location in
       let add_matching_sink_kind so_far { TaintConfiguration.pattern; sink_kind } =
         if Re2.matches pattern value then
-          BackwardTaint.singleton (CallInfo.origin value_location) sink_kind Frame.initial
+          BackwardTaint.singleton CallInfo.declaration sink_kind Frame.initial
+          |> BackwardTaint.apply_call
+               ~pyre_in_context
+               ~location:value_location
+               ~callee:Target.ArtificialTargets.str_literal
+               ~arguments:[]
+               ~port:AccessPath.Root.LocalResult
+               ~path:[]
+               ~is_class_method:false
+               ~is_static_method:false
+               ~call_info_intervals:Domains.ClassIntervals.top
           |> BackwardTaint.join so_far
         else
           so_far
@@ -559,15 +589,7 @@ module StringFormatCall = struct
     CallGraph.DefineCallGraph.resolve_string_format call_graph_of_define ~location
 
 
-  let apply_call ~callee_target ~pyre_in_context ~location =
-    let callee =
-      match callee_target with
-      | Some call_target -> Some call_target.CallGraph.CallTarget.target
-      | None ->
-          (* TODO(T190129382): Disallow this because without a callee, the UI can't show where the
-             sinks originate from. *)
-          None
-    in
+  let apply_call ~callee ~pyre_in_context ~location =
     BackwardState.Tree.apply_call
       ~pyre_in_context
       ~location
@@ -589,9 +611,9 @@ module StringFormatCall = struct
     let from_function_name string_function_name =
       CallGraph.CallTarget.create
         (match string_function_name with
-        | "__add__" -> Target.StringCombineArtificialTargets.str_add
-        | "__mod__" -> Target.StringCombineArtificialTargets.str_mod
-        | "format" -> Target.StringCombineArtificialTargets.str_format
+        | "__add__" -> Target.ArtificialTargets.str_add
+        | "__mod__" -> Target.ArtificialTargets.str_mod
+        | "format" -> Target.ArtificialTargets.str_format
         | _ -> failwith "Expect either `__add__` or `__mod__` or `format`")
 
 
@@ -604,8 +626,7 @@ module StringFormatCall = struct
       create
         ~call_targets
         ~default_target:
-          (CallGraph.CallTarget.create
-             Interprocedural.Target.StringCombineArtificialTargets.format_string)
+          (CallGraph.CallTarget.create Interprocedural.Target.ArtificialTargets.format_string)
   end
 end
 
@@ -632,7 +653,7 @@ let return_sink ~pyre_in_context ~location ~callee ~sink_model =
     |> BackwardState.Tree.apply_call
          ~pyre_in_context
          ~location
-         ~callee:(Some callee)
+         ~callee
            (* When the source and sink meet at the return statement, we want the leaf callable to be
               non-empty, to provide more information about the flow. *)
          ~arguments:[]

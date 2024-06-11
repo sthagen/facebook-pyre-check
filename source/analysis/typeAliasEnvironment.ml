@@ -26,12 +26,6 @@ open Pyre
 open Expression
 module PreviousEnvironment = EmptyStubEnvironment
 
-let preprocess_alias_value value =
-  value
-  |> Preprocessing.replace_union_shorthand_in_annotation_expression
-  |> Preprocessing.expand_strings_in_annotation_expression
-
-
 module IncomingDataComputation = struct
   module Queries = struct
     type t = {
@@ -131,58 +125,6 @@ module IncomingDataComputation = struct
             Type.create ~aliases:Type.empty_aliases (from_reference ~location:Location.any name)
           in
           match Node.value value, explicit_annotation with
-          | ( _,
-              Some
-                {
-                  Node.value =
-                    Subscript
-                      {
-                        base =
-                          {
-                            Node.value =
-                              Name
-                                (Name.Attribute
-                                  {
-                                    base = { Node.value = Name (Name.Identifier "typing"); _ };
-                                    attribute = "Type";
-                                    _;
-                                  });
-                            _;
-                          };
-                        index =
-                          {
-                            Node.value =
-                              Subscript
-                                {
-                                  base =
-                                    {
-                                      Node.value =
-                                        Name
-                                          (Name.Attribute
-                                            {
-                                              base =
-                                                {
-                                                  Node.value =
-                                                    Name (Name.Identifier "mypy_extensions");
-                                                  _;
-                                                };
-                                              attribute = "TypedDict";
-                                              _;
-                                            });
-                                      _;
-                                    };
-                                  _;
-                                };
-                            _;
-                          };
-                      };
-                  _;
-                } ) ->
-              if not (Type.is_top target_annotation) then
-                let value = delocalize value in
-                Some (TypeAlias { target = name; value })
-              else
-                None
           | ( (BinaryOperator _ | Subscript _ | Call _ | Name _ | Constant (Constant.String _)),
               Some
                 {
@@ -204,7 +146,7 @@ module IncomingDataComputation = struct
               match Type.Variable.parse_declaration (delocalize value) ~target:name with
               | Some variable -> Some (VariableAlias variable)
               | _ ->
-                  let value = preprocess_alias_value value |> delocalize in
+                  let value = Type.preprocess_alias_value value |> delocalize in
                   let value_annotation = Type.create ~aliases:Type.empty_aliases value in
                   if
                     not
@@ -313,7 +255,7 @@ module OutgoingDataComputation = struct
       Option.value modify_aliases ~default:(fun ?replace_unbound_parameters_with_any:_ name -> name)
     in
     let parsed =
-      let expression = preprocess_alias_value expression |> delocalize in
+      let expression = Type.preprocess_alias_value expression |> delocalize in
       let aliases ?replace_unbound_parameters_with_any name =
         get_type_alias name >>| modify_aliases ?replace_unbound_parameters_with_any
       in

@@ -40,7 +40,12 @@
         "name": "backward",
         "roots": [
           {
-            "kinds": [ { "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [ { "name": "str.format", "port": "leaf:return" } ],
+                "kind": "Test"
+              }
+            ],
             "origin": {
               "filename": "implicit_sinks.py",
               "line": 27,
@@ -99,7 +104,14 @@
         "name": "backward",
         "roots": [
           {
-            "kinds": [ { "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<format-string>}", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
             "origin": {
               "filename": "implicit_sinks.py",
               "line": 17,
@@ -178,7 +190,14 @@
         "name": "backward",
         "roots": [
           {
-            "kinds": [ { "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<format-string>}", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
             "origin": {
               "filename": "implicit_sinks.py",
               "line": 66,
@@ -237,7 +256,14 @@
         "name": "backward",
         "roots": [
           {
-            "kinds": [ { "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<str.__add__>}", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
             "origin": {
               "filename": "implicit_sinks.py",
               "line": 61,
@@ -299,7 +325,14 @@
         "name": "backward",
         "roots": [
           {
-            "kinds": [ { "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "str.__mod__", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
             "origin": {
               "filename": "implicit_sinks.py",
               "line": 36,
@@ -361,7 +394,14 @@
         "name": "backward",
         "roots": [
           {
-            "kinds": [ { "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "str.__add__", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
             "origin": {
               "filename": "implicit_sinks.py",
               "line": 45,
@@ -420,6 +460,9 @@
               {
                 "features": [
                   { "always-via": "format-string" }, { "always-via": "tito" }
+                ],
+                "leaves": [
+                  { "name": "Obj{<literal-string>}", "port": "leaf:return" }
                 ],
                 "length": 2,
                 "kind": "Test"
@@ -490,7 +533,15 @@
         "port": "formal(a, position=0)",
         "taint": [
           {
-            "kinds": [ { "length": 1, "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<literal-string>}", "port": "leaf:return" }
+                ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [ { "line": 52, "start": 18, "end": 19 } ],
             "origin": {
@@ -516,7 +567,15 @@
         "port": "formal(a, position=0)",
         "taint": [
           {
-            "kinds": [ { "length": 1, "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<literal-string>}", "port": "leaf:return" }
+                ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "local_features": [
               { "always-via": "format-string" }, { "always-via": "tito" }
             ],
@@ -544,7 +603,14 @@
         "port": "formal(a, position=0)",
         "taint": [
           {
-            "kinds": [ { "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<literal-string>}", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
             "local_features": [
               { "always-via": "format-string" }, { "always-via": "tito" }
             ],
@@ -572,7 +638,15 @@
         "port": "formal(a, position=0)",
         "taint": [
           {
-            "kinds": [ { "length": 1, "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<literal-string>}", "port": "leaf:return" }
+                ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "local_features": [
               { "always-via": "string_concat_lhs" }, { "always-via": "tito" }
             ],
@@ -600,7 +674,15 @@
         "port": "formal(a, position=0)",
         "taint": [
           {
-            "kinds": [ { "length": 1, "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<literal-string>}", "port": "leaf:return" }
+                ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "local_features": [
               { "always-via": "format-string" }, { "always-via": "tito" }
             ],
@@ -628,7 +710,15 @@
         "port": "formal(a, position=0)",
         "taint": [
           {
-            "kinds": [ { "length": 1, "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<literal-string>}", "port": "leaf:return" }
+                ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "local_features": [
               { "always-via": "string_concat_rhs" }, { "always-via": "tito" }
             ],
@@ -656,7 +746,15 @@
         "port": "formal(template, position=0)",
         "taint": [
           {
-            "kinds": [ { "length": 1, "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<literal-string>}", "port": "leaf:return" }
+                ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "local_features": [
               { "always-via": "format-string" }, { "always-via": "tito" }
             ],
@@ -719,7 +817,12 @@
         "name": "backward",
         "roots": [
           {
-            "kinds": [ { "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [ { "name": "str.format", "port": "leaf:return" } ],
+                "kind": "Test"
+              }
+            ],
             "origin": {
               "filename": "implicit_sinks.py",
               "line": 95,
@@ -728,7 +831,14 @@
             }
           },
           {
-            "kinds": [ { "kind": "Test" } ],
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{<str.__add__>}", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
             "origin": {
               "filename": "implicit_sinks.py",
               "line": 99,
