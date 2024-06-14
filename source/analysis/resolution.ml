@@ -22,7 +22,7 @@ type t = {
   global_resolution: GlobalResolution.t;
   annotation_store: TypeInfo.Store.t;
   type_variables: Type.Variable.Set.t;
-  resolve_expression: resolution:t -> Expression.t -> t * Annotation.t;
+  resolve_expression: resolution:t -> Expression.t -> t * TypeInfo.Unit.t;
   resolve_statement: resolution:t -> Statement.t -> resolve_statement_result_t;
   parent: Reference.t option;
 }
@@ -61,11 +61,11 @@ let is_global { global_resolution; _ } ~reference =
 
 let resolve_expression ({ resolve_expression; _ } as resolution) expression =
   let resolution, annotation = resolve_expression ~resolution expression in
-  resolution, Annotation.annotation annotation
+  resolution, TypeInfo.Unit.annotation annotation
 
 
 let resolve_expression_to_type ({ resolve_expression; _ } as resolution) expression =
-  resolve_expression ~resolution expression |> snd |> Annotation.annotation
+  resolve_expression ~resolution expression |> snd |> TypeInfo.Unit.annotation
 
 
 let resolve_expression_to_annotation ({ resolve_expression; _ } as resolution) expression =
@@ -76,7 +76,7 @@ let resolve_reference ({ resolve_expression; _ } as resolution) reference =
   Expression.from_reference ~location:Location.any reference
   |> resolve_expression ~resolution
   |> snd
-  |> Annotation.annotation
+  |> TypeInfo.Unit.annotation
 
 
 let resolve_statement ({ resolve_statement; _ } as resolution) statement =
@@ -181,30 +181,30 @@ let get_local_with_attributes
 
 
 let unset_local
-    ({ annotation_store = { annotations; temporary_annotations }; _ } as resolution)
+    ({ annotation_store = { type_info; temporary_type_info }; _ } as resolution)
     ~reference
   =
   {
     resolution with
     annotation_store =
       {
-        annotations = Reference.Map.Tree.remove annotations reference;
-        temporary_annotations = Reference.Map.Tree.remove temporary_annotations reference;
+        type_info = Reference.Map.Tree.remove type_info reference;
+        temporary_type_info = Reference.Map.Tree.remove temporary_type_info reference;
       };
   }
 
 
-let clear_temporary_annotations ({ annotation_store; _ } as resolution) =
+let clear_temporary_type_info ({ annotation_store; _ } as resolution) =
   {
     resolution with
-    annotation_store = { annotation_store with temporary_annotations = Reference.Map.Tree.empty };
+    annotation_store = { annotation_store with temporary_type_info = Reference.Map.Tree.empty };
   }
 
 
 let resolve_attribute_access resolution ~base_type ~attribute =
   let unique_name = Reference.create "$n" in
   let resolution =
-    new_local resolution ~reference:unique_name ~annotation:(Annotation.create_mutable base_type)
+    new_local resolution ~reference:unique_name ~annotation:(TypeInfo.Unit.create_mutable base_type)
   in
   let expression_to_analyze =
     Expression.from_reference
@@ -221,7 +221,9 @@ let resolve_expression_to_type_with_locals
   =
   let new_local resolution (reference, annotation) = new_local resolution ~reference ~annotation in
   let resolution_with_locals = List.fold ~init:resolution ~f:new_local locals in
-  resolve_expression ~resolution:resolution_with_locals expression |> snd |> Annotation.annotation
+  resolve_expression ~resolution:resolution_with_locals expression
+  |> snd
+  |> TypeInfo.Unit.annotation
 
 
 let add_type_variable ({ type_variables; _ } as resolution) ~variable =
@@ -317,7 +319,7 @@ let with_parent resolution ~parent = { resolution with parent }
 let resolution_for_statement ~local_annotations ~parent ~statement_key resolution =
   let annotation_store =
     local_annotations
-    >>= LocalAnnotationMap.ReadOnly.get_precondition ~statement_key
+    >>= TypeInfo.ForFunctionBody.ReadOnly.get_precondition ~statement_key
     |> Option.value ~default:TypeInfo.Store.empty
   in
   with_annotation_store ~annotation_store resolution |> with_parent ~parent
@@ -383,7 +385,7 @@ let fallback_attribute
     in
     match fallback with
     | Some fallback when AnnotatedAttribute.defined fallback -> (
-        let annotation = fallback |> AnnotatedAttribute.annotation |> Annotation.annotation in
+        let annotation = fallback |> AnnotatedAttribute.annotation |> TypeInfo.Unit.annotation in
         match annotation with
         | Parametric
             {

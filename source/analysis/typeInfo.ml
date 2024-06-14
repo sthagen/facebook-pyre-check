@@ -6,38 +6,224 @@
  *)
 
 (* This module allows storing the type of an expression and its attribute chains after refinement.
-
-   For example, say we have an expression `foo` of type `Foo`, having attribute `bar:
-   Optional[Bar]`, with `Bar` having attribute `baz: Optional[Baz]`.
-
-   If we see an if-statement that refines the type, such as:
-
-   `if foo.bar is not None and foo.bar.baz is not None:`
-
-   then, within that block, we would store the information that `foo.bar` is of type `Bar` (not
-   `Optional[Bar]`) and `foo.bar.baz` is of type `Baz` (not `Optional[Baz]`).
-
-   We store the above for arbitrary chains of attributes starting from the base expression `foo`,
-   leading to a tree of attributes (`foo -> bar -> baz`, `foo -> hello -> world`, etc.).
-
-   TypeInfo.Store: This stores two types of refinements: permanent and temporary.
-
-   For example, if we know that an attribute `bar` is final (e.g., it has type `Final[...]` or is
-   part of a frozen dataclass), then it is safe to permanently refine `foo.bar` as non-`None`, since
-   that attribute cannot be set to `None` again.
-
-   However, if the attribute is not final, then we only mark it temporarily as non-`None`. Any
-   intervening function call on that expression will end up removing these temporary refinements,
-   since that function *could* have set the attribute to `None`. *)
+ *
+ * For example, say we have an expression `foo` of type `Foo`, having attribute `bar:
+ * Optional[Bar]`, with `Bar` having attribute `baz: Optional[Baz]`.
+ *
+ * If we see an if-statement that refines the type, such as:
+ *
+ * `if foo.bar is not None and foo.bar.baz is not None:`
+ *
+ * then, within that block, we would store the information that `foo.bar` is of type `Bar` (not
+ * `Optional[Bar]`) and `foo.bar.baz` is of type `Baz` (not `Optional[Baz]`).
+ *
+ * We store the above for arbitrary chains of attributes starting from the base expression `foo`,
+ * leading to a tree of attributes (`foo -> bar -> baz`, `foo -> hello -> world`, etc.).
+ *
+ * The submodules handle this at different granularity:
+ * - TypeInfo.Unit: This represents the smallest unit of type info, one "name" which might
+ *   represent a global or local variable, or might be a chain of attribute accesses.
+ * - TypeInfo.LocalOrGlobal: This represents a given local or global variable, together
+ *   with any attribute access chains, in a rose tree format.
+ * - TypeInfo.Store: This represents the entire set of live type information as of analyzing
+ *   one specific expression. We store this type info in two separate trees:
+ *   - permanent type information representing either "primary" types coming
+ *     from type inference / explicit annotations and refinements of final
+ *     variables and attributes.
+ *   - temporary type information representing "temporary refinements" which are an
+ *     unsound attempt to allow "mostly" safe refinements of mutable attributes. We wipe
+ *     temporary anntoations on the first function call or `await`, which is an attempt
+ *     to minimize the likelihood of the narrowed type being invalidated by mutation.
+ *     (This mostly works in the absence of free threading).
+ * - TypeInfo.AroundStatement: This represents what we need to deal with type information in
+ *   a statement, given the way Pyre currently handles statements using a fixpoint. It contains
+ *   two `Store.t` values, one with the info *before* resolving the statement and another with
+ *   the info *after*.
+ * - TypeInfo.ForFunctionBody: This represent a map of the `AroundStatement.t` values for
+ *   every state in a function body. The representation is a map whose keys are statement ids
+ *   coming from the `Cfg`.
+ *
+ * For example, if we know that an attribute `bar` is final (e.g., it has type `Final[...]` or is
+ * part of a frozen dataclass), then it is safe to permanently refine `foo.bar` as non-`None`, since
+ * that attribute cannot be set to `None` again.
+ *
+ * However, if the attribute is not final, then we only mark it temporarily as non-`None`. Any
+ * intervening function call on that expression will end up removing these temporary refinements,
+ * since that function *could* have set the attribute to `None`.
+ *)
 
 open Core
 open Ast
-open Annotation
+open Pyre
 open LatticeOfMaps
+
+module Mutability = struct
+  type t =
+    | Mutable
+    | Immutable of {
+        original: Type.t;
+        final: bool;
+      }
+  [@@deriving compare, eq, hash, sexp]
+
+  let pp format = function
+    | Mutable -> Format.fprintf format "m"
+    | Immutable { original; final } ->
+        let final =
+          match final with
+          | true -> " (final)"
+          | _ -> ""
+        in
+        Format.fprintf format " (%a)%s" Type.pp original final
+
+
+  let transform_types ~f = function
+    | Mutable -> Mutable
+    | Immutable { original; final } -> Immutable { original = f original; final }
+
+
+  let less_or_equal ~left ~right =
+    match left, right with
+    | Mutable, _
+    (* we don't have to look at original or final because they will be the same *)
+    | Immutable _, Immutable _ ->
+        true
+    | Immutable _, Mutable -> false
+
+
+  let join ~type_join left right =
+    match left, right with
+    | Immutable left, Immutable right ->
+        Immutable
+          { original = type_join left.original right.original; final = left.final || right.final }
+    | (Immutable _ as immutable), Mutable
+    | Mutable, (Immutable _ as immutable) ->
+        immutable
+    | Mutable, Mutable -> Mutable
+
+
+  let meet ~type_meet left right =
+    match left, right with
+    | Mutable, _
+    | _, Mutable ->
+        Mutable
+    | Immutable left, Immutable right ->
+        Immutable
+          { original = type_meet left.original right.original; final = left.final && right.final }
+end
+
+module Unit = struct
+  type t = {
+    annotation: Type.t;
+    mutability: Mutability.t;
+  }
+  [@@deriving compare, eq, hash, sexp]
+
+  let pp format { annotation; mutability } =
+    Format.fprintf format "(%a: %a)" Type.pp annotation Mutability.pp mutability
+
+
+  let show = Format.asprintf "%a" pp
+
+  let display_as_revealed_type { annotation; mutability } =
+    match mutability with
+    | Mutable -> Format.asprintf "`%a`" Type.pp annotation
+    | Immutable { original; final; _ } ->
+        let if_final display = if final then display else "" in
+        if Type.contains_unknown original then
+          Format.asprintf "`%a`%s" Type.pp annotation (if_final " (final)")
+        else if Type.equal annotation original then
+          Format.asprintf "`%a`%s" Type.pp original (if_final " (final)")
+        else
+          Format.asprintf
+            "`%a` (inferred: `%a`%s)"
+            Type.pp
+            original
+            Type.pp
+            annotation
+            (if_final ", final")
+
+
+  let create_mutable annotation = { annotation; mutability = Mutable }
+
+  let create_immutable ?(original = None) ?(final = false) annotation =
+    let original = Option.value ~default:annotation original in
+    { annotation; mutability = Immutable { original; final } }
+
+
+  let annotation { annotation; _ } = annotation
+
+  let original { annotation; mutability } =
+    match mutability with
+    | Immutable { original; _ } -> original
+    | Mutable -> annotation
+
+
+  let is_immutable { mutability; _ } = not (Mutability.equal mutability Mutable)
+
+  let is_final { mutability; _ } =
+    match mutability with
+    | Immutable { final; _ } -> final
+    | Mutable -> false
+
+
+  let transform_types ~f { annotation; mutability } =
+    { annotation = f annotation; mutability = Mutability.transform_types ~f mutability }
+
+
+  let dequalify dequalify_map annotation =
+    let dequalify = Type.dequalify dequalify_map in
+    transform_types ~f:dequalify annotation
+
+
+  let less_or_equal ~type_less_or_equal ~left ~right =
+    Mutability.less_or_equal ~left:left.mutability ~right:right.mutability
+    && type_less_or_equal ~left:left.annotation ~right:right.annotation
+
+
+  let join ~type_join left right =
+    {
+      annotation = type_join left.annotation right.annotation;
+      mutability = Mutability.join ~type_join left.mutability right.mutability;
+    }
+
+
+  let meet ~type_meet left right =
+    {
+      annotation = type_meet left.annotation right.annotation;
+      mutability = Mutability.meet ~type_meet left.mutability right.mutability;
+    }
+
+
+  let refine ~type_less_or_equal ~solve_less_or_equal ~refined_type { annotation; mutability } =
+    let accept_refinement_of_immutable original =
+      (not (Type.is_unbound refined_type)) && type_less_or_equal ~left:refined_type ~right:original
+    in
+    match mutability with
+    | Mutable -> { annotation = refined_type; mutability }
+    | Immutable { original; _ } -> (
+        match refined_type with
+        | Type.Top -> { annotation = Type.Top; mutability }
+        | Type.Bottom -> { annotation; mutability }
+        | _ when accept_refinement_of_immutable original ->
+            { annotation = refined_type; mutability }
+        | _ ->
+            {
+              annotation =
+                solve_less_or_equal ~left:refined_type ~right:original
+                |> Option.value ~default:annotation;
+              mutability;
+            })
+
+
+  let join_forcing_union ~type_join left right =
+    let refined = join ~type_join left right in
+    { refined with annotation = Type.union [left.annotation; right.annotation] }
+end
 
 module LocalOrGlobal = struct
   type t = {
-    base: Annotation.t option;
+    base: Unit.t option;
     attributes: t Identifier.Map.Tree.t;
   }
   [@@deriving eq]
@@ -46,16 +232,16 @@ module LocalOrGlobal = struct
 
   let create base = { empty with base = Some base }
 
-  let create_mutable type_ = create (Annotation.create_mutable type_)
+  let create_mutable type_ = create (Unit.create_mutable type_)
 
-  let top = create (Annotation.create_mutable Type.Top)
+  let top = create (Unit.create_mutable Type.Top)
 
   let rec pp format { base; attributes } =
     let attribute_map_entry (identifier, refinement_unit) =
       Format.asprintf "%a -> %a" Identifier.pp identifier pp refinement_unit
     in
     (match base with
-    | Some base -> Format.fprintf format "[Base: %a; " Annotation.pp base
+    | Some base -> Format.fprintf format "[Base: %a; " Unit.pp base
     | None -> Format.fprintf format "[Base: (); ");
     Map.Tree.to_alist attributes
     |> List.map ~f:attribute_map_entry
@@ -120,7 +306,7 @@ module LocalOrGlobal = struct
   let rec less_or_equal ~type_less_or_equal ~left ~right =
     let base_less_or_equal left_base right_base =
       match left_base, right_base with
-      | Some left, Some right -> Annotation.less_or_equal ~type_less_or_equal ~left ~right
+      | Some left, Some right -> Unit.less_or_equal ~type_less_or_equal ~left ~right
       | None, None -> true (* intermediate refinement units don't require computation *)
       | _ -> false
     in
@@ -132,7 +318,7 @@ module LocalOrGlobal = struct
   let rec join ~type_join left right =
     let base =
       match left.base, right.base with
-      | Some left_base, Some right_base -> Some (Annotation.join ~type_join left_base right_base)
+      | Some left_base, Some right_base -> Some (Unit.join ~type_join left_base right_base)
       | _ -> None
     in
     {
@@ -144,7 +330,7 @@ module LocalOrGlobal = struct
   let rec meet ~type_meet left right =
     let base =
       match left.base, right.base with
-      | Some left_base, Some right_base -> Some (Annotation.meet ~type_meet left_base right_base)
+      | Some left_base, Some right_base -> Some (Unit.meet ~type_meet left_base right_base)
       | Some base, None
       | None, Some base ->
           Some base
@@ -158,58 +344,69 @@ module LocalOrGlobal = struct
 
   let widen ~type_join ~widening_threshold ~iteration left right =
     if iteration + 1 >= widening_threshold then
-      create (Annotation.create_mutable Type.Top)
+      create (Unit.create_mutable Type.Top)
     else
       join ~type_join left right
 
-
-  let join_annotations ~type_join left right =
-    let refined =
-      join ~type_join (create left) (create right)
-      |> base
-      |> Option.value ~default:(Annotation.create_mutable Type.Bottom)
-    in
-    { refined with annotation = Type.union [left.annotation; right.annotation] }
+  (* TODO() Explore whether this is really necessary - why would we want to force a union? *)
 end
 
 module Store = struct
   type t = {
-    annotations: LocalOrGlobal.t Reference.Map.Tree.t;
-    temporary_annotations: LocalOrGlobal.t Reference.Map.Tree.t;
+    type_info: LocalOrGlobal.t Reference.Map.Tree.t;
+    temporary_type_info: LocalOrGlobal.t Reference.Map.Tree.t;
   }
   [@@deriving eq]
 
-  let empty = { annotations = ReferenceMap.empty; temporary_annotations = ReferenceMap.empty }
+  let empty = { type_info = ReferenceMap.empty; temporary_type_info = ReferenceMap.empty }
 
-  let pp format { annotations; temporary_annotations } =
+  let pp format { type_info; temporary_type_info } =
     let show_annotation (reference, unit) =
       Format.asprintf "%a -> %a" Reference.pp reference LocalOrGlobal.pp unit
     in
-    Reference.Map.Tree.to_alist annotations
+    Reference.Map.Tree.to_alist type_info
     |> List.map ~f:show_annotation
     |> String.concat ~sep:", "
-    |> Format.fprintf format "Annotations: [%s]\n";
-    Reference.Map.Tree.to_alist temporary_annotations
+    |> Format.fprintf format "type_info: [%s]\n";
+    Reference.Map.Tree.to_alist temporary_type_info
     |> List.map ~f:show_annotation
     |> String.concat ~sep:", "
-    |> Format.fprintf format "Temporary Annotations: [%s]"
+    |> Format.fprintf format "temporary_type_info: [%s]"
 
 
   let show = Format.asprintf "%a" pp
 
-  let has_nontemporary_annotation ~name { annotations; _ } = ReferenceMap.mem annotations name
+  let print_as_json formatter { type_info; temporary_type_info } =
+    let pp_element ~temporary ~key ~data =
+      let temporary_suffix = if temporary then "(temp)" else "" in
+      Format.fprintf
+        formatter
+        "\"%a\": \"%a\"%s, "
+        Reference.pp
+        key
+        LocalOrGlobal.pp
+        data
+        temporary_suffix
+    in
+    Format.fprintf formatter "{";
+    Reference.Map.Tree.iteri type_info ~f:(pp_element ~temporary:false);
+    Reference.Map.Tree.iteri temporary_type_info ~f:(pp_element ~temporary:true);
+    Format.fprintf formatter "}"
 
-  let get_unit ?(include_temporary = true) ~name { annotations; temporary_annotations } =
+
+  let has_nontemporary_annotation ~name { type_info; _ } = ReferenceMap.mem type_info name
+
+  let get_unit ?(include_temporary = true) ~name { type_info; temporary_type_info } =
     let temporary =
       if include_temporary then
-        ReferenceMap.find temporary_annotations name
+        ReferenceMap.find temporary_type_info name
       else
         None
     in
     let found =
       match temporary with
       | Some _ -> temporary
-      | None -> ReferenceMap.find annotations name
+      | None -> ReferenceMap.find type_info name
     in
     Option.value ~default:LocalOrGlobal.empty found
 
@@ -219,12 +416,12 @@ module Store = struct
 
       The way we handle temporary vs non-temporary is very particular:
 
-      - If `temporary` is true we only apply this to `temporary_annotations`
-      - Otherwise, we apply it to `annotations` and also apply it to any *existing* data in
-        `temporary_annotations`, but we don't create any new `temporary_annotations`.
-      - The idea here is to minimize the amount of duplicated data, but ensure that `annotations`
-        and `temporary_annotations` always have a consistent view of (non-temporary) refinements. *)
-  let map_over_name ~temporary ~name ~f { annotations; temporary_annotations } =
+      - If `temporary` is true we only apply this to `temporary_type_info`
+      - Otherwise, we apply it to `type_info` and also apply it to any *existing* data in
+        `temporary_type_info`, but we don't create any new `temporary_type_info`.
+      - The idea here is to minimize the amount of duplicated data, but ensure that `type_info` and
+        `temporary_type_info` always have a consistent view of (non-temporary) refinements. *)
+  let map_over_name ~temporary ~name ~f { type_info; temporary_type_info } =
     let map_over_reference_map ~fallback reference_map =
       match Option.first_some (ReferenceMap.find reference_map name) fallback with
       | Some unit -> ReferenceMap.set ~key:name ~data:(f unit) reference_map
@@ -232,14 +429,14 @@ module Store = struct
     in
     if temporary then
       {
-        annotations;
-        temporary_annotations =
-          map_over_reference_map ~fallback:(Some LocalOrGlobal.empty) temporary_annotations;
+        type_info;
+        temporary_type_info =
+          map_over_reference_map ~fallback:(Some LocalOrGlobal.empty) temporary_type_info;
       }
     else
       {
-        annotations = map_over_reference_map ~fallback:(Some LocalOrGlobal.empty) annotations;
-        temporary_annotations = map_over_reference_map ~fallback:None temporary_annotations;
+        type_info = map_over_reference_map ~fallback:(Some LocalOrGlobal.empty) type_info;
+        temporary_type_info = map_over_reference_map ~fallback:None temporary_type_info;
       }
 
 
@@ -253,17 +450,17 @@ module Store = struct
     map_over_name ~temporary ~name ~f:(LocalOrGlobal.set_base ~base) store
 
 
-  let new_as_base ?(temporary = false) ~name ~base { annotations; temporary_annotations } =
+  let new_as_base ?(temporary = false) ~name ~base { type_info; temporary_type_info } =
     if temporary then
       {
-        annotations;
-        temporary_annotations =
-          ReferenceMap.set temporary_annotations ~key:name ~data:(LocalOrGlobal.create base);
+        type_info;
+        temporary_type_info =
+          ReferenceMap.set temporary_type_info ~key:name ~data:(LocalOrGlobal.create base);
       }
     else
       {
-        annotations = ReferenceMap.set annotations ~key:name ~data:(LocalOrGlobal.create base);
-        temporary_annotations = ReferenceMap.remove temporary_annotations name;
+        type_info = ReferenceMap.set type_info ~key:name ~data:(LocalOrGlobal.create base);
+        temporary_type_info = ReferenceMap.remove temporary_type_info name;
       }
 
 
@@ -286,11 +483,11 @@ module Store = struct
 
   let less_or_equal ~type_less_or_equal ~left ~right =
     let less_or_equal_one = LocalOrGlobal.less_or_equal ~type_less_or_equal in
-    ReferenceMap.less_or_equal ~less_or_equal_one ~left:left.annotations ~right:right.annotations
+    ReferenceMap.less_or_equal ~less_or_equal_one ~left:left.type_info ~right:right.type_info
     && ReferenceMap.less_or_equal
          ~less_or_equal_one
-         ~left:left.temporary_annotations
-         ~right:right.temporary_annotations
+         ~left:left.temporary_type_info
+         ~right:right.temporary_type_info
 
 
   (** Whenever we know for sure that right is pointwise less_or_equal to left, then we can save
@@ -298,19 +495,19 @@ module Store = struct
       operations *)
   let less_or_equal_monotone ~left ~right =
     let less_or_equal_one ~left ~right = LocalOrGlobal.equal left right in
-    ReferenceMap.less_or_equal ~less_or_equal_one ~left:left.annotations ~right:right.annotations
+    ReferenceMap.less_or_equal ~less_or_equal_one ~left:left.type_info ~right:right.type_info
     && ReferenceMap.less_or_equal
          ~less_or_equal_one
-         ~left:left.temporary_annotations
-         ~right:right.temporary_annotations
+         ~left:left.temporary_type_info
+         ~right:right.temporary_type_info
 
 
   let meet ~type_meet left right =
     let meet_one = LocalOrGlobal.meet ~type_meet in
     {
-      annotations = ReferenceMap.meet ~meet_one left.annotations right.annotations;
-      temporary_annotations =
-        ReferenceMap.meet ~meet_one left.temporary_annotations right.temporary_annotations;
+      type_info = ReferenceMap.meet ~meet_one left.type_info right.type_info;
+      temporary_type_info =
+        ReferenceMap.meet ~meet_one left.temporary_type_info right.temporary_type_info;
     }
 
 
@@ -321,11 +518,11 @@ module Store = struct
       which is applied at the `TypeInfo.LocalOrGlobal` level. *)
   let widen_or_join ~merge_one left right =
     {
-      (* Newly-instantiated locals live in `annotations`, so we merge with join *)
-      annotations = ReferenceMap.merge_with ~merge_one left.annotations right.annotations;
-      (* `temporary_annotations` only has type info, so we do a proper join *)
-      temporary_annotations =
-        ReferenceMap.join ~join_one:merge_one left.temporary_annotations right.temporary_annotations;
+      (* Newly-instantiated locals live in `type_info`, so we merge with join *)
+      type_info = ReferenceMap.merge_with ~merge_one left.type_info right.type_info;
+      (* `temporary_type_info` only has type info, so we do a proper join *)
+      temporary_type_info =
+        ReferenceMap.join ~join_one:merge_one left.temporary_type_info right.temporary_type_info;
     }
 
 
@@ -341,14 +538,14 @@ module Store = struct
 
   let update_existing ~old_store ~new_store =
     {
-      annotations =
+      type_info =
         ReferenceMap.update_existing_entries
-          ~map_to_update:old_store.annotations
-          ~new_map:new_store.annotations;
-      temporary_annotations =
+          ~map_to_update:old_store.type_info
+          ~new_map:new_store.type_info;
+      temporary_type_info =
         ReferenceMap.update_existing_entries
-          ~map_to_update:old_store.temporary_annotations
-          ~new_map:new_store.temporary_annotations;
+          ~map_to_update:old_store.temporary_type_info
+          ~new_map:new_store.temporary_type_info;
     }
 
 
@@ -363,8 +560,91 @@ module Store = struct
       ReferenceMap.fold ~init:old_map ~f new_map
     in
     {
-      annotations = update_map old_store.annotations new_store.annotations;
-      temporary_annotations =
-        update_map old_store.temporary_annotations new_store.temporary_annotations;
+      type_info = update_map old_store.type_info new_store.type_info;
+      temporary_type_info = update_map old_store.temporary_type_info new_store.temporary_type_info;
     }
+end
+
+module AroundStatement = struct
+  type t = {
+    precondition: Store.t;
+    postcondition: Store.t;
+  }
+  [@@deriving eq]
+
+  let pp formatter { precondition; postcondition } =
+    Format.fprintf
+      formatter
+      "{ \"Precondition\": %a, \"Postcondition\": %a}"
+      Store.print_as_json
+      precondition
+      Store.print_as_json
+      postcondition
+end
+
+module ForFunctionBody = struct
+  (* Maps a key, unique to each statement for a function CFG, to type annotations. The statement key
+     is computed from a tuple CFG node ID and and statement index (see Fixpoint.forward) *)
+  type t = AroundStatement.t Int.Table.t
+
+  let equal left right = Core.Hashtbl.equal AroundStatement.equal left right
+
+  let empty () = Int.Table.create ()
+
+  let pp formatter statements =
+    let pp_map formatter iterator pp_key map =
+      Format.fprintf formatter "{ ";
+      let pp_map_entry ~key ~data =
+        Format.fprintf formatter "%a: %a" pp_key key AroundStatement.pp data
+      in
+      iterator map ~f:pp_map_entry;
+      Format.fprintf formatter " }"
+    in
+    pp_map formatter Hashtbl.iteri Int.pp statements
+
+
+  let show map = Format.asprintf "%a" pp map
+
+  let set
+      ?(precondition =
+        Store.
+          { type_info = Reference.Map.Tree.empty; temporary_type_info = Reference.Map.Tree.empty })
+      ?(postcondition =
+        Store.
+          { type_info = Reference.Map.Tree.empty; temporary_type_info = Reference.Map.Tree.empty })
+      ~statement_key
+      type_info_for_function
+    =
+    Hashtbl.set
+      type_info_for_function
+      ~key:statement_key
+      ~data:{ AroundStatement.precondition; postcondition }
+
+
+  module StatementIdMap = struct
+    module StatementId = struct
+      type t = int [@@deriving compare, sexp, hash, to_yojson]
+    end
+
+    include Map.Make_tree (struct
+      include StatementId
+      include Comparator.Make (StatementId)
+    end)
+  end
+
+  module ReadOnly = struct
+    type t = AroundStatement.t StatementIdMap.t [@@deriving equal]
+
+    let get_precondition type_info_for_function ~statement_key =
+      StatementIdMap.find type_info_for_function statement_key
+      >>| fun { AroundStatement.precondition; _ } -> precondition
+
+
+    let get_postcondition type_info_for_function ~statement_key =
+      StatementIdMap.find type_info_for_function statement_key
+      >>| fun { AroundStatement.postcondition; _ } -> postcondition
+  end
+
+  let read_only type_info_for_function =
+    Hashtbl.to_alist type_info_for_function |> StatementIdMap.of_alist_exn
 end

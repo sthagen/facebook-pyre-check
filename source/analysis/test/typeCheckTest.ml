@@ -29,7 +29,7 @@ module DefaultContext = struct
   module Builder = Callgraph.NullBuilder
 end
 
-let create_annotation_store ?(immutables = []) annotations =
+let create_annotation_store ?(immutables = []) type_info =
   let immutables = String.Map.of_alist_exn immutables in
   let annotify (name, annotation) =
     let annotation =
@@ -37,59 +37,36 @@ let create_annotation_store ?(immutables = []) annotations =
         match Map.find immutables name with
         | Some original ->
             TypeInfo.LocalOrGlobal.create
-              (Annotation.create_immutable ~original:(Some original) annotation)
-        | _ -> TypeInfo.LocalOrGlobal.create (Annotation.create_mutable annotation)
+              (TypeInfo.Unit.create_immutable ~original:(Some original) annotation)
+        | _ -> TypeInfo.LocalOrGlobal.create (TypeInfo.Unit.create_mutable annotation)
       in
       create annotation
     in
     !&name, annotation
   in
   {
-    TypeInfo.Store.annotations = List.map annotations ~f:annotify |> Reference.Map.Tree.of_alist_exn;
-    temporary_annotations = Reference.Map.Tree.empty;
+    TypeInfo.Store.type_info = List.map type_info ~f:annotify |> Reference.Map.Tree.of_alist_exn;
+    temporary_type_info = Reference.Map.Tree.empty;
   }
 
 
 let assert_annotation_store ~expected actual =
   let actual = Resolution.annotation_store actual in
   let compare_annotation_store
+      { TypeInfo.Store.type_info = left_type_info; temporary_type_info = left_temporary_type_info }
       {
-        TypeInfo.Store.annotations = left_annotations;
-        temporary_annotations = left_temporary_annotations;
-      }
-      {
-        TypeInfo.Store.annotations = right_annotations;
-        temporary_annotations = right_temporary_annotations;
+        TypeInfo.Store.type_info = right_type_info;
+        temporary_type_info = right_temporary_type_info;
       }
     =
     let equal_map = Reference.Map.Tree.equal [%equal: TypeInfo.LocalOrGlobal.t] in
-    equal_map left_annotations right_annotations
-    && equal_map left_temporary_annotations right_temporary_annotations
-  in
-  let pp_annotation_store formatter { TypeInfo.Store.annotations; temporary_annotations } =
-    let annotation_to_string (name, refinement_unit) =
-      Format.asprintf "%a -> %a" Reference.pp name TypeInfo.LocalOrGlobal.pp refinement_unit
-    in
-    let printed_annotations =
-      Reference.Map.Tree.to_alist annotations
-      |> List.map ~f:annotation_to_string
-      |> String.concat ~sep:"\n"
-    in
-    let printed_temporary_annotations =
-      Reference.Map.Tree.to_alist temporary_annotations
-      |> List.map ~f:annotation_to_string
-      |> String.concat ~sep:"\n"
-    in
-    Format.fprintf
-      formatter
-      "Annotations: %s\nTemporaryAnnotations: %s"
-      printed_annotations
-      printed_temporary_annotations
+    equal_map left_type_info right_type_info
+    && equal_map left_temporary_type_info right_temporary_type_info
   in
   assert_equal
     ~cmp:compare_annotation_store
-    ~printer:(Format.asprintf "%a" pp_annotation_store)
-    ~pp_diff:(diff ~print:pp_annotation_store)
+    ~printer:(Format.asprintf "%a" TypeInfo.Store.pp)
+    ~pp_diff:(diff ~print:TypeInfo.Store.pp)
     expected
     actual
 
@@ -133,7 +110,7 @@ let test_initial =
 
       let define = +define
 
-      let resolution_fixpoint = Some (LocalAnnotationMap.empty ())
+      let resolution_fixpoint = Some (TypeInfo.ForFunctionBody.empty ())
 
       let error_map = Some (LocalErrorMap.empty ())
 
@@ -1152,17 +1129,20 @@ let test_forward_expression__store =
     in
 
     let resolved_annotation = Resolution.resolve_expression_to_annotation resolution expression in
-    assert_equal ~cmp:Annotation.equal ~printer:Annotation.show annotation resolved_annotation
+    assert_equal ~cmp:TypeInfo.Unit.equal ~printer:TypeInfo.Unit.show annotation resolved_annotation
   in
   test_list
     [
       labeled_test_case __FUNCTION__ __LINE__
-      @@ assert_annotation ~environment:"x = 1" "test.x" (Annotation.create_immutable Type.integer);
+      @@ assert_annotation
+           ~environment:"x = 1"
+           "test.x"
+           (TypeInfo.Unit.create_immutable Type.integer);
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_annotation
            ~environment:"x: typing.Union[int, str] = 1"
            "test.x"
-           (Annotation.create_immutable
+           (TypeInfo.Unit.create_immutable
               ~original:(Some (Type.union [Type.string; Type.integer]))
               (Type.union [Type.string; Type.integer]));
       labeled_test_case __FUNCTION__ __LINE__
@@ -1174,7 +1154,7 @@ let test_forward_expression__store =
                     self.attribute: int = 1
               |}
            "test.Foo().attribute"
-           (Annotation.create_immutable Type.integer);
+           (TypeInfo.Unit.create_immutable Type.integer);
     ]
 
 
