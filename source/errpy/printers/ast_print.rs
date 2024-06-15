@@ -1,7 +1,9 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-//
-// This source code is licensed under the MIT license found in the
-// LICENSE file in the root directory of this source tree
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
 
 use std::fmt;
 
@@ -178,6 +180,21 @@ impl fmt::Display for StmtDesc {
                 write!(
                     f,
                     "Try(body=[{}], handlers=[{}], orelse=[{}], finalbody=[{}], ",
+                    format_vec(body),
+                    format_vec(handlers),
+                    format_vec(orelse),
+                    format_vec(finalbody)
+                )
+            }
+            StmtDesc::TryStar {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                write!(
+                    f,
+                    "TryStar(body=[{}], handlers=[{}], orelse=[{}], finalbody=[{}], ",
                     format_vec(body),
                     format_vec(handlers),
                     format_vec(orelse),
@@ -932,7 +949,12 @@ impl fmt::Display for Withitem {
 impl fmt::Display for ExcepthandlerDesc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ExcepthandlerDesc::ExceptHandler { type__, name, body } => {
+            ExcepthandlerDesc::ExceptHandler {
+                type__,
+                name,
+                body,
+                star: _,
+            } => {
                 let type_fmt = match &type__ {
                     Some(ttype) => format!("type={}, ", ttype),
                     _ => String::from(""),

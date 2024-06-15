@@ -1,7 +1,9 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-//
-// This source code is licensed under the MIT license found in the
-// LICENSE file in the root directory of this source tree
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
 
 #![allow(dead_code)]
 
@@ -187,6 +189,12 @@ pub enum StmtDesc {
         cause: Option<Expr>,
     },
     Try {
+        body: Vec<Stmt>,
+        handlers: Vec<Excepthandler>,
+        orelse: Vec<Stmt>,
+        finalbody: Vec<Stmt>,
+    },
+    TryStar {
         body: Vec<Stmt>,
         handlers: Vec<Excepthandler>,
         orelse: Vec<Stmt>,
@@ -468,6 +476,7 @@ pub enum ExcepthandlerDesc {
         type__: Option<Expr>,
         name: Option<String>,
         body: Vec<Stmt>,
+        star: bool,
     },
 }
 

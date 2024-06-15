@@ -1,7 +1,10 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-//
-// This source code is licensed under the MIT license found in the
-// LICENSE file in the root directory of this source tree
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::convert::TryFrom;
 
 use ast::Alias;
@@ -540,6 +543,33 @@ impl Stmt {
                 type_comment,
             } => format_with(true, items, body, type_comment, pprint_output),
             StmtDesc::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                pprint_output.push_str("try:\n");
+                format_block(body, pprint_output);
+
+                for handle in handlers {
+                    handle.desc.pprint(pprint_output);
+                }
+
+                if !orelse.is_empty() {
+                    pprint_output.push_str("\n");
+                    pprint_output.push_ident();
+                    pprint_output.push_str("else:\n");
+                    format_block(orelse, pprint_output);
+                }
+
+                if !finalbody.is_empty() {
+                    pprint_output.push_str("\n");
+                    pprint_output.push_ident();
+                    pprint_output.push_str("finally:\n");
+                    format_block(finalbody, pprint_output);
+                }
+            }
+            StmtDesc::TryStar {
                 body,
                 handlers,
                 orelse,
@@ -1731,10 +1761,19 @@ impl Withitem {
 impl ExcepthandlerDesc {
     pub fn pprint(&self, pprint_output: &mut PrintHelper) {
         match self {
-            ExcepthandlerDesc::ExceptHandler { type__, name, body } => {
+            ExcepthandlerDesc::ExceptHandler {
+                type__,
+                name,
+                body,
+                star,
+            } => {
                 pprint_output.push_str("\n");
                 pprint_output.push_ident();
-                pprint_output.push_str("except");
+                if *star {
+                    pprint_output.push_str("except*");
+                } else {
+                    pprint_output.push_str("except");
+                }
 
                 if let Some(tt) = type__ {
                     pprint_output.push_str(" ");
