@@ -31,7 +31,7 @@ module IncomingDataComputation = struct
     type t = {
       class_exists: string -> bool;
       module_exists: Ast.Reference.t -> bool;
-      get_unannotated_global: Ast.Reference.t -> Ast.UnannotatedGlobal.t option;
+      get_unannotated_global: Ast.Reference.t -> UnannotatedGlobal.t option;
       is_from_empty_stub: Ast.Reference.t -> bool;
     }
   end
@@ -162,14 +162,27 @@ module IncomingDataComputation = struct
           if class_exists (Reference.show name) then
             None
           else
-            let original_name = UnannotatedGlobal.ImportEntry.deprecated_original_name import in
-            match Reference.as_list name, Reference.as_list original_name with
+            let original_name_of_alias =
+              match import with
+              | UnannotatedGlobal.ImportModule { target; implicit_alias } ->
+                  if implicit_alias then
+                    Option.value_exn (Reference.head target)
+                  else
+                    target
+              | UnannotatedGlobal.ImportFrom { from; target; _ } -> (
+                  match Reference.show from with
+                  | "future.builtins"
+                  | "builtins" ->
+                      Reference.create target
+                  | _ -> Reference.create target |> Reference.combine from)
+            in
+            match Reference.as_list name, Reference.as_list original_name_of_alias with
             | [single_identifier], [typing; identifier]
               when String.equal typing "typing" && String.equal single_identifier identifier ->
                 (* builtins has a bare qualifier. Don't export bare aliases from typing. *)
                 None
             | _ ->
-                let value = from_reference ~location:Location.any original_name in
+                let value = from_reference ~location:Location.any original_name_of_alias in
                 Some (TypeAlias { target = name; value }))
       | TupleAssign _
       | Class
