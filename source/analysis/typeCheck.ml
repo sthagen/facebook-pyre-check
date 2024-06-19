@@ -3160,6 +3160,17 @@ module State (Context : Context) = struct
           resolved_annotation = None;
           base = None;
         }
+    | Name (Name.Identifier "__debug__") ->
+        (* `__debug__` is a special unassignable builtin boolean, see
+           https://docs.python.org/3/library/constants.html *)
+        let resolved = Type.bool in
+        {
+          resolution;
+          errors = [];
+          resolved;
+          resolved_annotation = Some (TypeInfo.Unit.create_immutable resolved);
+          base = None;
+        }
     | Name (Name.Identifier identifier) ->
         forward_reference ~resolution ~location ~errors:[] (Reference.create identifier)
     | Name (Name.Attribute { base; attribute; special } as name) -> (
@@ -5942,7 +5953,8 @@ module State (Context : Context) = struct
     let check_unbound_names errors =
       let add_unbound_name_error errors { Define.NameAccess.name; location } =
         match GlobalResolution.get_module_metadata global_resolution Reference.empty with
-        | Some module_metadata when Option.is_some (Module.get_export module_metadata name) ->
+        | Some module_metadata when Option.is_some (Module.Metadata.get_export module_metadata name)
+          ->
             (* Do not error on names defined in empty qualifier space, e.g. custom builtins. *)
             errors
         | _ -> emit_error ~errors ~location ~kind:(AnalysisError.UnboundName name)

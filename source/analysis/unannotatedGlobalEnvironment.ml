@@ -55,110 +55,6 @@ open Ast
 open Statement
 open SharedMemoryKeys
 
-module ModuleComponents = struct
-  type t = {
-    module_metadata: Module.t;
-    class_summaries: (Ast.Identifier.t * ClassSummary.t Ast.Node.t) list;
-    unannotated_globals: UnannotatedGlobal.Collector.Result.t list;
-    function_definitions: (Ast.Reference.t * FunctionDefinition.t) list;
-  }
-
-  let class_summaries_of_source ({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source) =
-    (* TODO (T57944324): Support checking classes that are nested inside function bodies *)
-    let module ClassCollector = Visit.MakeStatementVisitor (struct
-      type t = Class.t Node.t list
-
-      let visit_children _ = true
-
-      let statement _ sofar = function
-        | { Node.location; value = Statement.Class definition } ->
-            { Node.location; value = definition } :: sofar
-        | _ -> sofar
-    end)
-    in
-    let classes = ClassCollector.visit [] source in
-    let classes =
-      match Reference.as_list qualifier with
-      | [] -> classes @ MissingFromStubs.missing_builtin_classes
-      | ["typing"] -> classes @ MissingFromStubs.missing_typing_classes
-      | ["typing_extensions"] -> classes @ MissingFromStubs.missing_typing_extensions_classes
-      | _ -> classes
-    in
-    let definition_to_summary { Node.location; value = { Class.name; _ } as class_definition } =
-      let primitive = Reference.show name in
-      primitive, { Node.location; value = ClassSummary.create ~qualifier class_definition }
-    in
-    List.map classes ~f:definition_to_summary
-
-
-  let function_definitions_of_source ({ Source.module_path; _ } as source) =
-    match ModulePath.should_type_check module_path with
-    | false ->
-        (* Do not collect function bodies for external sources as they won't get type checked *)
-        []
-    | true -> FunctionDefinition.collect_defines source
-
-
-  let unannotated_globals_of_source
-      ({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source)
-    =
-    let merge_defines unannotated_globals_alist =
-      let not_defines, defines =
-        List.partition_map unannotated_globals_alist ~f:(function
-            | { UnannotatedGlobal.Collector.Result.name; unannotated_global = Define defines } ->
-                Either.Second (name, defines)
-            | x -> Either.First x)
-      in
-      let add_to_map sofar (name, defines) =
-        let merge_with_existing to_merge = function
-          | None -> Some to_merge
-          | Some existing -> Some (to_merge @ existing)
-        in
-        Map.change sofar name ~f:(merge_with_existing defines)
-      in
-      List.fold defines ~f:add_to_map ~init:Identifier.Map.empty
-      |> Map.to_alist
-      |> List.map ~f:(fun (name, defines) ->
-             {
-               UnannotatedGlobal.Collector.Result.name;
-               unannotated_global = Define (List.rev defines);
-             })
-      |> fun defines -> List.append defines not_defines
-    in
-    let drop_classes unannotated_globals =
-      let is_not_class = function
-        | { UnannotatedGlobal.Collector.Result.unannotated_global = Class; _ } -> false
-        | _ -> true
-      in
-      List.filter unannotated_globals ~f:is_not_class
-    in
-    let globals = UnannotatedGlobal.Collector.from_source source |> merge_defines |> drop_classes in
-    let globals =
-      match Reference.as_list qualifier with
-      | [] -> globals @ MissingFromStubs.missing_builtin_globals
-      | _ -> globals
-    in
-    globals
-
-
-  let of_source source =
-    {
-      module_metadata = Module.create source;
-      class_summaries = class_summaries_of_source source;
-      unannotated_globals = unannotated_globals_of_source source;
-      function_definitions = function_definitions_of_source source;
-    }
-
-
-  let implicit_module () =
-    {
-      module_metadata = Module.create_implicit ();
-      class_summaries = [];
-      unannotated_globals = [];
-      function_definitions = [];
-    }
-end
-
 module IncomingDataComputation = struct
   module Queries = struct
     type t = {
@@ -169,10 +65,10 @@ module IncomingDataComputation = struct
 
   let module_components Queries.{ is_qualifier_tracked; source_of_qualifier } qualifier =
     match source_of_qualifier qualifier with
-    | Some source -> Some (ModuleComponents.of_source source)
+    | Some source -> Some (Module.Components.of_source source)
     | None ->
         if is_qualifier_tracked qualifier then
-          Some (ModuleComponents.implicit_module ())
+          Some (Module.Components.implicit_module ())
         else
           None
 end
@@ -183,9 +79,9 @@ module OutgoingDataComputation = struct
       class_exists: string -> bool;
       get_define_names_for_qualifier_in_project: Reference.t -> Reference.t list;
       get_class_summary: string -> ClassSummary.t Node.t option;
-      get_unannotated_global: Reference.t -> UnannotatedGlobal.t option;
+      get_unannotated_global: Reference.t -> Module.UnannotatedGlobal.t option;
       get_function_definition_in_project: Reference.t -> FunctionDefinition.t option;
-      get_module_metadata: Reference.t -> Module.t option;
+      get_module_metadata: Reference.t -> Module.Metadata.t option;
       module_exists: Reference.t -> bool;
     }
   end
@@ -272,7 +168,7 @@ module OutgoingDataComputation = struct
                     let checked_module = List.rev prefixes |> Reference.create_from_list in
                     let sofar = name :: sofar in
                     match get_module_metadata checked_module with
-                    | Some module_metadata when Module.empty_stub module_metadata ->
+                    | Some module_metadata when Module.Metadata.empty_stub module_metadata ->
                         Some
                           (ResolvedReference.PlaceholderStub
                              { stub_module = checked_module; remaining = sofar })
@@ -282,7 +178,7 @@ module OutgoingDataComputation = struct
                 names_to_resolve
                 (Reference.as_list current_module |> List.rev))
       | Some module_metadata -> (
-          match Module.empty_stub module_metadata with
+          match Module.Metadata.empty_stub module_metadata with
           | true ->
               (* If we encounter a placeholder stub as we are searching packages shallow-to-deep,
                  immediately return that this reference is coming from a Placeholder stub. Pyre will
@@ -306,10 +202,10 @@ module OutgoingDataComputation = struct
                       None
                   | Result.Ok _ -> (
                       (* There is no cycle, so look up the name in this module's globals. *)
-                      match Module.get_export module_metadata next_name with
+                      match Module.Metadata.get_export module_metadata next_name with
                       | None -> (
                           (* We didn't find any explicit global symbol for this name. *)
-                          match Module.get_export module_metadata "__getattr__" with
+                          match Module.Metadata.get_export module_metadata "__getattr__" with
                           | Some Module.Export.(Name (Define { is_getattr_any = true })) ->
                               (* If __getattr__ is defined, then all lookups resolve through it;
                                  this is occasionally used for real code and is also a common
@@ -631,13 +527,13 @@ module FromReadOnlyUpstream = struct
   end
 
   module ModuleValue = struct
-    type t = Module.t
+    type t = Module.Metadata.t
 
     let prefix = Hack_parallel.Std.Prefix.make ()
 
     let description = "Module"
 
-    let equal = Module.equal
+    let equal = Module.Metadata.equal
   end
 
   module ModuleTable = struct
@@ -724,13 +620,13 @@ module FromReadOnlyUpstream = struct
   end
 
   module UnannotatedGlobalValue = struct
-    type t = UnannotatedGlobal.t
+    type t = Module.UnannotatedGlobal.t
 
     let prefix = Hack_parallel.Std.Prefix.make ()
 
     let description = "UnannotatedGlobal"
 
-    let equal = Memory.equal_from_compare UnannotatedGlobal.compare
+    let equal = Memory.equal_from_compare Module.UnannotatedGlobal.compare
   end
 
   module UnannotatedGlobalTable = struct
@@ -786,38 +682,40 @@ module FromReadOnlyUpstream = struct
           _;
         }
       ~qualifier
-      ModuleComponents.
+      Module.Components.
         { module_metadata; class_summaries; unannotated_globals; function_definitions }
     =
     let set_module () = ModuleTable.add module_table qualifier module_metadata in
     let set_class_summaries () =
-      let register new_classes (class_name, class_summary_node) =
+      let register ~key:class_name ~data:class_summary_node class_names =
         ClassSummaryTable.write_around class_summary_table class_name class_summary_node;
-        Set.add new_classes class_name
+        Set.add class_names class_name
       in
       class_summaries
-      |> List.fold ~init:Type.Primitive.Set.empty ~f:register
+      |> Identifier.Map.Tree.fold ~init:Type.Primitive.Set.empty ~f:register
       |> Set.to_list
       |> KeyTracker.add_class_keys key_tracker qualifier
     in
     let set_function_definitions () =
-      let register (name, function_definition) =
+      let register ~key:name ~data:function_definition function_names =
         FunctionDefinitionTable.write_around function_definition_table name function_definition;
-        name
+        Set.add function_names name
       in
       function_definitions
-      |> List.map ~f:register
+      |> Reference.Map.Tree.fold ~init:Reference.Set.empty ~f:register
+      |> Set.to_list
       |> List.sort ~compare:Reference.compare
       |> DefineNames.add define_names qualifier
     in
     let set_unannotated_globals () =
-      let register { UnannotatedGlobal.Collector.Result.name; unannotated_global } =
+      let register ~key:name ~data:unannotated_global global_names =
         let name = Reference.create name |> Reference.combine qualifier in
         UnannotatedGlobalTable.add unannotated_global_table name unannotated_global;
-        name
+        Set.add global_names name
       in
       unannotated_globals
-      |> List.map ~f:register
+      |> Identifier.Map.Tree.fold ~init:Reference.Set.empty ~f:register
+      |> Set.to_list
       |> KeyTracker.add_unannotated_global_keys key_tracker qualifier
     in
     set_class_summaries ();
