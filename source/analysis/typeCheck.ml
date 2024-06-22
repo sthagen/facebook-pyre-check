@@ -3272,8 +3272,8 @@ module State (Context : Context) = struct
               forward_expression ~resolution expression
         in
         { resolved with resolved = Type.Top; resolved_annotation = None; base = None }
-    | Subscript { Subscript.index = Slice _; _ } -> failwith "T101302994"
-    | Subscript { Subscript.base; index = Index index } ->
+    | Slice slice -> forward_expression ~resolution (Slice.lowered ~location slice)
+    | Subscript { Subscript.base; index } ->
         (* The python runtime will treat `base[index]` (when not inside an assignment target) as
            `base.__getitem__(index)`. *)
         let synthetic_getitem_call =
@@ -5074,8 +5074,7 @@ module State (Context : Context) = struct
             (* We process type as union again to populate resolution *)
             propagate (resolution, errors) (Union types)
         | resolved -> inner_assignment resolution errors resolved)
-    | Expression.Subscript { Subscript.index = Slice _; _ } -> failwith "T101302994"
-    | Expression.Subscript { Subscript.base; index = Index index } ->
+    | Expression.Subscript { Subscript.base; index } ->
         let {
           Resolved.errors = callee_errors;
           resolved = resolved_setitem_type;

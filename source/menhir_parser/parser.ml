@@ -375,11 +375,19 @@ module ParserToAst = struct
         AstExpression.Expression.Starred
           (AstExpression.Starred.Twice (convert_expression expression))
         |> Node.create ~location
+    | Slice { Slice.start; stop; step } ->
+        AstExpression.Expression.Slice
+          {
+            AstExpression.Slice.start = start >>| convert_expression;
+            stop = stop >>| convert_expression;
+            step = step >>| convert_expression;
+          }
+        |> Node.create ~location
     | Subscript { Subscript.base; index } ->
         AstExpression.Expression.Subscript
           {
             AstExpression.Subscript.base = convert_expression base;
-            index = AstExpression.Subscript.Index.Index (convert_expression index);
+            index = convert_expression index;
           }
         |> Node.create ~location
     | Ternary { Ternary.target; test; alternative } ->

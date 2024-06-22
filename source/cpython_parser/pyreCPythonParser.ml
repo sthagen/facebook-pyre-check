@@ -443,8 +443,7 @@ let expression =
     |> Node.create ~location
   in
   let subscript ~location ~value ~slice ~ctx:() =
-    Expression.Subscript { Subscript.base = value; index = Subscript.Index.Index slice }
-    |> Node.create ~location
+    Expression.Subscript { Subscript.base = value; index = slice } |> Node.create ~location
   in
   let starred ~location ~value ~ctx:() =
     Expression.Starred (Starred.Once value) |> Node.create ~location
@@ -453,20 +452,7 @@ let expression =
   let list ~location ~elts ~ctx:() = Expression.List elts |> Node.create ~location in
   let tuple ~location ~elts ~ctx:() = Expression.Tuple elts |> Node.create ~location in
   let slice ~location ~lower ~upper ~step =
-    (* TODO(T101302994): We should avoid lowering slice expressions at parser phase. *)
-    let callee = Expression.Name (Name.Identifier "slice") |> Node.create ~location in
-    let arguments =
-      let to_argument = function
-        | None -> Expression.Constant Constant.NoneLiteral |> Node.create ~location:Ast.Location.any
-        | Some expression -> expression
-      in
-      [
-        { Call.Argument.name = None; value = to_argument lower };
-        { Call.Argument.name = None; value = to_argument upper };
-        { Call.Argument.name = None; value = to_argument step };
-      ]
-    in
-    Expression.Call { Call.callee; arguments } |> Node.create ~location
+    Expression.Slice { Slice.start = lower; stop = upper; step } |> Node.create ~location
   in
   PyreAst.TaglessFinal.Expression.make
     ~bool_op
