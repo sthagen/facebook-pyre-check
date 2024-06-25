@@ -476,23 +476,26 @@ module State (Context : Context) = struct
     | true -> []
     | false ->
         let is_untracked_name class_name =
-          match GlobalResolution.resolve_exports resolution (Reference.create class_name) with
-          | None -> true
-          | Some (ResolvedReference.PlaceholderStub _) -> false
-          | Some (ResolvedReference.Module _) ->
-              (* `name` refers to a module, which is usually not valid type *)
-              true
-          | Some
-              (ResolvedReference.ModuleAttribute
-                { export = ResolvedReference.FromModuleGetattr; _ }) ->
-              (* Don't complain if `name` is derived from getattr-Any *)
-              false
-          | Some (ResolvedReference.ModuleAttribute { from; name; remaining; _ }) ->
-              let full_name =
-                Reference.combine from (Reference.create_from_list (name :: remaining))
-                |> Reference.show
-              in
-              not (GlobalResolution.class_exists resolution full_name)
+          match class_name with
+          | "..." -> false
+          | _ -> (
+              match GlobalResolution.resolve_exports resolution (Reference.create class_name) with
+              | None -> true
+              | Some (ResolvedReference.PlaceholderStub _) -> false
+              | Some (ResolvedReference.Module _) ->
+                  (* `name` refers to a module, which is usually not valid type *)
+                  true
+              | Some
+                  (ResolvedReference.ModuleAttribute
+                    { export = ResolvedReference.FromModuleGetattr; _ }) ->
+                  (* Don't complain if `name` is derived from getattr-Any *)
+                  false
+              | Some (ResolvedReference.ModuleAttribute { from; name; remaining; _ }) ->
+                  let full_name =
+                    Reference.combine from (Reference.create_from_list (name :: remaining))
+                    |> Reference.show
+                  in
+                  not (GlobalResolution.class_exists resolution full_name))
         in
         let add_untracked_errors errors =
           Type.collect_names annotation
@@ -587,6 +590,25 @@ module State (Context : Context) = struct
                       annotation = Type.Primitive (Expression.show expression);
                       expected = "`Callable[[<parameters>], <return type>]`";
                     }))
+      | Type.Callable
+          {
+            implementation =
+              { parameters = Defined [PositionalOnly { annotation = Type.Primitive "..."; _ }]; _ };
+            _;
+          } ->
+          (* ban forms like Callable[[...], T] - the ellipsis should be used without the brackets *)
+          emit_error
+            ~errors:[]
+            ~location
+            ~kind:
+              (Error.InvalidType
+                 (InvalidType
+                    {
+                      annotation = Type.Primitive (Expression.show expression);
+                      expected =
+                        "`Callable[[<parameters>], <return type>]` or `Callable[..., <return \
+                         type>]`";
+                    }))
       | Type.Callable { implementation = { annotation; _ }; _ } when Type.is_ellipsis annotation ->
           emit_error
             ~errors:[]
@@ -597,6 +619,19 @@ module State (Context : Context) = struct
                     {
                       annotation = Type.Primitive (Expression.show expression);
                       expected = "annotation other than ... for return type";
+                    }))
+      | Type.Tuple (Concrete types) when List.find ~f:Type.is_ellipsis types |> Option.is_some ->
+          emit_error
+            ~errors:[]
+            ~location
+            ~kind:
+              (Error.InvalidType
+                 (InvalidType
+                    {
+                      annotation = Type.Primitive (Expression.show expression);
+                      expected =
+                        "a list of concrete type parameters, or an unbounded tuple type like \
+                         tuple[int, ...]";
                     }))
       | _ when Type.contains_unknown annotation ->
           emit_error
