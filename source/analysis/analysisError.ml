@@ -228,8 +228,12 @@ and invalid_assignment_kind =
 and invalid_type_kind =
   | FinalNested of Type.t
   | FinalParameter of Identifier.t
-  | InvalidType of {
+  | InvalidTypeAnnotation of {
       annotation: Type.t;
+      expected: string;
+    }
+  | InvalidTypeAnnotationExpression of {
+      annotation: Expression.t;
       expected: string;
     }
   | NestedAlias of Identifier.t
@@ -1053,7 +1057,7 @@ let weaken_literals kind =
     let type_map = function
       | Type.Variable
           {
-            Type.Record.Variable.RecordUnary.constraints =
+            Type.Record.Variable.RecordTypeVar.constraints =
               Type.Record.Variable.Bound (Type.Primitive "int");
             _;
           } ->
@@ -1369,7 +1373,7 @@ let rec messages ~concise ~signature location kind =
   | IncompleteType { target; annotation; attempted_action } ->
       let inferred =
         match annotation with
-        | Type.Variable variable when Type.Variable.Unary.is_escaped_and_free variable -> ""
+        | Type.Variable variable when Type.Variable.TypeVar.is_escaped_and_free variable -> ""
         | _ -> Format.asprintf "`%a` " pp_type annotation
       in
       let consequence =
@@ -1854,12 +1858,20 @@ let rec messages ~concise ~signature location kind =
           ]
       | FinalParameter name ->
           [Format.asprintf "Parameter `%a` cannot be annotated with Final." pp_identifier name]
-      | InvalidType { annotation; expected } ->
+      | InvalidTypeAnnotation { annotation; expected } ->
           if String.is_empty expected then
             [Format.asprintf "Expression `%a` is not a valid type." pp_type annotation]
           else
             [
               Format.asprintf "Expression `%a` is not a valid type." pp_type annotation;
+              Format.asprintf "Expected %s." expected;
+            ]
+      | InvalidTypeAnnotationExpression { annotation; expected } ->
+          if String.is_empty expected then
+            [Format.asprintf "Expression `%s` is not a valid type." (Expression.show annotation)]
+          else
+            [
+              Format.asprintf "Expression `%s` is not a valid type." (Expression.show annotation);
               Format.asprintf "Expected %s." expected;
             ]
       | NestedAlias name ->
@@ -1958,9 +1970,11 @@ let rec messages ~concise ~signature location kind =
         | ParameterVariadic expected ->
             Format.asprintf
               "Callable parameters expected for parameter specification `%s`"
-              (Type.Variable.Variadic.Parameters.name expected)
+              (Type.Variable.Variadic.ParamSpec.name expected)
         | TupleVariadic expected ->
-            Format.asprintf "Tuple expected for `%s`" (Type.Variable.Variadic.Tuple.name expected)
+            Format.asprintf
+              "Tuple expected for `%s`"
+              (Type.Variable.Variadic.TypeVarTuple.name expected)
       in
       let actual =
         match actual with
@@ -1988,10 +2002,10 @@ let rec messages ~concise ~signature location kind =
       | Type.Variable.Unary variable ->
           [Format.asprintf format (Type.show (Type.Variable variable))]
       | Type.Variable.ParameterVariadic variable ->
-          let name = Type.Variable.Variadic.Parameters.name variable in
+          let name = Type.Variable.Variadic.ParamSpec.name variable in
           [Format.asprintf format name]
       | Type.Variable.TupleVariadic variable ->
-          let name = Type.Variable.Variadic.Tuple.name variable in
+          let name = Type.Variable.Variadic.TypeVarTuple.name variable in
           [Format.asprintf format name])
   | InvalidTypeVariable { annotation; origin } -> (
       (* The explicit annotation is necessary to appease the compiler. *)
@@ -2018,11 +2032,11 @@ let rec messages ~concise ~signature location kind =
           | Toplevel -> [Format.asprintf format (Type.show (Type.Variable variable))])
       | Type.Variable.ParameterVariadic variable ->
           (* We don't give hints for the more complicated cases. *)
-          let name = Type.Variable.Variadic.Parameters.name variable in
+          let name = Type.Variable.Variadic.ParamSpec.name variable in
           [Format.asprintf format name]
       | Type.Variable.TupleVariadic variable ->
           (* We don't give hints for the more complicated cases. *)
-          let name = Type.Variable.Variadic.Tuple.name variable in
+          let name = Type.Variable.Variadic.TypeVarTuple.name variable in
           [Format.asprintf format name])
   | InvalidTypeVariance { origin; _ } when concise -> (
       match origin with
@@ -2535,7 +2549,7 @@ let rec messages ~concise ~signature location kind =
       | Annotation, _ ->
           [Format.asprintf "Explicit annotation for `%a` cannot contain `Any`." pp_reference name]
       | TypeVariable, Some (Type.Variable variable)
-        when Type.is_any (Type.Variable.Unary.upper_bound variable) ->
+        when Type.is_any (Type.Variable.TypeVar.upper_bound variable) ->
           [Format.asprintf "Type variable `%a` cannot have `Any` as a bound." pp_reference name]
       | TypeVariable, _ ->
           [
@@ -2758,13 +2772,13 @@ let rec messages ~concise ~signature location kind =
         | ProtocolBase -> "Duplicate type variable `%s` in Protocol[...]."
       in
       match variable with
-      | Type.Variable.Unary { Type.Record.Variable.RecordUnary.variable = name; _ } ->
+      | Type.Variable.Unary { Type.Record.Variable.RecordTypeVar.variable = name; _ } ->
           [Format.asprintf format name]
       | Type.Variable.ParameterVariadic variable ->
-          let name = Type.Variable.Variadic.Parameters.name variable in
+          let name = Type.Variable.Variadic.ParamSpec.name variable in
           [Format.asprintf format name]
       | Type.Variable.TupleVariadic variable ->
-          let name = Type.Variable.Variadic.Tuple.name variable in
+          let name = Type.Variable.Variadic.TypeVarTuple.name variable in
           [Format.asprintf format name])
   | UnboundName name when concise ->
       [Format.asprintf "Name `%a` is used but not defined." Identifier.pp_sanitized name]
@@ -3164,7 +3178,7 @@ let due_to_analysis_limitations { kind; _ } =
       (VariableArgumentsWithUnpackableType
         { mismatch = NotUnpackableType { annotation = actual; _ }; _ })
   | InvalidException { annotation = actual; _ }
-  | InvalidType (InvalidType { annotation = actual; _ })
+  | InvalidType (InvalidTypeAnnotation { annotation = actual; _ })
   | InvalidType (FinalNested actual)
   | NotCallable actual
   | ProhibitedAny { missing_annotation = { given_annotation = Some actual; _ }; _ }
@@ -3527,10 +3541,14 @@ let join ~resolution left right =
             annotation =
               Option.merge ~f:(GlobalResolution.join resolution) left.annotation right.annotation;
           }
-    | ( InvalidType (InvalidType { annotation = left; expected }),
-        InvalidType (InvalidType { annotation = right; _ }) )
+    | ( InvalidType (InvalidTypeAnnotation { annotation = left; expected }),
+        InvalidType (InvalidTypeAnnotation { annotation = right; _ }) )
       when Type.equal left right ->
-        InvalidType (InvalidType { annotation = left; expected })
+        InvalidType (InvalidTypeAnnotation { annotation = left; expected })
+    | ( InvalidType (InvalidTypeAnnotationExpression { annotation = left; expected }),
+        InvalidType (InvalidTypeAnnotationExpression { annotation = right; _ }) )
+      when Expression.equal left right ->
+        InvalidType (InvalidTypeAnnotationExpression { annotation = left; expected })
     | ( InvalidTypeVariable { annotation = left; origin = left_origin },
         InvalidTypeVariable { annotation = right; origin = right_origin } )
       when Type.Variable.equal left right
@@ -4142,7 +4160,7 @@ let dequalify
           AttributeResolution.ViolateConstraints
             {
               actual = dequalify actual;
-              expected = Type.Variable.Unary.dequalify ~dequalify_map expected;
+              expected = Type.Variable.TypeVar.dequalify ~dequalify_map expected;
             }
       | AttributeResolution.UnexpectedKind { actual; expected } ->
           AttributeResolution.UnexpectedKind
@@ -4196,8 +4214,10 @@ let dequalify
     | InvalidExceptionGroupHandler annotation -> InvalidExceptionGroupHandler (dequalify annotation)
     | InvalidMethodSignature ({ annotation; _ } as kind) ->
         InvalidMethodSignature { kind with annotation = annotation >>| dequalify }
-    | InvalidType (InvalidType { annotation; expected }) ->
-        InvalidType (InvalidType { annotation = dequalify annotation; expected })
+    | InvalidType (InvalidTypeAnnotation { annotation; expected }) ->
+        InvalidType (InvalidTypeAnnotation { annotation = dequalify annotation; expected })
+    | InvalidType (InvalidTypeAnnotationExpression details) ->
+        InvalidType (InvalidTypeAnnotationExpression details)
     | InvalidType (FinalNested annotation) -> InvalidType (FinalNested (dequalify annotation))
     | InvalidType (FinalParameter name) -> InvalidType (FinalParameter name)
     | InvalidType (NestedAlias name) -> InvalidType (NestedAlias name)

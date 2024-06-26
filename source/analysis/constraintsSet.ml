@@ -56,7 +56,7 @@ type order = {
     name:Ast.Identifier.t ->
     AnnotatedAttribute.instantiated option;
   is_protocol: Type.t -> protocol_assumptions:ProtocolAssumptions.t -> bool;
-  get_typed_dictionary: Type.t -> Type.t Type.Record.TypedDictionary.record option;
+  get_typed_dictionary: Type.t -> Type.TypedDictionary.t option;
   metaclass: Type.Primitive.t -> assumptions:Assumptions.t -> Type.t option;
   assumptions: Assumptions.t;
 }
@@ -94,7 +94,7 @@ module type OrderedConstraintsSetType = sig
   val get_parameter_specification_possibilities
     :  t ->
     order:order ->
-    parameter_specification:Type.Variable.Variadic.Parameters.t ->
+    parameter_specification:Type.Variable.Variadic.ParamSpec.t ->
     Type.Callable.parameters list
 
   val instantiate_protocol_parameters
@@ -302,8 +302,8 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         | Undefined, Defined _ -> [initial_constraints]
         | ( ParameterVariadicTypeVariable { head = left_head; variable = left_variable },
             ParameterVariadicTypeVariable { head = right_head; variable = right_variable } )
-          when Type.Variable.Variadic.Parameters.is_free left_variable
-               && Type.Variable.Variadic.Parameters.is_free right_variable ->
+          when Type.Variable.Variadic.ParamSpec.is_free left_variable
+               && Type.Variable.Variadic.ParamSpec.is_free right_variable ->
             let add_parameter_specification_bounds constraints =
               constraints
               |> OrderedConstraints.add_upper_bound
@@ -327,11 +327,11 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               ~constraints:initial_constraints
             |> List.concat_map ~f:add_parameter_specification_bounds
         | bound, ParameterVariadicTypeVariable { head = []; variable }
-          when Type.Variable.Variadic.Parameters.is_free variable ->
+          when Type.Variable.Variadic.ParamSpec.is_free variable ->
             let pair = Type.Variable.ParameterVariadicPair (variable, bound) in
             OrderedConstraints.add_upper_bound initial_constraints ~order ~pair |> Option.to_list
         | bound, ParameterVariadicTypeVariable { head; variable }
-          when Type.Variable.Variadic.Parameters.is_free variable ->
+          when Type.Variable.Variadic.ParamSpec.is_free variable ->
             let constraints, remainder =
               match bound with
               | Undefined -> [initial_constraints], Undefined
@@ -449,7 +449,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       ~left
       ~right
     =
-    let open Type.Record.TypedDictionary in
+    let open Type.TypedDictionary in
     let add_fallbacks other =
       Type.Variable.all_free_variables other
       |> List.fold ~init:constraints ~f:OrderedConstraints.add_fallback_to_any
@@ -478,7 +478,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     | _, Type.Top -> [constraints]
     | Type.ParameterVariadicComponent component, _ ->
         let left =
-          match Type.Variable.Variadic.Parameters.Components.component component with
+          match Type.Variable.Variadic.ParamSpec.Components.component component with
           | KeywordArguments ->
               Type.parametric
                 Type.mapping_primitive
@@ -490,8 +490,8 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     | _, Type.ParameterVariadicComponent _ -> impossible
     | Type.Any, other -> [add_fallbacks other]
     | Type.Variable left_variable, Type.Variable right_variable
-      when Type.Variable.Unary.is_free left_variable && Type.Variable.Unary.is_free right_variable
-      ->
+      when Type.Variable.TypeVar.is_free left_variable
+           && Type.Variable.TypeVar.is_free right_variable ->
         (* Either works because constraining V1 to be less or equal to V2 implies that V2 is greater
            than or equal to V1. Therefore either constraint is sufficient, and we should consider
            both. This approach simplifies things downstream for the constraint solver *)
@@ -508,10 +508,10 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
             |> Option.to_list )
         in
         right_greater_than_left @ left_less_than_right
-    | Type.Variable variable, bound when Type.Variable.Unary.is_free variable ->
+    | Type.Variable variable, bound when Type.Variable.TypeVar.is_free variable ->
         let pair = Type.Variable.UnaryPair (variable, bound) in
         OrderedConstraints.add_upper_bound constraints ~order ~pair |> Option.to_list
-    | bound, Type.Variable variable when Type.Variable.Unary.is_free variable ->
+    | bound, Type.Variable variable when Type.Variable.TypeVar.is_free variable ->
         let pair = Type.Variable.UnaryPair (variable, bound) in
         OrderedConstraints.add_lower_bound constraints ~order ~pair |> Option.to_list
     | Type.ReadOnly left, Type.ReadOnly right -> solve_less_or_equal order ~constraints ~left ~right
@@ -584,13 +584,13 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         @ solve_less_or_equal
             order
             ~constraints
-            ~left:(Type.Variable.Unary.upper_bound bound_variable)
+            ~left:(Type.Variable.TypeVar.upper_bound bound_variable)
             ~right
     | Type.Variable bound_variable, _ ->
         solve_less_or_equal
           order
           ~constraints
-          ~left:(Type.Variable.Unary.upper_bound bound_variable)
+          ~left:(Type.Variable.TypeVar.upper_bound bound_variable)
           ~right
     | _, Type.Variable _bound_variable -> impossible
     | _, Type.Union rights ->
@@ -676,7 +676,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                   (* T[_T2] is a subtype of T[Top], for any _T2 and regardless of its variance. *)
                   constraints
               | Top, _, _ -> impossible
-              | left, right, { Type.Variable.Unary.variance = Covariant; _ } ->
+              | left, right, { Type.Variable.TypeVar.variance = Covariant; _ } ->
                   constraints
                   |> List.concat_map ~f:(fun constraints ->
                          solve_less_or_equal order ~constraints ~left ~right)
@@ -730,7 +730,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               not
                 (List.exists
                    left_fields
-                   ~f:([%equal: Type.t Type.Record.TypedDictionary.typed_dictionary_field] field))
+                   ~f:([%equal: Type.TypedDictionary.typed_dictionary_field] field))
             in
             if not (List.exists right_fields ~f:field_not_found) then
               [constraints]
@@ -849,7 +849,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               ( Type.OrderedTypes.Concatenation.extract_sole_variadic concatenation,
                 Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation )
             with
-            | Some variadic, _ when Type.Variable.Variadic.Tuple.is_free variadic ->
+            | Some variadic, _ when Type.Variable.Variadic.TypeVarTuple.is_free variadic ->
                 solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
                 |> List.filter_map
                      ~f:
@@ -870,7 +870,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               ( Type.OrderedTypes.Concatenation.extract_sole_variadic concatenation,
                 Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation )
             with
-            | Some variadic, _ when Type.Variable.Variadic.Tuple.is_free variadic ->
+            | Some variadic, _ when Type.Variable.Variadic.TypeVarTuple.is_free variadic ->
                 solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
                 |> List.filter_map
                      ~f:
@@ -883,7 +883,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               ( Type.OrderedTypes.Concatenation.extract_sole_variadic left_concatenation,
                 Type.OrderedTypes.Concatenation.extract_sole_variadic right_concatenation )
             with
-            | _, Some variadic when Type.Variable.Variadic.Tuple.is_free variadic ->
+            | _, Some variadic when Type.Variable.Variadic.TypeVarTuple.is_free variadic ->
                 solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
                 |> List.filter_map
                      ~f:
@@ -892,7 +892,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                           ~pair:
                             (Type.Variable.TupleVariadicPair
                                (variadic, Concatenation left_concatenation)))
-            | Some variadic, _ when Type.Variable.Variadic.Tuple.is_free variadic ->
+            | Some variadic, _ when Type.Variable.Variadic.TypeVarTuple.is_free variadic ->
                 solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
                 |> List.filter_map
                      ~f:
@@ -1006,10 +1006,10 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                       let visit_children_after = false
 
                       let visit sofar = function
-                        | Type.Variable variable when Type.Variable.Unary.is_free variable ->
+                        | Type.Variable variable when Type.Variable.TypeVar.is_free variable ->
                             let transformed_variable =
-                              Type.Variable.Unary.namespace variable ~namespace
-                              |> Type.Variable.Unary.mark_as_bound
+                              Type.Variable.TypeVar.namespace variable ~namespace
+                              |> Type.Variable.TypeVar.mark_as_bound
                             in
                             {
                               Type.VisitWithTransform.transformed_annotation =

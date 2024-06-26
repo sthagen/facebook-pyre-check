@@ -266,11 +266,11 @@ let type_parameters_as_variables ?(default = None) (module Handler : Handler) = 
   | "type" ->
       (* Despite what typeshed says, typing.Type is covariant:
          https://www.python.org/dev/peps/pep-0484/#the-type-of-class-objects *)
-      Some [Type.Variable.Unary (Type.Variable.Unary.create ~variance:Covariant "_T_meta")]
+      Some [Type.Variable.Unary (Type.Variable.TypeVar.create ~variance:Covariant "_T_meta")]
   | "typing.Callable" ->
       (* This is not the "real" typing.Callable. We are just proxying to the Callable instance in
          the type order here. *)
-      Some [Unary (Type.Variable.Unary.create ~variance:Covariant "_T_meta")]
+      Some [Unary (Type.Variable.TypeVar.create ~variance:Covariant "_T_meta")]
   | primitive_name ->
       parents_and_generic_of_target (module Handler) primitive_name
       >>= List.find ~f:(fun { Target.target; _ } ->
@@ -293,7 +293,7 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~s
       let to_any = function
         | Type.Variable.Unary _ -> [Type.Parameter.Single Type.Any]
         | ParameterVariadic _ -> [CallableParameters Undefined]
-        | TupleVariadic _ -> Type.OrderedTypes.to_parameters Type.Variable.Variadic.Tuple.any
+        | TupleVariadic _ -> Type.OrderedTypes.to_parameters Type.Variable.Variadic.TypeVarTuple.any
       in
       target
       |> parents_and_generic_of_target (module Handler)
@@ -336,7 +336,7 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~s
                           Type.Variable.ParameterVariadicPair (variable, Undefined)
                       | TupleVariadic variadic ->
                           Type.Variable.TupleVariadicPair
-                            (variadic, Type.Variable.Variadic.Tuple.any)
+                            (variadic, Type.Variable.Variadic.TypeVarTuple.any)
                     in
                     Type.Variable.zip_variables_with_parameters ~parameters variables
                     |> Option.value ~default:(List.map ~f:to_any variables)

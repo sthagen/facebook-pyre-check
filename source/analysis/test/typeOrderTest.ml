@@ -421,7 +421,7 @@ let default =
   connect order ~predecessor:"int" ~successor:"float";
   connect order ~predecessor:"float" ~successor:"object";
   let type_builtin = "type" in
-  let type_variable = Type.Variable (Type.Variable.Unary.create "_T") in
+  let type_variable = Type.Variable (Type.Variable.TypeVar.create "_T") in
   insert order type_builtin;
   connect
     order
@@ -1780,7 +1780,7 @@ let test_join _ =
   (* TODO(T41082573) throw here instead of unioning *)
   assert_join "typing.Tuple[int, int]" "typing.Iterator[int]" "typing.Iterator[int]";
 
-  let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
+  let variadic = Type.Variable.Variadic.TypeVarTuple.create "Ts" in
   assert_join
     ~aliases:(fun ?replace_unbound_parameters_with_any:_ name ->
       match name with
@@ -2497,8 +2497,8 @@ let test_meet _ =
     insert order "typing.Generic";
     insert order "str";
     insert order "int";
-    let variable = Type.Variable (Type.Variable.Unary.create "T") in
-    let variable2 = Type.Variable (Type.Variable.Unary.create "T2") in
+    let variable = Type.Variable (Type.Variable.TypeVar.create "T") in
+    let variable2 = Type.Variable (Type.Variable.TypeVar.create "T2") in
     concrete_connect order ~predecessor:"M" ~successor:"typing.Generic" ~parameters:[variable];
     concrete_connect order ~predecessor:"M" ~successor:"A" ~parameters:[variable];
     concrete_connect order ~predecessor:"M" ~successor:"X" ~parameters:[variable];

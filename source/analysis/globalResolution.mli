@@ -70,7 +70,7 @@ val parse_as_parameter_specification_instance_annotation
   :  t ->
   variable_parameter_annotation:Expression.t ->
   keywords_parameter_annotation:Expression.t ->
-  Type.Variable.Variadic.Parameters.t option
+  Type.Variable.Variadic.ParamSpec.t option
 
 val immediate_parents : t -> Type.Primitive.t -> string list
 
@@ -104,11 +104,11 @@ val parse_annotation
 
 val global : t -> Reference.t -> AttributeResolution.Global.t option
 
-val get_typed_dictionary : t -> Type.t -> Type.t Type.Record.TypedDictionary.record option
+val get_typed_dictionary : t -> Type.t -> Type.TypedDictionary.t option
 
 val constraints_solution_exists
   :  t ->
-  get_typed_dictionary_override:(Type.t -> Type.t Type.Record.TypedDictionary.record option) ->
+  get_typed_dictionary_override:(Type.t -> Type.TypedDictionary.t option) ->
   left:Type.t ->
   right:Type.t ->
   bool

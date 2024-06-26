@@ -31,6 +31,17 @@ let dequalify_identifier map identifier =
   Reference.create identifier |> dequalify_reference map |> Reference.show
 
 
+(* Callable parameter names can be qualified, which means the actual identifier values are globally
+   unique and not comparable. Specialize Identifier.t so that `equal` treats names that were the
+   same before qualification as equal. *)
+module QualifiedParameterName = struct
+  type t = Identifier.t [@@deriving compare, sexp, show, hash]
+
+  let sanitized = Identifier.sanitized
+
+  let equal left right = Identifier.equal (sanitized left) (sanitized right)
+end
+
 module Record = struct
   module Variable = struct
     type state =
@@ -55,7 +66,7 @@ module Record = struct
       type t = int [@@deriving compare, eq, sexp, show, hash]
     end
 
-    module RecordUnary = struct
+    module RecordTypeVar = struct
       type 'annotation record = {
         variable: Identifier.t;
         constraints: 'annotation constraints;
@@ -100,7 +111,7 @@ module Record = struct
 
     module RecordVariadic = struct
       (* TODO(T47346673): Handle variance on variadics. *)
-      module RecordParameters = struct
+      module RecordParamSpec = struct
         type 'annotation record = {
           name: Identifier.t;
           variance: variance;
@@ -136,7 +147,7 @@ module Record = struct
           { name; variance; state = Free { escaped = false }; namespace = 1 }
       end
 
-      module Tuple = struct
+      module TypeVarTuple = struct
         type 'annotation record = {
           name: Identifier.t;
           state: state;
@@ -151,9 +162,9 @@ module Record = struct
     end
 
     type 'a record =
-      | Unary of 'a RecordUnary.record
-      | ParameterVariadic of 'a RecordVariadic.RecordParameters.record
-      | TupleVariadic of 'a RecordVariadic.Tuple.record
+      | Unary of 'a RecordTypeVar.record
+      | ParameterVariadic of 'a RecordVariadic.RecordParamSpec.record
+      | TupleVariadic of 'a RecordVariadic.TypeVarTuple.record
     [@@deriving compare, eq, sexp, show, hash]
   end
 
@@ -179,7 +190,7 @@ module Record = struct
 
     module Concatenation = struct
       type 'annotation record_unpackable =
-        | Variadic of 'annotation Variable.RecordVariadic.Tuple.record
+        | Variadic of 'annotation Variable.RecordVariadic.TypeVarTuple.record
         | UnboundedElements of 'annotation
       [@@deriving compare, eq, sexp, show, hash]
 
@@ -213,7 +224,7 @@ module Record = struct
 
       let rec pp_unpackable ~pp_type format = function
         | Variadic variadic ->
-            Format.fprintf format "*%a" Variable.RecordVariadic.Tuple.pp_concise variadic
+            Format.fprintf format "*%a" Variable.RecordVariadic.TypeVarTuple.pp_concise variadic
         | UnboundedElements annotation -> Format.fprintf format "*Tuple[%a, ...]" pp_type annotation
 
 
@@ -250,7 +261,7 @@ module Record = struct
               Expression.Name
                 (create_name
                    ~location
-                   (Format.asprintf "%a" Variable.RecordVariadic.Tuple.pp_concise variadic))
+                   (Format.asprintf "%a" Variable.RecordVariadic.TypeVarTuple.pp_concise variadic))
           | UnboundedElements annotation ->
               subscript
                 ~location
@@ -625,7 +636,7 @@ module Record = struct
   module Callable = struct
     module RecordParameter = struct
       type 'annotation named = {
-        name: Identifier.t;
+        name: QualifiedParameterName.t;
         annotation: 'annotation;
         default: bool;
       }
@@ -647,15 +658,6 @@ module Record = struct
         | Variable of 'annotation variable
         | Keywords of 'annotation
       [@@deriving compare, eq, sexp, show, hash]
-
-      let equal equal_annotation left right =
-        match left, right with
-        | Named left, Named right ->
-            Bool.equal left.default right.default
-            && Identifier.equal (Identifier.sanitized left.name) (Identifier.sanitized right.name)
-            && equal_annotation left.annotation right.annotation
-        | _ -> equal equal_annotation left right
-
 
       let show_concise ~pp_type parameter =
         let print_named ~kind { name; annotation; default } =
@@ -697,7 +699,7 @@ module Record = struct
 
     and 'annotation parameter_variadic_type_variable = {
       head: 'annotation list;
-      variable: 'annotation Variable.RecordVariadic.RecordParameters.record;
+      variable: 'annotation Variable.RecordVariadic.RecordParamSpec.record;
     }
 
     and 'annotation record_parameters =
@@ -716,19 +718,6 @@ module Record = struct
       overloads: 'annotation overload list;
     }
     [@@deriving compare, eq, sexp, show, hash]
-
-    let equal_overload equal_annotation left right =
-      equal_record_parameters equal_annotation left.parameters right.parameters
-      && equal_annotation left.annotation right.annotation
-
-
-    let _ = equal_record (* suppress warning about unused generated version *)
-
-    let equal_record equal_annotation left right =
-      (* Ignores implicit argument to simplify unit tests. *)
-      equal_kind left.kind right.kind
-      && equal_overload equal_annotation left.implementation right.implementation
-      && List.equal (equal_overload equal_annotation) left.overloads right.overloads
   end
 
   module Parameter = struct
@@ -743,21 +732,6 @@ module Record = struct
       | CallableParameters _
       | Unpacked _ ->
           None
-  end
-
-  module TypedDictionary = struct
-    type 'annotation typed_dictionary_field = {
-      name: string;
-      annotation: 'annotation;
-      required: bool;
-    }
-    [@@deriving compare, eq, sexp, show, hash]
-
-    type 'annotation record = {
-      name: Identifier.t;
-      fields: 'annotation typed_dictionary_field list;
-    }
-    [@@deriving compare, eq, sexp, show, hash]
   end
 
   module RecursiveType = struct
@@ -824,7 +798,7 @@ module T = struct
         parameters: t Record.Parameter.record list;
       }
     | ParameterVariadicComponent of
-        Record.Variable.RecordVariadic.RecordParameters.RecordComponents.t
+        Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents.t
     | Primitive of Primitive.t
     | ReadOnly of t
     | RecursiveType of t Record.RecursiveType.record
@@ -832,7 +806,7 @@ module T = struct
     | Tuple of t Record.OrderedTypes.record
     | TypeOperation of t Record.TypeOperation.record
     | Union of t list
-    | Variable of t Record.Variable.RecordUnary.record
+    | Variable of t Record.Variable.RecordTypeVar.record
   [@@deriving compare, eq, sexp, show, hash]
 end
 
@@ -968,7 +942,7 @@ module Constructors = struct
 
 
   let variable ?constraints ?variance name =
-    Variable (Record.Variable.RecordUnary.create ?constraints ?variance name)
+    Variable (Record.Variable.RecordTypeVar.create ?constraints ?variance name)
 
 
   let yield parameter = Parametric { name = "Yield"; parameters = [Single parameter] }
@@ -1604,14 +1578,6 @@ module PrettyPrinting = struct
           parameters
 
 
-  let pp_typed_dictionary_field
-      ~pp_type
-      format
-      { Record.TypedDictionary.name; annotation; required }
-    =
-    Format.fprintf format "%s%s: %a" name (if required then "" else "?") pp_type annotation
-
-
   let rec pp format annotation =
     let pp_ordered_type ordered_type =
       match ordered_type with
@@ -1656,7 +1622,7 @@ module PrettyPrinting = struct
         let name = Canonicalization.reverse_substitute name in
         Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
     | ParameterVariadicComponent component ->
-        Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
+        Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents.pp_concise format component
     | Primitive name -> Format.fprintf format "%s" name
     | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
     | RecursiveType { name; body } -> Format.fprintf format "%s (resolves to %a)" name pp body
@@ -1672,7 +1638,7 @@ module PrettyPrinting = struct
           format
           "typing.Union[%s]"
           (List.map parameters ~f:show |> String.concat ~sep:", ")
-    | Variable unary -> Record.Variable.RecordUnary.pp_concise format unary ~pp_type:pp
+    | Variable unary -> Record.Variable.RecordTypeVar.pp_concise format unary ~pp_type:pp
 
 
   and show annotation = Format.asprintf "%a" pp annotation
@@ -1740,7 +1706,7 @@ module PrettyPrinting = struct
         let name = strip_qualification (Canonicalization.reverse_substitute name) in
         Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
     | ParameterVariadicComponent component ->
-        Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
+        Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents.pp_concise format component
     | Primitive "..." -> Format.fprintf format "..."
     | Primitive name -> Format.fprintf format "%s" (strip_qualification name)
     | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
@@ -1899,7 +1865,7 @@ module Callable = struct
           match parameter with
           | KeywordOnly { name = parameter_name; _ }
           | Named { name = parameter_name; _ }
-            when Identifier.equal parameter_name name ->
+            when QualifiedParameterName.equal parameter_name name ->
               Some parameter
           | _ -> None
         in
@@ -2403,221 +2369,7 @@ module Alias = struct
   [@@deriving compare, eq, sexp, show, hash]
 end
 
-module Variable : sig
-  module Namespace : sig
-    include module type of struct
-      include Record.Variable.RecordNamespace
-    end
-
-    val reset : unit -> unit
-
-    val create_fresh : unit -> t
-  end
-
-  type unary_t = T.t Record.Variable.RecordUnary.record [@@deriving compare, eq, sexp, show, hash]
-
-  type unary_domain = T.t [@@deriving compare, eq, sexp, show, hash]
-
-  type parameter_variadic_t = T.t Record.Variable.RecordVariadic.RecordParameters.record
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
-
-  type tuple_variadic_t = T.t Record.Variable.RecordVariadic.Tuple.record
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type tuple_variadic_domain = T.t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
-
-  type pair =
-    | UnaryPair of unary_t * unary_domain
-    | ParameterVariadicPair of parameter_variadic_t * parameter_variadic_domain
-    | TupleVariadicPair of tuple_variadic_t * tuple_variadic_domain
-  [@@deriving compare, eq, sexp, show, hash]
-
-  type t = T.t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
-
-  type variable_t = t
-
-  module type VariableKind = sig
-    type t [@@deriving compare, eq, sexp, show, hash]
-
-    module Map : Core.Map.S with type Key.t = t
-
-    val is_free : t -> bool
-
-    val is_escaped_and_free : t -> bool
-
-    val mark_as_bound : t -> t
-
-    val mark_as_escaped : t -> t
-
-    val mark_as_free : t -> t
-
-    val namespace : t -> namespace:Namespace.t -> t
-
-    val dequalify : t -> dequalify_map:Reference.t Reference.Map.t -> t
-
-    type domain [@@deriving compare, eq, sexp, show, hash]
-
-    val any : domain
-
-    (* The value in the domain directly corresponding to the variable, i.e. the replacement that
-       would leave a type unchanged *)
-    val self_reference : t -> domain
-
-    val pair : t -> domain -> pair
-  end
-
-  module Unary : sig
-    include module type of struct
-      include Record.Variable.RecordUnary
-    end
-
-    include VariableKind with type t = unary_t and type domain = T.t
-
-    val create
-      :  ?constraints:T.t Record.Variable.constraints ->
-      ?variance:Record.Variable.variance ->
-      string ->
-      t
-
-    val is_contravariant : t -> bool
-
-    val is_covariant : t -> bool
-
-    val upper_bound : t -> T.t
-
-    val is_escaped_and_free : t -> bool
-
-    val contains_subvariable : t -> bool
-  end
-
-  module Variadic : sig
-    module Parameters : sig
-      include VariableKind with type t = parameter_variadic_t and type domain = Callable.parameters
-
-      val name : t -> Identifier.t
-
-      val create : ?variance:Record.Variable.variance -> string -> t
-
-      val parse_instance_annotation
-        :  create_type:
-             (aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
-             Expression.t ->
-             T.t) ->
-        variable_parameter_annotation:Expression.t ->
-        keywords_parameter_annotation:Expression.t ->
-        aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
-        t option
-
-      module Components : sig
-        include module type of struct
-          include Record.Variable.RecordVariadic.RecordParameters.RecordComponents
-        end
-
-        type decomposition = {
-          positional_component: T.t;
-          keyword_component: T.t;
-        }
-
-        val combine : decomposition -> parameter_variadic_t option
-
-        val component : t -> component
-      end
-
-      val decompose : t -> Components.decomposition
-    end
-
-    module Tuple : sig
-      include VariableKind with type t = tuple_variadic_t and type domain = tuple_variadic_domain
-
-      val name : t -> Identifier.t
-
-      val create : string -> t
-
-      val synthetic_class_name_for_error : string
-    end
-  end
-
-  module GlobalTransforms : sig
-    module type S = sig
-      type t
-
-      type domain
-
-      val replace_all : (t -> domain option) -> T.t -> T.t
-
-      val collect_all : T.t -> t list
-    end
-
-    module Unary : S with type t = unary_t and type domain = T.t
-
-    module ParameterVariadic :
-      S with type t = parameter_variadic_t and type domain = Callable.parameters
-
-    module TupleVariadic :
-      S with type t = tuple_variadic_t and type domain = T.t OrderedTypes.record
-  end
-
-  include module type of struct
-    include Record.Variable
-  end
-
-  module Set : Core.Set.S with type Elt.t = t
-
-  type variable_zip_result = {
-    variable_pair: pair;
-    received_parameter: Parameter.t;
-  }
-  [@@deriving compare, eq, sexp, show, hash]
-
-  val pp_concise : Format.formatter -> t -> unit
-
-  val parse_declaration : Expression.t -> target:Reference.t -> t option
-
-  val dequalify : Reference.t Reference.Map.t -> t -> t
-
-  val namespace : t -> namespace:Namespace.t -> t
-
-  val mark_all_variables_as_bound : ?specific:t list -> T.t -> T.t
-
-  val mark_all_variables_as_free : ?specific:t list -> T.t -> T.t
-
-  val mark_as_bound : t -> t
-
-  val namespace_all_free_variables : T.t -> namespace:Namespace.t -> T.t
-
-  val all_free_variables : T.t -> t list
-
-  val all_variables_are_resolved : T.t -> bool
-
-  val mark_all_free_variables_as_escaped : ?specific:t list -> T.t -> T.t
-
-  val collapse_all_escaped_variable_unions : T.t -> T.t
-
-  val contains_escaped_free_variable : T.t -> bool
-
-  val convert_all_escaped_free_variables_to_anys : T.t -> T.t
-
-  val converge_all_variable_namespaces : T.t -> T.t
-
-  val zip_variables_with_parameters : parameters:Parameter.t list -> t list -> pair list option
-
-  val zip_variables_with_parameters_including_mismatches
-    :  parameters:Parameter.t list ->
-    t list ->
-    variable_zip_result list option
-
-  val zip_variables_with_two_parameter_lists
-    :  left_parameters:Parameter.t list ->
-    right_parameters:Parameter.t list ->
-    t list ->
-    (pair * pair) list option
-
-  val all_unary : t list -> Unary.t list option
-
-  val to_parameter : t -> Parameter.t
-end = struct
+module Variable = struct
   open T
 
   module Namespace = struct
@@ -2633,16 +2385,16 @@ end = struct
       namespace
   end
 
-  type unary_t = T.t Record.Variable.RecordUnary.record [@@deriving compare, eq, sexp, show, hash]
+  type unary_t = T.t Record.Variable.RecordTypeVar.record [@@deriving compare, eq, sexp, show, hash]
 
   type unary_domain = T.t [@@deriving compare, eq, sexp, show, hash]
 
-  type parameter_variadic_t = T.t Record.Variable.RecordVariadic.RecordParameters.record
+  type parameter_variadic_t = T.t Record.Variable.RecordVariadic.RecordParamSpec.record
   [@@deriving compare, eq, sexp, show, hash]
 
   type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
 
-  type tuple_variadic_t = T.t Record.Variable.RecordVariadic.Tuple.record
+  type tuple_variadic_t = T.t Record.Variable.RecordVariadic.TypeVarTuple.record
   [@@deriving compare, eq, sexp, show, hash]
 
   type tuple_variadic_domain = T.t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
@@ -2681,8 +2433,8 @@ end = struct
     val pair : t -> domain -> pair
   end
 
-  module Unary = struct
-    include Record.Variable.RecordUnary
+  module TypeVar = struct
+    include Record.Variable.RecordTypeVar
 
     type t = T.t record [@@deriving compare, eq, sexp, show, hash]
 
@@ -2785,8 +2537,8 @@ end = struct
   end
 
   module Variadic = struct
-    module Parameters = struct
-      include Record.Variable.RecordVariadic.RecordParameters
+    module ParamSpec = struct
+      include Record.Variable.RecordVariadic.RecordParamSpec
 
       type t = T.t record [@@deriving compare, eq, sexp, show, hash]
 
@@ -2941,7 +2693,7 @@ end = struct
           | Some (Alias.VariableAlias (ParameterVariadic variable)) -> Some variable
           | _ -> None
         in
-        let open Record.Variable.RecordVariadic.RecordParameters.RecordComponents in
+        let open Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents in
         match variable_parameter_annotation, keywords_parameter_annotation with
         | ( {
               Node.value =
@@ -2972,7 +2724,7 @@ end = struct
 
 
       module Components = struct
-        include Record.Variable.RecordVariadic.RecordParameters.RecordComponents
+        include Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents
 
         type decomposition = {
           positional_component: T.t;
@@ -3012,8 +2764,8 @@ end = struct
         }
     end
 
-    module Tuple = struct
-      include Record.Variable.RecordVariadic.Tuple
+    module TypeVarTuple = struct
+      include Record.Variable.RecordVariadic.TypeVarTuple
 
       type t = T.t record [@@deriving compare, eq, sexp, show, hash]
 
@@ -3232,7 +2984,7 @@ end = struct
     module type VariableKind = sig
       include VariableKind
 
-      (* We don't want these to be part of the public interface for Unary or Variadic.Parameters *)
+      (* We don't want these to be part of the public interface for Unary or Variadic.ParamSpec *)
       val local_replace : (t -> domain option) -> T.t -> T.t option
 
       val local_collect : T.t -> t list
@@ -3347,9 +3099,9 @@ end = struct
       val collect_all : T.t -> t list
     end
 
-    module Unary = Make (Unary)
-    module ParameterVariadic = Make (Variadic.Parameters)
-    module TupleVariadic = Make (Variadic.Tuple)
+    module TypeVar = Make (TypeVar)
+    module ParamSpec = Make (Variadic.ParamSpec)
+    module TypeVarTuple = Make (Variadic.TypeVarTuple)
   end
 
   type t = T.t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
@@ -3369,37 +3121,38 @@ end = struct
   [@@deriving compare, eq, sexp, show, hash]
 
   let pp_concise format = function
-    | Unary variable -> Unary.pp_concise format variable ~pp_type:PrettyPrinting.pp
+    | Unary variable -> TypeVar.pp_concise format variable ~pp_type:PrettyPrinting.pp
     | ParameterVariadic { name; _ } ->
         Format.fprintf format "CallableParameterTypeVariable[%s]" name
     | TupleVariadic { name; _ } -> Format.fprintf format "TypeVarTuple[%s]" name
 
 
   let parse_declaration expression ~target =
-    match Variadic.Parameters.parse_declaration expression ~target with
+    match Variadic.ParamSpec.parse_declaration expression ~target with
     | Some variable -> Some (ParameterVariadic variable)
     | None -> (
-        match Variadic.Tuple.parse_declaration expression ~target with
+        match Variadic.TypeVarTuple.parse_declaration expression ~target with
         | Some variable -> Some (TupleVariadic variable)
         | None -> (
-            match Unary.parse_declaration expression target with
+            match TypeVar.parse_declaration expression target with
             | Some variable -> Some (Record.Variable.Unary variable)
             | None -> None))
 
 
   let dequalify dequalify_map = function
-    | Unary variable -> Unary (Unary.dequalify variable ~dequalify_map)
+    | Unary variable -> Unary (TypeVar.dequalify variable ~dequalify_map)
     | ParameterVariadic variable ->
-        ParameterVariadic (Variadic.Parameters.dequalify variable ~dequalify_map)
-    | TupleVariadic variable -> TupleVariadic (Variadic.Tuple.dequalify variable ~dequalify_map)
+        ParameterVariadic (Variadic.ParamSpec.dequalify variable ~dequalify_map)
+    | TupleVariadic variable ->
+        TupleVariadic (Variadic.TypeVarTuple.dequalify variable ~dequalify_map)
 
 
   let namespace variable ~namespace =
     match variable with
-    | Unary variable -> Unary (Unary.namespace variable ~namespace)
+    | Unary variable -> Unary (TypeVar.namespace variable ~namespace)
     | ParameterVariadic variable ->
-        ParameterVariadic (Variadic.Parameters.namespace variable ~namespace)
-    | TupleVariadic variable -> TupleVariadic (Variadic.Tuple.namespace variable ~namespace)
+        ParameterVariadic (Variadic.ParamSpec.namespace variable ~namespace)
+    | TupleVariadic variable -> TupleVariadic (Variadic.TypeVarTuple.namespace variable ~namespace)
 
 
   let partition =
@@ -3417,17 +3170,16 @@ end = struct
       | None -> None, None, None
       | Some (unaries, parameters, tuples) -> Some unaries, Some parameters, Some tuples
     in
-    GlobalTransforms.Unary.mark_all_as_bound ?specific:specific_unaries annotation
-    |> GlobalTransforms.ParameterVariadic.mark_all_as_bound ?specific:specific_parameters_variadics
-    |> GlobalTransforms.TupleVariadic.mark_all_as_bound ?specific:specific_tuple_variadics
+    GlobalTransforms.TypeVar.mark_all_as_bound ?specific:specific_unaries annotation
+    |> GlobalTransforms.ParamSpec.mark_all_as_bound ?specific:specific_parameters_variadics
+    |> GlobalTransforms.TypeVarTuple.mark_all_as_bound ?specific:specific_tuple_variadics
 
 
   let mark_as_bound = function
-    | Unary variable -> Unary (GlobalTransforms.Unary.mark_as_bound variable)
+    | Unary variable -> Unary (GlobalTransforms.TypeVar.mark_as_bound variable)
     | ParameterVariadic variable ->
-        ParameterVariadic (GlobalTransforms.ParameterVariadic.mark_as_bound variable)
-    | TupleVariadic variable ->
-        TupleVariadic (GlobalTransforms.TupleVariadic.mark_as_bound variable)
+        ParameterVariadic (GlobalTransforms.ParamSpec.mark_as_bound variable)
+    | TupleVariadic variable -> TupleVariadic (GlobalTransforms.TypeVarTuple.mark_as_bound variable)
 
 
   let mark_all_variables_as_free ?specific annotation =
@@ -3436,28 +3188,28 @@ end = struct
       | None -> None, None, None
       | Some (unaries, parameters, tuples) -> Some unaries, Some parameters, Some tuples
     in
-    GlobalTransforms.Unary.mark_all_as_free ?specific:specific_unaries annotation
-    |> GlobalTransforms.ParameterVariadic.mark_all_as_free ?specific:specific_parameters_variadics
-    |> GlobalTransforms.TupleVariadic.mark_all_as_free ?specific:specific_tuple_variadics
+    GlobalTransforms.TypeVar.mark_all_as_free ?specific:specific_unaries annotation
+    |> GlobalTransforms.ParamSpec.mark_all_as_free ?specific:specific_parameters_variadics
+    |> GlobalTransforms.TypeVarTuple.mark_all_as_free ?specific:specific_tuple_variadics
 
 
   let namespace_all_free_variables annotation ~namespace =
-    GlobalTransforms.Unary.namespace_all_free_variables annotation ~namespace
-    |> GlobalTransforms.ParameterVariadic.namespace_all_free_variables ~namespace
-    |> GlobalTransforms.TupleVariadic.namespace_all_free_variables ~namespace
+    GlobalTransforms.TypeVar.namespace_all_free_variables annotation ~namespace
+    |> GlobalTransforms.ParamSpec.namespace_all_free_variables ~namespace
+    |> GlobalTransforms.TypeVarTuple.namespace_all_free_variables ~namespace
 
 
   let all_free_variables annotation =
     let unaries =
-      GlobalTransforms.Unary.all_free_variables annotation
+      GlobalTransforms.TypeVar.all_free_variables annotation
       |> List.map ~f:(fun variable -> Unary variable)
     in
     let callable_variadics =
-      GlobalTransforms.ParameterVariadic.all_free_variables annotation
+      GlobalTransforms.ParamSpec.all_free_variables annotation
       |> List.map ~f:(fun variable -> ParameterVariadic variable)
     in
     let tuple_variadics =
-      GlobalTransforms.TupleVariadic.all_free_variables annotation
+      GlobalTransforms.TypeVarTuple.all_free_variables annotation
       |> List.map ~f:(fun variable -> TupleVariadic variable)
     in
     unaries @ callable_variadics @ tuple_variadics
@@ -3475,14 +3227,14 @@ end = struct
     let specific_unaries, specific_parameters_variadics, specific_tuple_variadics =
       partition variables
     in
-    GlobalTransforms.Unary.mark_as_escaped
+    GlobalTransforms.TypeVar.mark_as_escaped
       annotation
       ~variables:specific_unaries
       ~namespace:fresh_namespace
-    |> GlobalTransforms.ParameterVariadic.mark_as_escaped
+    |> GlobalTransforms.ParamSpec.mark_as_escaped
          ~variables:specific_parameters_variadics
          ~namespace:fresh_namespace
-    |> GlobalTransforms.TupleVariadic.mark_as_escaped
+    |> GlobalTransforms.TypeVarTuple.mark_as_escaped
          ~variables:specific_tuple_variadics
          ~namespace:fresh_namespace
 
@@ -3500,7 +3252,7 @@ end = struct
           match annotation with
           | Union parameters ->
               let not_escaped_free_variable = function
-                | Variable variable -> not (Unary.is_escaped_and_free variable)
+                | Variable variable -> not (TypeVar.is_escaped_and_free variable)
                 | _ -> true
               in
               List.filter parameters ~f:not_escaped_free_variable |> Constructors.union
@@ -3513,21 +3265,21 @@ end = struct
 
 
   let contains_escaped_free_variable annotation =
-    GlobalTransforms.Unary.contains_escaped_free_variable annotation
-    || GlobalTransforms.ParameterVariadic.contains_escaped_free_variable annotation
-    || GlobalTransforms.TupleVariadic.contains_escaped_free_variable annotation
+    GlobalTransforms.TypeVar.contains_escaped_free_variable annotation
+    || GlobalTransforms.ParamSpec.contains_escaped_free_variable annotation
+    || GlobalTransforms.TypeVarTuple.contains_escaped_free_variable annotation
 
 
   let convert_all_escaped_free_variables_to_anys annotation =
-    GlobalTransforms.Unary.convert_all_escaped_free_variables_to_anys annotation
-    |> GlobalTransforms.ParameterVariadic.convert_all_escaped_free_variables_to_anys
-    |> GlobalTransforms.TupleVariadic.convert_all_escaped_free_variables_to_anys
+    GlobalTransforms.TypeVar.convert_all_escaped_free_variables_to_anys annotation
+    |> GlobalTransforms.ParamSpec.convert_all_escaped_free_variables_to_anys
+    |> GlobalTransforms.TypeVarTuple.convert_all_escaped_free_variables_to_anys
 
 
   let converge_all_variable_namespaces annotation =
-    GlobalTransforms.Unary.converge_all_variable_namespaces annotation
-    |> GlobalTransforms.ParameterVariadic.converge_all_variable_namespaces
-    |> GlobalTransforms.TupleVariadic.converge_all_variable_namespaces
+    GlobalTransforms.TypeVar.converge_all_variable_namespaces annotation
+    |> GlobalTransforms.ParamSpec.converge_all_variable_namespaces
+    |> GlobalTransforms.TypeVarTuple.converge_all_variable_namespaces
 
 
   let coalesce_if_all_single parameters =
@@ -3546,12 +3298,12 @@ end = struct
       | Unary unary, Parameter.Single annotation -> UnaryPair (unary, annotation)
       | ParameterVariadic parameter_variadic, CallableParameters callable_parameters ->
           ParameterVariadicPair (parameter_variadic, callable_parameters)
-      | Unary unary, _ -> UnaryPair (unary, Unary.any)
+      | Unary unary, _ -> UnaryPair (unary, TypeVar.any)
       | ParameterVariadic parameter_variadic, _ ->
-          ParameterVariadicPair (parameter_variadic, Variadic.Parameters.any)
+          ParameterVariadicPair (parameter_variadic, Variadic.ParamSpec.any)
       | TupleVariadic tuple_variadic, _ ->
           (* We should not hit this case at all. *)
-          TupleVariadicPair (tuple_variadic, Variadic.Tuple.any)
+          TupleVariadicPair (tuple_variadic, Variadic.TypeVarTuple.any)
     in
     { variable_pair; received_parameter }
 
@@ -3589,11 +3341,11 @@ end = struct
                 |> Option.value
                      ~default:
                        {
-                         variable_pair = TupleVariadicPair (variadic, Variadic.Tuple.any);
+                         variable_pair = TupleVariadicPair (variadic, Variadic.TypeVarTuple.any);
                          received_parameter =
                            Single
                              (Constructors.parametric
-                                Variadic.Tuple.synthetic_class_name_for_error
+                                Variadic.TypeVarTuple.synthetic_class_name_for_error
                                 parameters_middle);
                        }
               in
@@ -3660,9 +3412,9 @@ end = struct
 
 
   let to_parameter = function
-    | Unary variable -> Parameter.Single (Unary.self_reference variable)
+    | Unary variable -> Parameter.Single (TypeVar.self_reference variable)
     | ParameterVariadic variable ->
-        Parameter.CallableParameters (Variadic.Parameters.self_reference variable)
+        Parameter.CallableParameters (Variadic.ParamSpec.self_reference variable)
     | TupleVariadic variadic -> Parameter.Unpacked (Variadic variadic)
 end
 
@@ -3826,7 +3578,7 @@ module ToExpression = struct
         subscript (Canonicalization.reverse_substitute name) parameters
     | ParameterVariadicComponent { component; variable_name; _ } ->
         let attribute =
-          Record.Variable.RecordVariadic.RecordParameters.RecordComponents.component_name component
+          Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents.component_name component
         in
         Expression.Name
           (Attribute { base = expression (Primitive variable_name); attribute; special = false })
@@ -3855,8 +3607,20 @@ module ToExpression = struct
 end
 
 module TypedDictionary = struct
+  type typed_dictionary_field = {
+    name: string;
+    annotation: T.t;
+    required: bool;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
+
+  type t = {
+    name: Identifier.t;
+    fields: typed_dictionary_field list;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
+
   open T
-  open Record.TypedDictionary
 
   let anonymous fields = { name = "$anonymous"; fields }
 
@@ -3880,7 +3644,7 @@ module TypedDictionary = struct
     { name; annotation; required }
 
 
-  let are_fields_total = List.for_all ~f:(fun { Record.TypedDictionary.required; _ } -> required)
+  let are_fields_total = List.for_all ~f:(fun { required; _ } -> required)
 
   let same_name { name = left_name; required = _; _ } { name = right_name; required = _; _ } =
     String.equal left_name right_name
@@ -3983,7 +3747,7 @@ module TypedDictionary = struct
   type special_method = {
     name: string;
     special_index: int option;
-    overloads: t typed_dictionary_field list -> t Callable.overload list;
+    overloads: typed_dictionary_field list -> t Callable.overload list;
   }
 
   let key_parameter name =
@@ -4024,7 +3788,7 @@ module TypedDictionary = struct
             parameters = Defined [self_parameter class_name; key_parameter name];
           };
           {
-            annotation = Union [annotation; Variable (Variable.Unary.create "_T")];
+            annotation = Union [annotation; Variable (Variable.TypeVar.create "_T")];
             parameters =
               Defined
                 [
@@ -4033,7 +3797,7 @@ module TypedDictionary = struct
                   Named
                     {
                       name = "default";
-                      annotation = Variable (Variable.Unary.create "_T");
+                      annotation = Variable (Variable.TypeVar.create "_T");
                       default = false;
                     };
                 ];
@@ -4097,7 +3861,7 @@ module TypedDictionary = struct
               parameters = Defined [self_parameter class_name; key_parameter name];
             };
             {
-              annotation = Union [annotation; Variable (Variable.Unary.create "_T")];
+              annotation = Union [annotation; Variable (Variable.TypeVar.create "_T")];
               parameters =
                 Defined
                   [
@@ -4106,7 +3870,7 @@ module TypedDictionary = struct
                     Named
                       {
                         name = "default";
-                        annotation = Variable (Variable.Unary.create "_T");
+                        annotation = Variable (Variable.TypeVar.create "_T");
                         default = false;
                       };
                   ];
@@ -4982,12 +4746,12 @@ let resolve_aliases ~aliases annotation =
                     | Variable _ as variable -> variable
                     | alias ->
                         alias
-                        |> Variable.GlobalTransforms.Unary.replace_all (fun _ ->
-                               Some Variable.Unary.any)
-                        |> Variable.GlobalTransforms.ParameterVariadic.replace_all (fun _ ->
-                               Some Variable.Variadic.Parameters.any)
-                        |> Variable.GlobalTransforms.TupleVariadic.replace_all (fun _ ->
-                               Some Variable.Variadic.Tuple.any)
+                        |> Variable.GlobalTransforms.TypeVar.replace_all (fun _ ->
+                               Some Variable.TypeVar.any)
+                        |> Variable.GlobalTransforms.ParamSpec.replace_all (fun _ ->
+                               Some Variable.Variadic.ParamSpec.any)
+                        |> Variable.GlobalTransforms.TypeVarTuple.replace_all (fun _ ->
+                               Some Variable.Variadic.TypeVarTuple.any)
                   in
                   mark_recursive_alias_as_visited alias;
                   alias
@@ -5012,14 +4776,13 @@ let resolve_aliases ~aliases annotation =
                 match variable_pairs with
                 | Some variable_pairs ->
                     uninstantiated_alias_annotation
-                    |> Variable.GlobalTransforms.Unary.replace_all (fun given_variable ->
+                    |> Variable.GlobalTransforms.TypeVar.replace_all (fun given_variable ->
                            List.find_map variable_pairs ~f:(function
                                | UnaryPair (variable, replacement)
                                  when [%equal: Variable.unary_t] variable given_variable ->
                                    Some replacement
                                | _ -> None))
-                    |> Variable.GlobalTransforms.ParameterVariadic.replace_all
-                         (fun given_variable ->
+                    |> Variable.GlobalTransforms.ParamSpec.replace_all (fun given_variable ->
                            List.find_map variable_pairs ~f:(function
                                | ParameterVariadicPair (variable, replacement)
                                  when [%equal: Variable.parameter_variadic_t]
@@ -5027,7 +4790,7 @@ let resolve_aliases ~aliases annotation =
                                         given_variable ->
                                    Some replacement
                                | _ -> None))
-                    |> Variable.GlobalTransforms.TupleVariadic.replace_all (fun given_variable ->
+                    |> Variable.GlobalTransforms.TypeVarTuple.replace_all (fun given_variable ->
                            List.find_map variable_pairs ~f:(function
                                | TupleVariadicPair (variable, replacement)
                                  when [%equal: Variable.tuple_variadic_t] variable given_variable ->
@@ -5235,7 +4998,7 @@ let class_data_for_attribute_lookup type_ =
       (* Variables return their upper bound because we need to take the least informative type in
          their interval. Otherwise, we might access an attribute that doesn't exist on the actual
          type. *)
-      | Variable variable -> Variable.Unary.upper_bound variable
+      | Variable variable -> Variable.TypeVar.upper_bound variable
       | _ -> original_type
     in
     match type_ with

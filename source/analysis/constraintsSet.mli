@@ -25,7 +25,7 @@ type order = {
     name:Ast.Identifier.t ->
     AnnotatedAttribute.instantiated option;
   is_protocol: Type.t -> protocol_assumptions:ProtocolAssumptions.t -> bool;
-  get_typed_dictionary: Type.t -> Type.t Type.Record.TypedDictionary.record option;
+  get_typed_dictionary: Type.t -> Type.TypedDictionary.t option;
   metaclass: Type.Primitive.t -> assumptions:Assumptions.t -> Type.t option;
   assumptions: Assumptions.t;
 }
@@ -47,7 +47,7 @@ module Solution : sig
 
   val instantiate : t -> Type.t -> Type.t
 
-  val instantiate_single_variable : t -> Type.Variable.Unary.t -> Type.t option
+  val instantiate_single_variable : t -> Type.Variable.TypeVar.t -> Type.t option
 
   (* For testing *)
   val create : Type.Variable.pair list -> t
@@ -74,7 +74,7 @@ module type OrderedConstraintsSetType = sig
   val get_parameter_specification_possibilities
     :  t ->
     order:order ->
-    parameter_specification:Type.Variable.Variadic.Parameters.t ->
+    parameter_specification:Type.Variable.Variadic.ParamSpec.t ->
     Type.Callable.parameters list
 
   (* Only exposed for testing *)

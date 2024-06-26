@@ -356,42 +356,42 @@ let make_assert_functions context =
     let parse_annotation = parse_annotation ~do_prep in
     let leave_unbound_in_left = List.map leave_unbound_in_left ~f:(fun a -> "test." ^ a) in
     let left =
-      let mark_unary ({ Type.Variable.Unary.variable = name; _ } as variable) =
+      let mark_unary ({ Type.Variable.TypeVar.variable = name; _ } as variable) =
         if List.mem leave_unbound_in_left name ~equal:Identifier.equal then
           None
         else
-          Some (Type.Variable (Type.Variable.Unary.mark_as_bound variable))
+          Some (Type.Variable (Type.Variable.TypeVar.mark_as_bound variable))
       in
       let mark_parameter_variadic variable =
         if
           List.mem
             leave_unbound_in_left
-            (Type.Variable.Variadic.Parameters.name variable)
+            (Type.Variable.Variadic.ParamSpec.name variable)
             ~equal:Identifier.equal
         then
           None
         else
           Some
             (Type.Callable.ParameterVariadicTypeVariable
-               { head = []; variable = Type.Variable.Variadic.Parameters.mark_as_bound variable })
+               { head = []; variable = Type.Variable.Variadic.ParamSpec.mark_as_bound variable })
       in
       let mark_tuple_variadic variable =
         if
           List.mem
             leave_unbound_in_left
-            (Type.Variable.Variadic.Tuple.name variable)
+            (Type.Variable.Variadic.TypeVarTuple.name variable)
             ~equal:Identifier.equal
         then
           None
         else
           Some
-            (Type.Variable.Variadic.Tuple.self_reference
-               (Type.Variable.Variadic.Tuple.mark_as_bound variable))
+            (Type.Variable.Variadic.TypeVarTuple.self_reference
+               (Type.Variable.Variadic.TypeVarTuple.mark_as_bound variable))
       in
       parse_annotation left
-      |> Type.Variable.GlobalTransforms.Unary.replace_all mark_unary
-      |> Type.Variable.GlobalTransforms.ParameterVariadic.replace_all mark_parameter_variadic
-      |> Type.Variable.GlobalTransforms.TupleVariadic.replace_all mark_tuple_variadic
+      |> Type.Variable.GlobalTransforms.TypeVar.replace_all mark_unary
+      |> Type.Variable.GlobalTransforms.ParamSpec.replace_all mark_parameter_variadic
+      |> Type.Variable.GlobalTransforms.TypeVarTuple.replace_all mark_tuple_variadic
     in
     let right = parse_annotation right in
     assert_less_or_equal_direct ~left ~right ~do_prep
@@ -947,9 +947,8 @@ let test_add_constraint context =
     ~expected_solutions:[]
     ();
 
-  let { Type.Variable.Variadic.Parameters.Components.positional_component; keyword_component } =
-    Type.Variable.Variadic.Parameters.create "TParams"
-    |> Type.Variable.Variadic.Parameters.decompose
+  let { Type.Variable.Variadic.ParamSpec.Components.positional_component; keyword_component } =
+    Type.Variable.Variadic.ParamSpec.create "TParams" |> Type.Variable.Variadic.ParamSpec.decompose
   in
 
   assert_less_or_equal_direct
@@ -1194,8 +1193,8 @@ let test_add_constraint_type_variable_tuple context =
     ~right:"typing.Tuple[int, bool, typing.Unpack[Ts2], bool, str]"
     ~expected_solutions:[]
     ();
-  let variadic = Type.Variable.Variadic.Tuple.create "test.Ts" in
-  let variadic2 = Type.Variable.Variadic.Tuple.create "test.Ts2" in
+  let variadic = Type.Variable.Variadic.TypeVarTuple.create "test.Ts" in
+  let variadic2 = Type.Variable.Variadic.TypeVarTuple.create "test.Ts2" in
   assert_less_or_equal_direct
     ~left:
       (Type.Tuple

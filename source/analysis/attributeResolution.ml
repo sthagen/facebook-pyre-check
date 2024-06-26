@@ -66,7 +66,7 @@ module Queries = struct
       variable_parameter_annotation:Ast.Expression.t ->
       keywords_parameter_annotation:Ast.Expression.t ->
       unit ->
-      Type.Variable.Variadic.Parameters.t option;
+      Type.Variable.Variadic.ParamSpec.t option;
     class_hierarchy: unit -> (module ClassHierarchy.Handler);
     variables:
       ?default:Type.Variable.t list option -> Type.Primitive.t -> Type.Variable.t list option;
@@ -302,7 +302,7 @@ module TypeParameterValidationTypes = struct
       }
     | ViolateConstraints of {
         actual: Type.t;
-        expected: Type.Variable.Unary.t;
+        expected: Type.Variable.TypeVar.t;
       }
     | UnexpectedKind of {
         actual: Type.Parameter.t;
@@ -701,8 +701,8 @@ module SignatureSelection = struct
                 _;
               };
           ] )
-        when Type.Variable.Unary.is_free parameter_variable
-             && Type.Variable.Unary.is_free return_variable ->
+        when Type.Variable.TypeVar.is_free parameter_variable
+             && Type.Variable.TypeVar.is_free return_variable ->
           Some (annotation, parameter_variable, return_variable, lambda_parameter, lambda_body)
       | _ -> None
     in
@@ -789,7 +789,7 @@ module SignatureSelection = struct
                           item_type_for_error = Type.OrderedTypes.union_upper_bound ordered_type;
                         }
                   | _, _ -> (
-                      let synthetic_variable = Type.Variable.Unary.create "$_T" in
+                      let synthetic_variable = Type.Variable.TypeVar.create "$_T" in
                       let generic_iterable_type =
                         Type.iterable (Type.Variable synthetic_variable)
                       in
@@ -1015,7 +1015,7 @@ module SignatureSelection = struct
                 match kind with
                 | DoubleStar ->
                     let create_error error = InvalidKeywordArgument error in
-                    let synthetic_variable = Type.Variable.Unary.create "$_T" in
+                    let synthetic_variable = Type.Variable.TypeVar.create "$_T" in
                     let generic_iterable_type =
                       Type.parametric
                         "typing.Mapping"
@@ -1080,7 +1080,7 @@ module SignatureSelection = struct
                     | Some signature_match_for_single_element -> signature_match_for_single_element
                     | None ->
                         let create_error error = InvalidVariableArgument error in
-                        let synthetic_variable = Type.Variable.Unary.create "$_T" in
+                        let synthetic_variable = Type.Variable.TypeVar.create "$_T" in
                         let generic_iterable_type =
                           Type.iterable (Type.Variable synthetic_variable)
                         in
@@ -1302,7 +1302,7 @@ module SignatureSelection = struct
         |> fun signature_match -> [signature_match]
     | Undefined -> [base_signature_match]
     | ParameterVariadicTypeVariable { head; variable }
-      when Type.Variable.Variadic.Parameters.is_free variable -> (
+      when Type.Variable.Variadic.ParamSpec.is_free variable -> (
         (* Handle callables where an early parameter binds a ParamSpec and later parameters expect
            the corresponding arguments.
 
@@ -1378,9 +1378,9 @@ module SignatureSelection = struct
            `**kwargs` that have "type" `P.args` and `P.kwargs` respectively. If the ParamSpec has a
            `head` prefix of parameters, check for any prefix arguments. *)
         let combines_into_variable ~positional_component ~keyword_component =
-          Type.Variable.Variadic.Parameters.Components.combine
+          Type.Variable.Variadic.ParamSpec.Components.combine
             { positional_component; keyword_component }
-          >>| Type.Variable.Variadic.Parameters.equal variable
+          >>| Type.Variable.Variadic.ParamSpec.equal variable
           |> Option.value ~default:false
         in
         match List.rev arguments with
@@ -2202,7 +2202,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             | Type.Callable callable -> Type.TypedDictionary.fields_from_constructor callable
             | _ -> None
           in
-          fields >>| fun fields -> { Type.Record.TypedDictionary.fields; name = class_name }
+          fields >>| fun fields -> { Type.TypedDictionary.fields; name = class_name }
       | _ -> None
 
     method full_order ~assumptions =
@@ -2301,11 +2301,11 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               | "typing.Final"
               | "typing_extensions.Final"
               | "typing.Optional" ->
-                  [Type.Variable.Unary (Type.Variable.Unary.create "T")]
+                  [Type.Variable.Unary (Type.Variable.TypeVar.create "T")]
               | "typing.Callable" ->
                   [
-                    Type.Variable.ParameterVariadic (Type.Variable.Variadic.Parameters.create "Ps");
-                    Type.Variable.Unary (Type.Variable.Unary.create "R");
+                    Type.Variable.ParameterVariadic (Type.Variable.Variadic.ParamSpec.create "Ps");
+                    Type.Variable.Unary (Type.Variable.TypeVar.create "R");
                   ]
               | _ -> variables name |> Option.value ~default:[]
             in
@@ -2411,7 +2411,8 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                                 | Type.Variable.Unary _ -> [Type.Parameter.Single Type.Any]
                                 | ParameterVariadic _ -> [CallableParameters Undefined]
                                 | TupleVariadic _ ->
-                                    Type.OrderedTypes.to_parameters Type.Variable.Variadic.Tuple.any))
+                                    Type.OrderedTypes.to_parameters
+                                      Type.Variable.Variadic.TypeVarTuple.any))
                         in
                         ( annotation,
                           List.filter generics ~f:(fun x -> not (is_tuple_variadic x))
@@ -2671,9 +2672,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           | _ -> None
         in
         let keep_last_declarations fields =
-          List.map
-            fields
-            ~f:(fun (field : Type.t Type.Record.TypedDictionary.typed_dictionary_field) ->
+          List.map fields ~f:(fun (field : Type.TypedDictionary.typed_dictionary_field) ->
               field.name, field)
           |> Map.of_alist_multi (module String)
           |> Map.to_alist
@@ -3169,7 +3168,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                 in
                 let synthetic =
                   Type.Variable
-                    (Type.Variable.Unary.create "$synthetic_attribute_resolution_variable")
+                    (Type.Variable.TypeVar.create "$synthetic_attribute_resolution_variable")
                 in
                 match name with
                 (* This can't be expressed without IntVars, StrVars, and corresponding TypeVarTuple
@@ -3340,7 +3339,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                   | Found { selected_return_annotation = return } -> Some return
                 in
                 let invert_dunder_set (descriptor, callable) ~order =
-                  let synthetic = Type.Variable.Unary.create "$synthetic_dunder_set_variable" in
+                  let synthetic = Type.Variable.TypeVar.create "$synthetic_dunder_set_variable" in
                   let right =
                     Type.Callable.create
                       ~annotation:Type.none

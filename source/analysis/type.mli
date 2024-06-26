@@ -29,7 +29,7 @@ module Record : sig
       | Invariant
     [@@deriving compare, eq, sexp, show, hash]
 
-    module RecordUnary : sig
+    module RecordTypeVar : sig
       type 'annotation record = {
         variable: Identifier.t;
         constraints: 'annotation constraints;
@@ -41,7 +41,7 @@ module Record : sig
     end
 
     module RecordVariadic : sig
-      module RecordParameters : sig
+      module RecordParamSpec : sig
         type 'annotation record [@@deriving compare, eq, sexp, show, hash]
 
         module RecordComponents : sig
@@ -49,15 +49,15 @@ module Record : sig
         end
       end
 
-      module Tuple : sig
+      module TypeVarTuple : sig
         type 'annotation record [@@deriving compare, eq, sexp, show, hash]
       end
     end
 
     type 'a record =
-      | Unary of 'a RecordUnary.record
-      | ParameterVariadic of 'a RecordVariadic.RecordParameters.record
-      | TupleVariadic of 'a RecordVariadic.Tuple.record
+      | Unary of 'a RecordTypeVar.record
+      | ParameterVariadic of 'a RecordVariadic.RecordParamSpec.record
+      | TupleVariadic of 'a RecordVariadic.TypeVarTuple.record
     [@@deriving compare, eq, sexp, show, hash]
   end
 
@@ -74,14 +74,14 @@ module Record : sig
         unit
 
       val create_unpackable
-        :  'annotation Variable.RecordVariadic.Tuple.record ->
+        :  'annotation Variable.RecordVariadic.TypeVarTuple.record ->
         'annotation record_unpackable
 
       val create_unbounded_unpackable : 'annotation -> 'annotation record_unpackable
 
       val extract_sole_variadic
         :  'annotation t ->
-        'annotation Variable.RecordVariadic.Tuple.record option
+        'annotation Variable.RecordVariadic.TypeVarTuple.record option
 
       val extract_sole_unbounded_annotation : 'annotation t -> 'annotation option
 
@@ -96,7 +96,7 @@ module Record : sig
       val create
         :  ?prefix:'annotation list ->
         ?suffix:'annotation list ->
-        'annotation Variable.RecordVariadic.Tuple.record ->
+        'annotation Variable.RecordVariadic.TypeVarTuple.record ->
         'annotation t
 
       val create_from_unbounded_element
@@ -170,7 +170,7 @@ module Record : sig
 
     and 'annotation parameter_variadic_type_variable = {
       head: 'annotation list;
-      variable: 'annotation Variable.RecordVariadic.RecordParameters.record;
+      variable: 'annotation Variable.RecordVariadic.RecordParamSpec.record;
     }
 
     and 'annotation record_parameters =
@@ -197,21 +197,6 @@ module Record : sig
       | Single of 'annotation
       | CallableParameters of 'annotation Callable.record_parameters
       | Unpacked of 'annotation OrderedTypes.Concatenation.record_unpackable
-  end
-
-  module TypedDictionary : sig
-    type 'annotation typed_dictionary_field = {
-      name: string;
-      annotation: 'annotation;
-      required: bool;
-    }
-    [@@deriving compare, eq, sexp, show, hash]
-
-    type 'annotation record = {
-      name: Identifier.t;
-      fields: 'annotation typed_dictionary_field list;
-    }
-    [@@deriving compare, eq, sexp, show, hash]
   end
 
   module RecursiveType : sig
@@ -265,7 +250,7 @@ and t =
       name: Identifier.t;
       parameters: t Record.Parameter.record list;
     }
-  | ParameterVariadicComponent of Record.Variable.RecordVariadic.RecordParameters.RecordComponents.t
+  | ParameterVariadicComponent of Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents.t
   | Primitive of Primitive.t
   | ReadOnly of t
   | RecursiveType of t Record.RecursiveType.record
@@ -273,7 +258,7 @@ and t =
   | Tuple of t Record.OrderedTypes.record
   | TypeOperation of t Record.TypeOperation.record
   | Union of t list
-  | Variable of t Record.Variable.RecordUnary.record
+  | Variable of t Record.Variable.RecordTypeVar.record
 [@@deriving compare, eq, sexp, show, hash]
 
 type type_t = t [@@deriving compare, eq, sexp, show]
@@ -295,12 +280,6 @@ module Parameter : sig
 
   val to_variable : t -> type_t Record.Variable.record option
 end
-
-val pp_typed_dictionary_field
-  :  pp_type:(Format.formatter -> type_t -> unit) ->
-  Format.formatter ->
-  t Record.TypedDictionary.typed_dictionary_field ->
-  unit
 
 val pp_concise : Format.formatter -> t -> unit
 
@@ -717,17 +696,17 @@ module Variable : sig
     val create_fresh : unit -> t
   end
 
-  type unary_t = type_t Record.Variable.RecordUnary.record
+  type unary_t = type_t Record.Variable.RecordTypeVar.record
   [@@deriving compare, eq, sexp, show, hash]
 
   type unary_domain = type_t [@@deriving compare, eq, sexp, show, hash]
 
-  type parameter_variadic_t = type_t Record.Variable.RecordVariadic.RecordParameters.record
+  type parameter_variadic_t = type_t Record.Variable.RecordVariadic.RecordParamSpec.record
   [@@deriving compare, eq, sexp, show, hash]
 
   type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
 
-  type tuple_variadic_t = type_t Record.Variable.RecordVariadic.Tuple.record
+  type tuple_variadic_t = type_t Record.Variable.RecordVariadic.TypeVarTuple.record
   [@@deriving compare, eq, sexp, show, hash]
 
   type tuple_variadic_domain = type_t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
@@ -772,9 +751,9 @@ module Variable : sig
     val pair : t -> domain -> pair
   end
 
-  module Unary : sig
+  module TypeVar : sig
     include module type of struct
-      include Record.Variable.RecordUnary
+      include Record.Variable.RecordTypeVar
     end
 
     include VariableKind with type t = unary_t and type domain = type_t
@@ -797,7 +776,7 @@ module Variable : sig
   end
 
   module Variadic : sig
-    module Parameters : sig
+    module ParamSpec : sig
       include VariableKind with type t = parameter_variadic_t and type domain = Callable.parameters
 
       val name : t -> Identifier.t
@@ -816,7 +795,7 @@ module Variable : sig
 
       module Components : sig
         include module type of struct
-          include Record.Variable.RecordVariadic.RecordParameters.RecordComponents
+          include Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents
         end
 
         type component =
@@ -836,7 +815,7 @@ module Variable : sig
       val decompose : t -> Components.decomposition
     end
 
-    module Tuple : sig
+    module TypeVarTuple : sig
       include VariableKind with type t = tuple_variadic_t and type domain = tuple_variadic_domain
 
       val name : t -> Identifier.t
@@ -858,12 +837,11 @@ module Variable : sig
       val collect_all : type_t -> t list
     end
 
-    module Unary : S with type t = unary_t and type domain = type_t
+    module TypeVar : S with type t = unary_t and type domain = type_t
 
-    module ParameterVariadic :
-      S with type t = parameter_variadic_t and type domain = Callable.parameters
+    module ParamSpec : S with type t = parameter_variadic_t and type domain = Callable.parameters
 
-    module TupleVariadic :
+    module TypeVarTuple :
       S with type t = tuple_variadic_t and type domain = type_t OrderedTypes.record
   end
 
@@ -920,7 +898,7 @@ module Variable : sig
     t list ->
     (pair * pair) list option
 
-  val all_unary : t list -> Unary.t list option
+  val all_unary : t list -> TypeVar.t list option
 
   val to_parameter : t -> Parameter.t
 end
@@ -936,43 +914,51 @@ val variable
 val is_concrete : t -> bool
 
 module TypedDictionary : sig
-  open Record.TypedDictionary
+  type typed_dictionary_field = {
+    name: string;
+    annotation: type_t;
+    required: bool;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
 
-  val base_typed_dictionary : t
+  type t = {
+    name: Identifier.t;
+    fields: typed_dictionary_field list;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
 
-  val anonymous : t typed_dictionary_field list -> t record
+  val base_typed_dictionary : type_t
+
+  val anonymous : typed_dictionary_field list -> t
 
   val create_field
-    :  annotation:t ->
+    :  annotation:type_t ->
     has_non_total_typed_dictionary_base_class:bool ->
     string ->
-    t typed_dictionary_field
+    typed_dictionary_field
 
-  val are_fields_total : t typed_dictionary_field list -> bool
+  val are_fields_total : typed_dictionary_field list -> bool
 
-  val same_name : t typed_dictionary_field -> t typed_dictionary_field -> bool
+  val same_name : typed_dictionary_field -> typed_dictionary_field -> bool
 
-  val same_name_different_requiredness
-    :  t typed_dictionary_field ->
-    t typed_dictionary_field ->
-    bool
+  val same_name_different_requiredness : typed_dictionary_field -> typed_dictionary_field -> bool
 
-  val same_name_different_annotation : t typed_dictionary_field -> t typed_dictionary_field -> bool
+  val same_name_different_annotation : typed_dictionary_field -> typed_dictionary_field -> bool
 
   val fields_have_colliding_keys
-    :  t typed_dictionary_field list ->
-    t typed_dictionary_field list ->
+    :  typed_dictionary_field list ->
+    typed_dictionary_field list ->
     bool
 
-  val constructor : name:Identifier.t -> fields:t typed_dictionary_field list -> Callable.t
+  val constructor : name:Identifier.t -> fields:typed_dictionary_field list -> Callable.t
 
-  val fields_from_constructor : Callable.t -> t typed_dictionary_field list option
+  val fields_from_constructor : Callable.t -> typed_dictionary_field list option
 
   val special_overloads
     :  class_name:Primitive.t ->
-    fields:t typed_dictionary_field list ->
+    fields:typed_dictionary_field list ->
     method_name:string ->
-    t Callable.overload list option
+    type_t Callable.overload list option
 
   val is_special_mismatch
     :  class_name:Primitive.t ->

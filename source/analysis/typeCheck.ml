@@ -179,7 +179,7 @@ let errors_from_not_found
                 ~mismatch
                 ~method_name
                 ~position
-                { Type.Record.TypedDictionary.fields; name = typed_dictionary_name }
+                { Type.TypedDictionary.fields; name = typed_dictionary_name }
               =
               if
                 Type.TypedDictionary.is_special_mismatch
@@ -192,7 +192,7 @@ let errors_from_not_found
                 | Type.Literal (Type.String (Type.LiteralValue field_name)) ->
                     let required_field_exists =
                       List.exists
-                        ~f:(fun { Type.Record.TypedDictionary.name; required; _ } ->
+                        ~f:(fun { Type.TypedDictionary.name; required; _ } ->
                           String.equal name field_name && required)
                         fields
                     in
@@ -585,9 +585,9 @@ module State (Context : Context) = struct
             ~location
             ~kind:
               (Error.InvalidType
-                 (InvalidType
+                 (InvalidTypeAnnotationExpression
                     {
-                      annotation = Type.Primitive (Expression.show expression);
+                      annotation = expression;
                       expected = "`Callable[[<parameters>], <return type>]`";
                     }))
       | Type.Callable
@@ -602,9 +602,9 @@ module State (Context : Context) = struct
             ~location
             ~kind:
               (Error.InvalidType
-                 (InvalidType
+                 (InvalidTypeAnnotationExpression
                     {
-                      annotation = Type.Primitive (Expression.show expression);
+                      annotation = expression;
                       expected =
                         "`Callable[[<parameters>], <return type>]` or `Callable[..., <return \
                          type>]`";
@@ -615,9 +615,9 @@ module State (Context : Context) = struct
             ~location
             ~kind:
               (Error.InvalidType
-                 (InvalidType
+                 (InvalidTypeAnnotationExpression
                     {
-                      annotation = Type.Primitive (Expression.show expression);
+                      annotation = expression;
                       expected = "annotation other than ... for return type";
                     }))
       | Type.Tuple (Concrete types) when List.find ~f:Type.is_ellipsis types |> Option.is_some ->
@@ -626,9 +626,9 @@ module State (Context : Context) = struct
             ~location
             ~kind:
               (Error.InvalidType
-                 (InvalidType
+                 (InvalidTypeAnnotationExpression
                     {
-                      annotation = Type.Primitive (Expression.show expression);
+                      annotation = expression;
                       expected =
                         "a list of concrete type parameters, or an unbounded tuple type like \
                          tuple[int, ...]";
@@ -639,8 +639,7 @@ module State (Context : Context) = struct
             ~location
             ~kind:
               (Error.InvalidType
-                 (InvalidType
-                    { annotation = Type.Primitive (Expression.show expression); expected = "" }))
+                 (InvalidTypeAnnotationExpression { annotation = expression; expected = "" }))
       | _ -> []
     in
     let errors, annotation =
@@ -1206,7 +1205,7 @@ module State (Context : Context) = struct
                   >>| fun callable -> known_callable_before_application callable)
               |> Option.all
           | Type.Variable ({ constraints = Type.Variable.Explicit _; _ } as explicit) ->
-              let upper_bound = Type.Variable.Unary.upper_bound explicit in
+              let upper_bound = Type.Variable.TypeVar.upper_bound explicit in
               let callee =
                 match callee with
                 | Callee.Attribute { attribute; base; expression } ->
@@ -4201,7 +4200,7 @@ module State (Context : Context) = struct
     in
     let add_type_variable_errors errors =
       match parsed with
-      | Variable variable when Type.Variable.Unary.contains_subvariable variable ->
+      | Variable variable when Type.Variable.TypeVar.contains_subvariable variable ->
           emit_error
             ~errors
             ~location
@@ -5471,7 +5470,8 @@ module State (Context : Context) = struct
         emit_error
           ~errors
           ~location
-          ~kind:(Error.InvalidType (InvalidType { annotation; expected = "an Enum member" })))
+          ~kind:
+            (Error.InvalidType (InvalidTypeAnnotation { annotation; expected = "an Enum member" })))
 
 
   let forward_statement ~resolution ~statement:{ Node.location; value } =
@@ -5719,8 +5719,8 @@ module State (Context : Context) = struct
           in
           let check_pair errors extended actual =
             match extended, actual with
-            | ( Type.Variable { Type.Record.Variable.RecordUnary.variance = left; _ },
-                Type.Variable { Type.Record.Variable.RecordUnary.variance = right; _ } ) -> (
+            | ( Type.Variable { Type.Record.Variable.RecordTypeVar.variance = left; _ },
+                Type.Variable { Type.Record.Variable.RecordTypeVar.variance = right; _ } ) -> (
                 match left, right with
                 | Type.Variable.Covariant, Type.Variable.Invariant
                 | Type.Variable.Contravariant, Type.Variable.Invariant
@@ -6034,7 +6034,7 @@ module State (Context : Context) = struct
       in
       let add_variance_error ~errors annotation =
         match annotation with
-        | Type.Variable variable when Type.Variable.Unary.is_contravariant variable ->
+        | Type.Variable variable when Type.Variable.TypeVar.is_contravariant variable ->
             emit_error
               ~errors
               ~location
@@ -6205,7 +6205,7 @@ module State (Context : Context) = struct
         let add_variance_error errors annotation =
           match annotation with
           | Type.Variable variable
-            when (not (Define.is_constructor define)) && Type.Variable.Unary.is_covariant variable
+            when (not (Define.is_constructor define)) && Type.Variable.TypeVar.is_covariant variable
             ->
               emit_error
                 ~errors
@@ -6429,7 +6429,7 @@ module State (Context : Context) = struct
           | Some variable ->
               let add_annotations_to_resolution
                   {
-                    Type.Variable.Variadic.Parameters.Components.positional_component;
+                    Type.Variable.Variadic.ParamSpec.Components.positional_component;
                     keyword_component;
                   }
                 =
@@ -6444,8 +6444,8 @@ module State (Context : Context) = struct
               if Resolution.type_variable_exists resolution ~variable:(ParameterVariadic variable)
               then
                 let new_resolution =
-                  Type.Variable.Variadic.Parameters.mark_as_bound variable
-                  |> Type.Variable.Variadic.Parameters.decompose
+                  Type.Variable.Variadic.ParamSpec.mark_as_bound variable
+                  |> Type.Variable.Variadic.ParamSpec.decompose
                   |> add_annotations_to_resolution
                 in
                 List.rev reversed_head
@@ -6529,7 +6529,7 @@ module State (Context : Context) = struct
         in
         let errors = List.fold ~init:errors ~f:check_base bases in
         if is_current_class_typed_dictionary then
-          let open Type.Record.TypedDictionary in
+          let open Type.TypedDictionary in
           let superclass_pairs_with_same_field_name =
             let field_name_to_successor_fields_map =
               let get_typed_dictionary_fields class_name =
@@ -7461,7 +7461,6 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
         let attributes = ClassSummary.attributes ~include_generated_attributes:true class_summary in
 
         let override_errors_for_typed_dictionary class_name =
-          let open Type.Record.TypedDictionary in
           let get_typed_dictionary_fields class_name =
             GlobalResolution.get_typed_dictionary global_resolution (Type.Primitive class_name)
             >>| (fun typed_dictionary -> typed_dictionary.fields)
@@ -7470,20 +7469,20 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
           let field_name_to_successor_fields_map =
             let get_successor_map_entries successor_name =
               get_typed_dictionary_fields successor_name
-              |> List.map ~f:(fun (field : Type.t typed_dictionary_field) ->
+              |> List.map ~f:(fun (field : Type.TypedDictionary.typed_dictionary_field) ->
                      field.name, (successor_name, field))
             in
             GlobalResolution.successors global_resolution class_name
             |> List.concat_map ~f:get_successor_map_entries
             |> Map.of_alist_multi (module String)
           in
-          let colliding_successor_fields (field : Type.t typed_dictionary_field) =
+          let colliding_successor_fields (field : Type.TypedDictionary.typed_dictionary_field) =
             let matching_successors =
               Map.find_multi field_name_to_successor_fields_map field.name
             in
             let is_inherited_field =
               List.exists matching_successors ~f:(fun (_, successor_field) ->
-                  [%equal: Type.t typed_dictionary_field] field successor_field)
+                  [%equal: Type.TypedDictionary.typed_dictionary_field] field successor_field)
             in
             if is_inherited_field then
               []
@@ -7495,7 +7494,8 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
             get_typed_dictionary_fields class_name |> List.concat_map ~f:colliding_successor_fields
           in
           let create_override_error
-              ((field : Type.t typed_dictionary_field), (successor_name, successor_field))
+              ( (field : Type.TypedDictionary.typed_dictionary_field),
+                (successor_name, successor_field) )
             =
             let kind =
               Error.InconsistentOverride
@@ -7507,7 +7507,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                     Error.WeakenedPostcondition
                       {
                         actual = field.annotation;
-                        expected = successor_field.annotation;
+                        expected = successor_field.Type.TypedDictionary.annotation;
                         due_to_invariance = false;
                       };
                 }

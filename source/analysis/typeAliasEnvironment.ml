@@ -49,7 +49,7 @@ module IncomingDataComputation = struct
           unparsed
       with
       | Type.Variable variable ->
-          if Type.Variable.Unary.contains_subvariable variable then
+          if Type.Variable.TypeVar.contains_subvariable variable then
             Type.Any
           else
             Type.Variable { variable with variable = Reference.show target }
@@ -305,7 +305,7 @@ module OutgoingDataComputation = struct
     let variable_parameter_annotation, keywords_parameter_annotation =
       delocalize variable_parameter_annotation, delocalize keywords_parameter_annotation
     in
-    Type.Variable.Variadic.Parameters.parse_instance_annotation
+    Type.Variable.Variadic.ParamSpec.parse_instance_annotation
       ~create_type:Type.create
       ~aliases:(fun ?replace_unbound_parameters_with_any:_ name -> get_type_alias name)
       ~variable_parameter_annotation
