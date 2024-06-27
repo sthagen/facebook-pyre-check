@@ -12,7 +12,7 @@ module Record : sig
   module Variable : sig
     type state [@@deriving compare, eq, sexp, show, hash]
 
-    module RecordNamespace : sig
+    module Namespace : sig
       type t [@@deriving compare, eq, sexp, show, hash]
     end
 
@@ -29,35 +29,33 @@ module Record : sig
       | Invariant
     [@@deriving compare, eq, sexp, show, hash]
 
-    module RecordTypeVar : sig
+    module TypeVar : sig
       type 'annotation record = {
         variable: Identifier.t;
         constraints: 'annotation constraints;
         variance: variance;
         state: state;
-        namespace: RecordNamespace.t;
+        namespace: Namespace.t;
       }
       [@@deriving compare, eq, sexp, show, hash]
     end
 
-    module RecordVariadic : sig
-      module RecordParamSpec : sig
-        type 'annotation record [@@deriving compare, eq, sexp, show, hash]
+    module ParamSpec : sig
+      type 'annotation record [@@deriving compare, eq, sexp, show, hash]
 
-        module RecordComponents : sig
-          type t [@@deriving compare, eq, sexp, show, hash]
-        end
-      end
-
-      module TypeVarTuple : sig
-        type 'annotation record [@@deriving compare, eq, sexp, show, hash]
+      module Components : sig
+        type t [@@deriving compare, eq, sexp, show, hash]
       end
     end
 
+    module TypeVarTuple : sig
+      type 'annotation record [@@deriving compare, eq, sexp, show, hash]
+    end
+
     type 'a record =
-      | Unary of 'a RecordTypeVar.record
-      | ParameterVariadic of 'a RecordVariadic.RecordParamSpec.record
-      | TupleVariadic of 'a RecordVariadic.TypeVarTuple.record
+      | TypeVarVariable of 'a TypeVar.record
+      | ParamSpecVariable of 'a ParamSpec.record
+      | TypeVarTupleVariable of 'a TypeVarTuple.record
     [@@deriving compare, eq, sexp, show, hash]
   end
 
@@ -67,25 +65,11 @@ module Record : sig
 
       type 'annotation t [@@deriving compare, eq, sexp, show, hash]
 
-      val pp_unpackable
-        :  pp_type:(Format.formatter -> 'annotation -> unit) ->
-        Format.formatter ->
-        'annotation record_unpackable ->
-        unit
-
       val create_unpackable
-        :  'annotation Variable.RecordVariadic.TypeVarTuple.record ->
+        :  'annotation Variable.TypeVarTuple.record ->
         'annotation record_unpackable
 
       val create_unbounded_unpackable : 'annotation -> 'annotation record_unpackable
-
-      val extract_sole_variadic
-        :  'annotation t ->
-        'annotation Variable.RecordVariadic.TypeVarTuple.record option
-
-      val extract_sole_unbounded_annotation : 'annotation t -> 'annotation option
-
-      val is_fully_unbounded : 'annotation t -> bool
 
       val create_from_unpackable
         :  ?prefix:'annotation list ->
@@ -96,7 +80,7 @@ module Record : sig
       val create
         :  ?prefix:'annotation list ->
         ?suffix:'annotation list ->
-        'annotation Variable.RecordVariadic.TypeVarTuple.record ->
+        'annotation Variable.TypeVarTuple.record ->
         'annotation t
 
       val create_from_unbounded_element
@@ -111,33 +95,11 @@ module Record : sig
       | Concatenation of 'annotation Concatenation.t
     [@@deriving compare, eq, sexp, show, hash]
 
-    type 'annotation ordered_type_split = {
-      prefix_pairs: ('annotation * 'annotation) list;
-      middle_pair: 'annotation record * 'annotation record;
-      suffix_pairs: ('annotation * 'annotation) list;
-    }
-    [@@deriving compare, eq, sexp, show, hash]
-
     val create_unbounded_concatenation : 'annotation -> 'annotation record
-
-    val pp_concise
-      :  Format.formatter ->
-      'a record ->
-      pp_type:(Format.formatter -> 'a -> unit) ->
-      unit
-
-    val split_matching_elements_by_length
-      :  'annotation record ->
-      'annotation record ->
-      'annotation ordered_type_split option
-
-    val drop_prefix : length:int -> 'annotation record -> 'annotation record option
-
-    val index : python_index:int -> 'annotation record -> 'annotation option
   end
 
   module Callable : sig
-    module RecordParameter : sig
+    module CallableParamType : sig
       type 'annotation named = {
         name: Identifier.t;
         annotation: 'annotation;
@@ -168,15 +130,15 @@ module Record : sig
       | Anonymous
       | Named of Reference.t
 
-    and 'annotation parameter_variadic_type_variable = {
+    and 'annotation params_from_param_spec = {
       head: 'annotation list;
-      variable: 'annotation Variable.RecordVariadic.RecordParamSpec.record;
+      variable: 'annotation Variable.ParamSpec.record;
     }
 
     and 'annotation record_parameters =
-      | Defined of 'annotation RecordParameter.t list
+      | Defined of 'annotation CallableParamType.t list
       | Undefined
-      | ParameterVariadicTypeVariable of 'annotation parameter_variadic_type_variable
+      | FromParamSpec of 'annotation params_from_param_spec
 
     and 'annotation overload = {
       annotation: 'annotation;
@@ -250,7 +212,7 @@ and t =
       name: Identifier.t;
       parameters: t Record.Parameter.record list;
     }
-  | ParameterVariadicComponent of Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents.t
+  | ParamSpecComponent of Record.Variable.ParamSpec.Components.t
   | Primitive of Primitive.t
   | ReadOnly of t
   | RecursiveType of t Record.RecursiveType.record
@@ -258,7 +220,7 @@ and t =
   | Tuple of t Record.OrderedTypes.record
   | TypeOperation of t Record.TypeOperation.record
   | Union of t list
-  | Variable of t Record.Variable.RecordTypeVar.record
+  | Variable of t Record.Variable.TypeVar.record
 [@@deriving compare, eq, sexp, show, hash]
 
 type type_t = t [@@deriving compare, eq, sexp, show]
@@ -279,15 +241,11 @@ module Parameter : sig
   val all_singles : t list -> type_t list option
 
   val to_variable : t -> type_t Record.Variable.record option
+
+  val pp_list : Format.formatter -> t list -> unit
 end
 
 val pp_concise : Format.formatter -> t -> unit
-
-val pp_parameters
-  :  pp_type:(Format.formatter -> type_t -> unit) ->
-  Format.formatter ->
-  Parameter.t list ->
-  unit
 
 val show_concise : t -> string
 
@@ -406,9 +364,13 @@ module Alias : sig
 end
 
 module Callable : sig
-  module Parameter : sig
+  include module type of struct
+    include Record.Callable
+  end
+
+  module CallableParamType : sig
     include module type of struct
-      include Record.Callable.RecordParameter
+      include Record.Callable.CallableParamType
     end
 
     val show_concise : type_t t -> string
@@ -418,7 +380,7 @@ module Callable : sig
     module Map : Core.Map.S with type Key.t = parameter
 
     (** Used to indicate * when passing in a list of parameters and creating a callable *)
-    val dummy_star_parameter : type_t Record.Callable.RecordParameter.named
+    val dummy_star_parameter : type_t Record.Callable.CallableParamType.named
 
     val create : 'annotation named list -> 'annotation t list
 
@@ -432,17 +394,13 @@ module Callable : sig
       [ `Both of 'a t * 'b t | `Left of 'a t | `Right of 'b t ] list
   end
 
-  include module type of struct
-    include Record.Callable
-  end
-
   type t = type_t Record.Callable.record [@@deriving compare, eq, sexp, show, hash]
 
   type parameters = type_t Record.Callable.record_parameters
   [@@deriving compare, eq, sexp, show, hash]
 
   module Overload : sig
-    val parameters : type_t overload -> Parameter.parameter list option
+    val parameters : type_t overload -> CallableParamType.parameter list option
 
     val return_annotation : type_t overload -> type_t
 
@@ -478,8 +436,8 @@ module Callable : sig
 
   val prepend_anonymous_parameters
     :  head:type_t list ->
-    tail:type_t Parameter.t list ->
-    type_t Parameter.t list
+    tail:type_t CallableParamType.t list ->
+    type_t CallableParamType.t list
 
   val name : t -> Reference.t option
 end
@@ -640,6 +598,22 @@ module OrderedTypes : sig
     include Record.OrderedTypes
   end
 
+  module Concatenation : sig
+    include module type of struct
+      include Record.OrderedTypes.Concatenation
+    end
+
+    val pp_unpackable : Format.formatter -> type_t record_unpackable -> unit
+
+    val extract_sole_variadic
+      :  'annotation t ->
+      'annotation Record.Variable.TypeVarTuple.record option
+
+    val extract_sole_unbounded_annotation : 'annotation t -> 'annotation option
+
+    val is_fully_unbounded : 'annotation t -> bool
+  end
+
   type t = type_t record [@@deriving compare, eq, sexp, show, hash]
 
   type ordered_types_t = t
@@ -664,6 +638,22 @@ module OrderedTypes : sig
     type_t Concatenation.t option
 
   val coalesce_ordered_types : type_t record list -> type_t record option
+
+  type 'annotation ordered_type_split = {
+    prefix_pairs: ('annotation * 'annotation) list;
+    middle_pair: 'annotation record * 'annotation record;
+    suffix_pairs: ('annotation * 'annotation) list;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
+
+  val split_matching_elements_by_length
+    :  'annotation record ->
+    'annotation record ->
+    'annotation ordered_type_split option
+
+  val drop_prefix : length:int -> 'annotation record -> 'annotation record option
+
+  val index : python_index:int -> 'annotation record -> 'annotation option
 end
 
 val split : t -> t * Parameter.t list
@@ -686,9 +676,13 @@ val dequalify_identifier : Reference.t Reference.Map.t -> Identifier.t -> Identi
 val dequalify_reference : Reference.t Reference.Map.t -> Reference.t -> Reference.t
 
 module Variable : sig
+  include module type of struct
+    include Record.Variable
+  end
+
   module Namespace : sig
     include module type of struct
-      include Record.Variable.RecordNamespace
+      include Record.Variable.Namespace
     end
 
     val reset : unit -> unit
@@ -696,25 +690,24 @@ module Variable : sig
     val create_fresh : unit -> t
   end
 
-  type unary_t = type_t Record.Variable.RecordTypeVar.record
-  [@@deriving compare, eq, sexp, show, hash]
+  type unary_t = type_t Record.Variable.TypeVar.record [@@deriving compare, eq, sexp, show, hash]
 
   type unary_domain = type_t [@@deriving compare, eq, sexp, show, hash]
 
-  type parameter_variadic_t = type_t Record.Variable.RecordVariadic.RecordParamSpec.record
+  type parameter_variadic_t = type_t Record.Variable.ParamSpec.record
   [@@deriving compare, eq, sexp, show, hash]
 
   type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
 
-  type tuple_variadic_t = type_t Record.Variable.RecordVariadic.TypeVarTuple.record
+  type tuple_variadic_t = type_t Record.Variable.TypeVarTuple.record
   [@@deriving compare, eq, sexp, show, hash]
 
   type tuple_variadic_domain = type_t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
 
   type pair =
-    | UnaryPair of unary_t * unary_domain
-    | ParameterVariadicPair of parameter_variadic_t * parameter_variadic_domain
-    | TupleVariadicPair of tuple_variadic_t * tuple_variadic_domain
+    | TypeVarPair of unary_t * unary_domain
+    | ParamSpecPair of parameter_variadic_t * parameter_variadic_domain
+    | TypeVarTuplePair of tuple_variadic_t * tuple_variadic_domain
   [@@deriving compare, eq, sexp, show, hash]
 
   type t = type_t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
@@ -753,7 +746,7 @@ module Variable : sig
 
   module TypeVar : sig
     include module type of struct
-      include Record.Variable.RecordTypeVar
+      include Record.Variable.TypeVar
     end
 
     include VariableKind with type t = unary_t and type domain = type_t
@@ -775,55 +768,53 @@ module Variable : sig
     val contains_subvariable : t -> bool
   end
 
-  module Variadic : sig
-    module ParamSpec : sig
-      include VariableKind with type t = parameter_variadic_t and type domain = Callable.parameters
+  module ParamSpec : sig
+    include VariableKind with type t = parameter_variadic_t and type domain = Callable.parameters
 
-      val name : t -> Identifier.t
+    val name : t -> Identifier.t
 
-      val create : ?variance:Record.Variable.variance -> string -> t
+    val create : ?variance:Record.Variable.variance -> string -> t
 
-      val parse_instance_annotation
-        :  create_type:
-             (aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
-             Expression.t ->
-             type_t) ->
-        variable_parameter_annotation:Expression.t ->
-        keywords_parameter_annotation:Expression.t ->
-        aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
-        t option
+    val parse_instance_annotation
+      :  create_type:
+           (aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
+           Expression.t ->
+           type_t) ->
+      variable_parameter_annotation:Expression.t ->
+      keywords_parameter_annotation:Expression.t ->
+      aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
+      t option
 
-      module Components : sig
-        include module type of struct
-          include Record.Variable.RecordVariadic.RecordParamSpec.RecordComponents
-        end
-
-        type component =
-          | KeywordArguments
-          | PositionalArguments
-
-        type decomposition = {
-          positional_component: type_t;
-          keyword_component: type_t;
-        }
-
-        val combine : decomposition -> parameter_variadic_t option
-
-        val component : t -> component
+    module Components : sig
+      include module type of struct
+        include Record.Variable.ParamSpec.Components
       end
 
-      val decompose : t -> Components.decomposition
+      type component =
+        | KeywordArguments
+        | PositionalArguments
+
+      type decomposition = {
+        positional_component: type_t;
+        keyword_component: type_t;
+      }
+
+      val combine : decomposition -> parameter_variadic_t option
+
+      val component : t -> component
     end
 
-    module TypeVarTuple : sig
-      include VariableKind with type t = tuple_variadic_t and type domain = tuple_variadic_domain
+    val decompose : t -> Components.decomposition
+  end
 
-      val name : t -> Identifier.t
+  module TypeVarTuple : sig
+    include VariableKind with type t = tuple_variadic_t and type domain = tuple_variadic_domain
 
-      val create : string -> t
+    val name : t -> Identifier.t
 
-      val synthetic_class_name_for_error : string
-    end
+    val create : string -> t
+
+    val synthetic_class_name_for_error : string
   end
 
   module GlobalTransforms : sig
@@ -843,10 +834,6 @@ module Variable : sig
 
     module TypeVarTuple :
       S with type t = tuple_variadic_t and type domain = type_t OrderedTypes.record
-  end
-
-  include module type of struct
-    include Record.Variable
   end
 
   type variable_zip_result = {

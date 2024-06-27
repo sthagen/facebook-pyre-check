@@ -159,7 +159,7 @@ let errors_from_not_found
           Error.InvalidClassInstantiation
             (Error.AbstractClassInstantiation { class_name; abstract_methods }) );
       ]
-  | CallingParameterVariadicTypeVariable -> [None, Error.NotCallable (Type.Callable callable)]
+  | CallingFromParamSpec -> [None, Error.NotCallable (Type.Callable callable)]
   | InvalidKeywordArgument { Node.location; value = { expression; annotation } } ->
       [
         ( Some location,
@@ -2867,7 +2867,7 @@ module State (Context : Context) = struct
                                global_resolution
                                ~left:Type.integer
                                ~right:
-                                 (Type.Callable.Parameter.annotation index_parameter
+                                 (Type.Callable.CallableParamType.annotation index_parameter
                                  |> Option.value ~default:Type.Bottom) ->
                           true
                       | _ -> false
@@ -3158,11 +3158,15 @@ module State (Context : Context) = struct
            that behavior you can always write a real inner function with a literal return type *)
         let resolved = Type.weaken_literals resolved in
         let create_parameter { Node.value = { Parameter.name; value; _ }; _ } =
-          { Type.Callable.Parameter.name; annotation = Type.Any; default = Option.is_some value }
+          {
+            Type.Callable.CallableParamType.name;
+            annotation = Type.Any;
+            default = Option.is_some value;
+          }
         in
         let parameters =
           List.map parameters ~f:create_parameter
-          |> Type.Callable.Parameter.create
+          |> Type.Callable.CallableParamType.create
           |> fun parameters -> Type.Callable.Defined parameters
         in
         {
@@ -4206,7 +4210,7 @@ module State (Context : Context) = struct
             ~location
             ~kind:
               (AnalysisError.InvalidType
-                 (AnalysisError.NestedTypeVariables (Type.Variable.Unary variable)))
+                 (AnalysisError.NestedTypeVariables (Type.Variable.TypeVarVariable variable)))
       | Variable { constraints = Explicit [explicit]; _ } ->
           emit_error
             ~errors
@@ -5719,8 +5723,8 @@ module State (Context : Context) = struct
           in
           let check_pair errors extended actual =
             match extended, actual with
-            | ( Type.Variable { Type.Record.Variable.RecordTypeVar.variance = left; _ },
-                Type.Variable { Type.Record.Variable.RecordTypeVar.variance = right; _ } ) -> (
+            | ( Type.Variable { Type.Record.Variable.TypeVar.variance = left; _ },
+                Type.Variable { Type.Record.Variable.TypeVar.variance = right; _ } ) -> (
                 match left, right with
                 | Type.Variable.Covariant, Type.Variable.Invariant
                 | Type.Variable.Contravariant, Type.Variable.Invariant
@@ -5795,7 +5799,7 @@ module State (Context : Context) = struct
                       | Type.Tuple (Concrete types) -> types
                       | Tuple (Concatenation concatenation) ->
                           [
-                            Type.Record.OrderedTypes.Concatenation.extract_sole_unbounded_annotation
+                            Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation
                               concatenation
                             |> Option.value ~default:type_;
                           ]
@@ -6213,7 +6217,7 @@ module State (Context : Context) = struct
                 ~kind:(Error.InvalidTypeVariance { annotation; origin = Error.Parameter })
           | _ -> errors
         in
-        let parse_as_unary () =
+        let parse_as_type_var () =
           let errors, annotation =
             match index, parent with
             | 0, Some parent
@@ -6383,9 +6387,9 @@ module State (Context : Context) = struct
                   |> Type.Variable.mark_all_variables_as_bound
                   |> TypeInfo.Unit.create_mutable
                   |> fun annotation -> errors, annotation)
-            |> Option.value ~default:(parse_as_unary ())
+            |> Option.value ~default:(parse_as_type_var ())
           else
-            parse_as_unary ()
+            parse_as_type_var ()
         in
         ( Resolution.new_local
             ~reference:(make_parameter_name name)
@@ -6428,10 +6432,7 @@ module State (Context : Context) = struct
           with
           | Some variable ->
               let add_annotations_to_resolution
-                  {
-                    Type.Variable.Variadic.ParamSpec.Components.positional_component;
-                    keyword_component;
-                  }
+                  { Type.Variable.ParamSpec.Components.positional_component; keyword_component }
                 =
                 resolution
                 |> Resolution.new_local
@@ -6441,11 +6442,11 @@ module State (Context : Context) = struct
                      ~reference:(make_parameter_name second_name)
                      ~type_info:(TypeInfo.Unit.create_mutable keyword_component)
               in
-              if Resolution.type_variable_exists resolution ~variable:(ParameterVariadic variable)
+              if Resolution.type_variable_exists resolution ~variable:(ParamSpecVariable variable)
               then
                 let new_resolution =
-                  Type.Variable.Variadic.ParamSpec.mark_as_bound variable
-                  |> Type.Variable.Variadic.ParamSpec.decompose
+                  Type.Variable.ParamSpec.mark_as_bound variable
+                  |> Type.Variable.ParamSpec.decompose
                   |> add_annotations_to_resolution
                 in
                 List.rev reversed_head
@@ -6464,7 +6465,7 @@ module State (Context : Context) = struct
                     ~errors
                     ~location
                     ~kind:
-                      (Error.InvalidTypeVariable { annotation = ParameterVariadic variable; origin })
+                      (Error.InvalidTypeVariable { annotation = ParamSpecVariable variable; origin })
                 in
                 ( add_annotations_to_resolution
                     { positional_component = Top; keyword_component = Top },
@@ -6823,8 +6824,8 @@ module State (Context : Context) = struct
                       parameter_annotations define ~resolution:global_resolution
                       |> List.map ~f:(fun (name, annotation, value) ->
                              let default = Option.is_some value in
-                             { Type.Callable.Parameter.name; annotation; default })
-                      |> Type.Callable.Parameter.create
+                             { Type.Callable.CallableParamType.name; annotation; default })
+                      |> Type.Callable.CallableParamType.create
                     in
                     let validate_match ~errors ~index ~overridden_parameter ~expected = function
                       | Some actual -> (
@@ -6906,8 +6907,8 @@ module State (Context : Context) = struct
                     let check_parameter index errors = function
                       | `Both (overridden_parameter, overriding_parameter) -> (
                           match
-                            ( Type.Callable.RecordParameter.annotation overridden_parameter,
-                              Type.Callable.RecordParameter.annotation overriding_parameter )
+                            ( Type.Callable.CallableParamType.annotation overridden_parameter,
+                              Type.Callable.CallableParamType.annotation overriding_parameter )
                           with
                           | Some expected, Some actual ->
                               validate_match
@@ -6922,14 +6923,14 @@ module State (Context : Context) = struct
                                  (Concatenation _). For now, let's just ignore this. *)
                               errors)
                       | `Left overridden_parameter -> (
-                          match Type.Callable.RecordParameter.annotation overridden_parameter with
+                          match Type.Callable.CallableParamType.annotation overridden_parameter with
                           | Some expected ->
                               validate_match ~errors ~index ~overridden_parameter ~expected None
                           | None -> errors)
                       | `Right overriding_parameter ->
                           let is_args_kwargs_or_has_default =
                             match overriding_parameter with
-                            | Type.Callable.RecordParameter.Keywords _ -> true
+                            | Type.Callable.CallableParamType.Keywords _ -> true
                             | Variable _ -> true
                             | Named { default = has_default; _ } -> has_default
                             | KeywordOnly { default = has_default; _ } -> has_default
@@ -7011,7 +7012,7 @@ module State (Context : Context) = struct
                     let overridden_parameters =
                       Type.Callable.Overload.parameters implementation |> Option.value ~default:[]
                     in
-                    Type.Callable.Parameter.zip overridden_parameters overriding_parameters
+                    Type.Callable.CallableParamType.zip overridden_parameters overriding_parameters
                     |> List.foldi ~init:errors ~f:check_parameter
                 | _ -> errors)
             | _ -> None
@@ -7053,12 +7054,12 @@ module State (Context : Context) = struct
             | _, Type.Variable unary -> unary
             | _ -> failwith "did not transform"
           in
-          fix_invalid_parameters_in_bounds unary |> fun unary -> Type.Variable.Unary unary
+          fix_invalid_parameters_in_bounds unary |> fun unary -> Type.Variable.TypeVarVariable unary
         in
         let extract = function
-          | Type.Variable.Unary unary -> unarize unary
-          | ParameterVariadic variable -> ParameterVariadic variable
-          | TupleVariadic variable -> TupleVariadic variable
+          | Type.Variable.TypeVarVariable unary -> unarize unary
+          | ParamSpecVariable variable -> ParamSpecVariable variable
+          | TypeVarTupleVariable variable -> TypeVarTupleVariable variable
         in
         Reference.show class_name
         |> GlobalResolution.type_parameters_as_variables global_resolution

@@ -390,8 +390,7 @@ let test_register_aliases context =
     [
       ( "test.Tparams",
         Type.Alias.VariableAlias
-          (Type.Variable.ParameterVariadic (Type.Variable.Variadic.ParamSpec.create "test.Tparams"))
-      );
+          (Type.Variable.ParamSpecVariable (Type.Variable.ParamSpec.create "test.Tparams")) );
     ];
   ()
 
@@ -598,7 +597,7 @@ let test_populate context =
       | None -> ""
       | Some targets ->
           let show_target { ClassHierarchy.Target.target; parameters } =
-            Format.asprintf "%s%a" target (Type.pp_parameters ~pp_type:Type.pp) parameters
+            Format.asprintf "%s%a" target Type.Parameter.pp_list parameters
           in
           List.to_string targets ~f:show_target
     in

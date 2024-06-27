@@ -157,7 +157,7 @@ and invalid_argument =
 and precondition_mismatch =
   | Found of mismatch
   | NotFound of {
-      parameter: Type.t Type.Callable.Parameter.t;
+      parameter: Type.t Type.Callable.CallableParamType.t;
       parameter_exists_in_overridden_signature: bool;
     }
 
@@ -1057,7 +1057,7 @@ let weaken_literals kind =
     let type_map = function
       | Type.Variable
           {
-            Type.Record.Variable.RecordTypeVar.constraints =
+            Type.Record.Variable.TypeVar.constraints =
               Type.Record.Variable.Bound (Type.Primitive "int");
             _;
           } ->
@@ -1638,9 +1638,9 @@ let rec messages ~concise ~signature location kind =
               | PositionalOnly { index; _ } ->
                   Format.asprintf
                     "of type `%s` at index %d"
-                    (Type.Callable.Parameter.show_concise parameter)
+                    (Type.Callable.CallableParamType.show_concise parameter)
                     index
-              | _ -> Format.asprintf "`%s`" (Type.Callable.Parameter.show_concise parameter)
+              | _ -> Format.asprintf "`%s`" (Type.Callable.CallableParamType.show_concise parameter)
             in
             let signature_description =
               if parameter_exists_in_overridden_signature then "overriding" else "overridden"
@@ -1715,9 +1715,9 @@ let rec messages ~concise ~signature location kind =
           [
             Format.asprintf
               "Argument types `%a` are not compatible with expected variadic elements `%a`."
-              (Type.Record.OrderedTypes.pp_concise ~pp_type)
+              Type.OrderedTypes.pp_concise
               ordered_types
-              (Type.Record.OrderedTypes.pp_concise ~pp_type)
+              Type.OrderedTypes.pp_concise
               variable;
           ]
       | VariableArgumentsWithUnpackableType
@@ -1732,16 +1732,14 @@ let rec messages ~concise ~signature location kind =
       | VariableArgumentsWithUnpackableType
           { variable; mismatch = CannotConcatenate unconcatenatable } ->
           let unconcatenatable =
-            List.map
-              unconcatenatable
-              ~f:(Format.asprintf "%a" (Type.Record.OrderedTypes.pp_concise ~pp_type))
+            List.map unconcatenatable ~f:(Format.asprintf "%a" Type.OrderedTypes.pp_concise)
             |> String.concat ~sep:", "
           in
           [
             Format.asprintf
               "Variadic type variable `%a` cannot be made to contain `%s`; concatenation of \
                multiple variadic type variables is not yet implemented."
-              (Type.Record.OrderedTypes.pp_concise ~pp_type)
+              Type.OrderedTypes.pp_concise
               variable
               unconcatenatable;
           ])
@@ -1793,9 +1791,7 @@ let rec messages ~concise ~signature location kind =
       let arguments = if has_arguments then "(...)" else "" in
       let recurse = messages ~concise ~signature location in
       let has_param_spec_variable = function
-        | Type.Callable { implementation = { parameters = ParameterVariadicTypeVariable _; _ }; _ }
-          ->
-            true
+        | Type.Callable { implementation = { parameters = FromParamSpec _; _ }; _ } -> true
         | _ -> false
       in
       match reason, reason >>| recurse >>= List.hd with
@@ -1868,10 +1864,16 @@ let rec messages ~concise ~signature location kind =
             ]
       | InvalidTypeAnnotationExpression { annotation; expected } ->
           if String.is_empty expected then
-            [Format.asprintf "Expression `%s` is not a valid type." (Expression.show annotation)]
+            [
+              Format.asprintf
+                "Expression `%s` is not a valid type."
+                (show_sanitized_expression annotation);
+            ]
           else
             [
-              Format.asprintf "Expression `%s` is not a valid type." (Expression.show annotation);
+              Format.asprintf
+                "Expression `%s` is not a valid type."
+                (show_sanitized_expression annotation);
               Format.asprintf "Expected %s." expected;
             ]
       | NestedAlias name ->
@@ -1965,16 +1967,14 @@ let rec messages ~concise ~signature location kind =
     ->
       let expected =
         match expected with
-        | Unary expected ->
+        | TypeVarVariable expected ->
             Format.asprintf "Single type parameter `%a` expected" Type.pp (Type.Variable expected)
-        | ParameterVariadic expected ->
+        | ParamSpecVariable expected ->
             Format.asprintf
               "Callable parameters expected for parameter specification `%s`"
-              (Type.Variable.Variadic.ParamSpec.name expected)
-        | TupleVariadic expected ->
-            Format.asprintf
-              "Tuple expected for `%s`"
-              (Type.Variable.Variadic.TypeVarTuple.name expected)
+              (Type.Variable.ParamSpec.name expected)
+        | TypeVarTupleVariable expected ->
+            Format.asprintf "Tuple expected for `%s`" (Type.Variable.TypeVarTuple.name expected)
       in
       let actual =
         match actual with
@@ -1982,13 +1982,10 @@ let rec messages ~concise ~signature location kind =
         | CallableParameters actual ->
             Format.asprintf
               "callable parameters `%a`"
-              (Type.pp_parameters ~pp_type:Type.pp)
+              Type.Parameter.pp_list
               [CallableParameters actual]
         | Unpacked actual ->
-            Format.asprintf
-              "variadic `%a`"
-              (Type.OrderedTypes.Concatenation.pp_unpackable ~pp_type:Type.pp)
-              actual
+            Format.asprintf "variadic `%a`" Type.OrderedTypes.Concatenation.pp_unpackable actual
       in
       [Format.asprintf "%s, but a %s was given for generic type %s." expected actual name]
   | InvalidTypeVariable { annotation; origin } when concise -> (
@@ -1999,13 +1996,13 @@ let rec messages ~concise ~signature location kind =
         | Toplevel -> "`%s` can only be used to annotate generic classes or functions."
       in
       match annotation with
-      | Type.Variable.Unary variable ->
+      | Type.Variable.TypeVarVariable variable ->
           [Format.asprintf format (Type.show (Type.Variable variable))]
-      | Type.Variable.ParameterVariadic variable ->
-          let name = Type.Variable.Variadic.ParamSpec.name variable in
+      | Type.Variable.ParamSpecVariable variable ->
+          let name = Type.Variable.ParamSpec.name variable in
           [Format.asprintf format name]
-      | Type.Variable.TupleVariadic variable ->
-          let name = Type.Variable.Variadic.TypeVarTuple.name variable in
+      | Type.Variable.TypeVarTupleVariable variable ->
+          let name = Type.Variable.TypeVarTuple.name variable in
           [Format.asprintf format name])
   | InvalidTypeVariable { annotation; origin } -> (
       (* The explicit annotation is necessary to appease the compiler. *)
@@ -2021,7 +2018,7 @@ let rec messages ~concise ~signature location kind =
          `typing.Generic[%s]`."
       in
       match annotation with
-      | Type.Variable.Unary variable -> (
+      | Type.Variable.TypeVarVariable variable -> (
           match origin with
           | ClassToplevel ->
               [
@@ -2030,13 +2027,13 @@ let rec messages ~concise ~signature location kind =
               ]
           | Define -> [Format.asprintf format (Type.show (Type.Variable variable))]
           | Toplevel -> [Format.asprintf format (Type.show (Type.Variable variable))])
-      | Type.Variable.ParameterVariadic variable ->
+      | Type.Variable.ParamSpecVariable variable ->
           (* We don't give hints for the more complicated cases. *)
-          let name = Type.Variable.Variadic.ParamSpec.name variable in
+          let name = Type.Variable.ParamSpec.name variable in
           [Format.asprintf format name]
-      | Type.Variable.TupleVariadic variable ->
+      | Type.Variable.TypeVarTupleVariable variable ->
           (* We don't give hints for the more complicated cases. *)
-          let name = Type.Variable.Variadic.TypeVarTuple.name variable in
+          let name = Type.Variable.TypeVarTuple.name variable in
           [Format.asprintf format name])
   | InvalidTypeVariance { origin; _ } when concise -> (
       match origin with
@@ -2497,8 +2494,7 @@ let rec messages ~concise ~signature location kind =
         "See https://pyre-check.org/docs/errors/#62-non-literal-string for more details.";
       ]
   | NotCallable
-      (Type.Callable { implementation = { parameters = ParameterVariadicTypeVariable _; _ }; _ } as
-      annotation) ->
+      (Type.Callable { implementation = { parameters = FromParamSpec _; _ }; _ } as annotation) ->
       [
         Format.asprintf
           "`%a` cannot be safely called because the types and kinds of its parameters depend on a \
@@ -2772,13 +2768,13 @@ let rec messages ~concise ~signature location kind =
         | ProtocolBase -> "Duplicate type variable `%s` in Protocol[...]."
       in
       match variable with
-      | Type.Variable.Unary { Type.Record.Variable.RecordTypeVar.variable = name; _ } ->
+      | Type.Variable.TypeVarVariable { Type.Record.Variable.TypeVar.variable = name; _ } ->
           [Format.asprintf format name]
-      | Type.Variable.ParameterVariadic variable ->
-          let name = Type.Variable.Variadic.ParamSpec.name variable in
+      | Type.Variable.ParamSpecVariable variable ->
+          let name = Type.Variable.ParamSpec.name variable in
           [Format.asprintf format name]
-      | Type.Variable.TupleVariadic variable ->
-          let name = Type.Variable.Variadic.TypeVarTuple.name variable in
+      | Type.Variable.TypeVarTupleVariable variable ->
+          let name = Type.Variable.TypeVarTuple.name variable in
           [Format.asprintf format name])
   | UnboundName name when concise ->
       [Format.asprintf "Name `%a` is used but not defined." Identifier.pp_sanitized name]

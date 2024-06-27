@@ -47,7 +47,7 @@ module Solution : sig
 
   val instantiate : t -> Type.t -> Type.t
 
-  val instantiate_single_variable : t -> Type.Variable.TypeVar.t -> Type.t option
+  val instantiate_single_type_var : t -> Type.Variable.TypeVar.t -> Type.t option
 
   (* For testing *)
   val create : Type.Variable.pair list -> t
@@ -67,14 +67,14 @@ type kind =
   | VariableIsExactly of Type.Variable.pair
 
 module type OrderedConstraintsSetType = sig
-  val add : t -> new_constraint:kind -> order:order -> t
+  val add_and_simplify : t -> new_constraint:kind -> order:order -> t
 
   val solve : ?only_solve_for:Type.Variable.t list -> t -> order:order -> Solution.t option
 
   val get_parameter_specification_possibilities
     :  t ->
     order:order ->
-    parameter_specification:Type.Variable.Variadic.ParamSpec.t ->
+    parameter_specification:Type.Variable.ParamSpec.t ->
     Type.Callable.parameters list
 
   (* Only exposed for testing *)

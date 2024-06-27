@@ -535,7 +535,7 @@ let test_unresolved_select =
                    ~parameters:
                      (Type.Callable.Defined
                         [
-                          Type.Callable.Parameter.PositionalOnly
+                          Type.Callable.CallableParamType.PositionalOnly
                             { index = 0; annotation = Type.Any; default = false };
                         ])
                    ~annotation:Type.integer
@@ -924,12 +924,12 @@ let test_unresolved_select =
                  {
                    annotation = Type.integer;
                    parameters =
-                     ParameterVariadicTypeVariable
+                     FromParamSpec
                        {
                          head = [];
                          variable =
-                           Type.Variable.Variadic.ParamSpec.create "TParams"
-                           |> Type.Variable.Variadic.ParamSpec.mark_as_bound;
+                           Type.Variable.ParamSpec.create "TParams"
+                           |> Type.Variable.ParamSpec.mark_as_bound;
                        };
                  };
                overloads = [];
@@ -937,7 +937,7 @@ let test_unresolved_select =
            (NotFound
               {
                 closest_return_annotation = Type.integer;
-                reason = Some SignatureSelectionTypes.CallingParameterVariadicTypeVariable;
+                reason = Some SignatureSelectionTypes.CallingFromParamSpec;
               });
     ]
 

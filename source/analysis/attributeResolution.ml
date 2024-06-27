@@ -66,7 +66,7 @@ module Queries = struct
       variable_parameter_annotation:Ast.Expression.t ->
       keywords_parameter_annotation:Ast.Expression.t ->
       unit ->
-      Type.Variable.Variadic.ParamSpec.t option;
+      Type.Variable.ParamSpec.t option;
     class_hierarchy: unit -> (module ClassHierarchy.Handler);
     variables:
       ?default:Type.Variable.t list option -> Type.Primitive.t -> Type.Variable.t list option;
@@ -167,19 +167,23 @@ let empty_reasons = { arity = []; annotation = [] }
 
 module ParameterArgumentMapping = struct
   type 'argument_type t = {
-    parameter_argument_mapping: 'argument_type matched_argument list Type.Callable.Parameter.Map.t;
+    parameter_argument_mapping:
+      'argument_type matched_argument list Type.Callable.CallableParamType.Map.t;
     reasons: reasons;
   }
 
   let empty =
-    { parameter_argument_mapping = Type.Callable.Parameter.Map.empty; reasons = empty_reasons }
+    {
+      parameter_argument_mapping = Type.Callable.CallableParamType.Map.empty;
+      reasons = empty_reasons;
+    }
 
 
   let equal_mapping_with_resolved_type
       ({ parameter_argument_mapping = left_mapping; reasons = left_reasons } : Type.t t)
       { parameter_argument_mapping = right_mapping; reasons = right_reasons }
     =
-    [%compare.equal: Type.t matched_argument list Type.Callable.Parameter.Map.t]
+    [%compare.equal: Type.t matched_argument list Type.Callable.CallableParamType.Map.t]
       left_mapping
       right_mapping
     && [%compare.equal: reasons] left_reasons right_reasons
@@ -189,7 +193,7 @@ module ParameterArgumentMapping = struct
     Format.fprintf
       format
       "ParameterArgumentMapping { parameter_argument_mapping: %s; reasons: %a }"
-      ([%show: (Type.Callable.Parameter.parameter * Type.t matched_argument list) list]
+      ([%show: (Type.Callable.CallableParamType.parameter * Type.t matched_argument list) list]
          (Map.to_alist parameter_argument_mapping))
       pp_reasons
       reasons
@@ -197,7 +201,7 @@ end
 
 type signature_match = {
   callable: Type.Callable.t;
-  parameter_argument_mapping: Type.t matched_argument list Type.Callable.Parameter.Map.t;
+  parameter_argument_mapping: Type.t matched_argument list Type.Callable.CallableParamType.Map.t;
   constraints_set: TypeConstraints.t list;
   ranks: ranks;
   reasons: reasons;
@@ -214,7 +218,7 @@ let pp_signature_match
      %a }"
     Type.Callable.pp
     callable
-    ([%show: (Type.Callable.Parameter.parameter * Type.t matched_argument list) list]
+    ([%show: (Type.Callable.CallableParamType.parameter * Type.t matched_argument list) list]
        (Map.to_alist parameter_argument_mapping))
     ([%show: TypeConstraints.t list] constraints_set)
     pp_ranks
@@ -441,11 +445,11 @@ module SignatureSelection = struct
         let rec search_parameters searched to_search =
           match to_search with
           | [] -> None, List.rev searched
-          | (Parameter.KeywordOnly { name = parameter_name; _ } as head) :: tail
-          | (Parameter.Named { name = parameter_name; _ } as head) :: tail
+          | (CallableParamType.KeywordOnly { name = parameter_name; _ } as head) :: tail
+          | (CallableParamType.Named { name = parameter_name; _ } as head) :: tail
             when Identifier.equal_sanitized parameter_name argument_name ->
               Some head, List.rev searched @ tail
-          | (Parameter.Keywords _ as head) :: tail ->
+          | (CallableParamType.Keywords _ as head) :: tail ->
               let matching, parameters = search_parameters (head :: searched) tail in
               let matching = Some (Option.value matching ~default:head) in
               matching, parameters
@@ -499,9 +503,9 @@ module SignatureSelection = struct
             parameter_argument_mapping_with_reasons with
             reasons = arity_mismatch ~arguments reasons;
           }
-      | [], (Parameter.KeywordOnly { default = true; _ } as parameter) :: parameters_tail
-      | [], (Parameter.PositionalOnly { default = true; _ } as parameter) :: parameters_tail
-      | [], (Parameter.Named { default = true; _ } as parameter) :: parameters_tail ->
+      | [], (CallableParamType.KeywordOnly { default = true; _ } as parameter) :: parameters_tail
+      | [], (CallableParamType.PositionalOnly { default = true; _ } as parameter) :: parameters_tail
+      | [], (CallableParamType.Named { default = true; _ } as parameter) :: parameters_tail ->
           (* Arguments empty, default parameter *)
           let parameter_argument_mapping = update_mapping parameter Default in
           consume
@@ -520,7 +524,7 @@ module SignatureSelection = struct
             ~parameters:parameters_tail
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
       | ( ({ kind = Named _; _ } as argument) :: arguments_tail,
-          (Parameter.Keywords _ as parameter) :: _ ) ->
+          (CallableParamType.Keywords _ as parameter) :: _ ) ->
           (* Labeled argument, keywords parameter *)
           let parameter_argument_mapping =
             update_mapping parameter (make_matched_argument argument)
@@ -547,7 +551,7 @@ module SignatureSelection = struct
             ~parameters:remaining_parameters
             { parameter_argument_mapping; reasons }
       | ( ({ kind = DoubleStar; _ } as argument) :: arguments_tail,
-          (Parameter.Keywords _ as parameter) :: _ ) ->
+          (CallableParamType.Keywords _ as parameter) :: _ ) ->
           let parameter_argument_mapping =
             update_mapping parameter (make_matched_argument argument)
           in
@@ -556,7 +560,7 @@ module SignatureSelection = struct
             ~parameters
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
       | ( ({ kind = SingleStar; _ } as argument) :: arguments_tail,
-          (Parameter.Variable _ as parameter) :: _ ) ->
+          (CallableParamType.Variable _ as parameter) :: _ ) ->
           let parameter_argument_mapping =
             update_mapping parameter (make_matched_argument ?index_into_starred_tuple argument)
           in
@@ -567,26 +571,26 @@ module SignatureSelection = struct
             ~arguments:arguments_tail
             ~parameters
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
-      | { kind = SingleStar; _ } :: _, Parameter.Keywords _ :: parameters_tail ->
+      | { kind = SingleStar; _ } :: _, CallableParamType.Keywords _ :: parameters_tail ->
           (* Starred argument, double starred parameter *)
           consume
             ~arguments
             ~parameters:parameters_tail
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
-      | { kind = Positional; _ } :: _, Parameter.Keywords _ :: parameters_tail ->
+      | { kind = Positional; _ } :: _, CallableParamType.Keywords _ :: parameters_tail ->
           (* Unlabeled argument, double starred parameter *)
           consume
             ~arguments
             ~parameters:parameters_tail
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
-      | { kind = DoubleStar; _ } :: _, Parameter.Variable _ :: parameters_tail ->
+      | { kind = DoubleStar; _ } :: _, CallableParamType.Variable _ :: parameters_tail ->
           (* Double starred argument, starred parameter *)
           consume
             ~arguments
             ~parameters:parameters_tail
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
       | ( ({ kind = Positional; _ } as argument) :: arguments_tail,
-          (Parameter.Variable _ as parameter) :: _ ) ->
+          (CallableParamType.Variable _ as parameter) :: _ ) ->
           (* Unlabeled argument, starred parameter *)
           let parameter_argument_mapping_with_reasons =
             let parameter_argument_mapping =
@@ -595,7 +599,8 @@ module SignatureSelection = struct
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
           in
           consume ~arguments:arguments_tail ~parameters parameter_argument_mapping_with_reasons
-      | { kind = SingleStar; _ } :: arguments_tail, Type.Callable.Parameter.KeywordOnly _ :: _ ->
+      | ( { kind = SingleStar; _ } :: arguments_tail,
+          Type.Callable.CallableParamType.KeywordOnly _ :: _ ) ->
           (* Starred argument, keyword only parameter *)
           consume ~arguments:arguments_tail ~parameters parameter_argument_mapping_with_reasons
       | ({ kind = DoubleStar; _ } as argument) :: _, parameter :: parameters_tail
@@ -610,7 +615,8 @@ module SignatureSelection = struct
             ~arguments
             ~parameters:parameters_tail
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
-      | { kind = Positional; _ } :: _, (Parameter.KeywordOnly _ as parameter) :: parameters_tail ->
+      | ( { kind = Positional; _ } :: _,
+          (CallableParamType.KeywordOnly _ as parameter) :: parameters_tail ) ->
           (* Unlabeled argument, keyword only parameter *)
           let reasons =
             arity_mismatch reasons ~unreachable_parameters:(parameter :: parameters_tail) ~arguments
@@ -627,7 +633,7 @@ module SignatureSelection = struct
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
     in
     {
-      ParameterArgumentMapping.parameter_argument_mapping = Parameter.Map.empty;
+      ParameterArgumentMapping.parameter_argument_mapping = CallableParamType.Map.empty;
       reasons = empty_reasons;
     }
     |> consume ?index_into_starred_tuple:None ~arguments ~parameters
@@ -649,7 +655,7 @@ module SignatureSelection = struct
      * and the argument is `lambda parameter: body` *)
     let is_generic_lambda parameter arguments =
       match parameter, arguments with
-      | ( Parameter.PositionalOnly
+      | ( CallableParamType.PositionalOnly
             {
               annotation =
                 Type.Callable
@@ -661,7 +667,7 @@ module SignatureSelection = struct
                         parameters =
                           Defined
                             [
-                              Parameter.PositionalOnly
+                              CallableParamType.PositionalOnly
                                 {
                                   index = 0;
                                   annotation = Type.Variable parameter_variable;
@@ -734,7 +740,7 @@ module SignatureSelection = struct
           { reasons with annotation = mismatch :: annotation }
         in
         let updated_constraints_set =
-          TypeOrder.OrderedConstraintsSet.add
+          TypeOrder.OrderedConstraintsSet.add_and_simplify
             constraints_set
             ~new_constraint:
               (LessOrEqual { left = argument_annotation; right = parameter_annotation })
@@ -750,14 +756,14 @@ module SignatureSelection = struct
           if Type.is_unbound resolved then
             ConstraintsSet.impossible
           else
-            TypeOrder.OrderedConstraintsSet.add
+            TypeOrder.OrderedConstraintsSet.add_and_simplify
               ConstraintsSet.empty
               ~new_constraint:(LessOrEqual { left = resolved; right = generic_iterable_type })
               ~order
         in
         TypeOrder.OrderedConstraintsSet.solve iterable_constraints ~order
         >>| fun solution ->
-        ConstraintsSet.Solution.instantiate_single_variable solution synthetic_variable
+        ConstraintsSet.Solution.instantiate_single_type_var solution synthetic_variable
         |> Option.value ~default:Type.Any
       in
       let bind_arguments_to_variadic ~expected ~arguments =
@@ -842,7 +848,7 @@ module SignatureSelection = struct
         in
         let solve (concatenated, extracted_ordered_types) =
           let updated_constraints_set =
-            TypeOrder.OrderedConstraintsSet.add
+            TypeOrder.OrderedConstraintsSet.add_and_simplify
               signature_match.constraints_set
               ~new_constraint:(OrderedTypesLessOrEqual { left = concatenated; right = expected })
               ~order
@@ -879,7 +885,7 @@ module SignatureSelection = struct
                     |> Option.value ~default:location
                   in
                   let is_mismatch =
-                    TypeOrder.OrderedConstraintsSet.add
+                    TypeOrder.OrderedConstraintsSet.add_and_simplify
                       signature_match.constraints_set
                       ~new_constraint:
                         (LessOrEqual { left = item_type_for_error; right = expected_item_type })
@@ -924,24 +930,24 @@ module SignatureSelection = struct
         extract_ordered_types arguments >>= concatenate >>= solve |> make_signature_match
       in
       match parameter, arguments with
-      | Parameter.Variable (Concatenation concatenation), arguments ->
+      | CallableParamType.Variable (Concatenation concatenation), arguments ->
           bind_arguments_to_variadic
             ~expected:(Type.OrderedTypes.Concatenation concatenation)
             ~arguments
-      | Parameter.Variable (Concrete parameter_annotation), arguments ->
+      | CallableParamType.Variable (Concrete parameter_annotation), arguments ->
           bind_arguments_to_variadic
             ~expected:(Type.OrderedTypes.create_unbounded_concatenation parameter_annotation)
             ~arguments
-      | Parameter.Keywords _, [] ->
+      | CallableParamType.Keywords _, [] ->
           (* Parameter was not matched, but empty is acceptable for variable arguments and keyword
              arguments. *)
           signature_match
-      | Parameter.KeywordOnly { name; _ }, []
-      | Parameter.Named { name; _ }, [] ->
+      | CallableParamType.KeywordOnly { name; _ }, []
+      | CallableParamType.Named { name; _ }, [] ->
           (* Parameter was not matched *)
           let reasons = { reasons with arity = MissingArgument (Named name) :: arity } in
           { signature_match with reasons }
-      | Parameter.PositionalOnly { index; _ }, [] ->
+      | CallableParamType.PositionalOnly { index; _ }, [] ->
           (* Parameter was not matched *)
           let reasons = { reasons with arity = MissingArgument (PositionalOnly index) :: arity } in
           { signature_match with reasons }
@@ -1148,7 +1154,7 @@ module SignatureSelection = struct
       let open Type.Record.Callable in
       let has_matched_keyword_parameter parameters =
         List.find parameters ~f:(function
-            | RecordParameter.Keywords _ -> true
+            | CallableParamType.Keywords _ -> true
             | _ -> false)
         >>= Map.find parameter_argument_mapping
         >>| List.is_empty
@@ -1169,7 +1175,7 @@ module SignatureSelection = struct
         when String.equal (Reference.show name) "dict.__init__"
              && has_matched_keyword_parameter parameters ->
           let updated_constraints =
-            TypeOrder.OrderedConstraintsSet.add
+            TypeOrder.OrderedConstraintsSet.add_and_simplify
               constraints_set
               ~new_constraint:(LessOrEqual { left = Type.string; right = key_type })
               ~order
@@ -1195,9 +1201,9 @@ module SignatureSelection = struct
               TypeOrder.OrderedConstraintsSet.solve
                 constraints_set
                 ~order
-                ~only_solve_for:[Type.Record.Variable.Unary parameter_variable]
+                ~only_solve_for:[Type.Record.Variable.TypeVarVariable parameter_variable]
               >>= fun solution ->
-              ConstraintsSet.Solution.instantiate_single_variable solution parameter_variable
+              ConstraintsSet.Solution.instantiate_single_type_var solution parameter_variable
             in
             match solution with
             | None -> signature_match
@@ -1216,10 +1222,10 @@ module SignatureSelection = struct
                       |> Type.weaken_literals
                     in
                     let parameters =
-                      Type.Callable.Parameter.create
+                      Type.Callable.CallableParamType.create
                         [
                           {
-                            Type.Callable.Parameter.name = lambda_parameter;
+                            Type.Callable.CallableParamType.name = lambda_parameter;
                             annotation = parameter_type;
                             default = false;
                           };
@@ -1227,14 +1233,14 @@ module SignatureSelection = struct
                     in
                     Type.Callable.create ~parameters:(Defined parameters) ~annotation:return_type ()
                   in
-                  TypeOrder.OrderedConstraintsSet.add
+                  TypeOrder.OrderedConstraintsSet.add_and_simplify
                     constraints_set
                     ~new_constraint:(LessOrEqual { left = resolved; right = annotation })
                     ~order
                   (* Once we've used this solution, we have to commit to it *)
-                  |> TypeOrder.OrderedConstraintsSet.add
+                  |> TypeOrder.OrderedConstraintsSet.add_and_simplify
                        ~new_constraint:
-                         (VariableIsExactly (UnaryPair (parameter_variable, parameter_type)))
+                         (VariableIsExactly (TypeVarPair (parameter_variable, parameter_type)))
                        ~order
                 in
                 { signature_match with constraints_set = updated_constraints })
@@ -1281,7 +1287,7 @@ module SignatureSelection = struct
     let base_signature_match =
       {
         callable;
-        parameter_argument_mapping = Parameter.Map.empty;
+        parameter_argument_mapping = CallableParamType.Map.empty;
         constraints_set = [TypeConstraints.empty];
         ranks = { arity = 0; annotation = 0; position = 0 };
         reasons = empty_reasons;
@@ -1301,8 +1307,7 @@ module SignatureSelection = struct
         |> check_arguments_against_parameters ~callable
         |> fun signature_match -> [signature_match]
     | Undefined -> [base_signature_match]
-    | ParameterVariadicTypeVariable { head; variable }
-      when Type.Variable.Variadic.ParamSpec.is_free variable -> (
+    | FromParamSpec { head; variable } when Type.Variable.ParamSpec.is_free variable -> (
         (* Handle callables where an early parameter binds a ParamSpec and later parameters expect
            the corresponding arguments.
 
@@ -1339,9 +1344,9 @@ module SignatureSelection = struct
         let solve_back parameters =
           let constraints_set =
             (* If we use this option, we have to commit to it as to not move away from it later *)
-            TypeOrder.OrderedConstraintsSet.add
+            TypeOrder.OrderedConstraintsSet.add_and_simplify
               constraints_set
-              ~new_constraint:(VariableIsExactly (ParameterVariadicPair (variable, parameters)))
+              ~new_constraint:(VariableIsExactly (ParamSpecPair (variable, parameters)))
               ~order
           in
           check_arguments_against_signature
@@ -1373,14 +1378,13 @@ module SignatureSelection = struct
         |> function
         | [] -> [head_signature]
         | nonempty -> nonempty)
-    | ParameterVariadicTypeVariable { head; variable } -> (
+    | FromParamSpec { head; variable } -> (
         (* The ParamSpec variable `P` is in scope, so the only valid arguments are `*args` and
            `**kwargs` that have "type" `P.args` and `P.kwargs` respectively. If the ParamSpec has a
            `head` prefix of parameters, check for any prefix arguments. *)
         let combines_into_variable ~positional_component ~keyword_component =
-          Type.Variable.Variadic.ParamSpec.Components.combine
-            { positional_component; keyword_component }
-          >>| Type.Variable.Variadic.ParamSpec.equal variable
+          Type.Variable.ParamSpec.Components.combine { positional_component; keyword_component }
+          >>| Type.Variable.ParamSpec.equal variable
           |> Option.value ~default:false
         in
         match List.rev arguments with
@@ -1400,7 +1404,7 @@ module SignatureSelection = struct
             [
               {
                 base_signature_match with
-                reasons = { arity = [CallingParameterVariadicTypeVariable]; annotation = [] };
+                reasons = { arity = [CallingFromParamSpec]; annotation = [] };
               };
             ])
 
@@ -1443,7 +1447,7 @@ module SignatureSelection = struct
     | [], reason :: reasons ->
         let importance = function
           | AbstractClassInstantiation _ -> 1
-          | CallingParameterVariadicTypeVariable -> 1
+          | CallingFromParamSpec -> 1
           | InvalidKeywordArgument _ -> 0
           | InvalidVariableArgument _ -> 0
           | Mismatches _ -> -1
@@ -1658,7 +1662,7 @@ let apply_dataclass_transforms_to_table
     let make_method ~parameters ~annotation ~attribute_name =
       let parameters =
         {
-          Type.Callable.Parameter.name = "$parameter$self";
+          Type.Callable.CallableParamType.name = "$parameter$self";
           annotation = Type.Primitive (Reference.show name);
           default = false;
         }
@@ -1670,7 +1674,7 @@ let apply_dataclass_transforms_to_table
           Type.Callable.kind = Named (Reference.combine name (Reference.create attribute_name));
           overloads = [];
           implementation =
-            { annotation; parameters = Defined (Type.Callable.Parameter.create parameters) };
+            { annotation; parameters = Defined (Type.Callable.CallableParamType.create parameters) };
         }
       in
 
@@ -1858,7 +1862,7 @@ let apply_dataclass_transforms_to_table
                 keyword_only)
           in
           let dataclass_constructor_to_named { DataclassOptions.name; annotation; default; _ }
-              : Type.t Callable.RecordParameter.named
+              : Type.t Callable.CallableParamType.named
             =
             { name; annotation; default }
           in
@@ -1869,7 +1873,9 @@ let apply_dataclass_transforms_to_table
           match keyword_only_named, not_keyword_only_named with
           | [], not_keyword_only -> not_keyword_only
           | keyword_only, not_keyword_only ->
-              not_keyword_only @ [Type.Callable.Parameter.dummy_star_parameter] @ keyword_only
+              not_keyword_only
+              @ [Type.Callable.CallableParamType.dummy_star_parameter]
+              @ keyword_only
         in
         (* A central method that processes parameters that abstracts over constructing methods. It
            specializes on __init__ and __match_args__. *)
@@ -2026,11 +2032,11 @@ let apply_dataclass_transforms_to_table
         in
         let methods =
           if match_args && not (already_in_table "__match_args__") then
-            let parameter_name { Callable.RecordParameter.name; _ } = Identifier.sanitized name in
+            let parameter_name { Callable.CallableParamType.name; _ } = Identifier.sanitized name in
 
             let params = match_parameters ~implicitly_initialize:false in
             let is_not_initvar param =
-              match param.Callable.RecordParameter.annotation with
+              match param.Callable.CallableParamType.annotation with
               | Type.Parametric { name = "dataclasses.InitVar"; parameters = [Single _] } -> false
               | _ -> true
             in
@@ -2097,7 +2103,7 @@ let partial_apply_self { Type.Callable.implementation; overloads; _ } ~order ~se
     | { Type.Callable.parameters = Defined (Named { annotation; _ } :: _); _ }, _ -> (
         let solution =
           try
-            TypeOrder.OrderedConstraintsSet.add
+            TypeOrder.OrderedConstraintsSet.add_and_simplify
               ConstraintsSet.empty
               ~new_constraint:(LessOrEqual { left = self_type; right = annotation })
               ~order
@@ -2120,8 +2126,7 @@ let partial_apply_self { Type.Callable.implementation; overloads; _ } ~order ~se
     let parameters =
       match parameters with
       | Type.Callable.Defined (_ :: parameters) -> Type.Callable.Defined parameters
-      | ParameterVariadicTypeVariable { head = _ :: head; variable } ->
-          ParameterVariadicTypeVariable { head; variable }
+      | FromParamSpec { head = _ :: head; variable } -> FromParamSpec { head; variable }
       | _ -> parameters
     in
     { Type.Callable.annotation; parameters }
@@ -2301,11 +2306,11 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               | "typing.Final"
               | "typing_extensions.Final"
               | "typing.Optional" ->
-                  [Type.Variable.Unary (Type.Variable.TypeVar.create "T")]
+                  [Type.Variable.TypeVarVariable (Type.Variable.TypeVar.create "T")]
               | "typing.Callable" ->
                   [
-                    Type.Variable.ParameterVariadic (Type.Variable.Variadic.ParamSpec.create "Ps");
-                    Type.Variable.Unary (Type.Variable.TypeVar.create "R");
+                    Type.Variable.ParamSpecVariable (Type.Variable.ParamSpec.create "Ps");
+                    Type.Variable.TypeVarVariable (Type.Variable.TypeVar.create "R");
                   ]
               | _ -> variables name |> Option.value ~default:[]
             in
@@ -2320,7 +2325,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               | Some paired ->
                   let check_parameter { Type.Variable.variable_pair; received_parameter } =
                     match variable_pair, received_parameter with
-                    | Type.Variable.UnaryPair (unary, given), Type.Parameter.Single _ ->
+                    | Type.Variable.TypeVarPair (unary, given), Type.Parameter.Single _ ->
                         let invalid =
                           let order = self#full_order ~assumptions in
                           TypeOrder.OrderedConstraints.add_lower_bound
@@ -2341,12 +2346,12 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                               } )
                         else
                           [Type.Parameter.Single given], None
-                    | ParameterVariadicPair (_, given), CallableParameters _ ->
+                    | ParamSpecPair (_, given), CallableParameters _ ->
                         (* TODO(T47346673): accept w/ new kind of validation *)
                         [CallableParameters given], None
-                    | TupleVariadicPair (_, given), Single (Tuple _) ->
+                    | TypeVarTuplePair (_, given), Single (Tuple _) ->
                         Type.OrderedTypes.to_parameters given, None
-                    | Type.Variable.UnaryPair (unary, given), _ ->
+                    | Type.Variable.TypeVarPair (unary, given), _ ->
                         ( [Single given],
                           Some
                             {
@@ -2354,11 +2359,11 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                               kind =
                                 UnexpectedKind
                                   {
-                                    expected = Type.Variable.Unary unary;
+                                    expected = Type.Variable.TypeVarVariable unary;
                                     actual = received_parameter;
                                   };
                             } )
-                    | ParameterVariadicPair (parameter_variadic, given), _ ->
+                    | ParamSpecPair (param_spec, given), _ ->
                         ( [CallableParameters given],
                           Some
                             {
@@ -2366,11 +2371,11 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                               kind =
                                 UnexpectedKind
                                   {
-                                    expected = ParameterVariadic parameter_variadic;
+                                    expected = ParamSpecVariable param_spec;
                                     actual = received_parameter;
                                   };
                             } )
-                    | TupleVariadicPair (tuple_variadic, given), _ ->
+                    | TypeVarTuplePair (type_var_tuple, given), _ ->
                         ( Type.OrderedTypes.to_parameters given,
                           Some
                             {
@@ -2378,7 +2383,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                               kind =
                                 UnexpectedKind
                                   {
-                                    expected = TupleVariadic tuple_variadic;
+                                    expected = TypeVarTupleVariable type_var_tuple;
                                     actual = received_parameter;
                                   };
                             } )
@@ -2401,18 +2406,18 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                           true )
                     | _ ->
                         let is_tuple_variadic = function
-                          | Type.Variable.TupleVariadic _ -> true
+                          | Type.Variable.TypeVarTupleVariable _ -> true
                           | _ -> false
                         in
                         let annotation =
                           Type.parametric
                             name
                             (List.concat_map generics ~f:(function
-                                | Type.Variable.Unary _ -> [Type.Parameter.Single Type.Any]
-                                | ParameterVariadic _ -> [CallableParameters Undefined]
-                                | TupleVariadic _ ->
-                                    Type.OrderedTypes.to_parameters
-                                      Type.Variable.Variadic.TypeVarTuple.any))
+                                | Type.Variable.TypeVarVariable _ ->
+                                    [Type.Parameter.Single Type.Any]
+                                | ParamSpecVariable _ -> [CallableParameters Undefined]
+                                | TypeVarTupleVariable _ ->
+                                    Type.OrderedTypes.to_parameters Type.Variable.TypeVarTuple.any))
                         in
                         ( annotation,
                           List.filter generics ~f:(fun x -> not (is_tuple_variadic x))
@@ -2546,11 +2551,11 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         in
         let parameters =
           let keyword_only_parameter (name, annotation) =
-            Type.Record.Callable.RecordParameter.KeywordOnly
+            Type.Record.Callable.CallableParamType.KeywordOnly
               { name = Format.asprintf "$parameter$%s" name; annotation; default = true }
           in
           let self_parameter =
-            Type.Callable.Parameter.Named
+            Type.Callable.CallableParamType.Named
               { name = "$parameter$self"; annotation = Type.Primitive class_name; default = false }
           in
           List.map ~f:keyword_only_parameter name_annotation_pairs
@@ -3132,7 +3137,8 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         let special_case_methods callable =
           (* Certain callables' types can't be expressed directly and need to be special cased *)
           let self_parameter =
-            Type.Callable.Parameter.Named { name = "self"; annotation = Type.Top; default = false }
+            Type.Callable.CallableParamType.Named
+              { name = "self"; annotation = Type.Top; default = false }
           in
           match instantiated, attribute_name, class_name with
           | Type.Tuple (Concrete members), "__getitem__", _ ->
@@ -3164,7 +3170,8 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               let implementation, overloads =
                 let generics = variables name |> Option.value ~default:[] in
                 let create_parameter annotation =
-                  Type.Callable.Parameter.PositionalOnly { index = 0; annotation; default = false }
+                  Type.Callable.CallableParamType.PositionalOnly
+                    { index = 0; annotation; default = false }
                 in
                 let synthetic =
                   Type.Variable
@@ -3208,7 +3215,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                           }
                     in
                     match generics with
-                    | [Unary generic] ->
+                    | [TypeVarVariable generic] ->
                         overload (create_parameter (Type.meta (Variable generic))), []
                     | _ ->
                         (* To support the value `GenericFoo[int, str]`, we need `class
@@ -3217,15 +3224,15 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                            `def __getitem__(cls, __x: Tuple[Type[T1], Type[T2]] ) -> GenericFoo[T1,
                            T2]`. *)
                         let meta_type_and_return_type = function
-                          | Type.Variable.Unary single ->
+                          | Type.Variable.TypeVarVariable single ->
                               ( Type.meta (Variable single),
                                 Type.Parameter.Single (Type.Variable single) )
-                          | ParameterVariadic _ ->
+                          | ParamSpecVariable _ ->
                               (* TODO:(T60536033) We'd really like to take FiniteList[Ts], but
                                  without that we can't actually return the correct metatype, which
                                  is a bummer *)
                               Type.Any, Type.Parameter.CallableParameters Undefined
-                          | TupleVariadic _ -> Type.Any, Single Any
+                          | TypeVarTupleVariable _ -> Type.Any, Single Any
                         in
                         let meta_types, return_parameters =
                           List.map generics ~f:meta_type_and_return_type |> List.unzip
@@ -3271,7 +3278,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                   let constraints =
                     match self_annotation with
                     | Some annotation ->
-                        TypeOrder.OrderedConstraintsSet.add
+                        TypeOrder.OrderedConstraintsSet.add_and_simplify
                           ConstraintsSet.empty
                           ~new_constraint:(LessOrEqual { left = instantiated; right = annotation })
                           ~order
@@ -3354,13 +3361,13 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                            ])
                       ()
                   in
-                  TypeOrder.OrderedConstraintsSet.add
+                  TypeOrder.OrderedConstraintsSet.add_and_simplify
                     ConstraintsSet.empty
                     ~new_constraint:(LessOrEqual { left = Type.Callable callable; right })
                     ~order
                   |> TypeOrder.OrderedConstraintsSet.solve ~order
                   >>= fun solution ->
-                  ConstraintsSet.Solution.instantiate_single_variable solution synthetic
+                  ConstraintsSet.Solution.instantiate_single_type_var solution synthetic
                 in
                 let function_dunder_get callable =
                   if accessed_through_class then
@@ -3813,7 +3820,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             ConstraintsSet.Solution.empty
         | _ ->
             let order = self#full_order ~assumptions in
-            TypeOrder.OrderedConstraintsSet.add
+            TypeOrder.OrderedConstraintsSet.add_and_simplify
               ConstraintsSet.empty
               ~new_constraint:(LessOrEqual { left = instantiated; right })
               ~order
@@ -3992,8 +3999,8 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                 let parameters =
                   Type.Callable.Defined
                     [
-                      Type.Callable.Parameter.Variable (Concrete Type.Any);
-                      Type.Callable.Parameter.Keywords Type.Any;
+                      Type.Callable.CallableParamType.Variable (Concrete Type.Any);
+                      Type.Callable.CallableParamType.Keywords Type.Any;
                     ]
                 in
                 Type.Callable (Type.Callable.map_parameters callable ~f:(fun _ -> parameters))
@@ -4410,7 +4417,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                 (get_typed_dictionary annotation));
         }
       in
-      TypeOrder.OrderedConstraintsSet.add
+      TypeOrder.OrderedConstraintsSet.add_and_simplify
         ConstraintsSet.empty
         ~new_constraint:(LessOrEqual { left; right })
         ~order
