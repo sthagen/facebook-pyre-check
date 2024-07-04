@@ -20,7 +20,7 @@ module ReadOnly : sig
 
   val controls : t -> EnvironmentControls.t
 
-  val unannotated_global_environment : t -> t
+  val source_code_read_only : t -> SourceCodeIncrementalApi.ReadOnly.t
 
   (* All other functions are dependency tracked *)
 
@@ -111,24 +111,16 @@ module UpdateResult : sig
 
   val invalidated_modules : t -> Reference.t list
 
-  val module_updates : t -> SourceCodeIncrementalApi.UpdateResult.ModuleUpdate.t list
-
   val all_triggered_dependencies : t -> DependencyKey.RegisteredSet.t list
 
-  val unannotated_global_environment_update_result : t -> t
+  val source_code_update_result : t -> SourceCodeIncrementalApi.UpdateResult.t
 end
 
 module Overlay : sig
   type t
 
   (* This handle to self is needed to fulfill the recursive interface of the Environment functor *)
-  val unannotated_global_environment : t -> t
-
-  val owns_qualifier : t -> Ast.Reference.t -> bool
-
-  val owns_reference : t -> Ast.Reference.t -> bool
-
-  val owns_identifier : t -> Ast.Identifier.t -> bool
+  val source_code_overlay : t -> SourceCodeIncrementalApi.Overlay.t
 
   val update_overlaid_code
     :  t ->
@@ -140,22 +132,13 @@ module Overlay : sig
   val read_only : t -> ReadOnly.t
 end
 
-module CreateHandle : sig
-  type t = {
-    source_code_incremental_base: SourceCodeIncrementalApi.Base.t;
-    maybe_ast_environment: AstEnvironment.t option;
-  }
-
-  val of_ast_environment : AstEnvironment.t -> t
-end
-
 type t
 
-val create : CreateHandle.t -> t
+val create : SourceCodeEnvironment.t -> t
 
 (* This handle to self is needed to fulfill the (recursive) interface used in the Environment.ml
    functor *)
-val unannotated_global_environment : t -> t
+val source_code_base : t -> SourceCodeIncrementalApi.Base.t
 
 val controls : t -> EnvironmentControls.t
 
