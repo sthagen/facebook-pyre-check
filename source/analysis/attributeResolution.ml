@@ -1448,6 +1448,7 @@ module SignatureSelection = struct
         let importance = function
           | AbstractClassInstantiation _ -> 1
           | CallingFromParamSpec -> 1
+          | NonInstantiableSpecialForm _ -> 1
           | InvalidKeywordArgument _ -> 0
           | InvalidVariableArgument _ -> 0
           | Mismatches _ -> -1
@@ -2307,6 +2308,13 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               | "typing_extensions.Final"
               | "typing.Optional" ->
                   [Type.Variable.TypeVarVariable (Type.Variable.TypeVar.create "T")]
+              | "typing.Annotated"
+              | "typing_extensions.Annotated" ->
+                  [
+                    Type.Variable.TypeVarVariable (Type.Variable.TypeVar.create "T1");
+                    Type.Variable.TypeVarVariable (Type.Variable.TypeVar.create "T2");
+                    Type.Variable.TypeVarTupleVariable (Type.Variable.TypeVarTuple.create "Ts");
+                  ]
               | "typing.Callable" ->
                   [
                     Type.Variable.ParamSpecVariable (Type.Variable.ParamSpec.create "Ps");
