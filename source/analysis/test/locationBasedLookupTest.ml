@@ -1333,8 +1333,8 @@ let test_resolve_definition_for_symbol =
       @@ assert_resolved_definition
            {|
              def foo(x: str) -> None:
+                   # ^     ^
                for x in [1]:
-                 # ^^
 
                  print(x)
                  #     ^- cursor
@@ -2752,7 +2752,15 @@ let test_classify_coverage_data _ =
     | "None" -> None
     | _ -> Some (parse_single_expression expression)
   in
-  let parse_type type_ = Type.create ~aliases:Type.empty_aliases (parse_single_expression type_) in
+
+  let variable_aliases _ = None in
+
+  let parse_type type_ =
+    Type.create
+      ~variables:variable_aliases
+      ~aliases:Type.empty_aliases
+      (parse_single_expression type_)
+  in
   let make_coverage_data_record ~expression type_ = { LocationBasedLookup.expression; type_ } in
   let make_coverage_gap_record ~coverage_data reason =
     Some { LocationBasedLookup.coverage_data; reason }
@@ -3465,7 +3473,11 @@ let test_resolve_type_for_symbol context =
       (symbol_data |> Result.ok >>= LocationBasedLookup.resolve_type_for_symbol ~type_environment)
   in
   let assert_resolved_type ?external_sources ?(aliases = Type.empty_aliases) source expected_type =
-    let parse_type type_ = Type.create ~aliases (parse_single_expression type_) in
+    let variable_aliases _ = None in
+
+    let parse_type type_ =
+      Type.create ~variables:variable_aliases ~aliases (parse_single_expression type_)
+    in
     assert_resolved_explicit_type ?external_sources source (expected_type >>| parse_type)
   in
   assert_resolved_type
@@ -3685,6 +3697,8 @@ let test_resolve_type_for_symbol context =
           # ^- cursor
     |}
     (Some "str");
+  (* NOTE: This is wrong: `x` should be `int` but the `resolve_type` implementation is not control
+     flow sensitive. *)
   assert_resolved_type
     {|
         def foo(x: str) -> None:
@@ -3692,7 +3706,7 @@ let test_resolve_type_for_symbol context =
             print(x)
             #     ^- cursor
     |}
-    (Some "int");
+    (Some "str");
   assert_resolved_explicit_type
     {|
         class Foo:

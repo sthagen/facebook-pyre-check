@@ -465,8 +465,8 @@ module State (Context : Context) = struct
     let add_error errors mismatch =
       match annotation with
       (* Ignore errors from synthetic Self type when it is Generic without the proper bound *)
-      | Type.Variable variable
-        when Preprocessing.SelfType.is_synthetic_type_variable variable.variable ->
+      | Type.Variable variable when Preprocessing.SelfType.is_synthetic_type_variable variable.name
+        ->
           errors
       | _ -> emit_error ~errors ~location ~kind:(Error.InvalidTypeParameters mismatch)
     in
@@ -5365,6 +5365,7 @@ module State (Context : Context) = struct
 
   and forward_assignment ~resolution ~location ~target ~annotation ~value =
     let global_resolution = Resolution.global_resolution resolution in
+
     let errors, is_final, unwrapped_annotation_type =
       match annotation with
       | None -> [], false, None
@@ -5400,6 +5401,7 @@ module State (Context : Context) = struct
           in
           annotation_errors, is_final, Option.map final_annotation ~f:unwrap_type_qualifiers
     in
+
     match Node.value target, value with
     | Expression.Name (Name.Identifier _), Some value
       when delocalize target
@@ -5596,8 +5598,7 @@ module State (Context : Context) = struct
             return_type
         in
         Value resolution, validate_return expression ~resolution ~errors ~actual ~is_implicit
-    | Define
-        { signature = { Define.Signature.name; nesting_define; parameters; _ } as signature; _ } ->
+    | Define { signature = { Define.Signature.name; nesting_define; _ } as signature; _ } ->
         let resolution =
           match nesting_define with
           | Some _ ->
@@ -5609,20 +5610,7 @@ module State (Context : Context) = struct
               Resolution.new_local resolution ~reference:name ~type_info:annotation
           | None -> resolution
         in
-        let duplicate_parameters, _ =
-          List.fold
-            parameters
-            ~init:([], Identifier.Set.empty)
-            ~f:(fun (duplicates, seen) { Node.value = { Parameter.name; _ }; location } ->
-              match Set.mem seen name with
-              | true -> (name, location) :: duplicates, seen
-              | false -> duplicates, Set.add seen name)
-        in
-        let errors =
-          List.fold duplicate_parameters ~init:[] ~f:(fun errors (name, location) ->
-              emit_error ~errors ~location ~kind:(Error.DuplicateParameter name))
-        in
-        Value resolution, errors
+        Value resolution, []
     | Import { Import.from; imports } ->
         let get_export_kind = function
           | ResolvedReference.Exported export -> Some export
@@ -5903,6 +5891,15 @@ module State (Context : Context) = struct
 
   let initial ~resolution =
     let global_resolution = Resolution.global_resolution resolution in
+
+    let get_type_alias = GlobalResolution.get_type_alias global_resolution in
+
+    let variable_aliases name =
+      match get_type_alias ?replace_unbound_parameters_with_any:(Some true) name with
+      | Some (Type.Alias.VariableAlias variable) -> Some variable
+      | _ -> None
+    in
+
     let {
       Node.location;
       value =
@@ -5926,6 +5923,16 @@ module State (Context : Context) = struct
     }
       =
       Context.define
+    in
+    let parameter_types =
+      let create_parameter { Node.value = { Parameter.name; value; _ }; _ } =
+        {
+          Type.Callable.CallableParamType.name;
+          annotation = Type.Any;
+          default = Option.is_some value;
+        }
+      in
+      List.map parameters ~f:create_parameter |> Type.Callable.CallableParamType.create
     in
     let check_decorators resolution errors =
       let check_final_decorator errors =
@@ -6029,6 +6036,45 @@ module State (Context : Context) = struct
       in
       List.fold unbound_names ~init:errors ~f:add_unbound_name_error
     in
+    let check_duplicate_parameters errors =
+      let duplicate_parameters, _ =
+        List.fold
+          parameters
+          ~init:([], Identifier.Set.empty)
+          ~f:(fun (duplicates, seen) { Node.value = { Parameter.name; _ }; location } ->
+            match Set.mem seen name with
+            | true -> (name, location) :: duplicates, seen
+            | false -> duplicates, Set.add seen name)
+      in
+      List.fold duplicate_parameters ~init:errors ~f:(fun errors (name, location) ->
+          emit_error ~errors ~location ~kind:(Error.DuplicateParameter name))
+    in
+    let check_positional_only_parameters errors =
+      (* Positional-only parameters cannot appear after parameters which may be passed by name,
+         ignoring the self/cls parameter for methods. *)
+      let parameters_to_check =
+        if Option.is_some parent && not (Define.is_static_method define) then
+          List.drop parameter_types 1
+        else
+          parameter_types
+      in
+      let parameters_array = List.to_array parameters in
+      List.fold
+        parameters_to_check
+        ~init:(errors, true)
+        ~f:(fun (errors, positional_only_allowed) param ->
+          match param with
+          | Type.Callable.CallableParamType.PositionalOnly { index; _ }
+            when not positional_only_allowed ->
+              let location =
+                try parameters_array.(index).Node.location with
+                | Invalid_argument _ -> location
+              in
+              emit_error ~errors ~location ~kind:Error.InvalidPositionalOnlyParameter, false
+          | PositionalOnly _ -> errors, true
+          | _ -> errors, false)
+      |> fst
+    in
     let check_return_annotation resolution errors =
       let add_missing_return_error annotation errors =
         let return_type =
@@ -6095,6 +6141,32 @@ module State (Context : Context) = struct
         else
           errors
       in
+      let add_typeguard_error { Node.location; _ } return_type errors =
+        (* TypeGuard functions require at least two parameters if implemented as an instance or
+           class method, since the first parameter is self or cls. Otherwise, TypeGuard functions
+           require at least one parameter. *)
+        let positional_parameters =
+          List.filter
+            ~f:(fun param ->
+              match param with
+              | Type.Callable.CallableParamType.PositionalOnly _
+              | Named _
+              | Variable _ ->
+                  true
+              | _ -> false)
+            parameter_types
+        in
+        match return_type with
+        | Type.Parametric { name = "typing.TypeGuard" | "typing_extensions.TypeGuard"; _ }
+          when Option.is_some parent
+               && (not (Define.is_static_method define))
+               && List.length positional_parameters < 2 ->
+            emit_error ~errors ~location ~kind:Error.InvalidTypeGuard
+        | Type.Parametric { name = "typing.TypeGuard" | "typing_extensions.TypeGuard"; _ }
+          when List.is_empty positional_parameters ->
+            emit_error ~errors ~location ~kind:Error.InvalidTypeGuard
+        | _ -> errors
+      in
       let errors = add_missing_return_error return_annotation errors in
       match return_annotation with
       | None -> errors
@@ -6105,6 +6177,7 @@ module State (Context : Context) = struct
           List.append annotation_errors errors
           |> add_async_generator_error return_type
           |> add_variance_error return_type
+          |> add_typeguard_error return_annotation return_type
     in
     let add_capture_annotations ~outer_scope_type_variables resolution errors =
       let process_signature ({ Define.Signature.nesting_define; _ } as signature) =
@@ -6540,7 +6613,10 @@ module State (Context : Context) = struct
           | Parametric _
           | Tuple _ ->
               errors
-          | Any when GlobalResolution.base_is_from_placeholder_stub global_resolution base -> errors
+          | Any
+            when (GlobalResolution.base_is_from_placeholder_stub variable_aliases global_resolution)
+                   base ->
+              errors
           | annotation ->
               emit_error
                 ~errors
@@ -7161,6 +7237,8 @@ module State (Context : Context) = struct
         |> check_init_subclass_call resolution
         |> check_behavioral_subtyping resolution
         |> check_constructor_return
+        |> check_duplicate_parameters
+        |> check_positional_only_parameters
       in
       resolution, errors
     in

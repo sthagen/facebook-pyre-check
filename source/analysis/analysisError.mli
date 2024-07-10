@@ -412,6 +412,7 @@ and kind =
       name: Identifier.t;
     }
   | InvalidType of invalid_type_kind
+  | InvalidTypeGuard
   | InvalidTypeParameters of AttributeResolution.type_parameters_mismatch
   | InvalidTypeVariable of {
       annotation: Type.Variable.t;
@@ -426,6 +427,7 @@ and kind =
       parent: Identifier.t;
       decorator: invalid_override_kind;
     }
+  | InvalidPositionalOnlyParameter
   | InvalidAssignment of invalid_assignment_kind
   | LeakToGlobal of GlobalLeaks.leak
   | MissingArgument of {

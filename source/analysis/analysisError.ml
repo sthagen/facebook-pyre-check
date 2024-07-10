@@ -758,6 +758,7 @@ and kind =
       name: Identifier.t;
     }
   | InvalidType of invalid_type_kind
+  | InvalidTypeGuard
   | InvalidTypeParameters of AttributeResolution.type_parameters_mismatch
   | InvalidTypeVariable of {
       annotation: Type.Variable.t;
@@ -772,6 +773,7 @@ and kind =
       parent: Identifier.t;
       decorator: invalid_override_kind;
     }
+  | InvalidPositionalOnlyParameter
   | InvalidAssignment of invalid_assignment_kind
   | LeakToGlobal of GlobalLeaks.leak
   | MissingArgument of {
@@ -954,6 +956,8 @@ let code_of_kind = function
   | DuplicateParameter _ -> 65
   | InvalidExceptionHandler _ -> 66
   | InvalidExceptionGroupHandler _ -> 67
+  | InvalidTypeGuard -> 68
+  | InvalidPositionalOnlyParameter -> 69
   | ParserFailure _ -> 404
   (* Additional errors. *)
   | UnawaitedAwaitable _ -> 1001
@@ -994,11 +998,13 @@ let name_of_kind = function
   | InvalidExceptionHandler _ -> "Invalid except clause"
   | InvalidExceptionGroupHandler _ -> "Invalid except* clause"
   | InvalidType _ -> "Invalid type"
+  | InvalidTypeGuard -> "Invalid type guard"
   | InvalidTypeParameters _ -> "Invalid type parameters"
   | InvalidTypeVariable _ -> "Invalid type variable"
   | InvalidTypeVariance _ -> "Invalid type variance"
   | InvalidInheritance _ -> "Invalid inheritance"
   | InvalidOverride _ -> "Invalid override"
+  | InvalidPositionalOnlyParameter -> "Invalid positional-only parameter"
   | InvalidAssignment _ -> "Invalid assignment"
   | LeakToGlobal kind -> GlobalLeaks.name_of_kind kind
   | MissingArgument _ -> "Missing argument"
@@ -1210,7 +1216,7 @@ let simplify_mismatch ({ actual; expected; _ } as mismatch) =
         let updated =
           match annotation with
           | Type.Parametric { name; _ }
-          | Variable { variable = name; _ }
+          | Variable { name; _ }
           | Primitive name ->
               name :: sofar
           | _ -> sofar
@@ -1908,6 +1914,11 @@ let rec messages ~concise ~signature location kind =
           ]
       | InvalidLiteral reference ->
           [Format.asprintf "Expression `%a` is not a literal value." Reference.pp reference])
+  | InvalidTypeGuard ->
+      [
+        Format.asprintf
+          "User-defined type guard functions or methods must have at least one input parameter.";
+      ]
   | InvalidTypeParameters
       {
         name;
@@ -2030,7 +2041,7 @@ let rec messages ~concise ~signature location kind =
           | ClassToplevel ->
               [
                 Format.asprintf format (Type.show (Type.Variable variable))
-                ^ Format.asprintf detail variable.variable;
+                ^ Format.asprintf detail variable.name;
               ]
           | Define -> [Format.asprintf format (Type.show (Type.Variable variable))]
           | Toplevel -> [Format.asprintf format (Type.show (Type.Variable variable))])
@@ -2171,6 +2182,11 @@ let rec messages ~concise ~signature location kind =
           ]
       | IllegalOverrideDecorator ->
           [Format.asprintf "%s`%a` %s." preamble pp_reference define_name message])
+  | InvalidPositionalOnlyParameter ->
+      [
+        Format.asprintf
+          "Positional-only parameters cannot appear after parameters that accept keyword arguments.";
+      ]
   | InvalidAssignment kind -> (
       match kind with
       | FinalAttribute name ->
@@ -2777,7 +2793,7 @@ let rec messages ~concise ~signature location kind =
         | ProtocolBase -> "Duplicate type variable `%s` in Protocol[...]."
       in
       match variable with
-      | Type.Variable.TypeVarVariable { Type.Record.Variable.TypeVar.variable = name; _ } ->
+      | Type.Variable.TypeVarVariable { Type.Record.Variable.TypeVar.name; _ } ->
           [Format.asprintf format name]
       | Type.Variable.ParamSpecVariable variable ->
           let name = Type.Variable.ParamSpec.name variable in
@@ -3219,9 +3235,11 @@ let due_to_analysis_limitations { kind; _ } =
   | InvalidTypeVariance _
   | InvalidInheritance _
   | InvalidOverride _
+  | InvalidPositionalOnlyParameter
   | InvalidAssignment _
   | InvalidClassInstantiation _
   | InvalidType _
+  | InvalidTypeGuard
   | IncompatibleOverload _
   | IncompleteType _
   | LeakToGlobal _
@@ -3335,9 +3353,12 @@ let join ~resolution left right =
             annotation = GlobalResolution.join resolution left right;
             attempted_action = left_attempted_action;
           }
+    | InvalidTypeGuard, InvalidTypeGuard -> InvalidTypeGuard
     | InvalidTypeParameters left, InvalidTypeParameters right
       when [%compare.equal: AttributeResolution.type_parameters_mismatch] left right ->
         InvalidTypeParameters left
+    | InvalidPositionalOnlyParameter, InvalidPositionalOnlyParameter ->
+        InvalidPositionalOnlyParameter
     | LeakToGlobal left, LeakToGlobal right when [%compare.equal: GlobalLeaks.leak] left right ->
         LeakToGlobal left
     | ( MissingArgument { callee = left_callee; parameter = Named left_name },
@@ -3744,11 +3765,13 @@ let join ~resolution left right =
     | InvalidExceptionGroupHandler _, _
     | InvalidMethodSignature _, _
     | InvalidType _, _
+    | InvalidTypeGuard, _
     | InvalidTypeParameters _, _
     | InvalidTypeVariable _, _
     | InvalidTypeVariance _, _
     | InvalidInheritance _, _
     | InvalidOverride _, _
+    | InvalidPositionalOnlyParameter, _
     | InvalidAssignment _, _
     | InvalidClassInstantiation _, _
     | LeakToGlobal _, _
@@ -4232,6 +4255,7 @@ let dequalify
     | InvalidType (SingleExplicit explicit) -> InvalidType (SingleExplicit (dequalify explicit))
     | InvalidType (InvalidLiteral reference) ->
         InvalidType (InvalidLiteral (dequalify_reference reference))
+    | InvalidTypeGuard -> InvalidTypeGuard
     | InvalidTypeParameters invalid_type_parameters ->
         InvalidTypeParameters (dequalify_invalid_type_parameters invalid_type_parameters)
     | InvalidTypeVariable { annotation; origin } ->
@@ -4243,6 +4267,7 @@ let dequalify
     | InvalidInheritance name -> InvalidInheritance (dequalify_invalid_inheritance name)
     | InvalidOverride { parent; decorator } ->
         InvalidOverride { parent = dequalify_identifier parent; decorator }
+    | InvalidPositionalOnlyParameter -> InvalidPositionalOnlyParameter
     | InvalidAssignment kind -> InvalidAssignment (dequalify_invalid_assignment kind)
     | InvalidClassInstantiation kind ->
         InvalidClassInstantiation (dequalify_invalid_class_instantiation kind)

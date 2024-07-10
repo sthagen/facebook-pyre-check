@@ -31,7 +31,7 @@ module Record : sig
 
     module TypeVar : sig
       type 'annotation record = {
-        variable: Identifier.t;
+        name: Identifier.t;
         constraints: 'annotation constraints;
         variance: variance;
         state: state;
@@ -448,7 +448,8 @@ val resolve_aliases
   t
 
 val create
-  :  aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
+  :  variables:(string -> t Record.Variable.record option) ->
+  aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
   Expression.t ->
   t
 
@@ -712,8 +713,6 @@ module Variable : sig
 
   type t = type_t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
 
-  type variable_t = t
-
   module type VariableKind = sig
     type t [@@deriving compare, eq, sexp, show, hash]
 
@@ -773,7 +772,7 @@ module Variable : sig
 
     val name : t -> Identifier.t
 
-    val create : ?variance:Record.Variable.variance -> string -> t
+    val create : string -> t
 
     val parse_instance_annotation
       :  create_type:
@@ -783,6 +782,7 @@ module Variable : sig
       variable_parameter_annotation:Expression.t ->
       keywords_parameter_annotation:Expression.t ->
       aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
+      variables:(string -> type_t Record.Variable.record option) ->
       t option
 
     module Components : sig

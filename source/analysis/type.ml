@@ -68,7 +68,7 @@ module Record = struct
 
     module TypeVar = struct
       type 'annotation record = {
-        variable: Identifier.t;
+        name: Identifier.t;
         constraints: 'annotation constraints;
         variance: variance;
         state: state;
@@ -77,14 +77,12 @@ module Record = struct
       [@@deriving compare, eq, sexp, show, hash]
 
       let create ?(constraints = Unconstrained) ?(variance = Invariant) name =
-        { variable = name; constraints; variance; state = Free { escaped = false }; namespace = 0 }
+        { name; constraints; variance; state = Free { escaped = false }; namespace = 0 }
     end
 
-    (* TODO(T47346673): Handle variance on variadics. *)
     module ParamSpec = struct
       type 'annotation record = {
         name: Identifier.t;
-        variance: variance;
         state: state;
         namespace: Namespace.t;
       }
@@ -98,15 +96,13 @@ module Record = struct
 
         type t = {
           component: component;
-          variance: variance;
           variable_name: Identifier.t;
           variable_namespace: Namespace.t;
         }
         [@@deriving compare, eq, sexp, show, hash]
       end
 
-      let create ?(variance = Invariant) name =
-        { name; variance; state = Free { escaped = false }; namespace = 1 }
+      let create name = { name; state = Free { escaped = false }; namespace = 1 }
     end
 
     module TypeVarTuple = struct
@@ -1052,8 +1048,8 @@ module PrettyPrinting = struct
     module TypeVar = struct
       open Record.Variable.TypeVar
 
-      let pp_concise format { variable; constraints; variance; _ } ~pp_type =
-        let name =
+      let pp_concise format { name; constraints; variance; _ } ~pp_type =
+        let description =
           match constraints with
           | Bound _
           | Explicit _
@@ -1078,7 +1074,13 @@ module PrettyPrinting = struct
           | Contravariant -> "(contravariant)"
           | Invariant -> ""
         in
-        Format.fprintf format "%s[%s%s]%s" name (Identifier.sanitized variable) constraints variance
+        Format.fprintf
+          format
+          "%s[%s%s]%s"
+          description
+          (Identifier.sanitized name)
+          constraints
+          variance
     end
 
     module ParamSpec = struct
@@ -1359,7 +1361,7 @@ module PrettyPrinting = struct
     | Union [parameter; NoneType] ->
         Format.fprintf format "Optional[%a]" pp_concise parameter
     | Union parameters -> Format.fprintf format "Union[%a]" pp_comma_separated parameters
-    | Variable { variable; _ } -> Format.fprintf format "%s" (strip_qualification variable)
+    | Variable { name; _ } -> Format.fprintf format "%s" (strip_qualification name)
 
 
   and show_concise annotation = Format.asprintf "%a" pp_concise annotation
@@ -1433,45 +1435,55 @@ module Callable = struct
     let dummy_star_parameter = { name = "*"; annotation = Bottom; default = false }
 
     let create parameters =
-      let parameter index (keyword_only, sofar) { name; annotation; default } =
+      let has_pep570_syntax =
+        List.find parameters ~f:(fun { name; _ } ->
+            String.equal (Identifier.sanitized name) "*"
+            || String.equal (Identifier.sanitized name) "/")
+        |> Option.is_some
+      in
+      let create_parameter (index, keyword_only, sofar) { name; annotation; default } =
         if String.equal (Identifier.sanitized name) "*" then
-          true, sofar
+          (* * makes all subsequent named parameters keyword-only *)
+          index, true, sofar
+        else if String.equal (Identifier.sanitized name) "/" then
+          (* / makes all previous named parameters positional-only *)
+          let add_positional_only index param =
+            match param with
+            | Named { annotation; default; _ } -> PositionalOnly { index; annotation; default }
+            | _ -> param
+          in
+          index, keyword_only, List.rev sofar |> List.mapi ~f:add_positional_only |> List.rev
         else
           let star, name = Identifier.split_star name in
           let keyword_only = keyword_only || Identifier.equal star "*" in
-          let new_parameter =
+          let index, new_parameter =
             match star with
-            | "**" -> Keywords annotation
-            | "*" -> Variable (Concrete annotation)
+            | "**" -> index + 1, Keywords annotation
+            | "*" -> index + 1, Variable (Concrete annotation)
             | _ ->
                 let sanitized = Identifier.sanitized name in
+                (* Parameters that start but do not end with __, occurring in functions that do not
+                   have PEP570's special parameter syntax * and /, are treated as positional-only
+                   unless they occur after a variadic parameter *)
                 if
-                  String.equal sanitized "__"
-                  || String.is_prefix sanitized ~prefix:"__"
-                     && not (String.is_suffix sanitized ~suffix:"__")
+                  (not keyword_only)
+                  && (not has_pep570_syntax)
+                  && (String.equal sanitized "__"
+                     || String.is_prefix sanitized ~prefix:"__"
+                        && not (String.is_suffix sanitized ~suffix:"__"))
                 then
-                  CallableParamType.PositionalOnly { index; annotation; default }
+                  index + 1, CallableParamType.PositionalOnly { index; annotation; default }
                 else
                   let named = { name; annotation; default } in
                   if keyword_only then
-                    KeywordOnly named
+                    index + 1, KeywordOnly named
                   else
-                    Named named
+                    index + 1, Named named
           in
-          keyword_only, new_parameter :: sofar
+          index, keyword_only, new_parameter :: sofar
       in
-      let add_positional_only index (positional_only, sofar) parameter =
-        match parameter with
-        | Named { name; _ } when String.equal (Identifier.sanitized name) "/" -> true, sofar
-        | Named { annotation; default; _ } when positional_only ->
-            let index = List.length parameters - 1 - index in
-            positional_only, PositionalOnly { index; annotation; default } :: sofar
-        | _ -> positional_only, parameter :: sofar
-      in
-      List.foldi parameters ~f:parameter ~init:(false, [])
-      |> snd
-      |> List.foldi ~f:add_positional_only ~init:(false, [])
-      |> snd
+      let _, _, parameters = List.fold parameters ~f:create_parameter ~init:(0, false, []) in
+      List.rev parameters
 
 
     let show_concise =
@@ -2540,35 +2552,8 @@ module Variable = struct
       | _ -> None
 
 
-    let parse_declaration value target =
-      match value with
-      | {
-       Node.value =
-         Expression.Call
-           {
-             callee =
-               {
-                 Node.value =
-                   Name
-                     (Name.Attribute
-                       {
-                         base = { Node.value = Name (Name.Identifier "typing"); _ };
-                         attribute = "TypeVar";
-                         special = false;
-                       });
-                 _;
-               };
-             arguments =
-               [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-           };
-       _;
-      } ->
-          Some (create (Reference.show target))
-      | _ -> None
-
-
-    let dequalify ({ variable = name; _ } as variable) ~dequalify_map =
-      { variable with variable = dequalify_identifier dequalify_map name }
+    let dequalify ({ name; _ } as variable) ~dequalify_map =
+      { variable with name = dequalify_identifier dequalify_map name }
   end
 
   module ParamSpec = struct
@@ -2661,67 +2646,16 @@ module Variable = struct
       { variable with name = dequalify_identifier dequalify_map name }
 
 
-    let parse_declaration value ~target =
-      match value with
-      | {
-          Node.value =
-            Expression.Call
-              {
-                callee =
-                  {
-                    Node.value =
-                      Name
-                        (Name.Attribute
-                          {
-                            base = { Node.value = Name (Name.Identifier "pyre_extensions"); _ };
-                            attribute = "ParameterSpecification";
-                            special = false;
-                          });
-                    _;
-                  };
-                arguments =
-                  [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-              };
-          _;
-        }
-      | {
-          Node.value =
-            Expression.Call
-              {
-                callee =
-                  {
-                    Node.value =
-                      Name
-                        (Name.Attribute
-                          {
-                            base =
-                              {
-                                Node.value = Name (Name.Identifier ("typing" | "typing_extensions"));
-                                _;
-                              };
-                            attribute = "ParamSpec";
-                            special = false;
-                          });
-                    _;
-                  };
-                arguments =
-                  [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-              };
-          _;
-        } ->
-          Some (create (Reference.show target))
-      | _ -> None
-
-
     let parse_instance_annotation
         ~create_type
         ~variable_parameter_annotation
         ~keywords_parameter_annotation
         ~aliases
+        ~variables
       =
-      let get_variable name =
-        match aliases ?replace_unbound_parameters_with_any:(Some false) name with
-        | Some (Alias.VariableAlias (ParamSpecVariable variable)) -> Some variable
+      let get_variable variables name =
+        match variables name with
+        | Some (ParamSpecVariable variable) -> Some variable
         | _ -> None
       in
       let open Record.Variable.ParamSpec.Components in
@@ -2749,7 +2683,7 @@ module Variable = struct
           with
           | Primitive positionals_base, Primitive keywords_base
             when Identifier.equal positionals_base keywords_base ->
-              get_variable positionals_base
+              get_variable variables positionals_base
           | _ -> None)
       | _ -> None
 
@@ -2772,24 +2706,22 @@ module Variable = struct
         | ( ParamSpecComponent ({ component = PositionalArguments; _ } as positional_component),
             ParamSpecComponent ({ component = KeywordArguments; _ } as keyword_component) )
           when component_agnostic_equal positional_component keyword_component ->
-            let { variance; variable_name = name; variable_namespace = namespace; _ } =
+            let { variable_name = name; variable_namespace = namespace; _ } =
               positional_component
             in
-            Some { name; namespace; variance; state = InFunction }
+            Some { name; namespace; state = InFunction }
         | _ -> None
 
 
       let component { component; _ } = component
     end
 
-    let decompose { name = variable_name; variance; namespace = variable_namespace; _ } =
+    let decompose { name = variable_name; namespace = variable_namespace; _ } =
       {
         Components.positional_component =
-          ParamSpecComponent
-            { component = PositionalArguments; variable_name; variance; variable_namespace };
+          ParamSpecComponent { component = PositionalArguments; variable_name; variable_namespace };
         keyword_component =
-          ParamSpecComponent
-            { component = KeywordArguments; variable_name; variance; variable_namespace };
+          ParamSpecComponent { component = KeywordArguments; variable_name; variable_namespace };
       }
   end
 
@@ -2973,40 +2905,6 @@ module Variable = struct
 
     let dequalify ({ name; _ } as variable) ~dequalify_map =
       { variable with name = dequalify_identifier dequalify_map name }
-
-
-    let parse_declaration value ~target =
-      match value with
-      | {
-       Node.value =
-         Expression.Call
-           {
-             callee =
-               {
-                 Node.value =
-                   Name
-                     (Name.Attribute
-                       {
-                         base =
-                           {
-                             Node.value =
-                               ( Name (Name.Identifier "pyre_extensions")
-                               | Name (Name.Identifier "typing_extensions")
-                               | Name (Name.Identifier "typing") );
-                             _;
-                           };
-                         attribute = "TypeVarTuple";
-                         special = false;
-                       });
-                 _;
-               };
-             arguments =
-               [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-           };
-       _;
-      } ->
-          Some (create (Reference.show target))
-      | _ -> None
   end
 
   module GlobalTransforms = struct
@@ -3135,8 +3033,6 @@ module Variable = struct
 
   type t = T.t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
 
-  type variable_t = t
-
   module Set = Core.Set.Make (struct
     type t = T.t Record.Variable.record [@@deriving compare, sexp]
   end)
@@ -3150,15 +3046,106 @@ module Variable = struct
   [@@deriving compare, eq, sexp, show, hash]
 
   let parse_declaration expression ~target =
-    match ParamSpec.parse_declaration expression ~target with
-    | Some variable -> Some (ParamSpecVariable variable)
-    | None -> (
-        match TypeVarTuple.parse_declaration expression ~target with
-        | Some variable -> Some (TypeVarTupleVariable variable)
-        | None -> (
-            match TypeVar.parse_declaration expression target with
-            | Some variable -> Some (Record.Variable.TypeVarVariable variable)
-            | None -> None))
+    match expression with
+    | {
+     Node.value =
+       Expression.Call
+         {
+           callee =
+             {
+               Node.value =
+                 Name
+                   (Name.Attribute
+                     {
+                       base = { Node.value = Name (Name.Identifier "typing"); _ };
+                       attribute = "TypeVar";
+                       special = false;
+                     });
+               _;
+             };
+           arguments =
+             [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+         };
+     _;
+    } ->
+        Some (TypeVarVariable (TypeVar.create (Reference.show target)))
+    | {
+        Node.value =
+          Expression.Call
+            {
+              callee =
+                {
+                  Node.value =
+                    Name
+                      (Name.Attribute
+                        {
+                          base = { Node.value = Name (Name.Identifier "pyre_extensions"); _ };
+                          attribute = "ParameterSpecification";
+                          special = false;
+                        });
+                  _;
+                };
+              arguments =
+                [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+            };
+        _;
+      }
+    | {
+        Node.value =
+          Expression.Call
+            {
+              callee =
+                {
+                  Node.value =
+                    Name
+                      (Name.Attribute
+                        {
+                          base =
+                            {
+                              Node.value = Name (Name.Identifier ("typing" | "typing_extensions"));
+                              _;
+                            };
+                          attribute = "ParamSpec";
+                          special = false;
+                        });
+                  _;
+                };
+              arguments =
+                [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+            };
+        _;
+      } ->
+        Some (ParamSpecVariable (ParamSpec.create (Reference.show target)))
+    | {
+     Node.value =
+       Expression.Call
+         {
+           callee =
+             {
+               Node.value =
+                 Name
+                   (Name.Attribute
+                     {
+                       base =
+                         {
+                           Node.value =
+                             ( Name (Name.Identifier "pyre_extensions")
+                             | Name (Name.Identifier "typing_extensions")
+                             | Name (Name.Identifier "typing") );
+                           _;
+                         };
+                       attribute = "TypeVarTuple";
+                       special = false;
+                     });
+               _;
+             };
+           arguments =
+             [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+         };
+     _;
+    } ->
+        Some (TypeVarTupleVariable (TypeVarTuple.create (Reference.show target)))
+    | _ -> None
 
 
   let dequalify dequalify_map = function
@@ -3609,7 +3596,7 @@ module ToExpression = struct
     | Union [parameter; NoneType] ->
         subscript "typing.Optional" [expression parameter]
     | Union parameters -> subscript "typing.Union" (List.map ~f:expression parameters)
-    | Variable { variable; _ } -> create_name variable
+    | Variable { name; _ } -> create_name name
 
 
   and expression annotation =
@@ -4835,13 +4822,8 @@ let resolve_aliases ~aliases annotation =
   snd (ResolveAliasesTransform.visit () annotation)
 
 
-let create ~aliases =
-  let variable_aliases name =
-    match aliases ?replace_unbound_parameters_with_any:(Some true) name with
-    | Some (Alias.VariableAlias variable) -> Some variable
-    | _ -> None
-  in
-  create_logic ~resolve_aliases:(resolve_aliases ~aliases) ~variable_aliases
+let create ~variables ~aliases =
+  create_logic ~resolve_aliases:(resolve_aliases ~aliases) ~variable_aliases:variables
 
 
 let namespace_insensitive_compare left right =
@@ -4888,8 +4870,8 @@ let dequalify map annotation =
                   List.map parameters ~f:(fun parameter -> Record.Parameter.Single parameter);
               }
         | Primitive name -> Primitive (dequalify_identifier map name)
-        | Variable ({ variable = name; _ } as annotation) ->
-            Variable { annotation with variable = dequalify_identifier map name }
+        | Variable ({ name; _ } as annotation) ->
+            Variable { annotation with name = dequalify_identifier map name }
         | Callable ({ kind; _ } as callable) ->
             let kind =
               match kind with
