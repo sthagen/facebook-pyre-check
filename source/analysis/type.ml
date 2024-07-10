@@ -2408,13 +2408,6 @@ module ReadOnly = struct
     |> Option.value ~default:(make_container element_type)
 end
 
-module Alias = struct
-  type t =
-    | TypeAlias of T.t
-    | VariableAlias of T.t Record.Variable.record
-  [@@deriving compare, eq, sexp, show, hash]
-end
-
 module Variable = struct
   open T
   include Record.Variable
@@ -2646,45 +2639,28 @@ module Variable = struct
       { variable with name = dequalify_identifier dequalify_map name }
 
 
-    let parse_instance_annotation
-        ~create_type
-        ~variable_parameter_annotation
-        ~keywords_parameter_annotation
-        ~aliases
-        ~variables
-      =
-      let get_variable variables name =
-        match variables name with
-        | Some (ParamSpecVariable variable) -> Some variable
+    let of_component_annotations ~get_param_spec ~args_annotation ~kwargs_annotation =
+      let get_param_spec_base_identifier annotation component_name =
+        match annotation with
+        | {
+         Node.value =
+           Expression.Name
+             (Attribute { base = { Node.value = Expression.Name base_name; _ }; attribute; _ });
+         _;
+        }
+          when Identifier.equal attribute component_name ->
+            name_to_reference base_name >>| Reference.show
         | _ -> None
       in
       let open Record.Variable.ParamSpec.Components in
       let open PrettyPrinting.Variable.ParamSpec.Components in
-      match variable_parameter_annotation, keywords_parameter_annotation with
-      | ( {
-            Node.value =
-              Expression.Name
-                (Attribute
-                  { base = variable_parameter_base; attribute = variable_parameter_attribute; _ });
-            _;
-          },
-          {
-            Node.value =
-              Expression.Name
-                (Attribute
-                  { base = keywords_parameter_base; attribute = keywords_parameter_attribute; _ });
-            _;
-          } )
-        when Identifier.equal variable_parameter_attribute (component_name PositionalArguments)
-             && Identifier.equal keywords_parameter_attribute (component_name KeywordArguments) -> (
-          match
-            ( create_type ~aliases variable_parameter_base,
-              create_type ~aliases keywords_parameter_base )
-          with
-          | Primitive positionals_base, Primitive keywords_base
-            when Identifier.equal positionals_base keywords_base ->
-              get_variable variables positionals_base
-          | _ -> None)
+      match
+        ( get_param_spec_base_identifier args_annotation (component_name PositionalArguments),
+          get_param_spec_base_identifier kwargs_annotation (component_name KeywordArguments) )
+      with
+      | Some positionals_base, Some keywords_base
+        when Identifier.equal positionals_base keywords_base ->
+          get_param_spec positionals_base
       | _ -> None
 
 
@@ -4714,6 +4690,13 @@ let assume_any = function
   | Top -> Any
   | annotation -> annotation
 
+
+module Alias = struct
+  type t =
+    | TypeAlias of T.t
+    | VariableAlias of T.t Record.Variable.record
+  [@@deriving compare, eq, sexp, show, hash]
+end
 
 let resolve_aliases ~aliases annotation =
   let visited = Containers.Hash_set.create () in

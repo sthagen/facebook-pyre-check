@@ -315,24 +315,21 @@ module OutgoingDataComputation = struct
       annotation
 
 
-  let parse_as_parameter_specification_instance_annotation
+  let param_spec_from_vararg_annotations
       Queries.{ get_type_alias; _ }
-      ~variable_parameter_annotation
-      ~keywords_parameter_annotation
+      ~args_annotation
+      ~kwargs_annotation
       ()
-      ~variable_aliases
     =
-    let variable_parameter_annotation, keywords_parameter_annotation =
-      delocalize variable_parameter_annotation, delocalize keywords_parameter_annotation
+    let get_param_spec name =
+      match get_type_alias ?replace_unbound_parameters_with_any:(Some false) name with
+      | Some (Type.Alias.VariableAlias (ParamSpecVariable variable)) -> Some variable
+      | _ -> None
     in
-    let aliases ?replace_unbound_parameters_with_any:_ name = get_type_alias name in
-
-    Type.Variable.ParamSpec.parse_instance_annotation
-      ~create_type:(Type.create ~variables:variable_aliases)
-      ~aliases
-      ~variables:variable_aliases
-      ~variable_parameter_annotation
-      ~keywords_parameter_annotation
+    Type.Variable.ParamSpec.of_component_annotations
+      ~get_param_spec
+      ~args_annotation:(delocalize args_annotation)
+      ~kwargs_annotation:(delocalize kwargs_annotation)
 end
 
 module AliasValue = struct
@@ -437,20 +434,9 @@ module ReadOnly = struct
       (outgoing_queries ?dependency environment)
 
 
-  let parse_as_parameter_specification_instance_annotation environment ?dependency =
-    let variable_aliases name =
-      match
-        (outgoing_queries ?dependency environment).get_type_alias
-          ?replace_unbound_parameters_with_any:(Some true)
-          name
-      with
-      | Some (Type.Alias.VariableAlias variable) -> Some variable
-      | _ -> None
-    in
-
-    OutgoingDataComputation.parse_as_parameter_specification_instance_annotation
+  let param_spec_from_vararg_annotations environment ?dependency =
+    OutgoingDataComputation.param_spec_from_vararg_annotations
       (outgoing_queries ?dependency environment)
-      ~variable_aliases
 end
 
 module AliasReadOnly = ReadOnly
