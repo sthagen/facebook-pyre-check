@@ -1103,6 +1103,115 @@ let test_handle_types_query context =
                  |> QueryTestTypes.create_types_at_locations;
              };
            ]))
+  >>= fun () ->
+  assert_type_query_response_with_local_root
+    ~source:{|[x for x in [1, 2, 3]]|}
+    ~query:"types(path='test.py')"
+    (fun _ ->
+      Single
+        (Base.TypesByPath
+           [
+             {
+               Base.path = "test.py";
+               types =
+                 [
+                   1, 0, 1, 22, Type.list Type.integer;
+                   1, 1, 1, 2, Type.integer;
+                   1, 7, 1, 8, Type.integer;
+                   1, 12, 1, 21, Type.list Type.integer;
+                   1, 13, 1, 14, Type.literal_integer 1;
+                   1, 16, 1, 17, Type.literal_integer 2;
+                   1, 19, 1, 20, Type.literal_integer 3;
+                 ]
+                 |> QueryTestTypes.create_types_at_locations;
+             };
+           ]))
+  >>= fun () ->
+  assert_type_query_response_with_local_root
+    ~source:{|(x for x in [1, 2, 3])|}
+    ~query:"types(path='test.py')"
+    (fun _ ->
+      Single
+        (Base.TypesByPath
+           [
+             {
+               Base.path = "test.py";
+               types =
+                 [
+                   ( 1,
+                     0,
+                     1,
+                     22,
+                     Type.generator
+                       ~yield_type:Type.integer
+                       ~send_type:Type.none
+                       ~return_type:Type.none
+                       () );
+                   1, 1, 1, 2, Type.integer;
+                   1, 7, 1, 8, Type.integer;
+                   1, 12, 1, 21, Type.list Type.integer;
+                   1, 13, 1, 14, Type.literal_integer 1;
+                   1, 16, 1, 17, Type.literal_integer 2;
+                   1, 19, 1, 20, Type.literal_integer 3;
+                 ]
+                 |> QueryTestTypes.create_types_at_locations;
+             };
+           ]))
+  >>= fun () ->
+  assert_type_query_response_with_local_root
+    ~source:{|
+      name = "Foo"
+      age = 42
+      f"{name} is {age} years old"
+    |}
+    ~query:"types(path='test.py')"
+    (fun _ ->
+      Single
+        (Base.TypesByPath
+           [
+             {
+               Base.path = "test.py";
+               types =
+                 [
+                   2, 0, 2, 4, Type.string;
+                   2, 7, 2, 12, Type.literal_string "Foo";
+                   3, 0, 3, 3, Type.integer;
+                   3, 6, 3, 8, Type.literal_integer 42;
+                   4, 0, 4, 28, Type.any_literal_string;
+                   4, 3, 4, 7, Type.string;
+                   4, 13, 4, 16, Type.integer;
+                 ]
+                 |> QueryTestTypes.create_types_at_locations;
+             };
+           ]))
+  >>= fun () ->
+  (* TODO: the coverage visitor does not handle scope correctly. we recurse into conditions in two
+     places: (1) from the main visitor, where we do not have the correct resolution object. (2) from
+     the special-case code in CreateDefinitionAndAnnotationLookupVisitor, where we only resolve the
+     outermost expression. Note that replacing `x==0` with `x` will include the reference to `x`,
+     but compound expressions fail. *)
+  assert_type_query_response_with_local_root
+    ~source:{|[x for x in [0] if x==0]|}
+    ~query:"types(path='test.py')"
+    (fun _ ->
+      Single
+        (Base.TypesByPath
+           [
+             {
+               Base.path = "test.py";
+               types =
+                 [
+                   1, 0, 1, 24, Type.list Type.integer;
+                   1, 1, 1, 2, Type.integer;
+                   1, 7, 1, 8, Type.integer;
+                   1, 12, 1, 15, Type.list Type.integer;
+                   1, 13, 1, 14, Type.literal_integer 0;
+                   1, 19, 1, 23, Type.bool;
+                   1, 22, 1, 23, Type.literal_integer 0;
+                 ]
+                 |> QueryTestTypes.create_types_at_locations;
+             };
+           ]))
 
 
 let test_handle_references_used_by_file_query context =

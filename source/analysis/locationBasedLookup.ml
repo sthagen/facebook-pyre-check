@@ -197,7 +197,7 @@ module CreateDefinitionAndAnnotationLookupVisitor = struct
       let store_coverage_data ~expression = store_lookup ~table:coverage_data_lookup ~expression in
       let store_generator_and_compute_resolution
           resolution
-          { Comprehension.Generator.target; iterator; conditions; _ }
+          ({ Comprehension.Generator.target; iterator; conditions; _ } as generator)
         =
         (* The basic idea here is to simulate element for x in generator if cond as the following: x
            = generator.__iter__().__next__() assert cond element *)
@@ -208,24 +208,7 @@ module CreateDefinitionAndAnnotationLookupVisitor = struct
         in
         annotate_expression resolution iterator;
         let resolution =
-          let target_assignment =
-            let iterator_element_call =
-              let to_call function_name base =
-                Expression.Call
-                  {
-                    callee =
-                      Node.create_with_default_location
-                        (Expression.Name
-                           (Name.Attribute { base; attribute = function_name; special = false }));
-                    arguments = [];
-                  }
-                |> Node.create_with_default_location
-              in
-
-              iterator |> to_call "__iter__" |> to_call "__next__"
-            in
-            { Assign.target; value = Some iterator_element_call; annotation = None }
-          in
+          let target_assignment = Statement.generator_assignment generator in
           Resolution.resolve_assignment resolution target_assignment
         in
         let store_condition_and_refine resolution condition =
@@ -263,6 +246,7 @@ module CreateDefinitionAndAnnotationLookupVisitor = struct
           in
           annotate_expression key;
           annotate_expression value
+      | Generator { element; generators }
       | ListComprehension { element; generators; _ }
       | SetComprehension { element; generators; _ } ->
           let annotate resolution ({ Node.location; _ } as expression) =
@@ -298,7 +282,7 @@ module CreateDefinitionAndAnnotationLookupVisitor = struct
 
   let visit_expression_children _ _ = true
 
-  let visit_format_string_children _ _ = false
+  let visit_format_string_children _ _ = true
 end
 
 (** This is a simple wrapper around [CreateDefinitionAndAnnotationLookupVisitor]. It ensures that
