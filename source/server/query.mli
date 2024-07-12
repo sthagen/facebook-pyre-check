@@ -21,6 +21,10 @@ module Request : sig
         qualifiers: Reference.t list;
         parse_errors: string list;
       }
+    | TypeAtPosition of {
+        path: PyrePath.t;
+        position: Location.position;
+      }
     | LessOrEqual of Expression.t * Expression.t
     | ModelQuery of {
         path: PyrePath.t;
@@ -161,6 +165,7 @@ module Response : sig
       | FoundModules of Ast.Reference.t list
       | FoundPath of string
       | GlobalLeakErrors of global_leak_errors
+      | TypeAtPosition of Type.t option
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
       | ReferenceTypesInPath of types_at_path
       | Success of string

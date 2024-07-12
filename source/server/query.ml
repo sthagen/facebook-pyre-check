@@ -41,6 +41,10 @@ module Request = struct
         qualifiers: Reference.t list;
         parse_errors: string list;
       }
+    | TypeAtPosition of {
+        path: PyrePath.t;
+        position: Location.position;
+      }
     | LessOrEqual of Expression.t * Expression.t
     | ModelQuery of {
         path: PyrePath.t;
@@ -189,6 +193,7 @@ module Response = struct
       | FoundModules of Reference.t list
       | FoundPath of string
       | GlobalLeakErrors of global_leak_errors
+      | TypeAtPosition of Type.t option
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
       | ReferenceTypesInPath of types_at_path
       | Success of string
@@ -286,6 +291,7 @@ module Response = struct
           let reference_to_yojson reference = `String (Reference.show reference) in
           `List (List.map references ~f:reference_to_yojson)
       | FoundPath path -> `Assoc ["path", `String path]
+      | TypeAtPosition maybe_type -> [%to_yojson: Type.t option] maybe_type
       | ReferenceTypesInPath referenceTypesInPath -> types_at_path_to_yojson referenceTypesInPath
       | Success message -> `Assoc ["message", `String message]
       | Superclasses class_to_superclasses_mapping ->
@@ -394,6 +400,13 @@ let rec parse_request_exn query =
         in
         Request.ValidateTaintModels { path; verify_dsl }
       in
+      let integer argument =
+        let integer_of_expression = function
+          | { Node.value = Expression.Constant (Constant.Integer value); _ } -> value
+          | _ -> raise (InvalidQuery "expected integer")
+        in
+        argument |> expression |> integer_of_expression
+      in
       match String.lowercase name, arguments with
       | "attributes", [name] -> Request.Attributes (reference name)
       | "batch", queries ->
@@ -431,6 +444,12 @@ let rec parse_request_exn query =
           List.map ~f:single_argument_to_reference arguments
           |> List.partition_result
           |> fun (qualifiers, parse_errors) -> Request.GlobalLeaks { qualifiers; parse_errors }
+      | "type_at_position", [path; line; column] ->
+          Request.TypeAtPosition
+            {
+              path = PyrePath.create_absolute (string path);
+              position = { Location.line = integer line; column = integer column };
+            }
       | "less_or_equal", [left; right] -> Request.LessOrEqual (access left, access right)
       | "model_query", [path; model_query_name] ->
           Request.ModelQuery
@@ -600,6 +619,20 @@ let rec process_request_exn
       in
       let qualifiers = GlobalModulePathsApi.explicit_qualifiers global_module_paths_api in
       List.fold_left qualifiers ~f:get_callgraph ~init:Reference.Map.empty
+    in
+    let qualifier_of_path path =
+      let relative_path =
+        let { Configuration.Analysis.local_root = root; _ } = configuration in
+        PyrePath.create_relative ~root ~relative:(PyrePath.absolute path) |> SourcePath.create
+      in
+      match
+        PathLookup.qualifiers_of_source_path_with_build_system
+          ~build_system
+          ~source_code_api
+          relative_path
+      with
+      | [found_module] -> Some found_module
+      | _ -> None
     in
     match request with
     | Request.Attributes annotation ->
@@ -833,6 +866,13 @@ let rec process_request_exn
         List.map ~f:find_leak_errors_for_qualifier qualifiers
         |> List.partition_result
         |> construct_result
+    | TypeAtPosition { path; position } ->
+        qualifier_of_path path
+        >>| (fun module_reference ->
+              LocationBasedLookup.type_at_position ~type_environment ~module_reference position)
+        >>| (fun maybe_type -> Single (Base.TypeAtPosition maybe_type))
+        |> Option.value
+             ~default:(Error (Format.sprintf "No module found for path `%s`" (PyrePath.show path)))
     | ModelQuery { path; query_name } -> (
         let pyre_api = PyrePysaApi.ReadOnly.create ~type_environment ~global_module_paths_api in
         if not (PyrePath.file_exists path) then

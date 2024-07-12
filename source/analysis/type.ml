@@ -1886,7 +1886,7 @@ module OrderedTypes = struct
         |> expression
 
 
-  let concatenation_from_annotations ~variable_aliases annotations =
+  let concatenation_from_annotations ~get_variable annotations =
     let unpacked_element_index index = function
       | Parametric { name; _ }
         when List.exists ~f:(Identifier.equal name) Record.OrderedTypes.unpack_public_names ->
@@ -1902,7 +1902,7 @@ module OrderedTypes = struct
             | Parametric { name; parameters = [Single (Primitive variable_name)] }
               when List.exists ~f:(Identifier.equal name) Record.OrderedTypes.unpack_public_names
               -> (
-                variable_aliases variable_name
+                get_variable variable_name
                 >>= function
                 | Record.Variable.TypeVarTupleVariable variadic ->
                     Some (Concatenation.create ~prefix ~suffix variadic)
@@ -3017,113 +3017,141 @@ module Variable = struct
 
   let pp_concise = PrettyPrinting.Variable.pp_concise ~pp_type:PrettyPrinting.pp
 
+  module Declaration = struct
+    type t =
+      | DTypeVar of {
+          name: Identifier.t;
+          constraints: Expression.t constraints;
+          variance: variance;
+        }
+      | DTypeVarTuple of { name: Identifier.t }
+      | DParamSpec of { name: Identifier.t }
+    [@@deriving equal, compare, sexp, show, hash]
+
+    let parse expression ~target =
+      match expression with
+      | {
+       Node.value =
+         Expression.Call
+           {
+             callee =
+               {
+                 Node.value =
+                   Name
+                     (Name.Attribute
+                       {
+                         base = { Node.value = Name (Name.Identifier "typing"); _ };
+                         attribute = "TypeVar";
+                         special = false;
+                       });
+                 _;
+               };
+             arguments =
+               [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+           };
+       _;
+      } ->
+          Some
+            (DTypeVar
+               { name = Reference.show target; constraints = Unconstrained; variance = Invariant })
+      | {
+          Node.value =
+            Expression.Call
+              {
+                callee =
+                  {
+                    Node.value =
+                      Name
+                        (Name.Attribute
+                          {
+                            base = { Node.value = Name (Name.Identifier "pyre_extensions"); _ };
+                            attribute = "ParameterSpecification";
+                            special = false;
+                          });
+                    _;
+                  };
+                arguments =
+                  [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+              };
+          _;
+        }
+      | {
+          Node.value =
+            Expression.Call
+              {
+                callee =
+                  {
+                    Node.value =
+                      Name
+                        (Name.Attribute
+                          {
+                            base =
+                              {
+                                Node.value = Name (Name.Identifier ("typing" | "typing_extensions"));
+                                _;
+                              };
+                            attribute = "ParamSpec";
+                            special = false;
+                          });
+                    _;
+                  };
+                arguments =
+                  [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+              };
+          _;
+        } ->
+          Some (DParamSpec { name = Reference.show target })
+      | {
+       Node.value =
+         Expression.Call
+           {
+             callee =
+               {
+                 Node.value =
+                   Name
+                     (Name.Attribute
+                       {
+                         base =
+                           {
+                             Node.value =
+                               ( Name (Name.Identifier "pyre_extensions")
+                               | Name (Name.Identifier "typing_extensions")
+                               | Name (Name.Identifier "typing") );
+                             _;
+                           };
+                         attribute = "TypeVarTuple";
+                         special = false;
+                       });
+                 _;
+               };
+             arguments =
+               [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
+           };
+       _;
+      } ->
+          Some (DTypeVarTuple { name = Reference.show target })
+      | _ -> None
+  end
+
   type variable_zip_result = {
     variable_pair: pair;
     received_parameter: Parameter.t;
   }
   [@@deriving compare, eq, sexp, show, hash]
 
-  let parse_declaration expression ~target =
-    match expression with
-    | {
-     Node.value =
-       Expression.Call
-         {
-           callee =
-             {
-               Node.value =
-                 Name
-                   (Name.Attribute
-                     {
-                       base = { Node.value = Name (Name.Identifier "typing"); _ };
-                       attribute = "TypeVar";
-                       special = false;
-                     });
-               _;
-             };
-           arguments =
-             [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-         };
-     _;
-    } ->
-        Some (TypeVarVariable (TypeVar.create (Reference.show target)))
-    | {
-        Node.value =
-          Expression.Call
-            {
-              callee =
-                {
-                  Node.value =
-                    Name
-                      (Name.Attribute
-                        {
-                          base = { Node.value = Name (Name.Identifier "pyre_extensions"); _ };
-                          attribute = "ParameterSpecification";
-                          special = false;
-                        });
-                  _;
-                };
-              arguments =
-                [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-            };
-        _;
-      }
-    | {
-        Node.value =
-          Expression.Call
-            {
-              callee =
-                {
-                  Node.value =
-                    Name
-                      (Name.Attribute
-                        {
-                          base =
-                            {
-                              Node.value = Name (Name.Identifier ("typing" | "typing_extensions"));
-                              _;
-                            };
-                          attribute = "ParamSpec";
-                          special = false;
-                        });
-                  _;
-                };
-              arguments =
-                [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-            };
-        _;
-      } ->
-        Some (ParamSpecVariable (ParamSpec.create (Reference.show target)))
-    | {
-     Node.value =
-       Expression.Call
-         {
-           callee =
-             {
-               Node.value =
-                 Name
-                   (Name.Attribute
-                     {
-                       base =
-                         {
-                           Node.value =
-                             ( Name (Name.Identifier "pyre_extensions")
-                             | Name (Name.Identifier "typing_extensions")
-                             | Name (Name.Identifier "typing") );
-                           _;
-                         };
-                       attribute = "TypeVarTuple";
-                       special = false;
-                     });
-               _;
-             };
-           arguments =
-             [{ Call.Argument.value = { Node.value = Constant (Constant.String _); _ }; _ }];
-         };
-     _;
-    } ->
-        Some (TypeVarTupleVariable (TypeVarTuple.create (Reference.show target)))
-    | _ -> None
+  let of_declaration declaration ~create_type =
+    match declaration with
+    | Declaration.DTypeVar { name; constraints; variance } ->
+        let constraints =
+          match constraints with
+          | Bound expression -> Bound (create_type expression)
+          | Explicit expressions -> Explicit (List.map ~f:create_type expressions)
+          | Unconstrained -> Unconstrained
+          | LiteralIntegers -> LiteralIntegers
+        in
+        TypeVarVariable (TypeVar.create ~constraints ~variance name)
+    | Declaration.DParamSpec { name } -> ParamSpecVariable (ParamSpec.create name)
+    | Declaration.DTypeVarTuple { name } -> TypeVarTupleVariable (TypeVarTuple.create name)
 
 
   let dequalify dequalify_map = function
@@ -4061,11 +4089,11 @@ let alternate_name_to_canonical_name_map =
   |> Identifier.Table.of_alist_exn
 
 
-let parameters_from_unpacked_annotation annotation ~variable_aliases =
+let parameters_from_unpacked_annotation annotation ~get_variable =
   let open Record.OrderedTypes.Concatenation in
   let unpacked_variadic_to_parameter = function
     | Primitive variable_name -> (
-        match variable_aliases variable_name with
+        match get_variable variable_name with
         | Some (Record.Variable.TypeVarTupleVariable variadic) ->
             Some (Parameter.Unpacked (Variadic variadic))
         | _ -> None)
@@ -4083,9 +4111,12 @@ let parameters_from_unpacked_annotation annotation ~variable_aliases =
 
 let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expression; _ } =
   let create_logic = create_logic ~resolve_aliases ~variable_aliases in
+  let get_variable identifier =
+    variable_aliases identifier >>| Variable.of_declaration ~create_type:create_logic
+  in
   let substitute_parameter_variadic = function
     | Primitive name -> (
-        match variable_aliases name with
+        match get_variable name with
         | Some (Record.Variable.ParamSpecVariable variable) ->
             Some { Record.Callable.variable; head = [] }
         | _ -> None)
@@ -4150,7 +4181,7 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
                     List.map tail ~f:(fun annotation ->
                         create_logic (Node.create_with_default_location annotation))
                   in
-                  OrderedTypes.concatenation_from_annotations ~variable_aliases elements
+                  OrderedTypes.concatenation_from_annotations ~get_variable elements
                   >>| (fun concatenation -> CallableParamType.Concatenation concatenation)
                   |> Option.value
                        ~default:
@@ -4342,7 +4373,7 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
                 ]
             | element -> (
                 let parsed = create_logic element in
-                match parameters_from_unpacked_annotation ~variable_aliases parsed with
+                match parameters_from_unpacked_annotation ~get_variable parsed with
                 | Some parameters -> parameters
                 | None -> (
                     match substitute_parameter_variadic parsed with
@@ -4403,7 +4434,7 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
             create_parametric ~base ~subscript_index)
   in
   let resolve_variables_then_aliases alias_name =
-    match variable_aliases alias_name with
+    match get_variable alias_name with
     | Some (Record.Variable.TypeVarVariable variable) -> Variable variable
     | _ -> Primitive alias_name |> resolve_aliases
   in
@@ -4557,7 +4588,7 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
               |> Option.all
             in
             all_positional_only_parameters
-            >>= OrderedTypes.concatenation_from_annotations ~variable_aliases
+            >>= OrderedTypes.concatenation_from_annotations ~get_variable
             >>| (fun concatenation ->
                   { overload with parameters = Defined [Variable (Concatenation concatenation)] })
             |> Option.value ~default:overload
@@ -4696,8 +4727,8 @@ let assume_any = function
 module Alias = struct
   type t =
     | TypeAlias of T.t
-    | VariableAlias of T.t Record.Variable.record
-  [@@deriving compare, eq, sexp, show, hash]
+    | VariableAlias of Variable.Declaration.t
+  [@@deriving equal, compare, sexp, show, hash]
 end
 
 let resolve_aliases ~aliases annotation =
