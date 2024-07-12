@@ -45,16 +45,17 @@ module MatchingSanitizeTransforms : sig
      * for instance if it contains a transform, or a (triggered) partial sink. *)
     sanitizable: bool;
   }
+  [@@deriving show]
 end
 
 val matching_source_sanitize_transforms
   :  t ->
-  named_transforms:TaintTransforms.t ->
+  non_sanitize_transforms:TaintTransforms.t ->
   base:Sinks.t ->
   MatchingSanitizeTransforms.t option
 
 val matching_sink_sanitize_transforms
   :  t ->
-  named_transforms:TaintTransforms.t ->
+  non_sanitize_transforms:TaintTransforms.t ->
   base:Sources.t ->
   MatchingSanitizeTransforms.t option
