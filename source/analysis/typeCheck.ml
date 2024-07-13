@@ -1788,6 +1788,7 @@ module State (Context : Context) = struct
   (** Resolves types by moving forward through nodes in the CFG starting at an expression. *)
   and forward_expression ~resolution { Node.location; value } =
     let global_resolution = Resolution.global_resolution resolution in
+
     let forward_entry ~resolution ~errors ~entry:Dictionary.Entry.KeyValue.{ key; value } =
       let { Resolved.resolution; resolved = key_resolved; errors = key_errors; _ } =
         forward_expression ~resolution key
@@ -4216,6 +4217,31 @@ module State (Context : Context) = struct
     resolution, errors
 
 
+  and forward_variable_alias_definition ~resolution ~location ~errors ~value =
+    let global_resolution = Resolution.global_resolution resolution in
+    let parsed =
+      GlobalResolution.parse_annotation ~validation:NoValidation global_resolution value
+    in
+
+    let add_type_variable_errors errors =
+      match parsed with
+      | Variable variable when Type.Variable.TypeVar.contains_subvariable variable ->
+          emit_error
+            ~errors
+            ~location
+            ~kind:
+              (AnalysisError.InvalidType
+                 (AnalysisError.NestedTypeVariables (Type.Variable.TypeVarVariable variable)))
+      | Variable { constraints = Explicit [explicit]; _ } ->
+          emit_error
+            ~errors
+            ~location
+            ~kind:(AnalysisError.InvalidType (AnalysisError.SingleExplicit explicit))
+      | _ -> errors
+    in
+    Value resolution, add_type_variable_errors errors
+
+
   and forward_type_alias_definition ~resolution ~location ~errors ~target ~value =
     let global_resolution = Resolution.global_resolution resolution in
     let parsed =
@@ -5365,6 +5391,8 @@ module State (Context : Context) = struct
 
   and forward_assignment ~resolution ~location ~target ~annotation ~value =
     let global_resolution = Resolution.global_resolution resolution in
+    let aliases = GlobalResolution.get_type_alias global_resolution in
+    let variables = Resolution.variables resolution in
 
     let errors, is_final, unwrapped_annotation_type =
       match annotation with
@@ -5404,10 +5432,12 @@ module State (Context : Context) = struct
 
     match Node.value target, value with
     | Expression.Name (Name.Identifier _), Some value
-      when delocalize target
-           |> Expression.show
-           |> GlobalResolution.get_type_alias global_resolution
-           |> Option.is_some ->
+      when delocalize target |> Expression.show |> variables |> Option.is_some ->
+        (* The statement has been recognized as a type alias definition instead of an actual value
+           assignment. *)
+        forward_variable_alias_definition ~resolution ~location ~errors ~value
+    | Expression.Name (Name.Identifier _), Some value
+      when delocalize target |> Expression.show |> aliases |> Option.is_some ->
         (* The statement has been recognized as a type alias definition instead of an actual value
            assignment. *)
         forward_type_alias_definition ~resolution ~location ~errors ~target ~value
@@ -5892,13 +5922,8 @@ module State (Context : Context) = struct
   let initial ~resolution =
     let global_resolution = Resolution.global_resolution resolution in
 
-    let get_type_alias = GlobalResolution.get_type_alias global_resolution in
-
-    let variable_aliases name =
-      match get_type_alias ?replace_unbound_parameters_with_any:(Some true) name with
-      | Some (Type.Alias.VariableAlias variable) -> Some variable
-      | _ -> None
-    in
+    (* let aliases = GlobalResolution.get_type_alias global_resolution in *)
+    let variables = Resolution.variables resolution in
 
     let {
       Node.location;
@@ -6614,8 +6639,8 @@ module State (Context : Context) = struct
           | Tuple _ ->
               errors
           | Any
-            when (GlobalResolution.base_is_from_placeholder_stub variable_aliases global_resolution)
-                   base ->
+            when (GlobalResolution.base_is_from_placeholder_stub variables global_resolution) base
+            ->
               errors
           | annotation ->
               emit_error
