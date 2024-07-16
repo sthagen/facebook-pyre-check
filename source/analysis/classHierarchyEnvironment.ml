@@ -30,9 +30,14 @@ module IncomingDataComputation = struct
       get_class_summary: string -> ClassSummary.t Ast.Node.t option;
       is_from_empty_stub: Ast.Reference.t -> bool;
       get_type_alias:
-        ?replace_unbound_parameters_with_any:bool -> Type.Primitive.t -> Type.Alias.t option;
+        ?replace_unbound_parameters_with_any:bool ->
+        Type.Primitive.t ->
+        TypeAliasEnvironment.RawAlias.t option;
       parse_annotation_without_validating_type_parameters:
-        ?modify_aliases:(?replace_unbound_parameters_with_any:bool -> Type.Alias.t -> Type.Alias.t) ->
+        ?modify_aliases:
+          (?replace_unbound_parameters_with_any:bool ->
+          TypeAliasEnvironment.RawAlias.t ->
+          TypeAliasEnvironment.RawAlias.t) ->
         ?allow_untracked:bool ->
         Ast.Expression.t ->
         Type.t;
@@ -223,10 +228,15 @@ module IncomingDataComputation = struct
           extract_supertype (Type.expression base)
           >>= fun (name, parameters) -> Some { ClassHierarchy.Target.target = name; parameters }
         in
+        let resolved_aliases ?replace_unbound_parameters_with_any:_ name =
+          match get_type_alias name with
+          | Some (TypeAliasEnvironment.RawAlias.TypeAlias t) -> Some t
+          | _ -> None
+        in
         let has_placeholder_stub_parent =
           compute_extends_placeholder_stub_class
             class_summary
-            ~aliases:get_type_alias
+            ~aliases:resolved_aliases
             ~is_from_empty_stub
             ~variable_aliases
         in
@@ -309,7 +319,7 @@ module Edges = Environment.EnvironmentTable.WithCache (struct
 
     let variable_aliases name =
       match queries.get_type_alias ?replace_unbound_parameters_with_any:(Some true) name with
-      | Some (Type.Alias.VariableAlias variable) -> Some variable
+      | Some (TypeAliasEnvironment.RawAlias.VariableAlias variable) -> Some variable
       | _ -> None
     in
 

@@ -199,7 +199,7 @@ let parse_single_call ?(preprocess = false) source =
   | _ -> failwith "Could not parse single call"
 
 
-let parse_callable ?name ?(aliases = Type.empty_aliases) callable =
+let parse_callable ?name ?(aliases = Type.resolved_empty_aliases) callable =
   let variable_aliases _ = None in
 
   let callable =
@@ -3107,7 +3107,7 @@ let mock_define =
 
 let create_type_alias_table type_aliases =
   let aliases ?replace_unbound_parameters_with_any:_ primitive =
-    type_aliases primitive >>| fun alias -> Type.Alias.TypeAlias alias
+    type_aliases primitive >>| fun alias -> TypeAliasEnvironment.RawAlias.TypeAlias alias
   in
   aliases
 

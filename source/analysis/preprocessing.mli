@@ -125,10 +125,10 @@ module Qualify (_ : QualifyContext) : sig
     locals: Reference.Set.t;
     is_top_level: bool;
     is_in_function: bool;
-    is_in_class: bool;
+    is_class_toplevel: bool;
   }
 
-  val qualify_statement : qualify_assign:bool -> scope:scope -> Statement.t -> scope * Statement.t
+  val qualify_statement : scope:scope -> Statement.t -> scope * Statement.t
 
   val qualify_match_case : scope:scope -> Statement.Match.Case.t -> scope * Statement.Match.Case.t
 

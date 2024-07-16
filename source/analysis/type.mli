@@ -564,7 +564,7 @@ val is_untyped : t -> bool
 
 val contains_variable : t -> bool
 
-val type_inside_typeguard : t -> t option
+val inner_type_if_is_typeguard : t -> t option
 
 val parameters : t -> Parameter.t list option
 
@@ -966,25 +966,18 @@ module ReadOnly : sig
   val lift_readonly_if_possible : make_container:(t -> t) -> t -> t
 end
 
-module Alias : sig
-  type t =
-    | TypeAlias of type_t
-    | VariableAlias of Variable.Declaration.t
-  [@@deriving compare, eq, sexp, show, hash]
-end
-
 val resolve_aliases
-  :  aliases:(?replace_unbound_parameters_with_any:bool -> string -> Alias.t option) ->
+  :  aliases:(?replace_unbound_parameters_with_any:bool -> string -> t option) ->
   t ->
   t
 
 val create
   :  variables:(string -> Variable.Declaration.t option) ->
-  aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option) ->
+  aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> t option) ->
   Expression.t ->
   t
 
-val empty_aliases : ?replace_unbound_parameters_with_any:bool -> Primitive.t -> Alias.t option
+val resolved_empty_aliases : ?replace_unbound_parameters_with_any:bool -> Primitive.t -> t option
 
 val infer_transform : t -> t
 

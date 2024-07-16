@@ -4069,7 +4069,7 @@ let create_literal = function
   | _ -> None
 
 
-let empty_aliases ?replace_unbound_parameters_with_any:_ _ = None
+let resolved_empty_aliases ?replace_unbound_parameters_with_any:_ _ = None
 
 let alternate_name_to_canonical_name_map =
   [
@@ -4612,7 +4612,7 @@ let expression_contains_any expression =
   |> List.exists ~f:(Hashtbl.mem primitives_with_any_map)
 
 
-let type_inside_typeguard = function
+let inner_type_if_is_typeguard = function
   | Parametric
       {
         name = "typing.TypeGuard" | "typing_extensions.TypeGuard";
@@ -4724,13 +4724,6 @@ let assume_any = function
   | annotation -> annotation
 
 
-module Alias = struct
-  type t =
-    | TypeAlias of T.t
-    | VariableAlias of Variable.Declaration.t
-  [@@deriving equal, compare, sexp, show, hash]
-end
-
 let resolve_aliases ~aliases annotation =
   let visited = Containers.Hash_set.create () in
   let module ResolveAliasesTransform = VisitWithTransform.Make (struct
@@ -4755,7 +4748,7 @@ let resolve_aliases ~aliases annotation =
           match annotation with
           | Primitive name -> (
               match aliases ?replace_unbound_parameters_with_any:(Some true) name with
-              | Some (Alias.TypeAlias alias) ->
+              | Some alias ->
                   let alias =
                     match alias with
                     (* Type variables are stored as `_T aliases to _T`. Don't replace them. *)
@@ -4820,7 +4813,7 @@ let resolve_aliases ~aliases annotation =
                    We will not find any free type variables in Foo[Any] and simply resolve it as
                    Foo[Any]. *)
                 match aliases ?replace_unbound_parameters_with_any:(Some false) alias_name with
-                | Some (Alias.TypeAlias uninstantiated_alias_annotation) ->
+                | Some uninstantiated_alias_annotation ->
                     instantiate ~given_parameters uninstantiated_alias_annotation
                 | _ -> annotation
               in
