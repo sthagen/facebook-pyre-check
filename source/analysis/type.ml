@@ -4612,14 +4612,22 @@ let expression_contains_any expression =
   |> List.exists ~f:(Hashtbl.mem primitives_with_any_map)
 
 
-let inner_type_if_is_typeguard = function
+type type_guard_narrowing_info =
+  | NoNarrowing
+  | PositiveNarrowing of t
+  | ExactNarrowing of t
+
+let narrowing_of_type_guard = function
+  | Parametric
+      { name = "typing.TypeIs" | "typing_extensions.TypeIs"; parameters = [Single guard_type] } ->
+      ExactNarrowing guard_type
   | Parametric
       {
         name = "typing.TypeGuard" | "typing_extensions.TypeGuard";
         parameters = [Single guard_type];
       } ->
-      Some guard_type
-  | _ -> None
+      PositiveNarrowing guard_type
+  | _ -> NoNarrowing
 
 
 let parameters = function
