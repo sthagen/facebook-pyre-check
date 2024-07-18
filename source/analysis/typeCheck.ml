@@ -7137,7 +7137,9 @@ module State (Context : Context) = struct
                             [
                               Reference.create "staticmethod";
                               Reference.create "classmethod";
-                              Reference.create "override";
+                              Reference.create "typing.override";
+                              Reference.create "typing_extensions.override";
+                              Reference.create "pyre_extensions.override";
                             ]
                           in
                           let is_equal_to_decorator_ref name ref =
@@ -7176,7 +7178,6 @@ module State (Context : Context) = struct
                                     } ->
                                     not (List.for_all ~f:is_non_modifying_decorator decorators))
                           in
-
                           if
                             is_args_kwargs_or_has_default
                             || are_overriding_function_possibly_changed
@@ -7584,7 +7585,16 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                   ->
                  let parent = Type.Primitive (ClassSummary.name definition |> Reference.show) in
                  let expected = annotation in
+                 let is_enum =
+                   GlobalResolution.less_or_equal
+                     global_resolution
+                     ~left:parent
+                     ~right:Type.enumeration
+                 in
                  if Type.is_top expected then
+                   None
+                 else if is_enum && String.equal name "_value_" then
+                   (* _value_ is automatically initialized for enums *)
                    None
                  else
                    let error_kind =
@@ -7592,12 +7602,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                        Error.Protocol (Reference.create original_class_name)
                      else if is_abstract then
                        Error.Abstract (Reference.create original_class_name)
-                     else if
-                       GlobalResolution.less_or_equal
-                         global_resolution
-                         ~left:parent
-                         ~right:Type.enumeration
-                     then
+                     else if is_enum then
                        Error.Enumeration
                      else
                        Error.Class
