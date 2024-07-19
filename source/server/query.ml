@@ -41,9 +41,9 @@ module Request = struct
         qualifiers: Reference.t list;
         parse_errors: string list;
       }
-    | TypeAtPosition of {
+    | TypeAtLocation of {
         path: PyrePath.t;
-        position: Location.position;
+        location: Location.t;
       }
     | LessOrEqual of Expression.t * Expression.t
     | ModelQuery of {
@@ -183,7 +183,7 @@ module Response = struct
     type t =
       | Boolean of bool
       | Callees of Analysis.Callgraph.callee list
-      | CalleesWithLocation of callee_with_instantiated_locations list
+      | CalleesWithLocation of callee_with_instantiated_locations list option
       | Callgraph of callees list
       | Errors of Analysis.AnalysisError.Instantiated.t list
       | ExpressionLevelCoverageResponse of coverage_response_at_path list
@@ -193,7 +193,7 @@ module Response = struct
       | FoundModules of Reference.t list
       | FoundPath of string
       | GlobalLeakErrors of global_leak_errors
-      | TypeAtPosition of Type.t option
+      | TypeAtLocation of Type.t option
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
       | ReferenceTypesInPath of types_at_path
       | Success of string
@@ -210,11 +210,15 @@ module Response = struct
       | Boolean boolean -> `Assoc ["boolean", `Bool boolean]
       | Callees callees ->
           `Assoc ["callees", `List (List.map callees ~f:Callgraph.callee_to_yojson)]
-      | CalleesWithLocation callees ->
+      | CalleesWithLocation maybe_callees ->
           let callee_to_yojson { callee; locations } =
             Callgraph.callee_to_yojson ~locations callee
           in
-          `Assoc ["callees", `List (List.map callees ~f:callee_to_yojson)]
+          let callees_to_yojson = function
+            | Some callees -> `List (List.map callees ~f:callee_to_yojson)
+            | None -> `Null
+          in
+          `Assoc ["callees", callees_to_yojson maybe_callees]
       | Callgraph callees ->
           let callee_to_yojson { callee; locations } =
             Callgraph.callee_to_yojson ~locations callee
@@ -291,7 +295,7 @@ module Response = struct
           let reference_to_yojson reference = `String (Reference.show reference) in
           `List (List.map references ~f:reference_to_yojson)
       | FoundPath path -> `Assoc ["path", `String path]
-      | TypeAtPosition maybe_type -> [%to_yojson: Type.t option] maybe_type
+      | TypeAtLocation maybe_type -> [%to_yojson: Type.t option] maybe_type
       | ReferenceTypesInPath referenceTypesInPath -> types_at_path_to_yojson referenceTypesInPath
       | Success message -> `Assoc ["message", `String message]
       | Superclasses class_to_superclasses_mapping ->
@@ -444,11 +448,16 @@ let rec parse_request_exn query =
           List.map ~f:single_argument_to_reference arguments
           |> List.partition_result
           |> fun (qualifiers, parse_errors) -> Request.GlobalLeaks { qualifiers; parse_errors }
-      | "type_at_position", [path; line; column] ->
-          Request.TypeAtPosition
+      | "type_at_location", [path; start_line; start_column; stop_line; stop_column] ->
+          Request.TypeAtLocation
             {
               path = PyrePath.create_absolute (string path);
-              position = { Location.line = integer line; column = integer column };
+              location =
+                {
+                  Location.start =
+                    { Location.line = integer start_line; column = integer start_column };
+                  stop = { Location.line = integer stop_line; column = integer stop_column };
+                };
             }
       | "less_or_equal", [left; right] -> Request.LessOrEqual (access left, access right)
       | "model_query", [path; model_query_name] ->
@@ -693,9 +702,8 @@ let rec process_request_exn
         in
         let callees =
           TypeEnvironment.ReadOnly.get_callees type_environment caller
-          |> Option.value ~default:[]
-          |> List.map ~f:(fun { Callgraph.callee; locations } ->
-                 { Base.callee; locations = List.map locations ~f:instantiate })
+          >>| List.map ~f:(fun { Callgraph.callee; locations } ->
+                  { Base.callee; locations = List.map locations ~f:instantiate })
         in
         Single (Base.CalleesWithLocation callees)
     | Defines module_or_class_names ->
@@ -866,11 +874,11 @@ let rec process_request_exn
         List.map ~f:find_leak_errors_for_qualifier qualifiers
         |> List.partition_result
         |> construct_result
-    | TypeAtPosition { path; position } ->
+    | TypeAtLocation { path; location } ->
         qualifier_of_path path
         >>| (fun module_reference ->
-              LocationBasedLookup.type_at_position ~type_environment ~module_reference position)
-        >>| (fun maybe_type -> Single (Base.TypeAtPosition maybe_type))
+              LocationBasedLookup.type_at_location ~type_environment ~module_reference location)
+        >>| (fun maybe_type -> Single (Base.TypeAtLocation maybe_type))
         |> Option.value
              ~default:(Error (Format.sprintf "No module found for path `%s`" (PyrePath.show path)))
     | ModelQuery { path; query_name } -> (
