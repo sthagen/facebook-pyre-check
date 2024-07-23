@@ -2525,6 +2525,33 @@ let test_lookup_if_statements context =
     ]
 
 
+let test_lookup_for_statements context =
+  let source =
+    {|
+      def f(l: list[int]) -> None:
+          for x in l:
+              pass
+    |}
+  in
+  let lookup = generate_lookup ~context source in
+  assert_annotation_list
+    ~lookup
+    [
+      "2:4-2:5/typing.Callable(test.f)[[Named(l, typing.List[int])], None]";
+      "2:6-2:7/typing.List[int]";
+      "2:9-2:18/typing.Type[typing.List[int]]";
+      "2:23-2:27/typing.Type[None]";
+      "3:8-3:9/int";
+      (* This is because the CFG creates synthetic expressions using the location of the entire
+         statement, and one of them arbitrarily winds up in the lookup map.
+
+         Since a caller trying to map expression locations in the original AST will never look up
+         this location, we can ignore the output. *)
+      "3:8-3:14/int";
+      "3:13-3:14/typing.List[int]";
+    ]
+
+
 let test_lookup_imports context =
   let source = {|
       from typing import List as l
@@ -4109,6 +4136,7 @@ let () =
          "lookup_dataclass_attributes" >:: test_lookup_dataclass_attributes;
          test_lookup_comprehensions;
          "lookup_if_statements" >:: test_lookup_if_statements;
+         "lookup_for_statements" >:: test_lookup_for_statements;
          "lookup_imports" >:: test_lookup_imports;
          "lookup_string_annotations" >:: test_lookup_string_annotations;
          "lookup_unbound" >:: test_lookup_unbound;
