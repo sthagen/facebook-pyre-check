@@ -195,7 +195,9 @@ and override_kind =
   | Attribute
 
 and invalid_inheritance =
-  | ClassName of Identifier.t
+  | FinalClass of Identifier.t
+  | GenericProtocol
+  | ProtocolBaseClass
   | NonMethodFunction of Identifier.t
   | UninheritableType of {
       annotation: Type.t;
@@ -275,6 +277,7 @@ and incompatible_overload_kind =
     }
   | DifferingDecorators
   | MisplacedOverloadDecorator
+  | NeedsAtLeastTwoOverloads
 
 and polymorphism_base_class =
   | GenericBase
@@ -1463,7 +1466,8 @@ let rec messages ~concise ~signature location kind =
       | DifferingDecorators ->
           ["This definition does not have the same decorators as the preceding overload(s)."]
       | MisplacedOverloadDecorator ->
-          ["The @overload decorator must be the topmost decorator if present."])
+          ["The @overload decorator must be the topmost decorator if present."]
+      | NeedsAtLeastTwoOverloads -> ["At least two overload signatures must be present."])
   | IncompatibleParameterType
       {
         keyword_argument_name;
@@ -2101,8 +2105,19 @@ let rec messages ~concise ~signature location kind =
       [formatted; "See `https://pyre-check.org/docs/errors#35-invalid-type-variance` for details."]
   | InvalidInheritance invalid_inheritance -> (
       match invalid_inheritance with
-      | ClassName class_name ->
+      | ProtocolBaseClass ->
+          [
+            Format.asprintf
+              "If Protocol is included as a base class, all other base classes must be protocols \
+               or Generic.";
+          ]
+      | FinalClass class_name ->
           [Format.asprintf "Cannot inherit from final class `%a`." pp_identifier class_name]
+      | GenericProtocol ->
+          [
+            Format.asprintf
+              "Subscripted Protocol and Generic may not appear in the same base class list";
+          ]
       | NonMethodFunction decorator_name ->
           [
             Format.asprintf
@@ -2135,7 +2150,7 @@ let rec messages ~concise ~signature location kind =
               pp_type
               annotation
               (if is_parent_class_typed_dictionary then
-                 " for a typed dictionary. Expected a typed dictionary"
+                 " for a typed dictionary. Expected a typed dictionary or typing.Generic"
               else
                 "");
           ]
@@ -4048,13 +4063,18 @@ let filter ~resolution errors =
   List.filter ~f:(fun error -> not (should_filter error)) errors
 
 
-let suppress ~mode ~ignore_codes error =
+let suppress
+    ~mode
+    ~ignore_codes
+    ~type_check_controls:{ EnvironmentControls.TypeCheckControls.include_strict_override_errors; _ }
+    error
+  =
   let suppress_in_strict ({ kind; _ } as error) =
     if due_to_analysis_limitations error then
       true
     else
       match kind with
-      | InvalidOverride { decorator = MissingOverride; _ } -> true
+      | InvalidOverride { decorator = MissingOverride; _ } -> not include_strict_override_errors
       | IncompleteType _ ->
           (* TODO(T42467236): Ungate this when ready to codemod upgrade *)
           true
@@ -4139,7 +4159,9 @@ let dequalify
         AbstractClassInstantiation { class_name = dequalify_reference class_name; abstract_methods }
   in
   let dequalify_invalid_inheritance = function
-    | ClassName name -> ClassName (dequalify_identifier name)
+    | FinalClass name -> FinalClass (dequalify_identifier name)
+    | GenericProtocol -> GenericProtocol
+    | ProtocolBaseClass -> ProtocolBaseClass
     | NonMethodFunction name -> NonMethodFunction (dequalify_identifier name)
     | UninheritableType { annotation; is_parent_class_typed_dictionary } ->
         UninheritableType { annotation = dequalify annotation; is_parent_class_typed_dictionary }
@@ -4204,6 +4226,7 @@ let dequalify
     | Parameters { name; location } -> Parameters { name = dequalify_reference name; location }
     | DifferingDecorators -> DifferingDecorators
     | MisplacedOverloadDecorator -> MisplacedOverloadDecorator
+    | NeedsAtLeastTwoOverloads -> NeedsAtLeastTwoOverloads
   in
   let dequalify_invalid_type_parameters { AttributeResolution.name; kind } =
     let dequalify_generic_type_problems = function

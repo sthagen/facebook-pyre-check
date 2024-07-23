@@ -1975,10 +1975,10 @@ let test_qualify_ast =
     {
       Qualify.qualifier = Reference.create "qualifier";
       aliases =
-        Reference.Map.singleton
-          (Reference.create "a")
+        String.Map.singleton
+          "a"
           { Qualify.name = Reference.create "b"; qualifier = Reference.empty };
-      locals = Reference.Set.empty;
+      locals = String.Set.empty;
       is_top_level = true;
       is_in_function = false;
       is_class_toplevel = false;
@@ -4461,7 +4461,7 @@ let test_expand_typed_dictionaries =
         year: int
     |}
            {|
-      class Movie(TypedDictionary):
+      class Movie(TypedDictionary, garbage=7):
         name: str = ...
         year: int = ...
     |};
@@ -4473,7 +4473,19 @@ let test_expand_typed_dictionaries =
         year: int
     |}
            {|
-      class Movie(TypedDictionary):
+      class Movie(TypedDictionary, OtherClass):
+        name: str = ...
+        year: int = ...
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_expand
+           {|
+      class Movie(OtherClass, mypy_extensions.TypedDict):
+        name: str
+        year: int
+    |}
+           {|
+      class Movie(TypedDictionary, OtherClass):
         name: str = ...
         year: int = ...
     |};

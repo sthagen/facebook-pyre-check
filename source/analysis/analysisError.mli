@@ -161,7 +161,9 @@ and override_kind =
   | Attribute
 
 and invalid_inheritance =
-  | ClassName of Identifier.t
+  | FinalClass of Identifier.t
+  | GenericProtocol
+  | ProtocolBaseClass
   | NonMethodFunction of Identifier.t
   | UninheritableType of {
       annotation: Type.t;
@@ -241,6 +243,7 @@ and incompatible_overload_kind =
     }
   | DifferingDecorators
   | MisplacedOverloadDecorator
+  | NeedsAtLeastTwoOverloads
 
 and polymorphism_base_class =
   | GenericBase
@@ -598,7 +601,12 @@ val deduplicate : t list -> t list
 
 val filter : resolution:GlobalResolution.t -> t list -> t list
 
-val suppress : mode:Source.mode -> ignore_codes:int list -> t -> bool
+val suppress
+  :  mode:Source.mode ->
+  ignore_codes:int list ->
+  type_check_controls:EnvironmentControls.TypeCheckControls.t ->
+  t ->
+  bool
 
 val dequalify : Reference.t Reference.Map.t -> resolution:GlobalResolution.t -> t -> t
 

@@ -280,8 +280,8 @@ module Qualify (Context : QualifyContext) = struct
 
   type scope = {
     qualifier: Reference.t;
-    aliases: alias Reference.Map.t;
-    locals: Reference.Set.t;
+    aliases: alias String.Map.t;
+    locals: String.Set.t;
     is_top_level: bool;
     is_in_function: bool;
     is_class_toplevel: bool;
@@ -298,23 +298,27 @@ module Qualify (Context : QualifyContext) = struct
 
   let prefix_identifier ~scope:({ aliases; locals; _ } as scope) ~prefix name =
     let stars, name = Identifier.split_star name in
-    let renamed = Format.asprintf "$%s$%s" prefix name in
-    let reference = Reference.create name in
-    ( {
-        scope with
-        aliases =
-          Map.set
-            aliases
-            ~key:reference
-            ~data:{ name = Reference.create renamed; qualifier = Context.source_qualifier };
-        locals = Set.add locals reference;
-      },
-      stars,
-      renamed )
+    if is_qualified name then
+      None
+    else
+      let renamed = Format.asprintf "$%s$%s" prefix name in
+      Some
+        ( {
+            scope with
+            aliases =
+              Map.set
+                aliases
+                ~key:name
+                ~data:{ name = Reference.create renamed; qualifier = Context.source_qualifier };
+            locals = Set.add locals name;
+          },
+          stars ^ renamed )
 
 
   let rec explore_scope ~scope statements =
-    let global_alias ~qualifier ~name = { name = Reference.combine qualifier name; qualifier } in
+    let global_alias ~qualifier ~name =
+      { name = Reference.combine qualifier (Reference.create name); qualifier }
+    in
     let explore_scope ({ qualifier; aliases; locals; is_in_function; _ } as scope) { Node.value; _ }
       =
       match value with
@@ -324,14 +328,27 @@ module Qualify (Context : QualifyContext) = struct
             annotation = Some { Node.value = Expression.Name (Name.Identifier "_SpecialForm"); _ };
             _;
           } ->
-          let name = Reference.create target_name in
-          { scope with aliases = Map.set aliases ~key:name ~data:(global_alias ~qualifier ~name) }
+          {
+            scope with
+            aliases =
+              Map.set aliases ~key:target_name ~data:(global_alias ~qualifier ~name:target_name);
+          }
       | Class { Class.name; _ } ->
-          { scope with aliases = Map.set aliases ~key:name ~data:(global_alias ~qualifier ~name) }
+          let class_name = Reference.show name in
+          {
+            scope with
+            aliases =
+              Map.set aliases ~key:class_name ~data:(global_alias ~qualifier ~name:class_name);
+          }
       | Define { Define.signature = { name; _ }; _ } when is_in_function ->
           qualify_function_name ~scope name |> fst
       | Define { Define.signature = { name; _ }; _ } when not is_in_function ->
-          { scope with aliases = Map.set aliases ~key:name ~data:(global_alias ~qualifier ~name) }
+          let define_name = Reference.show name in
+          {
+            scope with
+            aliases =
+              Map.set aliases ~key:define_name ~data:(global_alias ~qualifier ~name:define_name);
+          }
       | If { If.body; orelse; _ } ->
           let scope = explore_scope ~scope body in
           explore_scope ~scope orelse
@@ -340,15 +357,13 @@ module Qualify (Context : QualifyContext) = struct
           explore_scope ~scope orelse
       | Global identifiers ->
           let locals =
-            let register_global locals identifier = Set.add locals (Reference.create identifier) in
+            let register_global locals identifier = Set.add locals identifier in
             List.fold identifiers ~init:locals ~f:register_global
           in
           { scope with locals }
       | Nonlocal identifiers ->
           let locals =
-            let register_nonlocal locals identifier =
-              Set.add locals (Reference.create identifier)
-            in
+            let register_nonlocal locals identifier = Set.add locals identifier in
             List.fold identifiers ~init:locals ~f:register_nonlocal
           in
           { scope with locals }
@@ -379,8 +394,8 @@ module Qualify (Context : QualifyContext) = struct
           let alias = get_qualified_local_identifier simple_name ~qualifier |> Reference.create in
           ( {
               scope with
-              aliases = Map.set aliases ~key:name ~data:{ name = alias; qualifier };
-              locals = Set.add locals name;
+              aliases = Map.set aliases ~key:simple_name ~data:{ name = alias; qualifier };
+              locals = Set.add locals simple_name;
             },
             alias )
       | _ -> scope, qualify_reference ~scope name
@@ -389,10 +404,14 @@ module Qualify (Context : QualifyContext) = struct
         if is_class_toplevel then
           scope
         else
+          let function_name = Reference.show name in
           {
             scope with
             aliases =
-              Map.set aliases ~key:name ~data:{ name = Reference.combine qualifier name; qualifier };
+              Map.set
+                aliases
+                ~key:function_name
+                ~data:{ name = Reference.combine qualifier name; qualifier };
           }
       in
       scope, qualify_reference ~scope name
@@ -418,27 +437,23 @@ module Qualify (Context : QualifyContext) = struct
         (scope, reversed_parameters)
         ({ Node.value = { Parameter.name; value; annotation }; _ } as parameter)
       =
-      if not (is_qualified (snd (Identifier.split_star name))) then
-        let scope, stars, renamed = prefix_identifier ~scope ~prefix:"parameter" name in
-        ( scope,
-          {
-            parameter with
-            Node.value =
-              {
-                Parameter.name = stars ^ renamed;
-                value = value >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
-                annotation;
-              };
-          }
-          :: reversed_parameters )
-      else
-        scope, parameter :: reversed_parameters
+      match prefix_identifier ~scope ~prefix:"parameter" name with
+      | Some (scope, renamed) ->
+          ( scope,
+            {
+              parameter with
+              Node.value =
+                {
+                  Parameter.name = renamed;
+                  value = value >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
+                  annotation;
+                };
+            }
+            :: reversed_parameters )
+      | None -> scope, parameter :: reversed_parameters
     in
     let scope, parameters =
-      List.fold
-        parameters
-        ~init:({ scope with locals = Reference.Set.empty }, [])
-        ~f:rename_parameter
+      List.fold parameters ~init:({ scope with locals = String.Set.empty }, []) ~f:rename_parameter
     in
     scope, List.rev parameters
 
@@ -518,7 +533,7 @@ module Qualify (Context : QualifyContext) = struct
                           | Some alias -> alias
                           | None -> local_alias ~qualifier ~name:(name_to_reference_exn qualified)
                         in
-                        Map.update aliases (Reference.create name) ~f:update
+                        Map.update aliases name ~f:update
                       in
                       { scope with aliases }
                     in
@@ -529,19 +544,15 @@ module Qualify (Context : QualifyContext) = struct
                 | Name (Name.Identifier name) ->
                     (* Incrementally number local variables to avoid shadowing. *)
                     let scope =
-                      let reference = Reference.create name in
-                      if (not (is_qualified name)) && not (Set.mem locals reference) then
+                      if (not (is_qualified name)) && not (Set.mem locals name) then
                         let alias =
                           get_qualified_local_identifier name ~qualifier |> Reference.create
                         in
                         {
                           scope with
                           aliases =
-                            Map.set
-                              aliases
-                              ~key:reference
-                              ~data:(local_alias ~qualifier ~name:alias);
-                          locals = Set.add locals reference;
+                            Map.set aliases ~key:name ~data:(local_alias ~qualifier ~name:alias);
+                          locals = Set.add locals name;
                         }
                       else
                         scope
@@ -750,12 +761,13 @@ module Qualify (Context : QualifyContext) = struct
               } )
       | Class ({ name; _ } as definition) ->
           let scope =
+            let class_name = Reference.show name in
             {
               scope with
               aliases =
                 Map.set
                   aliases
-                  ~key:name
+                  ~key:class_name
                   ~data:(local_alias ~qualifier ~name:(Reference.combine qualifier name));
             }
           in
@@ -801,13 +813,13 @@ module Qualify (Context : QualifyContext) = struct
                 (* Add `alias -> from.name`. *)
                 Map.set
                   aliases
-                  ~key:(Reference.create alias)
+                  ~key:alias
                   ~data:(local_alias ~qualifier ~name:(Reference.combine from name))
             | None ->
                 (* Add `name -> from.name`. *)
                 Map.set
                   aliases
-                  ~key:name
+                  ~key:(Reference.show name)
                   ~data:(local_alias ~qualifier ~name:(Reference.combine from name))
           in
           { scope with aliases = List.fold imports ~init:aliases ~f:import }, value
@@ -816,7 +828,7 @@ module Qualify (Context : QualifyContext) = struct
             match alias with
             | Some alias ->
                 (* Add `alias -> from.name`. *)
-                Map.set aliases ~key:(Reference.create alias) ~data:(local_alias ~qualifier ~name)
+                Map.set aliases ~key:alias ~data:(local_alias ~qualifier ~name)
             | None -> aliases
           in
           { scope with aliases = List.fold imports ~init:aliases ~f:import }, value
@@ -851,10 +863,11 @@ module Qualify (Context : QualifyContext) = struct
             let qualify_handler { Try.Handler.kind; name; body } =
               let renamed_scope, name =
                 match name with
-                | Some { Node.value = name; location } when not (is_qualified name) ->
-                    let scope, _, renamed = prefix_identifier ~scope ~prefix:"target" name in
-                    scope, Some { Node.value = renamed; location }
-                | _ -> scope, name
+                | None -> scope, name
+                | Some { Node.value = target; location } -> (
+                    match prefix_identifier ~scope ~prefix:"target" target with
+                    | None -> scope, name
+                    | Some (scope, renamed) -> scope, Some { Node.value = renamed; location })
               in
               let kind = kind >>| qualify_expression ~qualify_strings:DoNotQualify ~scope in
               let scope, body = qualify_statements ~scope:renamed_scope body in
@@ -980,19 +993,17 @@ module Qualify (Context : QualifyContext) = struct
 
   and qualify_target ?(in_comprehension = false) ~scope target =
     let rec renamed_scope ({ locals; _ } as scope) target =
-      let has_local name =
-        let reference = Reference.create name in
-        (not in_comprehension) && Set.mem locals reference
-      in
+      let has_local name = (not in_comprehension) && Set.mem locals name in
       match target with
       | { Node.value = Expression.Tuple elements; _ } ->
           List.fold elements ~init:scope ~f:renamed_scope
-      | { Node.value = Name (Name.Identifier name); _ } ->
-          if has_local name || is_qualified name then
+      | { Node.value = Name (Name.Identifier name); _ } -> (
+          if has_local name then
             scope
           else
-            let scope, _, _ = prefix_identifier ~scope ~prefix:"target" name in
-            scope
+            match prefix_identifier ~scope ~prefix:"target" name with
+            | Some (scope, _) -> scope
+            | None -> scope)
       | _ -> scope
     in
     let scope = renamed_scope scope target in
@@ -1003,14 +1014,14 @@ module Qualify (Context : QualifyContext) = struct
     match Reference.as_list reference with
     | [] -> Reference.empty
     | head :: tail -> (
-        match Map.find aliases (Reference.create head) with
+        match Map.find aliases head with
         | Some { name; _ } -> Reference.combine name (Reference.create_from_list tail)
         | _ -> reference)
 
 
   and qualify_name ~qualify_strings ~location ~scope:({ aliases; _ } as scope) = function
     | Name.Identifier identifier -> (
-        match Map.find aliases (Reference.create identifier) with
+        match Map.find aliases identifier with
         | Some { name; _ } -> create_name_from_reference ~location name
         | _ -> Name.Identifier identifier)
     | Name.Attribute { base = { Node.value = Name (Name.Identifier "builtins"); _ }; attribute; _ }
@@ -1268,8 +1279,8 @@ let qualify
   let scope =
     {
       Qualify.qualifier;
-      aliases = Reference.Map.empty;
-      locals = Reference.Set.empty;
+      aliases = String.Map.empty;
+      locals = String.Set.empty;
       is_top_level = true;
       is_in_function = false;
       is_class_toplevel = false;
@@ -2167,7 +2178,54 @@ let expand_typed_dictionary_declarations
             Some value
         | _ -> None
       in
-      let typed_dictionary_class_declaration ~name ~fields ~total =
+      let base_is_typed_dictionary = function
+        | {
+            Call.Argument.name = None;
+            value =
+              {
+                Node.value =
+                  Name
+                    (Name.Attribute
+                      {
+                        base =
+                          {
+                            Node.value =
+                              Name
+                                (Name.Identifier
+                                  ("mypy_extensions" | "typing_extensions" | "typing"));
+                            _;
+                          };
+                        attribute = "TypedDict";
+                        _;
+                      });
+                _;
+              };
+          } ->
+            true
+        | _ -> false
+      in
+      let bases_include_typed_dictionary bases = List.exists bases ~f:base_is_typed_dictionary in
+      let extract_totality_from_base base =
+        let is_total ~total = String.equal (Identifier.sanitized total) "total" in
+        match base with
+        | {
+         Call.Argument.name = Some { value = total; _ };
+         value = { Node.value = Expression.Constant Constant.True; _ };
+        }
+          when is_total ~total ->
+            Some true
+        | {
+         Call.Argument.name = Some { value = total; _ };
+         value = { Node.value = Expression.Constant Constant.False; _ };
+        }
+          when is_total ~total ->
+            Some false
+        | _ -> None
+      in
+      let extract_totality arguments =
+        List.find_map arguments ~f:extract_totality_from_base |> Option.value ~default:true
+      in
+      let typed_dictionary_class_declaration ~name ~fields ~total ~bases =
         match name with
         | {
          Node.value =
@@ -2204,7 +2262,12 @@ let expand_typed_dictionary_declarations
               | [] -> [Node.create ~location Statement.Pass]
               | assignments -> assignments
             in
-
+            (* Filter out TypedDict and total from base class list arguments *)
+            let other_base_classes =
+              List.filter bases ~f:(fun base ->
+                  Option.is_none (extract_totality_from_base base)
+                  && not (base_is_typed_dictionary base))
+            in
             (* Note: Add a placeholder to indicate the totality of the class. Not using
                `total=False` because that gives an error saying `False` is not a valid literal type.
                Not using `total=Literal[False]` because that requires importing `Literal`. *)
@@ -2236,6 +2299,7 @@ let expand_typed_dictionary_declarations
                               (Expression.Name (create_name ~location "TypedDictionary"));
                         };
                       ]
+                     @ other_base_classes
                      @
                      if total then
                        []
@@ -2246,26 +2310,6 @@ let expand_typed_dictionary_declarations
                    top_level_unbound_names = [];
                  })
         | _ -> None
-      in
-      let extract_totality_from_base base =
-        let is_total ~total = String.equal (Identifier.sanitized total) "total" in
-        match base with
-        | {
-         Call.Argument.name = Some { value = total; _ };
-         value = { Node.value = Expression.Constant Constant.True; _ };
-        }
-          when is_total ~total ->
-            Some true
-        | {
-         Call.Argument.name = Some { value = total; _ };
-         value = { Node.value = Expression.Constant Constant.False; _ };
-        }
-          when is_total ~total ->
-            Some false
-        | _ -> None
-      in
-      let extract_totality arguments =
-        List.find_map arguments ~f:extract_totality_from_base |> Option.value ~default:true
       in
       match value with
       | Statement.Assign
@@ -2319,38 +2363,17 @@ let expand_typed_dictionary_declarations
                          | KeyValue { key; value } -> Some (key, value)
                          | Splat _ -> None))
                   ~total:(extract_totality argument_tail))
+                ~bases:[]
           |> Option.value ~default:value
       | Class
           {
             name = class_name;
-            base_arguments =
-              {
-                Call.Argument.name = None;
-                value =
-                  {
-                    Node.value =
-                      Name
-                        (Name.Attribute
-                          {
-                            base =
-                              {
-                                Node.value =
-                                  Name
-                                    (Name.Identifier
-                                      ("mypy_extensions" | "typing_extensions" | "typing"));
-                                _;
-                              };
-                            attribute = "TypedDict";
-                            _;
-                          });
-                    _;
-                  };
-              }
-              :: bases_tail;
+            base_arguments = bases;
             body;
             decorators = _;
             top_level_unbound_names = _;
-          } ->
+          }
+        when bases_include_typed_dictionary bases ->
           let fields =
             let extract = function
               | {
@@ -2372,7 +2395,8 @@ let expand_typed_dictionary_declarations
               typed_dictionary_class_declaration
                 ~name:(string_literal class_name)
                 ~fields
-                ~total:(extract_totality bases_tail)
+                ~total:(extract_totality bases)
+                ~bases
             in
             class_declaration
           in
