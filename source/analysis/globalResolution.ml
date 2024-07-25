@@ -52,10 +52,6 @@ let alias_environment resolution =
   ClassHierarchyEnvironment.ReadOnly.alias_environment (class_hierarchy_environment resolution)
 
 
-let empty_stub_environment resolution =
-  alias_environment resolution |> TypeAliasEnvironment.ReadOnly.empty_stub_environment
-
-
 let unannotated_global_environment resolution =
   alias_environment resolution |> TypeAliasEnvironment.ReadOnly.unannotated_global_environment
 
@@ -158,13 +154,6 @@ let resolve_exports ({ dependency; _ } as resolution) ?from reference =
     reference
 
 
-let is_from_empty_stub ({ dependency; _ } as resolution) reference =
-  EmptyStubEnvironment.ReadOnly.is_from_empty_stub
-    ?dependency
-    (empty_stub_environment resolution)
-    reference
-
-
 let get_type_alias ({ dependency; _ } as resolution) =
   TypeAliasEnvironment.ReadOnly.get_type_alias ?dependency (alias_environment resolution)
 
@@ -199,14 +188,8 @@ let type_parameters_as_variables ?default ({ dependency; _ } as resolution) =
     (class_hierarchy_environment resolution)
 
 
-let has_transitive_successor
-    ?(placeholder_subclass_extends_all = true)
-    resolution
-    ~successor
-    predecessor
-  =
+let has_transitive_successor resolution ~successor predecessor =
   ClassSuccessorMetadataEnvironment.ReadOnly.has_transitive_successor
-    ~placeholder_subclass_extends_all
     (class_metadata_environment resolution)
     ~successor
     predecessor
@@ -351,18 +334,6 @@ let location_of_global ({ dependency; _ } as resolution) =
 
 
 let immediate_parents resolution = ClassHierarchy.immediate_parents (class_hierarchy resolution)
-
-let base_is_from_placeholder_stub variable_aliases resolution =
-  let resolved_aliases ?replace_unbound_parameters_with_any:_ name =
-    match (get_type_alias resolution) name with
-    | Some t -> Some t
-    | _ -> None
-  in
-  AnnotatedBases.base_is_from_placeholder_stub
-    ~variables:variable_aliases
-    ~aliases:resolved_aliases
-    ~is_from_empty_stub:(is_from_empty_stub resolution)
-
 
 let parse_reference ?(allow_untracked = false) resolution reference =
   let validation =

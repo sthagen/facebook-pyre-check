@@ -53,8 +53,6 @@ val get_module_metadata : t -> Reference.t -> Module.Metadata.t option
 
 val resolve_exports : t -> ?from:Reference.t -> Reference.t -> ResolvedReference.t option
 
-val is_from_empty_stub : t -> Reference.t -> bool
-
 val get_type_alias
   :  t ->
   ?replace_unbound_parameters_with_any:bool ->
@@ -90,12 +88,7 @@ val type_parameters_as_variables
   Type.Primitive.t ->
   Type.Variable.t list option
 
-val has_transitive_successor
-  :  ?placeholder_subclass_extends_all:bool ->
-  t ->
-  successor:Type.Primitive.t ->
-  Type.Primitive.t ->
-  bool
+val has_transitive_successor : t -> successor:Type.Primitive.t -> Type.Primitive.t -> bool
 
 val successors : t -> Type.Primitive.t -> string list
 
@@ -200,8 +193,6 @@ val attribute_names
 val location_of_global : t -> Reference.t -> Location.WithModule.t option
 
 val class_hierarchy : t -> (module ClassHierarchy.Handler)
-
-val base_is_from_placeholder_stub : (string -> Type.Variable.t option) -> t -> Expression.t -> bool
 
 val parse_reference : ?allow_untracked:bool -> t -> Reference.t -> Type.t
 

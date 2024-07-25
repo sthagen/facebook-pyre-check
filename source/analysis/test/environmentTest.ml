@@ -257,18 +257,6 @@ let test_register_aliases context =
   (* Stub-suppressed aliases show up as `Any`. *)
   assert_resolved
     [
-      "stubbed.pyi", "# pyre-placeholder-stub";
-      ( "qualifier.py",
-        {|
-          class str: ...
-          T = stubbed.Something
-          Q = typing.Union[stubbed.Something, str]
-        |}
-      );
-    ]
-    ["qualifier.T", "typing.Any"; "qualifier.Q", "typing.Any"];
-  assert_resolved
-    [
       ( "t.py",
         {|
           import x
@@ -1157,7 +1145,6 @@ let test_remove_extra_edges_to_object context =
       ClassHierarchy.Edges.parents =
         [{ ClassHierarchy.Target.target = "test.One"; parameters = [] }];
       generic_base = None;
-      has_placeholder_stub_parent = false;
     };
   ()
 
