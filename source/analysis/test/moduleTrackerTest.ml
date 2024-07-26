@@ -131,9 +131,15 @@ let assert_module_path
     expected_path
     actual_path;
   Option.iter priority ~f:(fun expected_priority ->
-      assert_equal ~cmp:Int.equal ~printer:Int.to_string expected_priority actual_priority);
+      assert_equal
+        ~msg:"priorities are mismatched"
+        ~cmp:Int.equal
+        ~printer:Int.to_string
+        expected_priority
+        actual_priority);
   Option.iter should_type_check ~f:(fun expected_should_type_check ->
       assert_equal
+        ~msg:"should_type_check is mismatched"
         ~cmp:Bool.equal
         ~printer:Bool.to_string
         expected_should_type_check
@@ -2106,20 +2112,20 @@ let () =
   "environment"
   >::: [
          "module_path_create" >:: test_module_path_create;
-         "module_path_search_path_subdirectory " >:: test_module_path_search_path_subdirectory;
-         "module_path_exclude " >:: test_module_path_exclude;
-         "module_path_directory_filter " >:: test_module_path_directory_filter;
-         "module_path_directory_filter2 " >:: test_module_path_directory_filter2;
-         "module_path_directory_filter3 " >:: test_module_path_directory_filter3;
-         "module_path_overlapping " >:: test_module_path_overlapping;
-         "module_path_overlapping2 " >:: test_module_path_overlapping2;
+         "module_path_search_path_subdirectory" >:: test_module_path_search_path_subdirectory;
+         "module_path_exclude" >:: test_module_path_exclude;
+         "module_path_directory_filter" >:: test_module_path_directory_filter;
+         "module_path_directory_filter2" >:: test_module_path_directory_filter2;
+         "module_path_directory_filter3" >:: test_module_path_directory_filter3;
+         "module_path_overlapping" >:: test_module_path_overlapping;
+         "module_path_overlapping2" >:: test_module_path_overlapping2;
          "initialization" >:: test_initialization;
-         "priority " >:: test_priority;
-         "priority_multi_source_paths " >:: test_priority_multi_source_paths;
-         "root_independence " >:: test_root_independence;
-         "hidden_files " >:: test_hidden_files;
-         "hidden_files2 " >:: test_hidden_files2;
-         "namespace_modules " >:: test_namespace_modules;
+         "priority" >:: test_priority;
+         "priority_multi_source_paths" >:: test_priority_multi_source_paths;
+         "root_independence" >:: test_root_independence;
+         "hidden_files" >:: test_hidden_files;
+         "hidden_files2" >:: test_hidden_files2;
+         "namespace_modules" >:: test_namespace_modules;
          "stub_package_priority" >:: test_stub_package_priority;
          test_update_new_files;
          test_update_remove_files;
