@@ -31,6 +31,28 @@ let name_location
     }
 
 
+module TypeAlias = struct
+  type t = {
+    name: Expression.t;
+    type_params: Expression.TypeParam.t list;
+    value: Expression.t;
+  }
+  [@@deriving equal, compare, sexp, show, hash, to_yojson]
+
+  let location_insensitive_compare left right =
+    match Expression.location_insensitive_compare left.name right.name with
+    | x when not (Int.equal x 0) -> x
+    | _ -> (
+        match
+          List.compare
+            Expression.TypeParam.location_insensitive_compare
+            left.type_params
+            right.type_params
+        with
+        | x when not (Int.equal x 0) -> x
+        | _ -> Expression.location_insensitive_compare left.value right.value)
+end
+
 module Assign = struct
   type t = {
     target: Expression.t;
@@ -272,6 +294,7 @@ and Class : sig
     body: Statement.t list;
     decorators: Expression.t list;
     top_level_unbound_names: Define.NameAccess.t list;
+    type_params: Expression.TypeParam.t list;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -303,6 +326,7 @@ end = struct
     body: Statement.t list;
     decorators: Expression.t list;
     top_level_unbound_names: Define.NameAccess.t list;
+    type_params: Expression.TypeParam.t list;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -330,11 +354,19 @@ end = struct
                     right.decorators
                 with
                 | x when not (Int.equal x 0) -> x
-                | _ ->
-                    List.compare
-                      Define.NameAccess.compare
-                      left.top_level_unbound_names
-                      right.top_level_unbound_names)))
+                | _ -> (
+                    match
+                      List.compare
+                        Define.NameAccess.compare
+                        left.top_level_unbound_names
+                        right.top_level_unbound_names
+                    with
+                    | 0 ->
+                        List.compare
+                          Expression.TypeParam.location_insensitive_compare
+                          left.type_params
+                          right.type_params
+                    | x -> x))))
 
 
   let toplevel_define { name; top_level_unbound_names; body; _ } =
@@ -443,6 +475,7 @@ and Define : sig
       parent: Reference.t option;
       (* If the define is nested, this is the name of the nesting define. *)
       nesting_define: Reference.t option;
+      type_params: Expression.TypeParam.t list;
     }
     [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -610,6 +643,7 @@ end = struct
       parent: Reference.t option;
       (* If the define is nested, this is the name of the nesting define. *)
       nesting_define: Reference.t option;
+      type_params: Expression.TypeParam.t list;
     }
     [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -649,10 +683,18 @@ end = struct
                           | _ -> (
                               match [%compare: Reference.t option] left.parent right.parent with
                               | x when not (Int.equal x 0) -> x
-                              | _ ->
-                                  [%compare: Reference.t option]
-                                    left.nesting_define
-                                    right.nesting_define))))))
+                              | _ -> (
+                                  match
+                                    [%compare: Reference.t option]
+                                      left.nesting_define
+                                      right.nesting_define
+                                  with
+                                  | x when not (Int.equal x 0) -> x
+                                  | _ ->
+                                      List.compare
+                                        Expression.TypeParam.location_insensitive_compare
+                                        left.type_params
+                                        right.type_params)))))))
 
 
     let create_toplevel ~qualifier =
@@ -665,6 +707,7 @@ end = struct
         generator = false;
         parent = None;
         nesting_define = None;
+        type_params = [];
       }
 
 
@@ -678,6 +721,7 @@ end = struct
         generator = false;
         parent = Some parent;
         nesting_define = None;
+        type_params = [];
       }
 
 
@@ -1552,6 +1596,7 @@ and Statement : sig
     | Raise of Raise.t
     | Return of Return.t
     | Try of Try.t
+    | TypeAlias of TypeAlias.t
     | With of With.t
     | While of While.t
   [@@deriving equal, compare, sexp, hash, to_yojson]
@@ -1584,6 +1629,7 @@ end = struct
     | Raise of Raise.t
     | Return of Return.t
     | Try of Try.t
+    | TypeAlias of TypeAlias.t
     | With of With.t
     | While of While.t
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
@@ -1612,6 +1658,7 @@ end = struct
     | Raise left, Raise right -> Raise.location_insensitive_compare left right
     | Return left, Return right -> Return.location_insensitive_compare left right
     | Try left, Try right -> Try.location_insensitive_compare left right
+    | TypeAlias left, TypeAlias right -> TypeAlias.location_insensitive_compare left right
     | With left, With right -> With.location_insensitive_compare left right
     | While left, While right -> While.location_insensitive_compare left right
     | Assign _, _ -> -1
@@ -1633,6 +1680,7 @@ end = struct
     | Raise _, _ -> -1
     | Return _, _ -> -1
     | Try _, _ -> -1
+    | TypeAlias _, _ -> -1
     | With _, _ -> -1
     | While _, _ -> -1
 
@@ -1812,14 +1860,16 @@ module PrettyPrinter = struct
       value
 
 
-  and pp_class formatter { Class.name; base_arguments; body; decorators; _ } =
+  and pp_class formatter { Class.name; base_arguments; body; decorators; type_params; _ } =
     Format.fprintf
       formatter
-      "%a@[<v 2>class %a(%a):@;@[<v>%a@]@;@]"
+      "%a@[<v 2>class %a%a(%a):@;@[<v>%a@]@;@]"
       pp_decorators
       decorators
       Reference.pp
       name
+      Expression.pp_type_param_list
+      type_params
       Expression.pp_expression_argument_list
       base_arguments
       pp_statement_list
@@ -1830,7 +1880,16 @@ module PrettyPrinter = struct
       formatter
       {
         Define.signature =
-          { Define.Signature.name; parameters; decorators; return_annotation; async; parent; _ };
+          {
+            Define.Signature.name;
+            parameters;
+            decorators;
+            return_annotation;
+            async;
+            parent;
+            type_params;
+            _;
+          };
         body;
         captures = _;
         unbound_names = _;
@@ -1843,7 +1902,7 @@ module PrettyPrinter = struct
     in
     Format.fprintf
       formatter
-      "%a@[<v 2>%adef %a%s%a(%a)%s:@;%a@]@;"
+      "%a@[<v 2>%adef %a%s%a%a(%a)%s:@;%a@]@;"
       pp_decorators
       decorators
       pp_async
@@ -1853,6 +1912,8 @@ module PrettyPrinter = struct
       (if Option.is_some parent then "#" else "")
       Reference.pp
       name
+      Expression.pp_type_param_list
+      type_params
       Expression.pp_expression_parameter_list
       parameters
       return_annotation
@@ -1983,6 +2044,16 @@ module PrettyPrinter = struct
           orelse
           pp_finally_block
           finally
+    | TypeAlias { TypeAlias.name; type_params; value } ->
+        Format.fprintf
+          formatter
+          "type %a%a = %a"
+          Expression.pp
+          name
+          Expression.pp_type_param_list
+          type_params
+          Expression.pp
+          value
     | With { With.items; body; async } ->
         let pp_item formatter (expression, expression_option) =
           Format.fprintf
@@ -2133,6 +2204,8 @@ let is_generator statements =
         || List.exists handlers ~f:(fun { Try.Handler.body; _ } -> is_statements_generator body)
         || is_statements_generator orelse
         || is_statements_generator finally
+    | TypeAlias { TypeAlias.name; value; _ } ->
+        is_expression_generator name || is_expression_generator value
     | With { With.items; body; _ } ->
         List.exists items ~f:(fun (expression, _) -> is_expression_generator expression)
         || is_statements_generator body

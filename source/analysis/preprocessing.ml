@@ -923,6 +923,7 @@ module Qualify (Context : QualifyContext) = struct
                 body;
                 orelse;
               } )
+      | TypeAlias _ (* TODO(yangdanny): handle TypeAlias? *)
       | Break
       | Continue
       | Import _
@@ -2328,6 +2329,7 @@ let expand_typed_dictionary_declarations
                    decorators = [];
                    body = assignments;
                    top_level_unbound_names = [];
+                   type_params = [];
                  })
         | _ -> None
       in
@@ -2392,6 +2394,7 @@ let expand_typed_dictionary_declarations
             body;
             decorators = _;
             top_level_unbound_names = _;
+            type_params = _;
           }
         when bases_include_typed_dictionary bases ->
           let fields =
@@ -2682,6 +2685,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                 generator = false;
                 parent = Some parent;
                 nesting_define = None;
+                type_params = [];
               };
             captures = [];
             unbound_names = [];
@@ -2718,6 +2722,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                   body = constructors @ attributes;
                   decorators = [];
                   top_level_unbound_names = [];
+                  type_params = [];
                 }
           | _ -> value)
       | Class ({ Class.name; base_arguments; body; _ } as original) ->
@@ -2727,12 +2732,13 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                   {
                     Node.value =
                       Name
-                        (Name.Attribute
-                          {
-                            base = { Node.value = Name (Name.Identifier "typing"); _ };
-                            attribute = "NamedTuple";
-                            _;
-                          });
+                        ( Name.Identifier "typing.NamedTuple"
+                        | Name.Attribute
+                            {
+                              base = { Node.value = Name (Name.Identifier "typing"); _ };
+                              attribute = "NamedTuple";
+                              _;
+                            } );
                     _;
                   };
                 _;
@@ -2858,6 +2864,7 @@ let expand_new_types ({ Source.statements; _ } as source) =
               generator = false;
               parent = Some name;
               nesting_define = None;
+              type_params = [];
             };
           captures = [];
           unbound_names = [];
@@ -2872,6 +2879,7 @@ let expand_new_types ({ Source.statements; _ } as source) =
         body = [constructor];
         decorators = [];
         top_level_unbound_names = [];
+        type_params = [];
       }
   in
   let expand_new_type ({ Node.location; value } as statement) =
@@ -2975,6 +2983,7 @@ let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
             decorators = [];
             body = [Node.create ~location Statement.Pass];
             top_level_unbound_names = [];
+            type_params = [];
           }
       in
       match value with
@@ -3309,6 +3318,7 @@ module AccessCollector = struct
     | Global _
     | Import _
     | Nonlocal _
+    | TypeAlias _ (* TODO(T196994965): handle TypeAlias *)
     | Pass ->
         collected
 
@@ -4278,7 +4288,8 @@ let add_dataclass_keyword_only_specifiers source =
 
     let statement _ ({ Node.value; location } as statement) =
       match value with
-      | Statement.Class { name; base_arguments; body; decorators; top_level_unbound_names }
+      | Statement.Class
+          { name; base_arguments; body; decorators; top_level_unbound_names; type_params }
         when List.exists decorators ~f:is_dataclass_decorator
              && List.exists body ~f:is_keyword_only_pseudo_field ->
           ( (),
@@ -4292,6 +4303,7 @@ let add_dataclass_keyword_only_specifiers source =
                       body = set_keyword_only_after_pseudo_field body;
                       decorators;
                       top_level_unbound_names;
+                      type_params;
                     };
                 location;
               };
@@ -4668,6 +4680,7 @@ let expand_enum_functional_syntax
           decorators = [];
           body = assignments;
           top_level_unbound_names = [];
+          type_params = [];
         }
     in
     match value with

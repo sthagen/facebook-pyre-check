@@ -1678,6 +1678,48 @@ let test_non_async_function =
     ]
 
 
+let test_unawaited_awaitable_configuration_flag =
+  let open IntegrationTest in
+  let assert_type_errors ~enable_unawaited_awaitable_analysis source errors =
+    assert_type_errors ~enable_unawaited_awaitable_analysis source errors
+  in
+  test_list
+    [
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           ~enable_unawaited_awaitable_analysis:false
+           {|
+              async def awaitable() -> int: ...
+
+              async def foo() -> None:
+                x = awaitable()
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           ~enable_unawaited_awaitable_analysis:true
+           {|
+              async def awaitable() -> int: ...
+
+              async def foo() -> None:
+                x = awaitable()
+            |}
+           ["Unawaited awaitable [1001]: Awaitable assigned to `x` is never awaited."];
+      (* Don't warn about unawaited awaitables for top-level assignments. *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           ~enable_unawaited_awaitable_analysis:true
+           {|
+              async def awaitable() -> int: ...
+
+              x = awaitable()
+            |}
+           [
+             "Missing global annotation [5]: Globally accessible variable `x` has no type specified.";
+           ];
+    ]
+
+
 let () =
   "unawaited"
   >::: [
@@ -1697,5 +1739,6 @@ let () =
          test_bottom_type;
          test_class_satisfying_awaitable;
          test_non_async_function;
+         test_unawaited_awaitable_configuration_flag;
        ]
   |> Test.run

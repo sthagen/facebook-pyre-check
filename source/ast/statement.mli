@@ -33,6 +33,17 @@ module AugmentedAssign : sig
   val lower : location:Location.t -> t -> Expression.t
 end
 
+module TypeAlias : sig
+  type t = {
+    name: Expression.t;
+    type_params: Expression.TypeParam.t list;
+    value: Expression.t;
+  }
+  [@@deriving equal, compare, sexp, show, hash, to_yojson]
+
+  val location_insensitive_compare : t -> t -> int
+end
+
 module Import : sig
   type import = {
     name: Reference.t;
@@ -112,6 +123,7 @@ and Class : sig
     body: Statement.t list;
     decorators: Expression.t list;
     top_level_unbound_names: Define.NameAccess.t list;
+    type_params: Expression.TypeParam.t list;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -151,6 +163,7 @@ and Define : sig
       parent: Reference.t option;
       (* If the define is nested, this is the name of the nesting define. *)
       nesting_define: Reference.t option;
+      type_params: Expression.TypeParam.t list;
     }
     [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -451,6 +464,7 @@ and Statement : sig
     | Raise of Raise.t
     | Return of Return.t
     | Try of Try.t
+    | TypeAlias of TypeAlias.t
     | With of With.t
     | While of While.t
   [@@deriving equal, compare, sexp, hash, to_yojson]
