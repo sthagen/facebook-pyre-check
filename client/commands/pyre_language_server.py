@@ -19,9 +19,11 @@ import abc
 import asyncio
 
 import dataclasses
+import functools
 import json
 import logging
 import random
+import subprocess
 import traceback
 from collections import defaultdict
 from pathlib import Path
@@ -69,6 +71,9 @@ from .source_code_context import SourceCodeContext
 
 LOG: logging.Logger = logging.getLogger(__name__)
 CONSECUTIVE_START_ATTEMPT_THRESHOLD: int = 5
+PYAUTOTARGETS_ENABLED_SUFFIXES: Set[str] = {
+    ".py",
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -89,6 +94,24 @@ class PyreBuckTypeErrorMetadata:
     number_files_buck_checked: int
     preempted: Optional[bool]
     durations: Dict[str, float]
+
+
+@dataclasses.dataclass(frozen=True)
+class PythonAutoTargetsMetadata:
+    duration: Optional[float]
+    error_message: Optional[str]
+
+
+@functools.lru_cache(maxsize=1)
+def get_buck_root() -> str:
+    buck_root_query_parameters = ["buck2", "root", "--kind", "project"]
+    buck2_root_query = subprocess.run(
+        buck_root_query_parameters,
+        capture_output=True,
+        check=True,
+    )
+
+    return buck2_root_query.stdout.decode("utf-8").strip()
 
 
 async def read_lsp_request(
@@ -523,7 +546,9 @@ class PyreLanguageServer(PyreLanguageServerApi):
             == identifiers.PyreFlavor.CODE_NAVIGATION
         ):
             await self.handle_overlay_type_errors(
-                document_path=document_path, activity_key=activity_key
+                document_path=document_path,
+                new_file_loaded=True,
+                activity_key=activity_key,
             )
 
     async def process_close_request(
@@ -664,6 +689,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
     async def handle_overlay_type_errors(
         self,
         document_path: Path,
+        new_file_loaded: bool,
         activity_key: Optional[Dict[str, object]] = None,
     ) -> None:
         client_register_event = self.server_state.client_register_event
@@ -707,6 +733,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
                     },
                     "number_files_buck_type_checked": pyre_buck_metadata.number_files_buck_checked,
                     "preempted": pyre_buck_metadata.preempted,
+                    "new_file_loaded": new_file_loaded,
                 },
                 **daemon_status_before.as_telemetry_dict(),
             },
@@ -772,8 +799,53 @@ class PyreLanguageServer(PyreLanguageServerApi):
             != identifiers.PyreFlavor.CODE_NAVIGATION
         ):
             await self.handle_overlay_type_errors(
-                document_path=document_path, activity_key=activity_key
+                document_path=document_path,
+                new_file_loaded=False,
+                activity_key=activity_key,
             )
+
+    async def _run_python_auto_targets(
+        self,
+        changed_file: Path,
+    ) -> PythonAutoTargetsMetadata:
+        try:
+            buck2_root = get_buck_root()
+        except subprocess.CalledProcessError as error:
+            LOG.error(f"Error occurred while querying buck root: {str(error)}")
+            return PythonAutoTargetsMetadata(
+                duration=None,
+                error_message=f"Error occurred while querying buck root: {str(error)}",
+            )
+
+        pyautotargets_timer = timer.Timer()
+
+        pyautodeps_parameters = [
+            f"{buck2_root}/xplat/tools/pyautotargets",
+            "--verbose",
+            "--buck-root",
+            buck2_root,
+            "--isolation-dir=.pyautotargets",
+            str(changed_file),
+        ]
+        pyautodeps_run = await asyncio.create_subprocess_exec(
+            *pyautodeps_parameters,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=buck2_root,
+        )
+        stdout_data, stderr_data = await pyautodeps_run.communicate()
+
+        if pyautodeps_run.returncode != 0:
+            stderr = stderr_data.decode("utf-8")
+            LOG.error(f"Pyautodeps run failed:\n{stderr}")
+            return PythonAutoTargetsMetadata(duration=None, error_message=stderr)
+
+        stdout = stdout_data.decode("utf-8")
+        LOG.debug(f"Pyautodeps result:\n{stdout}")
+        return PythonAutoTargetsMetadata(
+            duration=pyautotargets_timer.stop_in_millisecond(),
+            error_message=None,
+        )
 
     async def process_did_save_request(
         self,
@@ -803,6 +875,15 @@ class PyreLanguageServer(PyreLanguageServerApi):
             pyre_code_updated=False,
         )
 
+        if (
+            self.get_language_server_features().python_auto_targets.is_enabled()
+            and document_path.suffix in PYAUTOTARGETS_ENABLED_SUFFIXES
+        ):
+            auto_targets_metadata = await self._run_python_auto_targets(document_path)
+        else:
+            auto_targets_metadata = PythonAutoTargetsMetadata(
+                duration=None, error_message=None
+            )
         await self.write_telemetry(
             {
                 "type": "LSP",
@@ -814,6 +895,10 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 # We don't do any blocking work on didSave, but analytics are easier if
                 # we avoid needlessly introducing NULL values.
                 "duration_ms": 0,
+                "python_auto_targets_metadata": {
+                    "duration": auto_targets_metadata.duration,
+                    "error_message": auto_targets_metadata.error_message,
+                },
                 **daemon_status_before.as_telemetry_dict(),
             },
             activity_key,
@@ -826,7 +911,9 @@ class PyreLanguageServer(PyreLanguageServerApi):
             == identifiers.PyreFlavor.CODE_NAVIGATION
         ):
             await self.handle_overlay_type_errors(
-                document_path=document_path, activity_key=activity_key
+                document_path=document_path,
+                new_file_loaded=False,
+                activity_key=activity_key,
             )
 
     async def process_type_coverage_request(
