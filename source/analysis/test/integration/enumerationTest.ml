@@ -62,6 +62,23 @@ let test_enumeration_methods =
       @@ assert_strict_type_errors
            {|
               from typing import reveal_type
+              from enum import Enum, member
+
+              class MyEnum(Enum):
+                @member
+                def foo(self) -> None:
+                  pass
+
+              reveal_type(MyEnum.foo)
+            |}
+           [
+             "Revealed type [-1]: Revealed type for `test.MyEnum.foo` is \
+              `typing_extensions.Literal[MyEnum.foo]` (final).";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_strict_type_errors
+           {|
+              from typing import reveal_type
               from enum import Enum
 
               class Color(Enum):
@@ -241,6 +258,43 @@ let test_check_enumeration_attributes =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
            {|
+              from enum import Enum
+
+              class C(Enum):
+                _value_: str
+                X = "X"
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              from enum import Enum
+
+              class C(Enum):
+                _value_: str
+                X = 1
+            |}
+           [
+             "Incompatible attribute type [8]: Attribute `X` declared in class `C` has type `str` \
+              but is used as type `int`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              from enum import Enum
+
+              class C(Enum):
+                _value_: str
+                def __init__(self) -> None:
+                  self._value_ = 1
+            |}
+           [
+             "Incompatible attribute type [8]: Attribute `_value_` declared in class `C` has type \
+              `str` but is used as type `int`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
               import enum
 
               class C(enum.IntEnum):
@@ -275,10 +329,7 @@ let test_check_enumeration_attributes =
               class C(enum.IntEnum):
                 a: str = 1
             |}
-           [
-             "Incompatible attribute type [8]: Attribute `a` declared in class `C` has type `str` \
-              but is used as type `int`.";
-           ];
+           [];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
            {|
