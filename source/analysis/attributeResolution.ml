@@ -74,6 +74,7 @@ module Queries = struct
     successors: Type.Primitive.t -> string list;
     get_class_metadata: Type.Primitive.t -> ClassSuccessorMetadataEnvironment.class_metadata option;
     is_typed_dictionary: Type.Primitive.t -> bool;
+    extends_enum: Type.Primitive.t -> bool;
     has_transitive_successor: successor:Type.Primitive.t -> Type.Primitive.t -> bool;
     least_upper_bound: Type.Primitive.t -> Type.Primitive.t -> Type.Primitive.t option;
     get_variable: ?replace_unbound_parameters_with_any:bool -> string -> Type.Variable.t option;
@@ -3494,14 +3495,14 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         ~parent
         ?(defined = true)
         ~accessed_via_metaclass
-        { Attribute.name = attribute_name; kind } =
-      let Queries.{ exists_matching_class_decorator; successors; _ } = queries in
+        ({ Attribute.name = attribute_name; kind } as attribute) =
+      let Queries.{ exists_matching_class_decorator; successors; extends_enum; _ } = queries in
       let { Node.value = { ClassSummary.name = parent_name; _ }; _ } = parent in
       let parent_name = Reference.show parent_name in
       let class_annotation = Type.Primitive parent_name in
       let annotation, class_variable, visibility, undecorated_signature, problem =
         match kind with
-        | Simple { annotation; values; toplevel; implicit; primitive; _ } ->
+        | Simple { annotation; values; toplevel; _ } ->
             let value = List.hd values >>| fun { value; _ } -> value in
             let parsed_annotation = annotation >>| self#parse_annotation ~assumptions in
             (* Account for class attributes. *)
@@ -3525,7 +3526,6 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             in
             (* Handle enumeration attributes. *)
             let annotation, visibility =
-              let superclasses = successors parent_name |> String.Set.of_list in
               (* TODO(yangdanny): align with enum logic in typeCheck.ml *)
               let metaclass_extends_enummeta class_name =
                 match self#metaclass ~assumptions class_name with
@@ -3543,11 +3543,8 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               in
               if
                 (not (Set.mem Recognized.enumeration_classes (Type.show class_annotation)))
-                && (metaclass_extends_enummeta parent_name
-                   || not (Set.is_empty (Set.inter Recognized.enumeration_classes superclasses)))
-                && primitive
-                && defined
-                && not implicit
+                && (metaclass_extends_enummeta parent_name || extends_enum parent_name)
+                && Attribute.may_be_enum_member attribute
               then
                 ( Some
                     (Type.Literal
@@ -4752,6 +4749,10 @@ let create_queries ~class_metadata_environment ~dependency =
           class_metadata_environment;
       is_typed_dictionary =
         ClassSuccessorMetadataEnvironment.ReadOnly.is_class_typed_dictionary
+          ?dependency
+          class_metadata_environment;
+      extends_enum =
+        ClassSuccessorMetadataEnvironment.ReadOnly.does_class_extend_enum
           ?dependency
           class_metadata_environment;
       has_transitive_successor =

@@ -4620,30 +4620,7 @@ module State (Context : Context) = struct
                       else
                         true
                     in
-                    (* TODO(yangdanny): align with enum logic in attributeResolution.ml *)
-                    let extends_enum =
-                      GlobalResolution.less_or_equal
-                        global_resolution
-                        ~left:parent_annotation
-                        ~right:Type.enumeration
-                    in
-                    let metaclass_extends_enummeta parent_annotation =
-                      let class_name =
-                        Type.class_name parent_annotation |> Reference.show_sanitized
-                      in
-                      match GlobalResolution.metaclass global_resolution class_name with
-                      | Some metaclass_type ->
-                          GlobalResolution.less_or_equal
-                            global_resolution
-                            ~left:metaclass_type
-                            ~right:(Primitive "enum.EnumMeta")
-                          || GlobalResolution.less_or_equal
-                               global_resolution
-                               ~left:metaclass_type
-                               ~right:(Primitive "enum.EnumType")
-                      | None -> false
-                    in
-                    (extends_enum || metaclass_extends_enummeta parent_annotation) && compatible
+                    GlobalResolution.is_enum global_resolution parent_annotation && compatible
                   in
                   let is_incompatible =
                     let expression_is_ellipses =
@@ -7794,12 +7771,18 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
     if Define.is_class_toplevel define then
       let check_final_inheritance errors =
         let is_final errors expression_value =
-          let add_error { ClassSuccessorMetadataEnvironment.is_final; _ } =
+          let add_error { ClassSuccessorMetadataEnvironment.is_final; extends_enum; _ } =
             if is_final then
+              let error_kind =
+                if extends_enum then
+                  Error.FinalEnum (Expression.show expression_value)
+                else
+                  FinalClass (Expression.show expression_value)
+              in
               let error =
                 Error.create
                   ~location:(Location.with_module ~module_reference:Context.qualifier location)
-                  ~kind:(Error.InvalidInheritance (FinalClass (Expression.show expression_value)))
+                  ~kind:(Error.InvalidInheritance error_kind)
                   ~define:Context.define
               in
               error :: errors

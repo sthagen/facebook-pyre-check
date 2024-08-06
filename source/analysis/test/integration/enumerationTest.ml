@@ -8,6 +8,53 @@
 open OUnit2
 open IntegrationTest
 
+let test_enumeration_inheritance =
+  test_list
+    [
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_strict_type_errors
+           {|
+              from enum import Enum
+
+              class NoDefinedMembers(Enum):
+                pass
+
+              class HasDefinedMembers(NoDefinedMembers):
+                RED = 1
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_strict_type_errors
+           {|
+              from enum import Enum
+
+              class HasDefinedMembers(Enum):
+                RED = 1
+
+              class InvalidChildEnum(HasDefinedMembers):
+                pass
+            |}
+           [
+             "Invalid inheritance [39]: Cannot inherit from final enum `HasDefinedMembers`. Enums \
+              with defined members cannot be extended.";
+           ];
+      (* StringEnum should be extensible
+         https://www.internalfb.com/code/fbsource/[18e22aca0c7dcf600fa15510a72af801118ff07b]/fbcode/instagram-server/distillery/util/enum.pyi?lines=13 *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_strict_type_errors
+           {|
+              from enum import Enum
+
+              class StringEnum(Enum):
+                value: str = ...
+
+              class OtherStringEnum(StringEnum):
+                pass
+            |}
+           [];
+    ]
+
+
 let test_enumeration_methods =
   test_list
     [
@@ -219,7 +266,7 @@ let test_check_enumeration_attributes =
             |}
            [
              "Uninitialized attribute [13]: Attribute `a` is declared in class `C` to have type \
-              `C` but is never initialized.";
+              `int` but is never initialized.";
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
@@ -292,12 +339,7 @@ let test_check_enumeration_attributes =
                       self.x: str = "another string"
               reveal_type(A.x)
             |}
-           [
-             "Illegal annotation target [35]: Target `self.x` cannot be annotated as it shadows \
-              the class-level annotation of `typing_extensions.Literal[test.A.x]` with `str`.";
-             "Revealed type [-1]: Revealed type for `test.A.x` is `typing_extensions.Literal[A.x]` \
-              (final).";
-           ];
+           ["Revealed type [-1]: Revealed type for `test.A.x` is `str`."];
     ]
 
 
@@ -328,5 +370,10 @@ let test_functional_syntax =
 
 let () =
   "enumeration"
-  >::: [test_check_enumeration_attributes; test_enumeration_methods; test_functional_syntax]
+  >::: [
+         test_check_enumeration_attributes;
+         test_enumeration_methods;
+         test_functional_syntax;
+         test_enumeration_inheritance;
+       ]
   |> Test.run

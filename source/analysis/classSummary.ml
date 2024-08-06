@@ -212,6 +212,18 @@ module Attribute = struct
       when Option.equal Reference.equal (Some parent) (name_to_reference name) ->
         Some attribute
     | _ -> None
+
+
+  (* If an attribute meeting these criteria is in an Enum class, it will be considered a member of
+     the enum *)
+  let may_be_enum_member { name; kind; _ } =
+    (* Names with single leading underscores are reserved *)
+    if String.is_prefix ~prefix:"_" name then
+      false
+    else
+      match kind with
+      | Simple { values = [{ origin = Explicit; _ }]; _ } -> true
+      | _ -> false
 end
 
 module ClassAttributes = struct
@@ -964,6 +976,17 @@ let has_decorator { decorators; _ } decorator =
 
 let is_final definition =
   has_decorator definition "typing.final" || has_decorator definition "typing_extensions.final"
+
+
+let has_possible_enum_members { class_attributes = { explicitly_assigned_attributes; _ }; _ } =
+  not
+    (Identifier.SerializableMap.is_empty
+       (Identifier.SerializableMap.filter
+          (fun _ { Node.value = { Attribute.name; _ } as attribute; _ } ->
+            (* Enum.value is normally a property, but some places in IG override it to be a regular
+               attribute so we special-case it *)
+            (not (Identifier.equal name "value")) && Attribute.may_be_enum_member attribute)
+          explicitly_assigned_attributes))
 
 
 let is_abstract { bases = { base_classes; metaclass; _ }; _ } =
