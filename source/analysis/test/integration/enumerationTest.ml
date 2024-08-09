@@ -58,6 +58,40 @@ let test_enumeration_inheritance =
 let test_enumeration_methods =
   test_list
     [
+      (* nonmember is a constructor, but we should probably use the type of the parameter for
+         typechecking the attribute *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_strict_type_errors
+           {|
+              from typing import reveal_type, Literal, assert_type
+              from enum import Enum, nonmember
+
+              class MyEnum(Enum):
+                foo = nonmember(1)
+
+              reveal_type(MyEnum.foo)
+              assert_type(MyEnum.foo, Literal[MyEnum.foo])
+            |}
+           [
+             "Revealed type [-1]: Revealed type for `test.MyEnum.foo` is `nonmember`.";
+             "Incompatible parameter type [6]: In call `assert_type`, for 1st positional argument, \
+              expected `typing_extensions.Literal[MyEnum.foo]` but got `nonmember`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_strict_type_errors
+           {|
+              from typing import reveal_type
+              from enum import Enum, member
+
+              class MyEnum(Enum):
+                foo = member(1)
+
+              reveal_type(MyEnum.foo)
+            |}
+           [
+             "Revealed type [-1]: Revealed type for `test.MyEnum.foo` is \
+              `typing_extensions.Literal[MyEnum.foo]` (final).";
+           ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_strict_type_errors
            {|
@@ -249,6 +283,37 @@ let test_enumeration_methods =
                 reveal_type(b)
             |}
            ["Revealed type [-1]: Revealed type for `b` is `bool`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_strict_type_errors
+           {|
+              from typing import reveal_type, assert_type, Literal
+              from enum import Enum
+
+              class Color(Enum):
+                __RED = 1
+
+              assert_type(Color.__RED, Literal[Color.__RED])
+            |}
+           [
+             "Undefined attribute [16]: `Color` has no attribute `__RED`. `__RED` looks like a \
+              private attribute, which is not accessible from outside its parent class.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_strict_type_errors
+           {|
+              from typing import reveal_type, assert_type, Literal
+              from enum import Enum
+
+              class Color(Enum):
+                __RED = 1
+
+                def foo(self) -> None:
+                  assert_type(Color.__RED, Literal[Color.__RED])
+            |}
+           [
+             "Incompatible parameter type [6]: In call `assert_type`, for 1st positional argument, \
+              expected `typing_extensions.Literal[Color._Color__RED]` but got `int`.";
+           ];
     ]
 
 
