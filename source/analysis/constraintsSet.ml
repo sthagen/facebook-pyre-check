@@ -42,7 +42,7 @@ type class_hierarchy = {
   instantiate_successors_parameters:
     source:Type.t -> target:Type.Primitive.t -> Type.Parameter.t list option;
   has_transitive_successor: successor:Type.Primitive.t -> Type.Primitive.t -> bool;
-  variables: Type.Primitive.t -> Type.Variable.t list option;
+  generic_parameters_as_variables: Type.Primitive.t -> Type.Variable.t list option;
   least_upper_bound: Type.Primitive.t -> Type.Primitive.t -> Type.Primitive.t option;
 }
 
@@ -55,7 +55,7 @@ type order = {
     assumptions:Assumptions.t ->
     name:Ast.Identifier.t ->
     AnnotatedAttribute.instantiated option;
-  is_protocol: Type.t -> protocol_assumptions:ProtocolAssumptions.t -> bool;
+  is_protocol: Type.t -> bool;
   get_typed_dictionary: Type.t -> Type.TypedDictionary.t option;
   metaclass: Type.Primitive.t -> assumptions:Assumptions.t -> Type.t option;
   assumptions: Assumptions.t;
@@ -453,9 +453,14 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
   and solve_less_or_equal
       ({
          class_hierarchy =
-           { instantiate_successors_parameters; variables; has_transitive_successor; _ };
+           {
+             instantiate_successors_parameters;
+             generic_parameters_as_variables;
+             has_transitive_successor;
+             _;
+           };
          is_protocol;
-         assumptions = { protocol_assumptions; _ } as assumptions;
+         assumptions;
          get_typed_dictionary;
          metaclass;
          _;
@@ -473,7 +478,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       if has_transitive_successor ~successor:target source then
         [constraints]
       else if
-        is_protocol right ~protocol_assumptions
+        is_protocol right
         && [%compare.equal: Type.Parameter.t list option]
              (instantiate_protocol_parameters order ~candidate:left ~protocol:target)
              (Some [])
@@ -548,8 +553,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           ~constraints
           ~left:(Type.RecursiveType.unfold_recursive_type recursive_type)
           ~right
-    | (Type.Callable _ | Type.NoneType), Type.Primitive protocol
-      when is_protocol right ~protocol_assumptions ->
+    | (Type.Callable _ | Type.NoneType), Type.Primitive protocol when is_protocol right ->
         if
           [%compare.equal: Type.Parameter.t list option]
             (instantiate_protocol_parameters order ~protocol ~candidate:left)
@@ -558,8 +562,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           [constraints]
         else
           impossible
-    | (Type.Callable _ | Type.NoneType), Type.Parametric { name; _ }
-      when is_protocol right ~protocol_assumptions ->
+    | (Type.Callable _ | Type.NoneType), Type.Parametric { name; _ } when is_protocol right ->
         instantiate_protocol_parameters order ~protocol:name ~candidate:left
         >>| Type.parametric name
         >>| (fun left -> solve_less_or_equal order ~constraints ~left ~right)
@@ -654,7 +657,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           | _ -> impossible
         in
         let through_protocol_hierarchy =
-          match right, is_protocol right ~protocol_assumptions with
+          match right, is_protocol right with
           | Primitive right_name, true ->
               if
                 [%compare.equal: Type.Parameter.t list option]
@@ -725,7 +728,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           | _ -> impossible
         in
         let solve_parameters left_parameters right_parameters =
-          variables right_name
+          generic_parameters_as_variables right_name
           >>= Type.Variable.zip_variables_with_two_parameter_lists
                 ~left_parameters
                 ~right_parameters
@@ -734,7 +737,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         let left_parameters =
           let left_parameters = instantiate_successors_parameters ~source:left ~target:right_name in
           match left_parameters with
-          | None when is_protocol right ~protocol_assumptions ->
+          | None when is_protocol right ->
               instantiate_protocol_parameters order ~protocol:right_name ~candidate:left
           | _ -> left_parameters
         in
@@ -985,7 +988,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       classes just follows from the class hierarchy. *)
   and instantiate_protocol_parameters_with_solve
       ({
-         class_hierarchy = { variables; _ };
+         class_hierarchy = { generic_parameters_as_variables; _ };
          assumptions = { protocol_assumptions; _ } as assumptions;
          _;
        } as order)
@@ -995,7 +998,8 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       : Type.Parameter.t list option
     =
     match candidate with
-    | Type.Primitive candidate_name when Option.is_some (variables candidate_name) ->
+    | Type.Primitive candidate_name
+      when Option.is_some (generic_parameters_as_variables candidate_name) ->
         (* If we are given a "stripped" generic, we decline to do structural analysis, as these
            kinds of comparisons only exists for legacy reasons to do nominal comparisons *)
         None
@@ -1011,7 +1015,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         match assumed_protocol_parameters with
         | Some result -> Some result
         | None ->
-            let protocol_generics = variables protocol in
+            let protocol_generics = generic_parameters_as_variables protocol in
             let protocol_generic_parameters =
               protocol_generics >>| List.map ~f:Type.Variable.to_parameter
             in

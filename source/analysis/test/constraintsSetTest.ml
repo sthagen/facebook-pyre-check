@@ -67,7 +67,8 @@ let hierarchy global_environment =
     ConstraintsSet.instantiate_successors_parameters =
       ClassHierarchy.instantiate_successors_parameters class_hierarchy_handler;
     has_transitive_successor;
-    variables = ClassHierarchy.type_parameters_as_variables class_hierarchy_handler;
+    generic_parameters_as_variables =
+      ClassHierarchy.generic_parameters_as_variables class_hierarchy_handler;
     least_upper_bound =
       ClassSuccessorMetadataEnvironment.ReadOnly.least_upper_bound class_metadata_environment;
   }
@@ -210,7 +211,7 @@ let make_assert_functions context =
   let assert_less_or_equal_direct
       ~left
       ~right
-      ?(is_protocol = fun _ ~protocol_assumptions:_ -> false)
+      ?(is_protocol = fun _ -> false)
       ?(attributes = fun _ ~assumptions:_ -> None)
       ?constraints
       ?(postprocess = default_postprocess)
@@ -749,7 +750,7 @@ let test_add_constraint context =
   let parse_annotation annotation =
     annotation |> parse_single_expression |> prep |> GlobalResolution.parse_annotation resolution
   in
-  let is_protocol annotation ~protocol_assumptions:_ =
+  let is_protocol annotation =
     match annotation with
     | Type.Parametric { name = "test.G_invariant"; _ } -> true
     | _ -> false
@@ -1534,7 +1535,7 @@ let test_instantiate_protocol_parameters context =
             List.Assoc.find (classes @ protocols) primitive ~equal:String.equal
         | _ -> None
       in
-      let is_protocol annotation ~protocol_assumptions:_ =
+      let is_protocol annotation =
         match Type.split annotation with
         | Type.Primitive primitive, _ -> List.Assoc.mem protocols primitive ~equal:String.equal
         | _ -> false
@@ -1716,7 +1717,7 @@ let test_mark_escaped_as_escaped context =
         ConstraintsSet.class_hierarchy = hierarchy environment;
         instantiated_attributes = (fun _ ~assumptions:_ -> None);
         attribute = (fun _ ~assumptions:_ ~name:_ -> None);
-        is_protocol = (fun _ ~protocol_assumptions:_ -> false);
+        is_protocol = (fun _ -> false);
         assumptions =
           {
             protocol_assumptions = ProtocolAssumptions.empty;
