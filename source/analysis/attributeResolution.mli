@@ -265,12 +265,7 @@ module AttributeReadOnly : sig
     string ->
     AnnotatedAttribute.uninstantiated list option
 
-  val metaclass
-    :  t ->
-    ?dependency:DependencyKey.registered ->
-    variable_map:(?replace_unbound_parameters_with_any:bool -> string -> Type.Variable.t option) ->
-    Type.Primitive.t ->
-    Type.t option
+  val metaclass : t -> ?dependency:DependencyKey.registered -> Type.Primitive.t -> Type.t option
 
   val constraints
     :  t ->
@@ -279,7 +274,7 @@ module AttributeReadOnly : sig
     ?parameters:Type.Parameter.t list ->
     instantiated:Type.t ->
     unit ->
-    ConstraintsSet.Solution.t
+    TypeConstraints.Solution.t
 
   val resolve_literal
     :  t ->

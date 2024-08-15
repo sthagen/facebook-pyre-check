@@ -16,16 +16,16 @@ type class_hierarchy = {
 type order = {
   class_hierarchy: class_hierarchy;
   instantiated_attributes:
-    Type.t -> assumptions:Assumptions.t -> AnnotatedAttribute.instantiated list option;
+    Type.t -> cycle_detections:CycleDetection.t -> AnnotatedAttribute.instantiated list option;
   attribute:
     Type.t ->
-    assumptions:Assumptions.t ->
+    cycle_detections:CycleDetection.t ->
     name:Ast.Identifier.t ->
     AnnotatedAttribute.instantiated option;
   is_protocol: Type.t -> bool;
   get_typed_dictionary: Type.t -> Type.TypedDictionary.t option;
-  metaclass: Type.Primitive.t -> assumptions:Assumptions.t -> Type.t option;
-  assumptions: Assumptions.t;
+  metaclass: Type.Primitive.t -> cycle_detections:CycleDetection.t -> Type.t option;
+  cycle_detections: CycleDetection.t;
 }
 
 val resolve_callable_protocol : assumption:Type.t -> order:order -> Type.t -> Type.t option
@@ -37,21 +37,6 @@ val empty : t
 val impossible : t
 
 val potentially_satisfiable : t -> bool
-
-module Solution : sig
-  type t [@@deriving eq]
-
-  val empty : t
-
-  val instantiate : t -> Type.t -> Type.t
-
-  val instantiate_single_type_var : t -> Type.Variable.TypeVar.t -> Type.t option
-
-  (* For testing *)
-  val create : Type.Variable.pair list -> t
-
-  val show : t -> string
-end
 
 type kind =
   | LessOrEqual of {
@@ -67,7 +52,11 @@ type kind =
 module type OrderedConstraintsSetType = sig
   val add_and_simplify : t -> new_constraint:kind -> order:order -> t
 
-  val solve : ?only_solve_for:Type.Variable.t list -> t -> order:order -> Solution.t option
+  val solve
+    :  ?only_solve_for:Type.Variable.t list ->
+    t ->
+    order:order ->
+    TypeConstraints.Solution.t option
 
   val get_parameter_specification_possibilities
     :  t ->

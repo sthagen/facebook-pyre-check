@@ -1518,9 +1518,9 @@ let test_constraints =
       List.map expected ~f:(fun (variable, value) -> Type.Variable.TypeVarPair (variable, value))
     in
     assert_equal
-      ~printer:ConstraintsSet.Solution.show
-      ~cmp:ConstraintsSet.Solution.equal
-      (ConstraintsSet.Solution.create expected)
+      ~printer:TypeConstraints.Solution.show
+      ~cmp:TypeConstraints.Solution.equal
+      (TypeConstraints.Solution.create expected)
       constraints
   in
   let int_and_foo_string_union =
@@ -1792,9 +1792,7 @@ let test_metaclasses =
       ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
     in
     let resolution = GlobalResolution.create global_environment in
-    assert_equal
-      (Some (Type.Primitive metaclass))
-      (GlobalResolution.metaclass ~variable_map:Type.empty_variable_map resolution target)
+    assert_equal (Some (Type.Primitive metaclass)) (GlobalResolution.metaclass resolution target)
   in
   test_list
     [
