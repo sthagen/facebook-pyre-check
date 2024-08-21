@@ -26,7 +26,7 @@ let test_simple_registration context =
             List.map
               ~f:(fun name -> { ClassHierarchy.Target.target = name; arguments = [] })
               expected_edges;
-          generic_base = None;
+          parameters_as_generic_base_arguments = None;
         }
     in
     assert_equal
@@ -52,7 +52,7 @@ let test_simple_registration context =
 
 
 let test_parents_and_inferred_generic_base context =
-  let assert_registers ~expected_parents ?expected_inferred_generic_base source name =
+  let assert_registers ~expected_parents ?expected_parameters_as_variables source name =
     let project = ScratchProject.setup ["test.py", source] ~context ~track_dependencies:true in
     let read_only =
       ScratchProject.errors_environment project
@@ -64,11 +64,12 @@ let test_parents_and_inferred_generic_base context =
         arguments = List.map concretes ~f:(fun single -> Type.Argument.Single single);
       }
     in
+
     let expected =
       Some
         {
           ClassHierarchy.Edges.parents = List.map expected_parents ~f:create_target;
-          generic_base = Option.map expected_inferred_generic_base ~f:create_target;
+          parameters_as_generic_base_arguments = expected_parameters_as_variables;
         }
     in
     assert_equal
@@ -95,7 +96,7 @@ let test_parents_and_inferred_generic_base context =
      |}
     "test.C"
     ~expected_parents:["test.List", [Type.variable "test._T"]]
-    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
+    ~expected_parameters_as_variables:[TypeVarVariable (Type.Variable.TypeVar.create "test._T")];
   assert_registers
     {|
        import typing
@@ -107,7 +108,7 @@ let test_parents_and_inferred_generic_base context =
      |}
     "test.C"
     ~expected_parents:["typing.Generic", [Type.variable "test._T"]; "test.List", []]
-    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
+    ~expected_parameters_as_variables:[TypeVarVariable (Type.Variable.TypeVar.create "test._T")];
   assert_registers
     {|
        import typing
@@ -119,7 +120,7 @@ let test_parents_and_inferred_generic_base context =
      |}
     "test.C"
     ~expected_parents:["test.List", [Type.variable "test._T"]]
-    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
+    ~expected_parameters_as_variables:[TypeVarVariable (Type.Variable.TypeVar.create "test._T")];
   assert_registers
     {|
        import typing
@@ -132,7 +133,7 @@ let test_parents_and_inferred_generic_base context =
      |}
     "test.C"
     ~expected_parents:["test.List", [Type.variable "test._T"]]
-    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
+    ~expected_parameters_as_variables:[TypeVarVariable (Type.Variable.TypeVar.create "test._T")];
   assert_registers
     {|
        _T = typing.TypeVar("_T")
@@ -144,7 +145,8 @@ let test_parents_and_inferred_generic_base context =
     "test.List"
     ~expected_parents:
       ["test.Iterable", [Type.variable "test._T"]; "typing.Generic", [Type.variable "test._T"]]
-    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T"]);
+    ~expected_parameters_as_variables:[TypeVarVariable (Type.Variable.TypeVar.create "test._T")];
+
   assert_registers
     {|
        import typing
@@ -157,8 +159,12 @@ let test_parents_and_inferred_generic_base context =
     "test.Bar"
     ~expected_parents:
       ["test.Foo1", [Type.variable "test.T1"]; "test.Foo2", [Type.variable "test.T2"]]
-    ~expected_inferred_generic_base:
-      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+    ~expected_parameters_as_variables:
+      [
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T1");
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T2");
+      ];
+
   assert_registers
     {|
        import typing
@@ -171,8 +177,12 @@ let test_parents_and_inferred_generic_base context =
     "test.Bar"
     ~expected_parents:
       ["test.Foo1", [Type.variable "test.T1"]; "test.Foo2", [Type.variable "test.T2"]]
-    ~expected_inferred_generic_base:
-      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+    ~expected_parameters_as_variables:
+      [
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T1");
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T2");
+      ];
+
   assert_registers
     {|
        import typing
@@ -189,8 +199,12 @@ let test_parents_and_inferred_generic_base context =
         "test.Foo2", [Type.variable "test.T2"];
         "typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"];
       ]
-    ~expected_inferred_generic_base:
-      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+    ~expected_parameters_as_variables:
+      [
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T1");
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T2");
+      ];
+
   assert_registers
     {|
        import typing
@@ -203,8 +217,12 @@ let test_parents_and_inferred_generic_base context =
      |}
     "test.Bar"
     ~expected_parents:["test.Foo1", []; "test.Foo2", [Type.variable "test.T2"]]
-    ~expected_inferred_generic_base:
-      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+    ~expected_parameters_as_variables:
+      [
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T1");
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T2");
+      ];
+
   assert_registers
     {|
        import typing
@@ -217,8 +235,12 @@ let test_parents_and_inferred_generic_base context =
     "test.Bar"
     ~expected_parents:
       ["test.Foo1", [Type.variable "test.T1"]; "test.Foo2", [Type.variable "test.T2"]]
-    ~expected_inferred_generic_base:
-      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+    ~expected_parameters_as_variables:
+      [
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T1");
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T2");
+      ];
+
   assert_registers
     {|
        import typing
@@ -236,8 +258,12 @@ let test_parents_and_inferred_generic_base context =
         "typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"];
         "test.Foo2", [];
       ]
-    ~expected_inferred_generic_base:
-      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+    ~expected_parameters_as_variables:
+      [
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T1");
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T2");
+      ];
+
   assert_registers
     {|
        import typing
@@ -254,8 +280,12 @@ let test_parents_and_inferred_generic_base context =
         "test.Foo1", [];
         "test.Foo2", [];
       ]
-    ~expected_inferred_generic_base:
-      ("typing.Generic", [Type.variable "test.T1"; Type.variable "test.T2"]);
+    ~expected_parameters_as_variables:
+      [
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T1");
+        TypeVarVariable (Type.Variable.TypeVar.create "test.T2");
+      ];
+
   assert_registers
     {|
        import typing
@@ -266,7 +296,8 @@ let test_parents_and_inferred_generic_base context =
     "test.Bar"
     ~expected_parents:
       ["typing.Protocol", [Type.variable "test.T"]; "test.Foo", [Type.variable "test.T"]]
-    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test.T"]);
+    ~expected_parameters_as_variables:[TypeVarVariable (Type.Variable.TypeVar.create "test.T")];
+
   assert_registers
     {|
       _T1 = typing.TypeVar('_T1')
@@ -277,8 +308,12 @@ let test_parents_and_inferred_generic_base context =
     |}
     "test.Foo"
     ~expected_parents:["test.Dict", [Type.variable "test._T1"; Type.variable "test._T2"]]
-    ~expected_inferred_generic_base:
-      ("typing.Generic", [Type.variable "test._T1"; Type.variable "test._T2"]);
+    ~expected_parameters_as_variables:
+      [
+        TypeVarVariable (Type.Variable.TypeVar.create "test._T1");
+        TypeVarVariable (Type.Variable.TypeVar.create "test._T2");
+      ];
+
   assert_registers
     {|
       _T1 = typing.TypeVar('_T1')
@@ -289,7 +324,8 @@ let test_parents_and_inferred_generic_base context =
     |}
     "test.Foo"
     ~expected_parents:["test.Dict", [Type.variable "test._T1"; Type.variable "test._T1"]]
-    ~expected_inferred_generic_base:("typing.Generic", [Type.variable "test._T1"]);
+    ~expected_parameters_as_variables:[TypeVarVariable (Type.Variable.TypeVar.create "test._T1")];
+
   ()
 
 
@@ -325,7 +361,7 @@ let test_updates context =
                   ClassHierarchy.Edges.parents =
                     List.map expectation ~f:(fun name ->
                         { ClassHierarchy.Target.target = name; arguments = [] });
-                  generic_base = None;
+                  parameters_as_generic_base_arguments = None;
                 })
           in
           ClassHierarchyEnvironment.ReadOnly.get_edges read_only ~dependency class_name
