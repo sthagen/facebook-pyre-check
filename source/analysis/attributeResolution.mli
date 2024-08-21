@@ -35,7 +35,7 @@ type generic_type_problems =
       expected: Type.Variable.TypeVar.t;
     }
   | UnexpectedKind of {
-      actual: Type.Parameter.t;
+      actual: Type.Argument.t;
       expected: Type.Variable.t;
     }
 [@@deriving compare, sexp, show, hash]
@@ -211,7 +211,7 @@ module AttributeReadOnly : sig
 
   val full_order : ?dependency:DependencyKey.registered -> t -> TypeOrder.order
 
-  val check_invalid_type_parameters
+  val check_invalid_type_arguments
     :  t ->
     ?dependency:DependencyKey.registered ->
     Type.t ->
@@ -274,7 +274,7 @@ module AttributeReadOnly : sig
     :  t ->
     ?dependency:DependencyKey.registered ->
     target:Type.Primitive.t ->
-    ?parameters:Type.Parameter.t list ->
+    ?arguments:Type.Argument.t list ->
     instantiated:Type.t ->
     unit ->
     TypeConstraints.Solution.t

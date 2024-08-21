@@ -1314,8 +1314,8 @@ let rec messages ~concise ~signature location kind =
     let expected_message = Format.asprintf "`%a`" pp_type expected in
     let actual_message = Format.asprintf "`%a`" pp_type actual in
     match expected, actual with
-    | ( Type.Parametric { parameters = expected_members; name = "Tuple" },
-        Type.Parametric { parameters = actual_members; name = "Tuple" } ) ->
+    | ( Type.Parametric { arguments = expected_members; name = "Tuple" },
+        Type.Parametric { arguments = actual_members; name = "Tuple" } ) ->
         let expected_length = List.length expected_members in
         let actual_length = List.length actual_members in
         if expected_length = actual_length then
@@ -2028,7 +2028,7 @@ let rec messages ~concise ~signature location kind =
         | CallableParameters actual ->
             Format.asprintf
               "callable parameters `%a`"
-              Type.Parameter.pp_list
+              Type.Argument.pp_list
               [CallableParameters actual]
         | Unpacked actual ->
             Format.asprintf "variadic `%a`" Type.OrderedTypes.Concatenation.pp_unpackable actual
@@ -2893,7 +2893,7 @@ let rec messages ~concise ~signature location kind =
                   | Parametric
                       {
                         name = "BoundMethod";
-                        parameters = [Single (Callable { kind; _ }); Single _];
+                        arguments = [Single (Callable { kind; _ }); Single _];
                       } );
               _;
             } -> (

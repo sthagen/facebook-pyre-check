@@ -538,13 +538,13 @@ let rec process_request_exn
                           | _ -> false) ->
                 Type.parametric
                   annotation
-                  (List.map generics ~f:(fun _ -> Type.Parameter.Single Type.Any))
+                  (List.map generics ~f:(fun _ -> Type.Argument.Single Type.Any))
             | _ -> Type.Primitive annotation)
         | _ -> annotation
       in
       if ClassHierarchy.is_instantiated order annotation then
         let mismatches, _ =
-          GlobalResolution.check_invalid_type_parameters global_resolution annotation
+          GlobalResolution.check_invalid_type_arguments global_resolution annotation
         in
         if List.is_empty mismatches then
           annotation

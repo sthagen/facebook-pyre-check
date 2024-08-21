@@ -40,7 +40,7 @@ open CycleDetection
 
 type class_hierarchy = {
   instantiate_successors_parameters:
-    source:Type.t -> target:Type.Primitive.t -> Type.Parameter.t list option;
+    source:Type.t -> target:Type.Primitive.t -> Type.Argument.t list option;
   has_transitive_successor: successor:Type.Primitive.t -> Type.Primitive.t -> bool;
   generic_parameters_as_variables: Type.Primitive.t -> Type.Variable.t list option;
   least_upper_bound: Type.Primitive.t -> Type.Primitive.t -> Type.Primitive.t option;
@@ -99,7 +99,7 @@ module type OrderedConstraintsSetType = sig
     :  order ->
     candidate:Type.t ->
     protocol:Ast.Identifier.t ->
-    Type.Parameter.t list option
+    Type.Argument.t list option
 end
 
 let resolve_callable_protocol
@@ -128,7 +128,7 @@ let resolve_callable_protocol
       >>| TypeInfo.Unit.annotation
       >>= fun annotation ->
       match annotation with
-      | Type.Parametric { name = "BoundMethod"; parameters = [Single _; Single _] }
+      | Type.Parametric { name = "BoundMethod"; arguments = [Single _; Single _] }
       | Callable _ ->
           Some annotation
       | _ -> None)
@@ -489,7 +489,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         [constraints]
       else if
         is_protocol right
-        && [%compare.equal: Type.Parameter.t list option]
+        && [%compare.equal: Type.Argument.t list option]
              (instantiate_protocol_parameters order ~candidate:left ~protocol:target)
              (Some [])
       then
@@ -550,7 +550,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     | _, Type.NoneType -> impossible
     | _, Type.RecursiveType recursive_type ->
         if
-          [%compare.equal: Type.Parameter.t list option]
+          [%compare.equal: Type.Argument.t list option]
             (instantiate_recursive_type_parameters order ~candidate:left ~recursive_type)
             (Some [])
         then
@@ -565,7 +565,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           ~right
     | (Type.Callable _ | Type.NoneType), Type.Primitive protocol when is_protocol right ->
         if
-          [%compare.equal: Type.Parameter.t list option]
+          [%compare.equal: Type.Argument.t list option]
             (instantiate_protocol_parameters order ~protocol ~candidate:left)
             (Some [])
         then
@@ -649,19 +649,19 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               solve_less_or_equal order ~constraints ~left ~right)
     | Type.ReadOnly _, _ -> impossible
     | ( Type.Parametric
-          { name = "typing.TypeGuard" | "typing_extensions.TypeGuard"; parameters = [Single left] },
+          { name = "typing.TypeGuard" | "typing_extensions.TypeGuard"; arguments = [Single left] },
         Type.Parametric
-          { name = "typing.TypeGuard" | "typing_extensions.TypeGuard"; parameters = [Single right] }
+          { name = "typing.TypeGuard" | "typing_extensions.TypeGuard"; arguments = [Single right] }
       ) ->
         solve_less_or_equal order ~constraints ~left ~right
-    | ( Type.Parametric { name = "type"; parameters = [Single left] },
-        Type.Parametric { name = "type"; parameters = [Single right] } ) ->
+    | ( Type.Parametric { name = "type"; arguments = [Single left] },
+        Type.Parametric { name = "type"; arguments = [Single right] } ) ->
         solve_less_or_equal order ~constraints ~left ~right
-    | Type.Parametric { name = "type"; parameters = [Single meta_parameter] }, _ ->
+    | Type.Parametric { name = "type"; arguments = [Single meta_argument] }, _ ->
         let through_meta_hierarchy =
-          match meta_parameter, right with
-          | Primitive meta_parameter, Primitive _ ->
-              metaclass meta_parameter ~cycle_detections
+          match meta_argument, right with
+          | Primitive meta_argument, Primitive _ ->
+              metaclass meta_argument ~cycle_detections
               >>| (fun left -> solve_less_or_equal order ~left ~right ~constraints)
               |> Option.value ~default:impossible
           | _ -> impossible
@@ -670,7 +670,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           match right, is_protocol right with
           | Primitive right_name, true ->
               if
-                [%compare.equal: Type.Parameter.t list option]
+                [%compare.equal: Type.Argument.t list option]
                   (instantiate_protocol_parameters order ~candidate:left ~protocol:right_name)
                   (Some [])
               then
@@ -683,7 +683,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               >>| (fun left -> solve_less_or_equal order ~left ~right ~constraints)
               |> Option.value ~default:impossible
           | Callable _, _ -> (
-              match meta_parameter with
+              match meta_argument with
               | Type.Union types ->
                   solve_less_or_equal
                     order
@@ -697,7 +697,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           | _ -> impossible
         in
         List.append through_protocol_hierarchy through_meta_hierarchy
-    | _, Type.Parametric { name = right_name; parameters = right_parameters } ->
+    | _, Type.Parametric { name = right_name; arguments = right_arguments } ->
         let solve_respecting_variance constraints = function
           | Type.Variable.TypeVarPair (unary, left), Type.Variable.TypeVarPair (_, right) -> (
               match left, right, unary with
@@ -737,22 +737,20 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                      solve_ordered_types_less_or_equal order ~left ~right ~constraints)
           | _ -> impossible
         in
-        let solve_parameters left_parameters right_parameters =
+        let solve_arguments left_arguments right_arguments =
           generic_parameters_as_variables right_name
-          >>= Type.Variable.zip_variables_with_two_parameter_lists
-                ~left_parameters
-                ~right_parameters
+          >>= Type.Variable.zip_variables_with_two_argument_lists ~left_arguments ~right_arguments
           >>| List.fold ~f:solve_respecting_variance ~init:[constraints]
         in
-        let left_parameters =
-          let left_parameters = instantiate_successors_parameters ~source:left ~target:right_name in
-          match left_parameters with
+        let left_arguments =
+          let left_arguments = instantiate_successors_parameters ~source:left ~target:right_name in
+          match left_arguments with
           | None when is_protocol right ->
               instantiate_protocol_parameters order ~protocol:right_name ~candidate:left
-          | _ -> left_parameters
+          | _ -> left_arguments
         in
-        left_parameters
-        >>= (fun left_parameters -> solve_parameters left_parameters right_parameters)
+        left_arguments
+        >>= (fun left_arguments -> solve_arguments left_arguments right_arguments)
         |> Option.value ~default:impossible
     | Type.Primitive source, Type.Primitive target -> (
         let left_typed_dictionary = get_typed_dictionary left in
@@ -791,11 +789,11 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         solve_ordered_types_less_or_equal order ~left ~right ~constraints
     | Type.Tuple (Concatenation concatenation), Type.Primitive _ ->
         Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
-        >>| (fun parameter ->
+        >>| (fun argument ->
               solve_less_or_equal
                 order
                 ~constraints
-                ~left:(Type.parametric "tuple" [Single parameter])
+                ~left:(Type.parametric "tuple" [Single argument])
                 ~right)
         |> Option.value ~default:impossible
     | Type.Tuple (Concrete members), Type.Primitive _ ->
@@ -1005,7 +1003,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       ~solve_candidate_less_or_equal_protocol
       ~candidate
       ~protocol
-      : Type.Parameter.t list option
+      : Type.Argument.t list option
     =
     match candidate with
     | Type.Primitive candidate_name
@@ -1014,7 +1012,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
            kinds of comparisons only exists for legacy reasons to do nominal comparisons *)
         None
     | Type.Primitive candidate_name when Identifier.equal candidate_name protocol -> Some []
-    | Type.Parametric { name; parameters } when Identifier.equal name protocol -> Some parameters
+    | Type.Parametric { name; arguments } when Identifier.equal name protocol -> Some arguments
     | _ -> (
         let assumed_protocol_parameters =
           AssumedProtocolInstantiations.find_assumed_protocol_parameters
@@ -1027,7 +1025,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         | None ->
             let protocol_generics = generic_parameters_as_variables protocol in
             let protocol_generic_parameters =
-              protocol_generics >>| List.map ~f:Type.Variable.to_parameter
+              protocol_generics >>| List.map ~f:Type.Variable.to_argument
             in
             let new_cycle_detections =
               AssumedProtocolInstantiations.add
@@ -1081,9 +1079,9 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               let desanitize =
                 let desanitization_solution = TypeConstraints.Solution.create desanitize_map in
                 let instantiate = function
-                  | Type.Parameter.Single single ->
+                  | Type.Argument.Single single ->
                       [
-                        Type.Parameter.Single
+                        Type.Argument.Single
                           (TypeConstraints.Solution.instantiate desanitization_solution single);
                       ]
                   | CallableParameters parameters ->
@@ -1098,7 +1096,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                         desanitization_solution
                         (Concatenation
                            (Type.OrderedTypes.Concatenation.create_from_unpackable unpackable))
-                      |> Type.OrderedTypes.to_parameters
+                      |> Type.OrderedTypes.to_arguments
                 in
                 List.concat_map ~f:instantiate
               in
@@ -1106,16 +1104,16 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                 | Type.Variable.TypeVarVariable variable ->
                     TypeConstraints.Solution.instantiate_single_type_var solution variable
                     |> Option.value ~default:(Type.Variable variable)
-                    |> fun instantiated -> [Type.Parameter.Single instantiated]
+                    |> fun instantiated -> [Type.Argument.Single instantiated]
                 | ParamSpecVariable variable ->
                     TypeConstraints.Solution.instantiate_single_param_spec solution variable
                     |> Option.value ~default:(Type.Callable.FromParamSpec { head = []; variable })
-                    |> fun instantiated -> [Type.Parameter.CallableParameters instantiated]
+                    |> fun instantiated -> [Type.Argument.CallableParameters instantiated]
                 | TypeVarTupleVariable variadic ->
                     TypeConstraints.Solution.instantiate_ordered_types
                       solution
                       (Concatenation (Type.OrderedTypes.Concatenation.create variadic))
-                    |> Type.OrderedTypes.to_parameters
+                    |> Type.OrderedTypes.to_arguments
               in
               protocol_generics
               >>| List.concat_map ~f:instantiate
@@ -1138,7 +1136,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       `candidate` type with the protocol, whereas `Some []` means no generic constraints were
       induced. *)
   and instantiate_protocol_parameters
-      : order -> candidate:Type.t -> protocol:Ast.Identifier.t -> Type.Parameter.t list option
+      : order -> candidate:Type.t -> protocol:Ast.Identifier.t -> Type.Argument.t list option
     =
     (* A candidate is less-or-equal to a protocol if candidate.x <: protocol.x for each attribute
        `x` in the protocol. *)
@@ -1161,7 +1159,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                   match attribute_lookup ~name:"__getattr__" >>| attribute_type with
                   | Some
                       (Type.Parametric
-                        { name = "BoundMethod"; parameters = [Single (Type.Callable callable); _] })
+                        { name = "BoundMethod"; arguments = [Single (Type.Callable callable); _] })
                   | Some (Type.Callable callable) ->
                       Some callable.implementation.annotation
                   | _ -> None)
@@ -1202,7 +1200,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
 
 
   and instantiate_recursive_type_parameters order ~candidate ~recursive_type
-      : Type.Parameter.t list option
+      : Type.Argument.t list option
     =
     (* TODO(T44784951): Allow passing in the generic parameters for generic recursive types. *)
     let solve_recursive_type_less_or_equal order ~candidate ~protocol_annotation:_ =
