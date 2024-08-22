@@ -15,7 +15,6 @@ This module is NOT responsible for any kind of processing that happens to the re
 which is left to the higher layers.
 """
 
-
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +27,6 @@ from typing import AsyncIterator, Optional, Union
 
 from .. import dataclasses_json_extensions as json_mixins, log
 from . import connections
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

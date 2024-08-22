@@ -16,7 +16,6 @@ TraceEvent tools like Perfetto or the Chrome tracevent tool to
 standard output.
 """
 
-
 import dataclasses
 import json
 import logging
@@ -29,7 +28,6 @@ from typing_extensions import Final
 
 from .. import backend_arguments, command_arguments, frontend_configuration, identifiers
 from . import commands
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

@@ -9,7 +9,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import json
 import logging
 import os
@@ -24,7 +23,6 @@ from typing_extensions import Final, Literal
 
 from .environment import Environment
 from .specification import Specification
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

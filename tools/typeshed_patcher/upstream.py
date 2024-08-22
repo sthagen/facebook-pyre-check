@@ -10,10 +10,10 @@ Tools for pulling an upstream typeshed zip archive from github, cleaning out
 irrelevant data, and producing either a typeshed.Typeshed object or a
 directory.
 """
+
 from __future__ import annotations
 
 import io
-
 import json
 import logging
 import pathlib
@@ -22,7 +22,6 @@ import urllib.request
 import zipfile
 
 from . import typeshed
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 LATEST: str = "LATEST"

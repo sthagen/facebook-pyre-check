@@ -18,7 +18,6 @@ import asyncio
 import json
 import logging
 import traceback
-
 from typing import Dict, Optional
 
 from .. import (
@@ -48,7 +47,6 @@ from . import (
     subscription,
     type_error_handler,
 )
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -97,9 +95,7 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
         self,
         parameters: Dict[str, object],
     ) -> None:
-        should_write_telemetry = (
-            self.server_state.server_options.language_server_features.telemetry.is_enabled()
-        )
+        should_write_telemetry = self.server_state.server_options.language_server_features.telemetry.is_enabled()
         if should_write_telemetry:
             parameters = dict(parameters)
             parameters["project_identifier"] = (

@@ -9,7 +9,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import json
 import logging
 import traceback
@@ -25,7 +24,6 @@ from .runner import (
     ResultComparison,
 )
 from .specification import Specification
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

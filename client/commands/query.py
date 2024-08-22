@@ -15,7 +15,6 @@ modules daemon_query.py and no_daemon_query.py are responsible
 for handling the low-level details of how those queries are executed.
 """
 
-
 import json
 import logging
 
@@ -26,10 +25,8 @@ from .. import (
     identifiers,
     log,
 )
-
 from ..language_server import connections
 from . import commands, daemon_query, no_daemon_query
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

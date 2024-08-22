@@ -26,7 +26,6 @@ from ..errors import (
     SkippingGeneratedFileException,
 )
 
-
 unittest.util._MAX_LENGTH = 200
 
 
@@ -247,7 +246,6 @@ class ErrorsTest(unittest.TestCase):
         truncate: bool = False,
         unsafe: bool = False,
     ) -> None:
-
         self.assertEqual(
             _suppress_errors(
                 _normalize(input),

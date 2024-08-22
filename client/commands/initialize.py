@@ -10,7 +10,6 @@ This module contains logic for `pyre init`, which interactively
 helps a user create a new pyre configuration.
 """
 
-
 import json
 import logging
 import os
@@ -22,7 +21,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 from .. import log
-
 from ..find_directories import (
     BINARY_NAME,
     CONFIGURATION_FILE,

@@ -14,7 +14,6 @@ fields, but most of these contain a `base_arguments` field of type
 backend_arguments.BaseArguments.
 """
 
-
 import contextlib
 import dataclasses
 import json
@@ -33,7 +32,6 @@ from . import (
     frontend_configuration,
     identifiers,
 )
-
 from .configuration import search_path
 
 LOG: logging.Logger = logging.getLogger(__name__)

@@ -9,21 +9,18 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import argparse
 import logging
 from pathlib import Path
 from typing import Optional
 
 from pyre_extensions import override
-
 from typing_extensions import Final
 
 from ..configuration import Configuration
 from ..filesystem import find_files, LocalMode, path_exists
 from ..repository import Repository
 from .command import CommandArguments, ErrorSource, ErrorSuppressingCommand
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

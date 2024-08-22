@@ -12,7 +12,6 @@ code, to determine which expressions have an informative (non-Any) type
 in Pyre analysis.
 """
 
-
 import json
 import logging
 import time
@@ -29,7 +28,6 @@ from .. import (
     log,
     remote_logger,
 )
-
 from ..language_server import connections, protocol as lsp
 from . import commands, daemon_query
 

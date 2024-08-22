@@ -10,9 +10,7 @@ from pathlib import Path
 import testslide
 
 from ...language_server import protocol as lsp
-
 from .. import libcst_util
-
 
 test_root = "/test_root"
 test_path = "/test_root/test_project/test_module.py"
@@ -171,7 +169,6 @@ b : int = 1 + 1
         self.assertEqual(results, [])
 
     def test_booleans(self) -> None:
-
         test_code: str = """
 def foo() -> None:
     if True:

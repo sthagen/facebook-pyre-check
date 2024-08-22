@@ -10,7 +10,6 @@ This module contains logic for transforming the raw output of Pyre queries
 into structured Pythonic data structure.
 """
 
-
 import logging
 from dataclasses import dataclass
 from functools import lru_cache
@@ -18,7 +17,6 @@ from itertools import islice
 from typing import Any, Dict, Generator, Iterable, List, NamedTuple, Optional, TypeVar
 
 from .connection import PyreConnection, PyreQueryResult
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

@@ -9,7 +9,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import json
 import logging
 import subprocess
@@ -17,7 +16,6 @@ import time
 from typing import Any, Dict, Optional, Sequence
 
 from .batch import RunnerResult, Sample
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

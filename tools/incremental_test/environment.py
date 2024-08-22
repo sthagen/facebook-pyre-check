@@ -9,14 +9,12 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import logging
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Container, Optional
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

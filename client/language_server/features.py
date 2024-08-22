@@ -12,12 +12,10 @@ The actual availability of the each individual feature is handled by the vscode 
 and is passed to the pyre client entry point (pyre.py) upon initialization of the persistent client.
 """
 
-
 from __future__ import annotations
 
 import dataclasses
 import enum
-
 from typing import Dict
 
 

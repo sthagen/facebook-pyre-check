@@ -14,7 +14,6 @@ This module also has become something of a dumping ground for filename
 constants that are not directly related to directory searching.
 """
 
-
 from __future__ import annotations
 
 import enum
@@ -24,7 +23,6 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, List, NamedTuple, Optional
-
 
 CONFIGURATION_FILE: str = ".pyre_configuration"
 LOCAL_CONFIGURATION_FILE: str = ".pyre_configuration.local"

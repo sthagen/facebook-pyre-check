@@ -9,7 +9,6 @@
 This module is used to configure remote logging logic for the Python client.
 """
 
-
 import json
 import logging
 import os
@@ -18,7 +17,6 @@ import subprocess
 import time
 from enum import Enum
 from typing import Mapping, Optional
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

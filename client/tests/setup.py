@@ -12,7 +12,6 @@ files and directories exist and controlling the working directory
 from which tests are run.
 """
 
-
 import asyncio
 import contextlib
 import functools
@@ -41,7 +40,6 @@ from ..find_directories import (
     CONFIGURATION_FILE,
     LOCAL_CONFIGURATION_FILE,
 )
-
 
 TParams = ParameterSpecification("TParams")
 T = TypeVar("T")

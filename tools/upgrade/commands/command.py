@@ -9,7 +9,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import argparse
 import logging
 from dataclasses import dataclass
@@ -20,7 +19,6 @@ from ..configuration import Configuration
 from ..errors import Errors, PartialErrorSuppression
 from ..filesystem import add_local_mode, LocalMode
 from ..repository import Repository
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

@@ -9,7 +9,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import argparse
 import enum
 import json
@@ -23,7 +22,6 @@ from . import report
 from .batch import run_batch_benchmark, run_batch_test, RunnerResult
 from .environment import SubprocessEnvironment
 from .specification import InvalidSpecificationException, Specification
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

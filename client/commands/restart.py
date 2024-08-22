@@ -11,12 +11,10 @@ is a single command that effectively runs `pyre stop` followed by
 `pyre incremental`.
 """
 
-
 import logging
 
 from .. import command_arguments, frontend_configuration, identifiers
 from . import commands, incremental, stop
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

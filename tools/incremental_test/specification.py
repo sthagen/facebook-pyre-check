@@ -9,7 +9,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -19,7 +18,6 @@ from pathlib import Path
 from typing import Any, ContextManager, Dict, Iterator, List
 
 from .environment import Environment
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

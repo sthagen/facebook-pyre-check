@@ -9,7 +9,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import argparse
 import logging
 import pathlib
@@ -25,7 +24,6 @@ from ..configuration import Configuration
 from ..errors import Errors
 from ..filesystem import path_exists
 from ..repository import Repository
-
 
 LOG: Logger = logging.getLogger(__name__)
 

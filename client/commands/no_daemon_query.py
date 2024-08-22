@@ -15,12 +15,10 @@ This class also only handles queries that are specified as no-daemon, and not
 those that query a running pyre daemon.
 """
 
-
 from __future__ import annotations
 
 import contextlib
 import dataclasses
-
 import logging
 import subprocess
 from typing import Any, Dict, Iterator, Optional
@@ -122,7 +120,6 @@ def execute_query(
     configuration: frontend_configuration.Base,
     query_arguments: command_arguments.QueryArguments,
 ) -> Optional[query_response.Response]:
-
     start_command = configuration.get_server_start_command(download_if_needed=True)
     if start_command is None:
         raise configuration_module.InvalidConfiguration(

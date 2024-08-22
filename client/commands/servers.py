@@ -11,7 +11,6 @@ running servers (i.e. daemons - background backend processes available for
 incremental checks and queries, including from language servers).
 """
 
-
 import dataclasses
 import json
 import logging
@@ -24,7 +23,6 @@ from typing_extensions import TypedDict
 from .. import command_arguments, daemon_socket, identifiers, log
 from ..language_server import connections
 from . import commands, stop
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

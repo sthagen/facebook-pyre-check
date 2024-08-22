@@ -22,7 +22,6 @@ the `--noninteractive` flag will determine the
 determine the `StartArguments.terminal` field.
 """
 
-
 from __future__ import annotations
 
 import enum
@@ -31,7 +30,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from .identifiers import PyreFlavor
-
 
 TEXT: str = "text"
 JSON: str = "json"

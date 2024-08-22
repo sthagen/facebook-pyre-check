@@ -9,7 +9,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import ast
 import logging
 from logging import Logger
@@ -17,7 +16,6 @@ from typing import Callable
 
 from pyre_extensions import TypeVarTuple
 from pyre_extensions.type_variable_operators import Concatenate
-
 
 Ts = TypeVarTuple("Ts")
 

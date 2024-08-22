@@ -31,7 +31,6 @@ from .. import (
     subscription,
     type_error_handler,
 )
-
 from ..tests import server_setup
 
 
@@ -1329,8 +1328,10 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
                 client_output_channel, server_state
             ),
         )
-        await server_handler.client_status_message_handler.show_status_message_to_client(
-            message="derp", level=lsp.MessageType.WARNING
+        await (
+            server_handler.client_status_message_handler.show_status_message_to_client(
+                message="derp", level=lsp.MessageType.WARNING
+            )
         )
 
         client_visible_messages = bytes_writer.items()

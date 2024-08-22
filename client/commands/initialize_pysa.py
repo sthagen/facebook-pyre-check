@@ -12,7 +12,6 @@ This module provides the logic for the `pyre init-pysa` command, which:
 - runs pyre infer if desired which can provide extra type information
 """
 
-
 import logging
 import os
 import subprocess
@@ -21,7 +20,6 @@ from pathlib import Path
 
 from .. import log
 from ..find_directories import find_pysa_filters_directory
-
 from . import commands
 from .initialize import (
     get_configuration_and_path,

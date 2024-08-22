@@ -11,7 +11,6 @@ including file tailing logic used to forward logs from the backend
 and pretty-printing goodies such as the color-coding of interactive logs.
 """
 
-
 import contextlib
 import copy
 import io
@@ -26,7 +25,6 @@ from types import TracebackType
 from typing import Dict, Generator, Iterable, Optional, Pattern, Sequence, TextIO
 
 import click
-
 
 PERFORMANCE: int = 15
 PROMPT: int = 50

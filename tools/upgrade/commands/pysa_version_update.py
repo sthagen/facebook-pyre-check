@@ -9,7 +9,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import argparse
 import logging
 
@@ -18,7 +17,6 @@ from pyre_extensions import override
 from ..configuration import Configuration
 from ..repository import Repository
 from .command import Command
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

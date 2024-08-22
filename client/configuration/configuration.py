@@ -23,7 +23,6 @@ Out-of-the-box, open-source pyre only uses a single
 cases.
 """
 
-
 import dataclasses
 import glob
 import json
@@ -65,7 +64,6 @@ from . import (
     site_packages,
     unwatched,
 )
-
 
 LOG: Logger = logging.getLogger(__name__)
 T = TypeVar("T")

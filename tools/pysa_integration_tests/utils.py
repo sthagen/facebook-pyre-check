@@ -9,11 +9,9 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 from __future__ import annotations
 
 import enum
-
 import json
 import logging
 import subprocess

@@ -16,23 +16,19 @@ Note that this module does not handle requests of every format (such as overlay 
 nor incremental updates), it only handles queries.
 """
 
-
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
-
 from typing import List, Optional, Type, TypeVar, Union
 
 import dataclasses_json
 
 from .. import dataclasses_json_extensions as json_mixins, error
-
 from ..language_server import daemon_connection
 from . import daemon_querier, incremental
 from .query_response import InvalidQueryResponse, Response
-
 
 QueryResponseType = TypeVar(
     "QueryResponseType", bound=json_mixins.CamlCaseAndExcludeJsonMixin

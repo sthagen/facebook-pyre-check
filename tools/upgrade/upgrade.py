@@ -9,7 +9,6 @@
 The pyre-upgrade command is composed of many subcommands related to upgrading a project or performing codemods. See the module-level documentation for each subcommand for more details.
 """
 
-
 import argparse
 import enum
 import logging
@@ -38,7 +37,6 @@ from .commands.strict_default import StrictDefault
 from .commands.support_sqlalchemy import SupportSqlalchemy
 from .commands.targets_to_configuration import TargetsToConfiguration
 from .repository import Repository
-
 
 LOG: Logger = logging.getLogger(__name__)
 

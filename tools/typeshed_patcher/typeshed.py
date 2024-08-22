@@ -12,12 +12,10 @@ data pulled from github vs a local directory where we have one)
 in most of our patching code.
 """
 
-
 import abc
 import contextlib
 import pathlib
 import tempfile
-
 from typing import Dict, Iterable, Iterator, Mapping, Optional, Set
 
 

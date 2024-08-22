@@ -16,7 +16,6 @@ socket connections and using the better-typed interface to
 code-navigation deamons.
 """
 
-
 import enum
 import json
 import logging
@@ -27,7 +26,6 @@ from types import TracebackType
 from typing import Any, List, NamedTuple, Optional
 
 from typing_extensions import TypedDict
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

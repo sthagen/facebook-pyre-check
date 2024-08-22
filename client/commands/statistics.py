@@ -21,7 +21,6 @@ The `pyre statistics` command is in maintenance mode while we build out `pyre
 report` and migrate use cases.
 """
 
-
 import dataclasses
 import json
 import logging
@@ -34,7 +33,6 @@ from libcst.metadata import CodePosition, CodeRange
 
 from .. import command_arguments, coverage_data, frontend_configuration, log
 from . import commands
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -286,7 +284,7 @@ class AggregatedStatisticsData:
 
 
 def aggregate_statistics(
-    data: Mapping[str, StatisticsData]
+    data: Mapping[str, StatisticsData],
 ) -> AggregatedStatisticsData:
     aggregate_annotations = {
         "return_count": 0,
@@ -397,7 +395,7 @@ def print_json_summary(data: Mapping[str, StatisticsData]) -> None:
 
 
 def process_json_statistics(
-    data: Mapping[str, StatisticsData]
+    data: Mapping[str, StatisticsData],
 ) -> Dict[str, Dict[str, Dict[str, int]]]:
     path_to_dictionary_statistics = {
         path: dataclasses.asdict(statistics_data)

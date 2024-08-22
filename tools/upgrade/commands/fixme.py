@@ -14,7 +14,6 @@ If your project contains sub-projects (.pyre_configuration.local files), then
 consider using fixme_single or fixme_all instead.
 """
 
-
 import argparse
 import logging
 from typing import Optional
@@ -25,7 +24,6 @@ from ..configuration import Configuration
 from ..errors import Errors
 from ..repository import Repository
 from .command import CommandArguments, ErrorSource, ErrorSuppressingCommand
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

@@ -14,7 +14,6 @@ and start one if none is found, then ask for type errors and display
 them in the same format as `pyre check` would.
 """
 
-
 import dataclasses
 import enum
 import json
@@ -30,10 +29,8 @@ from .. import (
     frontend_configuration,
     identifiers,
 )
-
 from ..language_server import connections
 from . import commands, server_event, start
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

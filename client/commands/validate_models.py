@@ -12,7 +12,6 @@ This command will sanity check that Pysa taint models make sense for
 the given project.
 """
 
-
 import dataclasses
 import logging
 import os
@@ -22,7 +21,6 @@ from typing import Dict, List
 from .. import daemon_socket, error as error_module, frontend_configuration, identifiers
 from ..language_server import connections
 from . import commands, daemon_query
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

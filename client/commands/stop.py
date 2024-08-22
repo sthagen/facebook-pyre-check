@@ -11,14 +11,12 @@ shutdown of a running Pyre daemon by sending it a shutdown request
 via a socket connection.
 """
 
-
 import logging
 from pathlib import Path
 
 from .. import daemon_socket, frontend_configuration, identifiers
 from ..language_server import connections
 from . import commands
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

@@ -15,7 +15,6 @@ dedicated start command, particularly to start a deamon that we can later
 query.
 """
 
-
 import contextlib
 import dataclasses
 import datetime
@@ -49,7 +48,6 @@ from .. import (
     log,
 )
 from . import commands, server_event, stop
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

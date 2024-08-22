@@ -9,10 +9,10 @@
 This module provides the CLI we use for pulling new upstream typesheds
 and vendoring them, which includes some logic both for cleaning and patching.
 """
+
 from __future__ import annotations
 
 import logging
-
 import pathlib
 import shutil
 import sys

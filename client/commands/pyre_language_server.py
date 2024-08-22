@@ -15,9 +15,7 @@ because it illustrates that this is the intermediary between the Language server
 from __future__ import annotations
 
 import abc
-
 import asyncio
-
 import dataclasses
 import functools
 import json
@@ -45,7 +43,6 @@ from pyre_extensions import ParameterSpecification
 from pyre_extensions.type_variable_operators import Concatenate
 
 from .. import background_tasks, error, identifiers, json_rpc, log, timer
-
 from ..language_server import connections, daemon_connection, features, protocol as lsp
 from . import (
     commands,
@@ -55,7 +52,6 @@ from . import (
     server_state as state,
     type_error_handler,
 )
-
 from .daemon_querier import DaemonQueryFailure, GetDefinitionLocationsResponse
 from .document_formatter import AbstractDocumentFormatter
 from .pyre_language_server_error import (
@@ -63,11 +59,8 @@ from .pyre_language_server_error import (
     get_language_server_error,
     PyreLanguageServerError,
 )
-
 from .server_state import OpenedDocumentState
-
 from .source_code_context import SourceCodeContext
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 CONSECUTIVE_START_ATTEMPT_THRESHOLD: int = 5
@@ -365,7 +358,7 @@ def log_exceptions_factory(
     operation: str,
 ) -> LanguageServerDecorator:
     def log_exceptions(
-        func: Callable[Concatenate[PyreLanguageServer, P], Coroutine[None, None, T]]
+        func: Callable[Concatenate[PyreLanguageServer, P], Coroutine[None, None, T]],
     ) -> Callable[Concatenate[PyreLanguageServer, P], Coroutine[None, None, T]]:
         async def new_func(
             self_: PyreLanguageServer, *args: P.args, **kwargs: P.kwargs
@@ -427,9 +420,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
         parameters: Dict[str, object],
         activity_key: Optional[Dict[str, object]],
     ) -> None:
-        should_write_telemetry = (
-            self.server_state.server_options.language_server_features.telemetry.is_enabled()
-        )
+        should_write_telemetry = self.server_state.server_options.language_server_features.telemetry.is_enabled()
         if should_write_telemetry:
             parameters = dict(parameters)
             parameters["project_identifier"] = (
@@ -762,9 +753,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
         daemon_status_before = self.server_state.status_tracker.get_status()
         did_change_timer = timer.Timer()
 
-        process_unsaved_changes = (
-            self.server_state.server_options.language_server_features.unsaved_changes.is_enabled()
-        )
+        process_unsaved_changes = self.server_state.server_options.language_server_features.unsaved_changes.is_enabled()
         error_message = None
         code_changes = str(
             "".join(
@@ -1392,14 +1381,16 @@ class PyreLanguageServer(PyreLanguageServerApi):
                     symbol_search_response.data
                 )["workspaceSymbols"]
 
-        await lsp.write_json_rpc(
-            self.output_channel,
-            json_rpc.SuccessResponse(
-                id=request_id,
-                activity_key=activity_key,
-                result=raw_results,
+        (
+            await lsp.write_json_rpc(
+                self.output_channel,
+                json_rpc.SuccessResponse(
+                    id=request_id,
+                    activity_key=activity_key,
+                    result=raw_results,
+                ),
             ),
-        ),
+        )
 
         await self.write_telemetry(
             {
@@ -1450,14 +1441,16 @@ class PyreLanguageServer(PyreLanguageServerApi):
                     document_formatting_response
                 )["listOfEdits"]
 
-                await lsp.write_json_rpc(
-                    self.output_channel,
-                    json_rpc.SuccessResponse(
-                        id=request_id,
-                        activity_key=activity_key,
-                        result=raw_results,
+                (
+                    await lsp.write_json_rpc(
+                        self.output_channel,
+                        json_rpc.SuccessResponse(
+                            id=request_id,
+                            activity_key=activity_key,
+                            result=raw_results,
+                        ),
                     ),
-                ),
+                )
 
             await self.write_telemetry(
                 {

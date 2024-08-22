@@ -12,7 +12,6 @@ differs from fixme_single in the sense that this runs over a whole repository
 sub-projects with .pyre_configuration.local files.
 """
 
-
 import argparse
 import logging
 
@@ -21,7 +20,6 @@ from pyre_extensions import override
 from ..configuration import Configuration
 from ..repository import Repository
 from .command import CommandArguments, ErrorSource, ErrorSuppressingCommand
-
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

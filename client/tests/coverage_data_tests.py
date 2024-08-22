@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 import libcst as cst
-
 import testslide
 from libcst.metadata import MetadataWrapper
 
@@ -31,7 +30,6 @@ from ..coverage_data import (
     SuppressionKind,
     TypeErrorSuppression,
 )
-
 from ..tests import setup
 
 
@@ -663,7 +661,6 @@ class AnnotationCollectorTest(testslide.TestCase):
 
 
 class FunctionAnnotationStatusTest(testslide.TestCase):
-
     ANNOTATION = cst.Annotation(cst.Name("Foo"))
 
     def _parameter(self, name: str, annotated: bool) -> cst.Param:
