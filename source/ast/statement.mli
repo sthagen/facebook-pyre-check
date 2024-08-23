@@ -120,6 +120,7 @@ and Class : sig
   type t = {
     name: Reference.t;
     base_arguments: Expression.Call.Argument.t list;
+    parent: ModuleContext.t;
     body: Statement.t list;
     decorators: Expression.t list;
     top_level_unbound_names: Define.NameAccess.t list;
@@ -129,7 +130,7 @@ and Class : sig
 
   val location_insensitive_compare : t -> t -> int
 
-  val toplevel_define : t -> Define.t
+  val toplevel_define : qualifier:Reference.t -> t -> Define.t
 
   val constructors : ?in_test:bool -> t -> Define.t list
 
@@ -160,7 +161,7 @@ and Define : sig
       async: bool;
       generator: bool;
       (* The class owning the method. *)
-      parent: Reference.t option;
+      legacy_parent: Reference.t option;
       (* If the define is nested, this is the name of the nesting define. *)
       nesting_define: Reference.t option;
       type_params: Expression.TypeParam.t list;
@@ -169,9 +170,7 @@ and Define : sig
 
     val location_insensitive_compare : t -> t -> int
 
-    val create_toplevel : qualifier:Reference.t option -> t
-
-    val create_class_toplevel : parent:Reference.t -> t
+    val create_toplevel : Reference.t -> t
 
     val unqualified_name : t -> Identifier.t
 
@@ -250,8 +249,8 @@ and Define : sig
   val location_insensitive_compare : t -> t -> int
 
   val create_toplevel
-    :  unbound_names:NameAccess.t list ->
-    qualifier:Reference.t option ->
+    :  module_name:Reference.t ->
+    unbound_names:NameAccess.t list ->
     statements:Statement.t list ->
     t
 

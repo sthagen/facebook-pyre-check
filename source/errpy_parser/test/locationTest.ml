@@ -920,6 +920,7 @@ let test_call_locations =
 
 let test_class_locations =
   let assert_parsed = assert_parsed in
+  let parent = ModuleContext.create_toplevel () in
   test_list
     [
       labeled_test_case __FUNCTION__ __LINE__
@@ -934,6 +935,7 @@ let test_class_locations =
                     {
                       Class.name = !&"foo";
                       base_arguments = [];
+                      parent;
                       body = [node ~start:(3, 1) ~stop:(3, 5) Statement.Pass];
                       decorators =
                         [node ~start:(1, 1) ~stop:(1, 4) (Expression.Name (Name.Identifier "bar"))];
@@ -953,6 +955,7 @@ let test_class_locations =
                     {
                       Class.name = !&"foo";
                       base_arguments = [];
+                      parent;
                       body =
                         [
                           node
@@ -968,7 +971,7 @@ let test_class_locations =
                                      return_annotation = None;
                                      async = false;
                                      generator = false;
-                                     parent = Some !&"foo";
+                                     legacy_parent = Some !&"foo";
                                      nesting_define = None;
                                      type_params = [];
                                    };
@@ -1012,6 +1015,7 @@ let test_class_locations =
                                 (Expression.Constant (Constant.Integer 2));
                           };
                         ];
+                      parent;
                       body =
                         [
                           node
@@ -1046,6 +1050,7 @@ let test_class_locations =
                     {
                       Class.name = !&"foo";
                       base_arguments = [];
+                      parent;
                       body =
                         [
                           node
@@ -1073,7 +1078,7 @@ let test_class_locations =
                                                 return_annotation = None;
                                                 async = false;
                                                 generator = false;
-                                                parent = Some !&"foo";
+                                                legacy_parent = Some !&"foo";
                                                 nesting_define = None;
                                                 type_params = [];
                                               };
@@ -1115,7 +1120,7 @@ let test_define_locations =
                           return_annotation = None;
                           async = true;
                           generator = false;
-                          parent = None;
+                          legacy_parent = None;
                           nesting_define = None;
                           type_params = [];
                         };
@@ -1159,7 +1164,7 @@ let test_define_locations =
                           return_annotation = None;
                           async = false;
                           generator = false;
-                          parent = None;
+                          legacy_parent = None;
                           nesting_define = None;
                           type_params = [];
                         };
@@ -1180,7 +1185,7 @@ let test_define_locations =
                                      return_annotation = None;
                                      async = false;
                                      generator = false;
-                                     parent = None;
+                                     legacy_parent = None;
                                      nesting_define = None;
                                      type_params = [];
                                    };
@@ -2924,6 +2929,7 @@ let test_stub_locations =
                     {
                       Class.name = !&"foo";
                       base_arguments = [];
+                      parent = ModuleContext.create_toplevel ();
                       body =
                         [
                           node

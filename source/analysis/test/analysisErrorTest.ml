@@ -22,7 +22,7 @@ let signature_value ?(return_annotation = Some !"int") ?(name = "foo") () =
     return_annotation;
     async = false;
     generator = false;
-    parent = None;
+    legacy_parent = None;
     nesting_define = None;
     type_params = [];
   }
@@ -845,7 +845,7 @@ let test_description _ =
             location = Location.WithModule.any;
             signature =
               Node.create_with_default_location
-                (Ast.Statement.Define.Signature.create_toplevel ~qualifier:None);
+                (Ast.Statement.Define.Signature.create_toplevel Reference.empty);
           }
       in
       if concise then

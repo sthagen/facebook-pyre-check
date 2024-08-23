@@ -1284,7 +1284,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1312,7 +1312,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1341,7 +1341,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1365,7 +1365,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1393,7 +1393,7 @@ let test_define =
                         return_annotation = Some !"c";
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1417,7 +1417,7 @@ let test_define =
                         return_annotation = None;
                         async = true;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1441,7 +1441,7 @@ let test_define =
                         return_annotation = None;
                         async = true;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1465,7 +1465,7 @@ let test_define =
                         return_annotation = None;
                         async = true;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1489,7 +1489,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1524,7 +1524,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1548,7 +1548,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1586,7 +1586,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1618,7 +1618,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1646,7 +1646,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1678,7 +1678,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1709,7 +1709,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1733,7 +1733,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1761,7 +1761,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1790,7 +1790,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1808,7 +1808,7 @@ let test_define =
                                  return_annotation = None;
                                  async = false;
                                  generator = false;
-                                 parent = None;
+                                 legacy_parent = None;
                                  nesting_define = None;
                                  type_params = [];
                                };
@@ -1840,7 +1840,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1871,7 +1871,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1899,7 +1899,7 @@ let test_define =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = None;
+                        legacy_parent = None;
                         nesting_define = None;
                         type_params = [];
                       };
@@ -1911,38 +1911,38 @@ let test_define =
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| def foo(): # type: () -> str
         return 4 |}) ~expected: [ +Statement.Define { Define.signature = { Define.Signature.name =
         !&"foo"; parameters = []; decorators = []; return_annotation = Some !"str"; async = false;
-        generator = false; parent = None; nesting_define = None; type_params = []; }; captures = [];
-        unbound_names = []; body = [ +Statement.Return { Return.expression = Some
+        generator = false; legacy_parent = None; nesting_define = None; type_params = []; };
+        captures = []; unbound_names = []; body = [ +Statement.Return { Return.expression = Some
         (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ]; *)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| def foo(): # type: () -> str
         return 4 |}) ~expected: [ +Statement.Define { Define.signature = { Define.Signature.name =
         !&"foo"; parameters = []; decorators = []; return_annotation = Some !"str"; async = false;
-        generator = false; parent = None; nesting_define = None; type_params = []; }; captures = [];
-        unbound_names = []; body = [ +Statement.Return { Return.expression = Some
+        generator = false; legacy_parent = None; nesting_define = None; type_params = []; };
+        captures = []; unbound_names = []; body = [ +Statement.Return { Return.expression = Some
         (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| def foo(a): # type: (str) -> str
         return 4 |}) ~expected: [ +Statement.Define { Define.signature = { Define.Signature.name =
         !&"foo"; parameters = [+{ Parameter.name = "a"; value = None; annotation = Some !"str" }];
-        decorators = []; return_annotation = Some !"str"; async = false; generator = false; parent =
-        None; nesting_define = None; type_params = []; }; captures = []; unbound_names = []; body =
-        [ +Statement.Return { Return.expression = Some (+Expression.Constant (Constant.Integer 4));
-        is_implicit = false; }; ]; }; ];*)
+        decorators = []; return_annotation = Some !"str"; async = false; generator = false;
+        legacy_parent = None; nesting_define = None; type_params = []; }; captures = [];
+        unbound_names = []; body = [ +Statement.Return { Return.expression = Some
+        (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| class A: def foo(self, a): #
         type: (str) -> str return 4 |}) ~expected: [ +Statement.Class { Define.Signature.name =
         !&"A"; base_arguments = []; decorators = []; top_level_unbound_names = []; type_params = [];
         body = [ +Statement.Define { Define.signature = { name = !&"foo"; parameters = [ +{
         Parameter.name = "self"; value = None; annotation = None }; +{ Parameter.name = "a"; value =
         None; annotation = Some !"str" }; ]; decorators = []; return_annotation = Some !"str"; async
-        = false; generator = false; parent = Some !&"A"; nesting_define = None; type_params = []; };
-        captures = []; unbound_names = []; body = [ +Statement.Return { Return.expression = Some
-        (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ]; }; ];*)
+        = false; generator = false; legacy_parent = Some !&"A"; nesting_define = None; type_params =
+        []; }; captures = []; unbound_names = []; body = [ +Statement.Return { Return.expression =
+        Some (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| class A: def foo(self, a): #
         type: (A, str) -> str return 4 |}) ~expected: [ +Statement.Class { Define.Signature.name =
         !&"A"; base_arguments = []; decorators = []; top_level_unbound_names = []; type_params = [];
         body = [ +Statement.Define { Define.signature = { name = !&"foo"; parameters = [ +{
         Parameter.name = "self"; value = None; annotation = Some !"A" }; +{ Parameter.name = "a";
         value = None; annotation = Some !"str" }; ]; decorators = []; return_annotation = Some
-        !"str"; async = false; generator = false; parent = Some !&"A"; nesting_define = None;
+        !"str"; async = false; generator = false; legacy_parent = Some !&"A"; nesting_define = None;
         type_params = []; }; captures = []; unbound_names = []; body = [ +Statement.Return {
         Return.expression = Some (+Expression.Constant (Constant.Integer 4)); is_implicit = false;
         }; ]; }; ]; }; ];*)
@@ -1952,59 +1952,59 @@ let test_define =
         annotation = Some (+Expression.Constant (Constant.String (StringLiteral.create "bool"))); };
         +{ Parameter.name = "b"; value = None; annotation = Some (+Expression.Constant
         (Constant.String (StringLiteral.create "bool"))); }; ]; decorators = []; return_annotation =
-        None; async = false; generator = false; parent = None; nesting_define = None; type_params =
-        []; }; captures = []; unbound_names = []; body = [+Statement.Pass]; }; ];*)
+        None; async = false; generator = false; legacy_parent = None; nesting_define = None;
+        type_params = []; }; captures = []; unbound_names = []; body = [+Statement.Pass]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| async def foo( a, # type: bool b
         # type: bool ): # type: (...) -> int pass |}) ~expected: [ +Statement.Define {
         Define.signature = { name = !&"foo"; parameters = [ +{ Parameter.name = "a"; value = None;
         annotation = Some (+Expression.Constant (Constant.String (StringLiteral.create "bool"))); };
         +{ Parameter.name = "b"; value = None; annotation = Some (+Expression.Constant
         (Constant.String (StringLiteral.create "bool"))); }; ]; decorators = []; return_annotation =
-        Some !"int"; async = true; generator = false; parent = None; nesting_define = None;
+        Some !"int"; async = true; generator = false; legacy_parent = None; nesting_define = None;
         type_params = []; }; captures = []; unbound_names = []; body = [+Statement.Pass]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| def foo( *args, **kwargs): #
         type: ( *str, **str) -> str return 4 |}) ~expected: [ +Statement.Define { Define.signature =
         { Define.Signature.name = !&"foo"; parameters = [ +{ Parameter.name = "*args"; value = None;
         annotation = Some !"str" }; +{ Parameter.name = "**kwargs"; value = None; annotation = Some
         !"str" }; ]; decorators = []; return_annotation = Some !"str"; async = false; generator =
-        false; parent = None; nesting_define = None; type_params = []; }; captures = [];
+        false; legacy_parent = None; nesting_define = None; type_params = []; }; captures = [];
         unbound_names = []; body = [ +Statement.Return { Return.expression = Some
         (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| def foo(): # type: () -> str
         return 4 |}) ~expected: [ +Statement.Define { Define.signature = { Define.Signature.name =
         !&"foo"; parameters = []; decorators = []; return_annotation = Some !"str"; async = false;
-        generator = false; parent = None; nesting_define = None; type_params = []; }; captures = [];
-        unbound_names = []; body = [ +Statement.Return { Return.expression = Some
+        generator = false; legacy_parent = None; nesting_define = None; type_params = []; };
+        captures = []; unbound_names = []; body = [ +Statement.Return { Return.expression = Some
         (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| def foo(): # type: () -> str
         return 4 |}) ~expected: [ +Statement.Define { Define.signature = { Define.Signature.name =
         !&"foo"; parameters = []; decorators = []; return_annotation = Some !"str"; async = false;
-        generator = false; parent = None; nesting_define = None; type_params = []; }; captures = [];
-        unbound_names = []; body = [ +Statement.Return { Return.expression = Some
+        generator = false; legacy_parent = None; nesting_define = None; type_params = []; };
+        captures = []; unbound_names = []; body = [ +Statement.Return { Return.expression = Some
         (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| def foo(a): # type: (str) -> str
         return 4 |}) ~expected: [ +Statement.Define { Define.signature = { Define.Signature.name =
         !&"foo"; parameters = [+{ Parameter.name = "a"; value = None; annotation = Some !"str" }];
-        decorators = []; return_annotation = Some !"str"; async = false; generator = false; parent =
-        None; nesting_define = None; type_params = []; }; captures = []; unbound_names = []; body =
-        [ +Statement.Return { Return.expression = Some (+Expression.Constant (Constant.Integer 4));
-        is_implicit = false; }; ]; }; ];*)
+        decorators = []; return_annotation = Some !"str"; async = false; generator = false;
+        legacy_parent = None; nesting_define = None; type_params = []; }; captures = [];
+        unbound_names = []; body = [ +Statement.Return { Return.expression = Some
+        (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| class A: def foo(self, a): #
         type: (str) -> str return 4 |}) ~expected: [ +Statement.Class { Define.Signature.name =
         !&"A"; base_arguments = []; decorators = []; top_level_unbound_names = []; type_params = [];
         body = [ +Statement.Define { Define.signature = { name = !&"foo"; parameters = [ +{
         Parameter.name = "self"; value = None; annotation = None }; +{ Parameter.name = "a"; value =
         None; annotation = Some !"str" }; ]; decorators = []; return_annotation = Some !"str"; async
-        = false; generator = false; parent = Some !&"A"; nesting_define = None; type_params = []; };
-        captures = []; unbound_names = []; body = [ +Statement.Return { Return.expression = Some
-        (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ]; }; ];*)
+        = false; generator = false; legacy_parent = Some !&"A"; nesting_define = None; type_params =
+        []; }; captures = []; unbound_names = []; body = [ +Statement.Return { Return.expression =
+        Some (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| class A: def foo(self, a): #
         type: (A, str) -> str return 4 |}) ~expected: [ +Statement.Class { Define.Signature.name =
         !&"A"; base_arguments = []; decorators = []; top_level_unbound_names = []; type_params = [];
         body = [ +Statement.Define { Define.signature = { name = !&"foo"; parameters = [ +{
         Parameter.name = "self"; value = None; annotation = Some !"A" }; +{ Parameter.name = "a";
         value = None; annotation = Some !"str" }; ]; decorators = []; return_annotation = Some
-        !"str"; async = false; generator = false; parent = Some !&"A"; nesting_define = None;
+        !"str"; async = false; generator = false; legacy_parent = Some !&"A"; nesting_define = None;
         type_params = []; }; captures = []; unbound_names = []; body = [ +Statement.Return {
         Return.expression = Some (+Expression.Constant (Constant.Integer 4)); is_implicit = false;
         }; ]; }; ]; }; ];*)
@@ -2014,22 +2014,22 @@ let test_define =
         annotation = Some (+Expression.Constant (Constant.String (StringLiteral.create "bool"))); };
         +{ Parameter.name = "b"; value = None; annotation = Some (+Expression.Constant
         (Constant.String (StringLiteral.create "bool"))); }; ]; decorators = []; return_annotation =
-        None; async = false; generator = false; parent = None; nesting_define = None; type_params =
-        []; }; captures = []; unbound_names = []; body = [+Statement.Pass]; }; ];*)
+        None; async = false; generator = false; legacy_parent = None; nesting_define = None;
+        type_params = []; }; captures = []; unbound_names = []; body = [+Statement.Pass]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| async def foo( a, # type: bool b
         # type: bool ): # type: (...) -> int pass |}) ~expected: [ +Statement.Define {
         Define.signature = { name = !&"foo"; parameters = [ +{ Parameter.name = "a"; value = None;
         annotation = Some (+Expression.Constant (Constant.String (StringLiteral.create "bool"))); };
         +{ Parameter.name = "b"; value = None; annotation = Some (+Expression.Constant
         (Constant.String (StringLiteral.create "bool"))); }; ]; decorators = []; return_annotation =
-        Some !"int"; async = true; generator = false; parent = None; nesting_define = None;
+        Some !"int"; async = true; generator = false; legacy_parent = None; nesting_define = None;
         type_params = []; }; captures = []; unbound_names = []; body = [+Statement.Pass]; }; ];*)
       (*TODO (T148669698): assert_parsed (trim_extra_indentation {| def foo( *args, **kwargs): #
         type: ( *str, **str) -> str return 4 |}) ~expected: [ +Statement.Define { Define.signature =
         { Define.Signature.name = !&"foo"; parameters = [ +{ Parameter.name = "*args"; value = None;
         annotation = Some !"str" }; +{ Parameter.name = "**kwargs"; value = None; annotation = Some
         !"str" }; ]; decorators = []; return_annotation = Some !"str"; async = false; generator =
-        false; parent = None; nesting_define = None; type_params = []; }; captures = [];
+        false; legacy_parent = None; nesting_define = None; type_params = []; }; captures = [];
         unbound_names = []; body = [ +Statement.Return { Return.expression = Some
         (+Expression.Constant (Constant.Integer 4)); is_implicit = false; }; ]; }; ];*)
 
@@ -2039,6 +2039,7 @@ let test_define =
 
 
 let test_class =
+  let parent = ModuleContext.create_toplevel () in
   let assert_parsed = assert_parsed in
   test_list
     [
@@ -2051,6 +2052,7 @@ let test_class =
                   {
                     Class.name = !&"foo";
                     base_arguments = [];
+                    parent;
                     body = [+Statement.Pass];
                     decorators = [];
                     top_level_unbound_names = [];
@@ -2066,6 +2068,7 @@ let test_class =
                   {
                     Class.name = !&"foo";
                     base_arguments = [];
+                    parent;
                     body = [+Statement.Pass];
                     decorators = [!"bar"];
                     top_level_unbound_names = [];
@@ -2081,6 +2084,7 @@ let test_class =
                   {
                     Class.name = !&"foo";
                     base_arguments = [];
+                    parent;
                     body =
                       [
                         +Statement.Define
@@ -2093,7 +2097,7 @@ let test_class =
                                  return_annotation = None;
                                  async = false;
                                  generator = false;
-                                 parent = Some !&"foo";
+                                 legacy_parent = Some !&"foo";
                                  nesting_define = None;
                                  type_params = [];
                                };
@@ -2116,6 +2120,7 @@ let test_class =
                   {
                     Class.name = !&"foo";
                     base_arguments = [];
+                    parent;
                     body =
                       [
                         +Statement.Define
@@ -2128,7 +2133,7 @@ let test_class =
                                  return_annotation = None;
                                  async = false;
                                  generator = false;
-                                 parent = Some !&"foo";
+                                 legacy_parent = Some !&"foo";
                                  nesting_define = None;
                                  type_params = [];
                                };
@@ -2146,7 +2151,7 @@ let test_class =
                                           return_annotation = None;
                                           async = false;
                                           generator = false;
-                                          parent = None;
+                                          legacy_parent = None;
                                           nesting_define = None;
                                           type_params = [];
                                         };
@@ -2181,6 +2186,7 @@ let test_class =
                           value = +Expression.Constant (Constant.Integer 2);
                         };
                       ];
+                    parent;
                     body = [+Statement.Expression (+Expression.Constant (Constant.Integer 1))];
                     decorators = [];
                     top_level_unbound_names = [];
@@ -2204,6 +2210,7 @@ let test_class =
                                (Constant.String (StringLiteral.create "literal_string"));
                         };
                       ];
+                    parent;
                     body = [+Statement.Expression (+Expression.Constant (Constant.Integer 1))];
                     decorators = [];
                     top_level_unbound_names = [];
@@ -2229,6 +2236,7 @@ let test_class =
                           value = +Expression.Starred (Starred.Twice !"kwargs");
                         };
                       ];
+                    parent;
                     body = [+Statement.Expression (+Expression.Constant (Constant.Integer 1))];
                     decorators = [];
                     top_level_unbound_names = [];
@@ -2244,6 +2252,7 @@ let test_class =
                   {
                     Class.name = !&"foo";
                     base_arguments = [{ Call.Argument.name = None; value = !"superfoo" }];
+                    parent;
                     body =
                       [
                         +Statement.Define
@@ -2256,7 +2265,7 @@ let test_class =
                                  return_annotation = None;
                                  async = false;
                                  generator = false;
-                                 parent = Some !&"foo";
+                                 legacy_parent = Some !&"foo";
                                  nesting_define = None;
                                  type_params = [];
                                };
@@ -2279,6 +2288,7 @@ let test_class =
                   {
                     Class.name = !&"A";
                     base_arguments = [];
+                    parent;
                     body =
                       [
                         +Statement.Define
@@ -2291,7 +2301,7 @@ let test_class =
                                  return_annotation = None;
                                  async = false;
                                  generator = false;
-                                 parent = Some !&"A";
+                                 legacy_parent = Some !&"A";
                                  nesting_define = None;
                                  type_params = [];
                                };
@@ -2303,6 +2313,7 @@ let test_class =
                            {
                              Class.name = !&"B";
                              base_arguments = [];
+                             parent = ModuleContext.create_class ~parent "A";
                              body =
                                [
                                  +Statement.Define
@@ -2315,7 +2326,7 @@ let test_class =
                                           return_annotation = None;
                                           async = false;
                                           generator = false;
-                                          parent = Some !&"B";
+                                          legacy_parent = Some !&"B";
                                           nesting_define = None;
                                           type_params = [];
                                         };
@@ -2332,6 +2343,42 @@ let test_class =
                     decorators = [];
                     top_level_unbound_names = [];
                     type_params = [];
+                  };
+             ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_parsed
+           "def foo():\n\tclass bar:\n\t\tpass"
+           ~expected:
+             [
+               +Statement.Define
+                  {
+                    Define.signature =
+                      {
+                        Define.Signature.name = !&"foo";
+                        parameters = [];
+                        decorators = [];
+                        return_annotation = None;
+                        async = false;
+                        generator = false;
+                        legacy_parent = None;
+                        nesting_define = None;
+                        type_params = [];
+                      };
+                    captures = [];
+                    unbound_names = [];
+                    body =
+                      [
+                        +Statement.Class
+                           {
+                             Class.name = !&"bar";
+                             base_arguments = [];
+                             parent = ModuleContext.create_function ~parent "foo";
+                             body = [+Statement.Pass];
+                             decorators = [];
+                             top_level_unbound_names = [];
+                             type_params = [];
+                           };
+                      ];
                   };
              ];
     ]

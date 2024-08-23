@@ -968,7 +968,7 @@ module Qualify (Context : QualifyContext) = struct
           ({ qualifier; _ } as scope)
           ({
              Define.signature =
-               { name; parameters; decorators; return_annotation; parent; nesting_define; _ };
+               { name; parameters; decorators; return_annotation; legacy_parent; nesting_define; _ };
              body;
              _;
            } as define)
@@ -976,7 +976,7 @@ module Qualify (Context : QualifyContext) = struct
         let return_annotation =
           return_annotation >>| qualify_expression ~qualify_strings:Qualify ~scope
         in
-        let parent = parent >>| fun parent -> qualify_reference ~scope parent in
+        let legacy_parent = legacy_parent >>| fun parent -> qualify_reference ~scope parent in
         let nesting_define =
           nesting_define >>| fun nesting_define -> qualify_reference ~scope nesting_define
         in
@@ -1007,7 +1007,7 @@ module Qualify (Context : QualifyContext) = struct
             parameters;
             decorators;
             return_annotation;
-            parent;
+            legacy_parent;
             nesting_define;
           }
         in
@@ -1883,7 +1883,7 @@ let defines
     ?(include_nested = false)
     ?(include_toplevels = false)
     ?(include_methods = true)
-    source
+    ({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source)
   =
   let module Collector = Visit.StatementCollector (struct
     type t = Define.t Node.t
@@ -1896,7 +1896,7 @@ let defines
 
     let predicate = function
       | { Node.location; value = Statement.Class class_; _ } when include_toplevels ->
-          Class.toplevel_define class_ |> Node.create ~location |> Option.some
+          Class.toplevel_define ~qualifier class_ |> Node.create ~location |> Option.some
       | { Node.location; value = Define define } when Define.is_stub define ->
           if include_stubs then
             Some { Node.location; Node.value = define }
@@ -2240,7 +2240,7 @@ let expand_typed_dictionary_declarations
       let extract_totality arguments =
         List.find_map arguments ~f:extract_totality_from_base |> Option.value ~default:true
       in
-      let typed_dictionary_class_declaration ~name ~fields ~total ~bases =
+      let typed_dictionary_class_declaration ~name ~parent ~fields ~total ~bases =
         match name with
         | {
          Node.value =
@@ -2321,6 +2321,7 @@ let expand_typed_dictionary_declarations
                      else
                        [non_total_base]);
                    decorators = [];
+                   parent;
                    body = assignments;
                    top_level_unbound_names = [];
                    type_params = [];
@@ -2372,6 +2373,7 @@ let expand_typed_dictionary_declarations
           >>= (fun name ->
                 typed_dictionary_class_declaration
                   ~name:(string_literal (Reference.show (Reference.create ~prefix:qualifier name)))
+                  ~parent:(ModuleContext.create_toplevel ())
                   ~fields:
                     (List.filter_map entries ~f:(fun entry ->
                          let open Dictionary.Entry in
@@ -2385,6 +2387,7 @@ let expand_typed_dictionary_declarations
           {
             name = class_name;
             base_arguments = bases;
+            parent;
             body;
             decorators = _;
             top_level_unbound_names = _;
@@ -2411,6 +2414,7 @@ let expand_typed_dictionary_declarations
             let class_declaration =
               typed_dictionary_class_declaration
                 ~name:(string_literal class_name)
+                ~parent
                 ~fields
                 ~total:(extract_totality bases)
                 ~bases
@@ -2453,7 +2457,7 @@ let expand_typed_dictionary_declarations
 
 
 let expand_named_tuples ({ Source.statements; _ } as source) =
-  let rec expand_named_tuples ({ Node.location; value } as statement) =
+  let rec expand_named_tuples ~parent ({ Node.location; value } as statement) =
     let extract_attributes expression =
       match expression with
       | {
@@ -2675,7 +2679,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                 return_annotation = Some return_annotation;
                 async = false;
                 generator = false;
-                parent = Some parent;
+                legacy_parent = Some parent;
                 nesting_define = None;
                 type_params = [];
               };
@@ -2711,13 +2715,14 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                 {
                   Class.name;
                   base_arguments = [tuple_base ~location];
+                  parent;
                   body = constructors @ attributes;
                   decorators = [];
                   top_level_unbound_names = [];
                   type_params = [];
                 }
           | _ -> value)
-      | Class ({ Class.name; base_arguments; body; _ } as original) ->
+      | Class ({ Class.name; base_arguments; parent; body; _ } as original) ->
           let is_named_tuple_primitive = function
             | {
                 Call.Argument.value =
@@ -2802,15 +2807,34 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
               {
                 original with
                 Class.base_arguments = List.rev reversed_bases;
-                body = attributes @ List.map ~f:expand_named_tuples body;
+                body =
+                  attributes
+                  @ List.map
+                      ~f:
+                        (expand_named_tuples
+                           ~parent:(ModuleContext.create_class ~parent (Reference.last name)))
+                      body;
               }
-      | Define ({ Define.body; _ } as define) ->
-          Define { define with Define.body = List.map ~f:expand_named_tuples body }
+      | Define ({ Define.signature = { Define.Signature.name; _ }; body; _ } as define) ->
+          Define
+            {
+              define with
+              Define.body =
+                List.map
+                  ~f:
+                    (expand_named_tuples
+                       ~parent:(ModuleContext.create_function ~parent (Reference.last name)))
+                  body;
+            }
       | _ -> value
     in
     { statement with Node.value }
   in
-  { source with Source.statements = List.map ~f:expand_named_tuples statements }
+  {
+    source with
+    Source.statements =
+      List.map ~f:(expand_named_tuples ~parent:(ModuleContext.create_toplevel ())) statements;
+  }
 
 
 let expand_new_types ({ Source.statements; _ } as source) =
@@ -2838,6 +2862,7 @@ let expand_new_types ({ Source.statements; _ } as source) =
          } as base_argument)
       name
     =
+    let class_parent = ModuleContext.create_toplevel () in
     let constructor =
       Statement.Define
         {
@@ -2854,7 +2879,7 @@ let expand_new_types ({ Source.statements; _ } as source) =
                 Some (Node.create ~location (Expression.Constant Constant.NoneLiteral));
               async = false;
               generator = false;
-              parent = Some name;
+              legacy_parent = Some name;
               nesting_define = None;
               type_params = [];
             };
@@ -2868,6 +2893,7 @@ let expand_new_types ({ Source.statements; _ } as source) =
       {
         Class.name;
         base_arguments = [base_argument];
+        parent = class_parent;
         body = [constructor];
         decorators = [];
         top_level_unbound_names = [];
@@ -2973,6 +2999,7 @@ let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
             name = class_name_reference;
             base_arguments = [metaclass];
             decorators = [];
+            parent = ModuleContext.create_toplevel ();
             body = [Node.create ~location Statement.Pass];
             top_level_unbound_names = [];
             type_params = [];
@@ -3342,7 +3369,7 @@ let populate_captures ({ Source.statements; _ } as source) =
             | Scope.Kind.(Module | Lambda | Comprehension) ->
                 (* We don't care about module-level and expression-level bindings *)
                 None
-            | Scope.Kind.Define ({ Define.Signature.parent; _ } as signature) -> (
+            | Scope.Kind.Define ({ Define.Signature.legacy_parent; _ } as signature) -> (
                 match binding_kind with
                 | Binding.Kind.(ClassName | ImportName _) ->
                     (* Judgement call: these bindings are (supposedly) not useful for type
@@ -3490,10 +3517,10 @@ let populate_captures ({ Source.statements; _ } as source) =
                     in
                     Some { Define.Capture.name; kind = Annotation annotation }
                 | Binding.Kind.(ParameterName { star = None; index = 0; annotation })
-                  when Option.is_some parent
+                  when Option.is_some legacy_parent
                        && Option.is_none annotation
                        && not (Define.Signature.is_static_method signature) ->
-                    let parent = Option.value_exn parent in
+                    let parent = Option.value_exn legacy_parent in
                     if
                       Define.Signature.is_class_method signature
                       || Define.Signature.is_class_property signature
@@ -3572,7 +3599,7 @@ let populate_captures ({ Source.statements; _ } as source) =
   { source with Source.statements = transform_statements ~scopes statements }
 
 
-let populate_unbound_names source =
+let populate_unbound_names ({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source) =
   let open Scope in
   let to_unbound_name ~scopes ({ Define.NameAccess.name; _ } as access) =
     match ScopeStack.lookup scopes name with
@@ -3616,7 +3643,9 @@ let populate_unbound_names source =
     | { Node.location; value = Class ({ Class.body; _ } as class_) } ->
         let top_level_unbound_names =
           let scopes =
-            ScopeStack.extend scopes ~with_:(Scope.of_define_exn (Class.toplevel_define class_))
+            ScopeStack.extend
+              scopes
+              ~with_:(Scope.of_define_exn (Class.toplevel_define ~qualifier class_))
           in
           AccessCollector.from_class class_ |> compute_unbound_names ~scopes
         in
@@ -3877,7 +3906,7 @@ let mangle_private_attributes source =
             tail, { statement with value = Statement.Class { metadata with body } }
         | ( { mangling_prefix; _ } :: _,
             Statement.Define
-              ({ Define.signature = { Define.Signature.name; parent; _ } as signature; _ } as
+              ({ Define.signature = { Define.Signature.name; legacy_parent; _ } as signature; _ } as
               define) )
           when should_mangle (Reference.last name) ->
             let mangle_parent_name parent =
@@ -3900,7 +3929,7 @@ let mangle_private_attributes source =
                         {
                           signature with
                           name = mangle_reference mangling_prefix name;
-                          parent = parent >>| mangle_parent_name;
+                          legacy_parent = legacy_parent >>| mangle_parent_name;
                         };
                     };
               } )
@@ -4279,7 +4308,7 @@ let add_dataclass_keyword_only_specifiers source =
     let statement _ ({ Node.value; location } as statement) =
       match value with
       | Statement.Class
-          { name; base_arguments; body; decorators; top_level_unbound_names; type_params }
+          { name; base_arguments; parent; body; decorators; top_level_unbound_names; type_params }
         when List.exists decorators ~f:is_dataclass_decorator
              && List.exists body ~f:is_keyword_only_pseudo_field ->
           ( (),
@@ -4290,6 +4319,7 @@ let add_dataclass_keyword_only_specifiers source =
                     {
                       name;
                       base_arguments;
+                      parent;
                       body = set_keyword_only_after_pseudo_field body;
                       decorators;
                       top_level_unbound_names;
@@ -4463,10 +4493,10 @@ module SelfType = struct
 
   let replace_self_type_in_signature
       ~qualifier
-      ({ Define.Signature.parameters; return_annotation; parent; _ } as signature)
+      ({ Define.Signature.parameters; return_annotation; legacy_parent; _ } as signature)
     =
     match
-      ( parent,
+      ( legacy_parent,
         can_bind_self_parameter_using_self_type_variable parameters,
         parameters,
         return_annotation )
@@ -4668,6 +4698,7 @@ let expand_enum_functional_syntax
           name = class_reference;
           base_arguments;
           decorators = [];
+          parent = ModuleContext.create_toplevel ();
           body = assignments;
           top_level_unbound_names = [];
           type_params = [];

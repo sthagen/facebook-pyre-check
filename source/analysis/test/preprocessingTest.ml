@@ -445,10 +445,44 @@ let test_expand_string_annotation_preserves_locations =
 
 
 let test_qualify_source =
+  (* Expected sources may make parent info qualified which we don't care about in this test. So,
+     strip them. *)
+  let dequalify_parent source =
+    let module SanitizeDefines = Transform.MakeStatementTransformer (struct
+      type t = unit
+
+      let rec dequalify_parent = function
+        | ModuleContext.TopLevel as top_level -> top_level
+        | ModuleContext.Function { name; parent } ->
+            ModuleContext.create_function
+              ~parent:(dequalify_parent parent)
+              (Reference.create name |> Reference.last)
+        | ModuleContext.Class { name; parent } ->
+            ModuleContext.create_class
+              ~parent:(dequalify_parent parent)
+              (Reference.create name |> Reference.last)
+
+
+      let statement _ = function
+        | { Node.value = Statement.Class ({ Class.parent; _ } as class_body); location } ->
+            ( (),
+              [
+                {
+                  Node.value =
+                    Statement.Class { class_body with Class.parent = dequalify_parent parent };
+                  location;
+                };
+              ] )
+        | statement -> (), [statement]
+    end)
+    in
+    let { SanitizeDefines.source; _ } = SanitizeDefines.transform () source in
+    source
+  in
   let assert_qualify ?(handle = "qualifier.py") source expected _ =
     let parsed = parse ~handle source in
     let processed = Preprocessing.qualify parsed in
-    let expected = legacy_parse ~handle expected in
+    let expected = legacy_parse ~handle expected |> dequalify_parent in
     assert_source_equal ~location_insensitive:true expected processed;
     (* Qualifying twice should not change the source. *)
     assert_source_equal ~location_insensitive:true expected (Preprocessing.qualify processed)
@@ -2063,6 +2097,7 @@ let test_qualify_ast =
                  base_arguments = [];
                  top_level_unbound_names = [];
                  type_params = [];
+                 parent = ModuleContext.create_toplevel ();
                  body = [];
                  decorators = [];
                })
@@ -2072,6 +2107,7 @@ let test_qualify_ast =
                  base_arguments = [];
                  top_level_unbound_names = [];
                  type_params = [];
+                 parent = ModuleContext.create_toplevel ();
                  body = [];
                  decorators = [];
                });
@@ -2285,6 +2321,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                   base_arguments = [];
                   top_level_unbound_names = [];
                   type_params = [];
+                  parent = ModuleContext.create_toplevel ();
                   body =
                     [
                       +Statement.Define
@@ -2298,7 +2335,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = None;
                                type_params = [];
                              };
@@ -2339,6 +2376,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                   base_arguments = [];
                   top_level_unbound_names = [];
                   type_params = [];
+                  parent = ModuleContext.create_toplevel ();
                   body =
                     [
                       +Statement.Define
@@ -2358,7 +2396,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = None;
                                type_params = [];
                              };
@@ -2413,6 +2451,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                 {
                   Class.name = Reference.create "Foo";
                   base_arguments = [];
+                  parent = ModuleContext.create_toplevel ();
                   top_level_unbound_names = [];
                   type_params = [];
                   body =
@@ -2428,7 +2467,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = None;
                                type_params = [];
                              };
@@ -2469,6 +2508,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                   base_arguments = [];
                   top_level_unbound_names = [];
                   type_params = [];
+                  parent = ModuleContext.create_toplevel ();
                   body =
                     [
                       +Statement.Define
@@ -2488,7 +2528,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = None;
                                type_params = [];
                              };
@@ -2538,6 +2578,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                   base_arguments = [];
                   top_level_unbound_names = [];
                   type_params = [];
+                  parent = ModuleContext.create_toplevel ();
                   body =
                     [
                       +Statement.Define
@@ -2551,7 +2592,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = None;
                                type_params = [];
                              };
@@ -2592,6 +2633,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                   base_arguments = [];
                   top_level_unbound_names = [];
                   type_params = [];
+                  parent = ModuleContext.create_toplevel ();
                   body =
                     [
                       +Statement.Define
@@ -2611,7 +2653,7 @@ let test_qualify_ast_class_with_same_name_as_local =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = None;
                                type_params = [];
                              };
@@ -3560,7 +3602,7 @@ let test_expand_implicit_returns =
                     return_annotation = None;
                     async = false;
                     generator = false;
-                    parent = None;
+                    legacy_parent = None;
                     nesting_define = None;
                     type_params = [];
                   };
@@ -3757,7 +3799,7 @@ let test_defines =
           return_annotation = None;
           async = false;
           generator = false;
-          parent = None;
+          legacy_parent = None;
           nesting_define = None;
           type_params = [];
         };
@@ -3776,7 +3818,7 @@ let test_defines =
           return_annotation = None;
           async = false;
           generator = false;
-          parent = None;
+          legacy_parent = None;
           nesting_define = None;
           type_params = [];
         };
@@ -3795,7 +3837,7 @@ let test_defines =
           return_annotation = None;
           async = false;
           generator = false;
-          parent = Some (Reference.create parent);
+          legacy_parent = Some (Reference.create parent);
           nesting_define = None;
           type_params = [];
         };
@@ -3821,7 +3863,7 @@ let test_defines =
                return_annotation = None;
                async = false;
                generator = false;
-               parent = None;
+               legacy_parent = None;
                nesting_define = None;
                type_params = [];
              };
@@ -3840,7 +3882,7 @@ let test_defines =
                return_annotation = None;
                async = false;
                generator = false;
-               parent = None;
+               legacy_parent = None;
                nesting_define = None;
                type_params = [];
              };
@@ -3867,7 +3909,7 @@ let test_defines =
                return_annotation = None;
                async = false;
                generator = false;
-               parent = None;
+               legacy_parent = None;
                nesting_define = None;
                type_params = [];
              };
@@ -3886,7 +3928,7 @@ let test_defines =
                return_annotation = None;
                async = false;
                generator = false;
-               parent = None;
+               legacy_parent = None;
                nesting_define = None;
                type_params = [];
              };
@@ -3918,6 +3960,7 @@ let test_defines =
          {
            Class.name = !&"Foo";
            base_arguments = [];
+           parent = ModuleContext.create_toplevel ();
            body;
            decorators = [];
            top_level_unbound_names = [];
@@ -3949,6 +3992,7 @@ let test_classes =
          {
            Class.name = !&"foo";
            base_arguments = [];
+           parent = ModuleContext.create_toplevel ();
            body =
              [
                +Statement.Define
@@ -3961,7 +4005,7 @@ let test_classes =
                         return_annotation = None;
                         async = false;
                         generator = false;
-                        parent = Some !&"foo";
+                        legacy_parent = Some !&"foo";
                         nesting_define = None;
                         type_params = [];
                       };
@@ -3977,10 +4021,13 @@ let test_classes =
        in
        labeled_test_case __FUNCTION__ __LINE__
        @@ assert_classes [+Statement.Class class_define] [class_define]);
-      (let inner =
+      (let toplevel_context = ModuleContext.create_toplevel () in
+       let foo_context = ModuleContext.create_class ~parent:toplevel_context "foo" in
+       let inner =
          {
            Class.name = !&"bar";
            base_arguments = [];
+           parent = foo_context;
            body = [+Statement.Pass];
            decorators = [];
            top_level_unbound_names = [];
@@ -3991,6 +4038,7 @@ let test_classes =
          {
            Class.name = !&"foo";
            base_arguments = [];
+           parent = toplevel_context;
            body = [+Statement.Class inner];
            decorators = [];
            top_level_unbound_names = [];
@@ -5030,7 +5078,7 @@ let test_populate_nesting_define =
                       return_annotation = None;
                       async = false;
                       generator = false;
-                      parent = None;
+                      legacy_parent = None;
                       nesting_define = None;
                       type_params = [];
                     };
@@ -5048,7 +5096,7 @@ let test_populate_nesting_define =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = Some !&"foo";
                                type_params = [];
                              };
@@ -5084,7 +5132,7 @@ let test_populate_nesting_define =
                       return_annotation = None;
                       async = false;
                       generator = false;
-                      parent = None;
+                      legacy_parent = None;
                       nesting_define = None;
                       type_params = [];
                     };
@@ -5102,7 +5150,7 @@ let test_populate_nesting_define =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = Some !&"foo";
                                type_params = [];
                              };
@@ -5120,7 +5168,7 @@ let test_populate_nesting_define =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = Some !&"foo";
                                type_params = [];
                              };
@@ -5150,7 +5198,7 @@ let test_populate_nesting_define =
                       return_annotation = None;
                       async = false;
                       generator = false;
-                      parent = None;
+                      legacy_parent = None;
                       nesting_define = None;
                       type_params = [];
                     };
@@ -5168,7 +5216,7 @@ let test_populate_nesting_define =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = None;
+                               legacy_parent = None;
                                nesting_define = Some !&"foo";
                                type_params = [];
                              };
@@ -5186,7 +5234,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = None;
+                                        legacy_parent = None;
                                         nesting_define = Some !&"bar";
                                         type_params = [];
                                       };
@@ -5221,7 +5269,7 @@ let test_populate_nesting_define =
                       return_annotation = None;
                       async = false;
                       generator = false;
-                      parent = None;
+                      legacy_parent = None;
                       nesting_define = None;
                       type_params = [];
                     };
@@ -5244,7 +5292,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = None;
+                                        legacy_parent = None;
                                         nesting_define = Some !&"foo";
                                         type_params = [];
                                       };
@@ -5265,7 +5313,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = None;
+                                        legacy_parent = None;
                                         nesting_define = Some !&"foo";
                                         type_params = [];
                                       };
@@ -5300,7 +5348,7 @@ let test_populate_nesting_define =
                       return_annotation = None;
                       async = false;
                       generator = false;
-                      parent = None;
+                      legacy_parent = None;
                       nesting_define = None;
                       type_params = [];
                     };
@@ -5323,7 +5371,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = None;
+                                        legacy_parent = None;
                                         nesting_define = Some !&"foo";
                                         type_params = [];
                                       };
@@ -5344,7 +5392,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = None;
+                                        legacy_parent = None;
                                         nesting_define = Some !&"foo";
                                         type_params = [];
                                       };
@@ -5376,7 +5424,7 @@ let test_populate_nesting_define =
                       return_annotation = None;
                       async = false;
                       generator = false;
-                      parent = None;
+                      legacy_parent = None;
                       nesting_define = None;
                       type_params = [];
                     };
@@ -5400,7 +5448,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = None;
+                                        legacy_parent = None;
                                         nesting_define = Some !&"foo";
                                         type_params = [];
                                       };
@@ -5438,7 +5486,7 @@ let test_populate_nesting_define =
                       return_annotation = None;
                       async = false;
                       generator = false;
-                      parent = None;
+                      legacy_parent = None;
                       nesting_define = None;
                       type_params = [];
                     };
@@ -5460,7 +5508,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = None;
+                                        legacy_parent = None;
                                         nesting_define = Some !&"foo";
                                         type_params = [];
                                       };
@@ -5487,7 +5535,7 @@ let test_populate_nesting_define =
                                               return_annotation = None;
                                               async = false;
                                               generator = false;
-                                              parent = None;
+                                              legacy_parent = None;
                                               nesting_define = Some !&"foo";
                                               type_params = [];
                                             };
@@ -5510,7 +5558,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = None;
+                                        legacy_parent = None;
                                         nesting_define = Some !&"foo";
                                         type_params = [];
                                       };
@@ -5538,6 +5586,7 @@ let test_populate_nesting_define =
                   Class.name = !&"C";
                   base_arguments = [];
                   decorators = [];
+                  parent = ModuleContext.create_toplevel ();
                   body =
                     [
                       +Statement.Define
@@ -5550,7 +5599,7 @@ let test_populate_nesting_define =
                                return_annotation = None;
                                async = false;
                                generator = false;
-                               parent = Some !&"C";
+                               legacy_parent = Some !&"C";
                                nesting_define = None;
                                type_params = [];
                              };
@@ -5568,7 +5617,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = None;
+                                        legacy_parent = None;
                                         nesting_define = Some !&"bar";
                                         type_params = [];
                                       };
@@ -5603,7 +5652,7 @@ let test_populate_nesting_define =
                       return_annotation = None;
                       async = false;
                       generator = false;
-                      parent = None;
+                      legacy_parent = None;
                       nesting_define = None;
                       type_params = [];
                     };
@@ -5616,6 +5665,8 @@ let test_populate_nesting_define =
                            Class.name = !&"C";
                            base_arguments = [];
                            decorators = [];
+                           parent =
+                             ModuleContext.(create_function ~parent:(create_toplevel ()) "foo");
                            body =
                              [
                                +Statement.Define
@@ -5628,7 +5679,7 @@ let test_populate_nesting_define =
                                         return_annotation = None;
                                         async = false;
                                         generator = false;
-                                        parent = Some !&"C";
+                                        legacy_parent = Some !&"C";
                                         nesting_define = None;
                                         type_params = [];
                                       };
@@ -5646,7 +5697,7 @@ let test_populate_nesting_define =
                                                  return_annotation = None;
                                                  async = false;
                                                  generator = false;
-                                                 parent = None;
+                                                 legacy_parent = None;
                                                  nesting_define = Some !&"bar";
                                                  type_params = [];
                                                };
@@ -5820,7 +5871,7 @@ let test_populate_captures =
                          return_annotation = Some (int_annotation (3, 21) (3, 24));
                          async = false;
                          generator = false;
-                         parent = None;
+                         legacy_parent = None;
                          nesting_define = None;
                          type_params = [];
                        } );
@@ -6525,7 +6576,7 @@ let test_populate_captures =
                          return_annotation = None;
                          async = false;
                          generator = false;
-                         parent = None;
+                         legacy_parent = None;
                          nesting_define = None;
                          type_params = [];
                        } );
@@ -6579,7 +6630,7 @@ let test_populate_unbound_names =
     List.iter expected ~f:(fun (name, unbound_names) -> assert_unbound_names_ name unbound_names)
   in
   let toplevel_name = !&"test.$toplevel" in
-  let class_foo_toplevel_name = !&"Foo.$class_toplevel" in
+  let class_foo_toplevel_name = !&"test.Foo.$class_toplevel" in
   test_list
     [
       labeled_test_case __FUNCTION__ __LINE__

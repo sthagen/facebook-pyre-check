@@ -54,6 +54,7 @@ let test_attributes =
       {
         Class.name = !&"";
         base_arguments = [];
+        parent = ModuleContext.create_toplevel ();
         body = [];
         decorators = [];
         top_level_unbound_names = [];
@@ -209,7 +210,7 @@ let test_class_attributes =
                 return_annotation = Some !"int";
                 async = false;
                 generator = false;
-                parent = None;
+                legacy_parent = None;
                 nesting_define = None;
                 type_params = [];
               }

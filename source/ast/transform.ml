@@ -280,13 +280,21 @@ module Make (Transformer : Transformer) = struct
               }
         | Break -> value
         | Class
-            { Class.name; base_arguments; body; decorators; top_level_unbound_names; type_params }
-          ->
+            {
+              Class.name;
+              base_arguments;
+              parent;
+              body;
+              decorators;
+              top_level_unbound_names;
+              type_params;
+            } ->
             Class
               {
                 Class.name;
                 base_arguments =
                   transform_list base_arguments ~f:(transform_argument ~transform_expression);
+                parent;
                 body = transform_list body ~f:transform_statement |> List.concat;
                 decorators = transform_list decorators ~f:transform_expression;
                 top_level_unbound_names;
@@ -302,7 +310,7 @@ module Make (Transformer : Transformer) = struct
                   decorators;
                   return_annotation;
                   async;
-                  parent;
+                  legacy_parent;
                   nesting_define;
                   generator;
                   type_params;
@@ -315,7 +323,7 @@ module Make (Transformer : Transformer) = struct
                 decorators = transform_list decorators ~f:transform_expression;
                 return_annotation = return_annotation >>| transform_expression;
                 async;
-                parent;
+                legacy_parent;
                 nesting_define;
                 generator;
                 type_params =

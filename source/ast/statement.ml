@@ -291,6 +291,7 @@ and Class : sig
   type t = {
     name: Reference.t;
     base_arguments: Expression.Call.Argument.t list;
+    parent: ModuleContext.t;
     body: Statement.t list;
     decorators: Expression.t list;
     top_level_unbound_names: Define.NameAccess.t list;
@@ -300,7 +301,7 @@ and Class : sig
 
   val location_insensitive_compare : t -> t -> int
 
-  val toplevel_define : t -> Define.t
+  val toplevel_define : qualifier:Reference.t -> t -> Define.t
 
   val constructors : ?in_test:bool -> t -> Define.t list
 
@@ -323,6 +324,7 @@ end = struct
   type t = {
     name: Reference.t;
     base_arguments: Expression.Call.Argument.t list;
+    parent: ModuleContext.t;
     body: Statement.t list;
     decorators: Expression.t list;
     top_level_unbound_names: Define.NameAccess.t list;
@@ -344,35 +346,39 @@ end = struct
         with
         | x when not (Int.equal x 0) -> x
         | _ -> (
-            match List.compare Statement.location_insensitive_compare left.body right.body with
+            match ModuleContext.compare left.parent right.parent with
             | x when not (Int.equal x 0) -> x
             | _ -> (
-                match
-                  List.compare
-                    Expression.location_insensitive_compare
-                    left.decorators
-                    right.decorators
-                with
+                match List.compare Statement.location_insensitive_compare left.body right.body with
                 | x when not (Int.equal x 0) -> x
                 | _ -> (
                     match
                       List.compare
-                        Define.NameAccess.compare
-                        left.top_level_unbound_names
-                        right.top_level_unbound_names
+                        Expression.location_insensitive_compare
+                        left.decorators
+                        right.decorators
                     with
-                    | 0 ->
-                        List.compare
-                          Expression.TypeParam.location_insensitive_compare
-                          left.type_params
-                          right.type_params
-                    | x -> x))))
+                    | x when not (Int.equal x 0) -> x
+                    | _ -> (
+                        match
+                          List.compare
+                            Define.NameAccess.compare
+                            left.top_level_unbound_names
+                            right.top_level_unbound_names
+                        with
+                        | 0 ->
+                            List.compare
+                              Expression.TypeParam.location_insensitive_compare
+                              left.type_params
+                              right.type_params
+                        | x -> x)))))
 
 
-  let toplevel_define { name; top_level_unbound_names; body; _ } =
+  let toplevel_define ~qualifier { name; top_level_unbound_names; parent; body; _ } =
     Define.create_class_toplevel
       ~unbound_names:top_level_unbound_names
-      ~parent:name
+      ~module_name:qualifier
+      ~local_context:(ModuleContext.create_class ~parent (Reference.last name))
       ~statements:body
 
 
@@ -472,7 +478,7 @@ and Define : sig
       async: bool;
       generator: bool;
       (* The class owning the method. *)
-      parent: Reference.t option;
+      legacy_parent: Reference.t option;
       (* If the define is nested, this is the name of the nesting define. *)
       nesting_define: Reference.t option;
       type_params: Expression.TypeParam.t list;
@@ -481,9 +487,7 @@ and Define : sig
 
     val location_insensitive_compare : t -> t -> int
 
-    val create_toplevel : qualifier:Reference.t option -> t
-
-    val create_class_toplevel : parent:Reference.t -> t
+    val create_toplevel : Reference.t -> t
 
     val unqualified_name : t -> Identifier.t
 
@@ -562,14 +566,15 @@ and Define : sig
   val location_insensitive_compare : t -> t -> int
 
   val create_toplevel
-    :  unbound_names:NameAccess.t list ->
-    qualifier:Reference.t option ->
+    :  module_name:Reference.t ->
+    unbound_names:NameAccess.t list ->
     statements:Statement.t list ->
     t
 
   val create_class_toplevel
     :  unbound_names:NameAccess.t list ->
-    parent:Reference.t ->
+    module_name:Reference.t ->
+    local_context:ModuleContext.t ->
     statements:Statement.t list ->
     t
 
@@ -644,7 +649,7 @@ end = struct
       async: bool;
       generator: bool;
       (* The class owning the method *)
-      parent: Reference.t option;
+      legacy_parent: Reference.t option;
       (* If the define is nested, this is the name of the nesting define. *)
       nesting_define: Reference.t option;
       type_params: Expression.TypeParam.t list;
@@ -685,7 +690,11 @@ end = struct
                           match Bool.compare left.generator right.generator with
                           | x when not (Int.equal x 0) -> x
                           | _ -> (
-                              match [%compare: Reference.t option] left.parent right.parent with
+                              match
+                                [%compare: Reference.t option]
+                                  left.legacy_parent
+                                  right.legacy_parent
+                              with
                               | x when not (Int.equal x 0) -> x
                               | _ -> (
                                   match
@@ -701,29 +710,30 @@ end = struct
                                         right.type_params)))))))
 
 
-    let create_toplevel ~qualifier =
+    let create_toplevel module_name =
       {
-        name = Reference.create ?prefix:qualifier toplevel_define_name;
+        name = Reference.create ~prefix:module_name toplevel_define_name;
         parameters = [];
         decorators = [];
         return_annotation = None;
         async = false;
         generator = false;
-        parent = None;
+        legacy_parent = None;
         nesting_define = None;
         type_params = [];
       }
 
 
-    let create_class_toplevel ~parent =
+    let create_class_toplevel ~module_name local_context =
+      let qualified_class_name = ModuleContext.to_qualifier ~module_name local_context in
       {
-        name = Reference.create ~prefix:parent class_toplevel_define_name;
+        name = Reference.create ~prefix:qualified_class_name class_toplevel_define_name;
         parameters = [];
         decorators = [];
         return_annotation = None;
         async = false;
         generator = false;
-        parent = Some parent;
+        legacy_parent = Some qualified_class_name;
         nesting_define = None;
         type_params = [];
       }
@@ -737,7 +747,7 @@ end = struct
       | _ -> "self"
 
 
-    let is_method { parent; _ } = Option.is_some parent
+    let is_method { legacy_parent; _ } = Option.is_some legacy_parent
 
     let has_decorator ?(match_prefix = false) { decorators; _ } decorator =
       Expression.exists_in_list ~match_prefix ~expression_list:decorators decorator
@@ -784,21 +794,19 @@ end = struct
       String.is_prefix ~prefix:"__" name && String.is_suffix ~suffix:"__" name
 
 
-    let is_class_method ({ parent; _ } as signature) =
+    let is_class_method signature =
       let valid_names = ["__init_subclass__"; "__new__"; "__class_getitem__"] in
-      Option.is_some parent
+      is_method signature
       && (Set.exists Recognized.classmethod_decorators ~f:(has_decorator signature)
          || List.mem valid_names (unqualified_name signature) ~equal:String.equal)
 
 
-    let is_class_property ({ parent; _ } as signature) =
-      Option.is_some parent
+    let is_class_property signature =
+      is_method signature
       && Set.exists Recognized.classproperty_decorators ~f:(has_decorator signature)
 
 
-    let is_enum_member ({ parent; _ } as signature) =
-      Option.is_some parent && has_decorator signature "enum.member"
-
+    let is_enum_member signature = is_method signature && has_decorator signature "enum.member"
 
     let test_initializers =
       String.Set.of_list
@@ -814,23 +822,21 @@ end = struct
         ]
 
 
-    let is_test_setup ({ parent; _ } as signature) =
+    let is_test_setup signature =
+      is_method signature
+      &&
       let name = unqualified_name signature in
-      if Option.is_none parent then
-        false
-      else
-        Set.mem test_initializers name
+      Set.mem test_initializers name
 
 
-    let is_constructor ?(in_test = false) ({ parent; _ } as signature) =
+    let is_constructor ?(in_test = false) signature =
+      is_method signature
+      &&
       let name = unqualified_name signature in
-      if Option.is_none parent then
-        false
-      else
-        String.equal name "__init__"
-        || String.equal name "__new__"
-        || String.equal name "__init_subclass__"
-        || (in_test && is_test_setup signature)
+      String.equal name "__init__"
+      || String.equal name "__new__"
+      || String.equal name "__init_subclass__"
+      || (in_test && is_test_setup signature)
 
 
     let is_property_setter signature =
@@ -923,18 +929,18 @@ end = struct
             | _ -> List.compare Statement.location_insensitive_compare left.body right.body))
 
 
-  let create_toplevel ~unbound_names ~qualifier ~statements =
+  let create_toplevel ~module_name ~unbound_names ~statements =
     {
-      signature = Signature.create_toplevel ~qualifier;
+      signature = Signature.create_toplevel module_name;
       captures = [];
       unbound_names;
       body = statements;
     }
 
 
-  let create_class_toplevel ~unbound_names ~parent ~statements =
+  let create_class_toplevel ~unbound_names ~module_name ~local_context ~statements =
     {
-      signature = Signature.create_class_toplevel ~parent;
+      signature = Signature.create_class_toplevel ~module_name local_context;
       captures = [];
       unbound_names;
       body = statements;
@@ -1896,7 +1902,7 @@ module PrettyPrinter = struct
             decorators;
             return_annotation;
             async;
-            parent;
+            legacy_parent;
             type_params;
             _;
           };
@@ -1918,8 +1924,8 @@ module PrettyPrinter = struct
       pp_async
       async
       pp_reference_option
-      parent
-      (if Option.is_some parent then "#" else "")
+      legacy_parent
+      (if Option.is_some legacy_parent then "#" else "")
       Reference.pp
       name
       Expression.pp_type_param_list
