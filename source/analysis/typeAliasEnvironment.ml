@@ -29,11 +29,9 @@ module PreviousEnvironment = UnannotatedGlobalEnvironment
 module RawAlias = struct
   type t =
     | TypeAlias of Type.t
-    | VariableAlias of Type.Variable.Declaration.t
+    | VariableDeclaration of Type.Variable.Declaration.t
   [@@deriving equal, compare, sexp, show, hash]
 end
-
-let empty_aliases ?replace_unbound_parameters_with_any:_ _ = None
 
 module IncomingDataComputation = struct
   module Queries = struct
@@ -113,8 +111,8 @@ module IncomingDataComputation = struct
   end
 
   type extracted =
-    | VariableAlias of Type.Variable.Declaration.t
-    | TypeAlias of UnresolvedAlias.t
+    | ExtractedVariableDeclaration of Type.Variable.Declaration.t
+    | ExtractedAlias of UnresolvedAlias.t
 
   let extract_alias Queries.{ class_exists; get_unannotated_global; _ } name =
     let open Module.UnannotatedGlobal in
@@ -131,7 +129,7 @@ module IncomingDataComputation = struct
           match Node.value value, explicit_annotation with
           | Call _, None -> (
               match Type.Variable.Declaration.parse (delocalize value) ~target:name with
-              | Some variable -> Some (VariableAlias variable)
+              | Some variable -> Some (ExtractedVariableDeclaration variable)
               | None -> None)
           | ( (BinaryOperator _ | Subscript _ | Name _ | Constant (Constant.String _)),
               Some
@@ -164,7 +162,7 @@ module IncomingDataComputation = struct
                   || Type.contains_unknown value_annotation
                   || Type.equal value_annotation target_annotation)
               then
-                Some (TypeAlias { target = name; value })
+                Some (ExtractedAlias { target = name; value })
               else
                 None
           | _ -> None)
@@ -193,11 +191,13 @@ module IncomingDataComputation = struct
                 None
             | _ ->
                 let value = from_reference ~location:Location.any original_name_of_alias in
-                Some (TypeAlias { target = name; value }))
+                Some (ExtractedAlias { target = name; value }))
       | TupleAssign _
       | Class
       | Define _ ->
           None
+      (* TODO for migeedz: Populate this case *)
+      | TypeStatement _ -> None
     in
     get_unannotated_global name >>= extract_alias
 
@@ -230,8 +230,8 @@ module IncomingDataComputation = struct
       else
         let visited = Set.add visited current in
         let resolve_after_resolving_dependencies = function
-          | VariableAlias variable -> Some (RawAlias.VariableAlias variable)
-          | TypeAlias unresolved -> (
+          | ExtractedVariableDeclaration variable -> Some (RawAlias.VariableDeclaration variable)
+          | ExtractedAlias unresolved -> (
               match UnresolvedAlias.checked_resolve queries unresolved with
               | Resolved alias -> Some alias
               | HasDependents { unparsed; dependencies } ->
@@ -255,7 +255,7 @@ module IncomingDataComputation = struct
 
                   let variable_aliases name =
                     match aliases name with
-                    | Some (RawAlias.VariableAlias variable) ->
+                    | Some (RawAlias.VariableDeclaration variable) ->
                         let type_variables =
                           Type.Variable.of_declaration
                             ~create_type:
@@ -285,10 +285,8 @@ module OutgoingDataComputation = struct
   module Queries = struct
     type t = {
       class_exists: Type.Primitive.t -> bool;
-      get_type_alias:
-        ?replace_unbound_parameters_with_any:bool -> Type.Primitive.t -> Type.t option;
-      get_variable:
-        ?replace_unbound_parameters_with_any:bool -> Type.Primitive.t -> Type.Variable.t option;
+      get_type_alias: Type.Primitive.t -> Type.t option;
+      get_variable: Type.Primitive.t -> Type.Variable.t option;
     }
   end
 
@@ -403,19 +401,18 @@ include Aliases
 module ReadOnly = struct
   include Aliases.ReadOnly
 
-  let get_type_alias environment ?dependency ?replace_unbound_parameters_with_any:_ name =
+  let get_type_alias environment ?dependency name =
     match get environment ?dependency name with
     | Some (RawAlias.TypeAlias t) -> Some t
     | _ -> None
 
 
-  let get_variable environment ?dependency ?replace_unbound_parameters_with_any:_ name =
-    let aliases ?replace_unbound_parameters_with_any name =
-      get_type_alias environment ?dependency name ?replace_unbound_parameters_with_any
+  let get_variable environment ?dependency name =
+    let aliases ?replace_unbound_parameters_with_any:_ name =
+      get_type_alias environment ?dependency name
     in
-
     match get environment ?dependency name with
-    | Some (RawAlias.VariableAlias t) ->
+    | Some (RawAlias.VariableDeclaration t) ->
         let type_variables =
           Type.Variable.of_declaration
             ~create_type:(Type.create ~aliases ~variables:Type.resolved_empty_variables)

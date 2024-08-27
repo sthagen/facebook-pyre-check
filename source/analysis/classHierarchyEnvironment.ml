@@ -34,7 +34,7 @@ module IncomingDataComputation = struct
         ?allow_untracked:bool ->
         Ast.Expression.t ->
         Type.t;
-      get_variable: ?replace_unbound_parameters_with_any:bool -> string -> Type.Variable.t option;
+      get_variable: string -> Type.Variable.t option;
     }
   end
 
@@ -101,7 +101,7 @@ module IncomingDataComputation = struct
             parse_annotation_without_validating_type_parameters
               ~allow_untracked:true
               value
-              ~variables:(get_variable ?replace_unbound_parameters_with_any:(Some true))
+              ~variables:get_variable
             |> Type.split
           in
           match supertype with
@@ -189,29 +189,26 @@ module IncomingDataComputation = struct
           |> deduplicate
           |> remove_extra_edges_to_object
         in
-        let parameters_as_generic_base_arguments =
+        let generic_metadata =
           let open Option in
           let parsed_bases =
             List.map
               base_classes
-              ~f:
-                (parse_annotation_without_validating_type_parameters
-                   ~variables:(get_variable ?replace_unbound_parameters_with_any:(Some true)))
+              ~f:(parse_annotation_without_validating_type_parameters ~variables:get_variable)
           in
-          compute_generic_base parsed_bases
-          >>= fun base ->
-          extract_supertype (Type.expression base) >>= fun (_, arguments) -> Some arguments
+          let maybe_generic_base_arguments =
+            compute_generic_base parsed_bases
+            >>= fun base ->
+            extract_supertype (Type.expression base) >>= fun (_, arguments) -> Some arguments
+          in
+          match maybe_generic_base_arguments with
+          | None -> ClassHierarchy.GenericMetadata.NotGeneric
+          | Some arguments -> (
+              match List.map arguments ~f:Type.Argument.to_variable |> Option.all with
+              | None -> ClassHierarchy.GenericMetadata.InvalidGenericBase
+              | Some variables -> ClassHierarchy.GenericMetadata.GenericBase variables)
         in
-        let to_variable parameters =
-          match parameters with
-          | Some parameters -> List.map parameters ~f:Type.Argument.to_variable |> Option.all
-          | None -> None
-        in
-        Some
-          {
-            ClassHierarchy.Edges.parents;
-            parameters_as_variables = to_variable parameters_as_generic_base_arguments;
-          }
+        Some { ClassHierarchy.Edges.parents; generic_metadata }
 end
 
 module OutgoingDataComputation = struct

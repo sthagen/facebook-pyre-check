@@ -11,14 +11,9 @@ open SharedMemoryKeys
 module RawAlias : sig
   type t =
     | TypeAlias of Type.t
-    | VariableAlias of Type.Variable.Declaration.t
+    | VariableDeclaration of Type.Variable.Declaration.t
   [@@deriving equal, compare, sexp, show, hash]
 end
-
-val empty_aliases
-  :  ?replace_unbound_parameters_with_any:bool ->
-  Type.Primitive.t ->
-  RawAlias.t option
 
 module AliasReadOnly : sig
   include Environment.ReadOnly
@@ -26,14 +21,12 @@ module AliasReadOnly : sig
   val get_type_alias
     :  t ->
     ?dependency:DependencyKey.registered ->
-    ?replace_unbound_parameters_with_any:bool ->
     Type.Primitive.t ->
     Type.t option
 
   val get_variable
     :  t ->
     ?dependency:DependencyKey.registered ->
-    ?replace_unbound_parameters_with_any:bool ->
     Type.Primitive.t ->
     Type.Variable.t option
 

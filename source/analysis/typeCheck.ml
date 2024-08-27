@@ -806,7 +806,7 @@ module State (Context : Context) = struct
     match
       GlobalResolution.resolve_define
         global_resolution
-        ~variable_map:(GlobalResolution.get_variable global_resolution)
+        ~scoped_type_variables:None
         ~implementation:(Some signature)
         ~overloads:[]
     with
@@ -1004,7 +1004,9 @@ module State (Context : Context) = struct
     let reference =
       match target.Node.value with
       | Expression.Name (Name.Identifier identifier) -> Reference.create identifier
-      | _ -> failwith "not possible"
+      (* TODO migeedz: Revist this line for type statements once we implement the end to end
+         feature *)
+      | expression -> Reference.create ([%show: expression] expression)
     in
     let annotation_kind =
       match parsed with
@@ -1842,7 +1844,6 @@ module State (Context : Context) = struct
   (** Resolves types by moving forward through nodes in the CFG starting at an expression. *)
   and forward_expression ~resolution { Node.location; value } =
     let global_resolution = Resolution.global_resolution resolution in
-
     let forward_entry ~resolution ~errors ~entry:Dictionary.Entry.KeyValue.{ key; value } =
       let { Resolved.resolution; resolved = key_resolved; errors = key_errors; _ } =
         forward_expression ~resolution key
@@ -4072,11 +4073,7 @@ module State (Context : Context) = struct
             | Some previous ->
                 if annotation_less_or_equal ~left:refined ~right:previous then
                   Value (refine_local ~name refined)
-                else
-                  (* Keeping previous state, since it is more refined. *)
-                  (* TODO: once T38750424 is done, we should really return bottom if previous is not
-                     <= refined and refined is not <= previous, as this is an obvious
-                     contradiction. *)
+                else (* Keeping previous state, since it is more refined. *)
                   Value resolution
             | None -> Value resolution)
       end
@@ -4135,6 +4132,37 @@ module State (Context : Context) = struct
           right = { Node.value = Constant Constant.NoneLiteral; _ };
         } ->
         refine_resolution_for_assert ~resolution left
+    | UnaryOperator
+        { UnaryOperator.operator = UnaryOperator.Not; operand = { Node.value = Name name; _ } }
+      when is_simple_name name -> (
+        match existing_annotation name with
+        | Some ({ TypeInfo.Unit.annotation = Type.Primitive "bool"; _ } as annotation) ->
+            let resolution =
+              refine_local
+                ~name
+                { annotation with TypeInfo.Unit.annotation = Type.Literal (Boolean false) }
+            in
+            Value resolution
+        | _ -> Value resolution)
+    (* Literal refinements *)
+    | ComparisonOperator
+        {
+          ComparisonOperator.left = refinement_target;
+          operator = ComparisonOperator.Equals;
+          right = value;
+        } -> (
+        match maybe_simple_name_of refinement_target with
+        | None -> Value resolution
+        | Some name -> (
+            let { Resolved.resolved = refined; _ } = forward_expression ~resolution value in
+            let refined = TypeInfo.Unit.create_mutable refined in
+            match existing_annotation name, refined with
+            | Some previous, { TypeInfo.Unit.annotation = Type.Literal _; _ } ->
+                if annotation_less_or_equal ~left:refined ~right:previous then
+                  Value (refine_local ~name refined)
+                else (* Keeping previous state, since it is more refined. *)
+                  Value resolution
+            | _, _ -> Value resolution))
     | Name name when is_simple_name name -> (
         match existing_annotation name with
         | Some { TypeInfo.Unit.annotation = Type.NoneType; _ } -> Unreachable
@@ -4150,6 +4178,13 @@ module State (Context : Context) = struct
               refine_local
                 ~name
                 { annotation with TypeInfo.Unit.annotation = Type.union refined_annotation }
+            in
+            Value resolution
+        | Some ({ TypeInfo.Unit.annotation = Type.Primitive "bool"; _ } as annotation) ->
+            let resolution =
+              refine_local
+                ~name
+                { annotation with TypeInfo.Unit.annotation = Type.Literal (Boolean true) }
             in
             Value resolution
         | _ -> Value resolution)
@@ -4606,6 +4641,12 @@ module State (Context : Context) = struct
             | _ -> None
           in
           let check_errors ~name_reference errors resolved reference =
+            let parent_annotation =
+              match legacy_parent with
+              | None -> Type.Top
+              | Some reference -> Type.Primitive (Reference.show reference)
+            in
+            let is_enum = GlobalResolution.is_enum global_resolution parent_annotation in
             let check_assignment_compatibility errors =
               let is_valid_enumeration_assignment, expected_enumeration_type =
                 let parent_annotation =
@@ -4613,7 +4654,6 @@ module State (Context : Context) = struct
                   | None -> Type.Top
                   | Some reference -> Type.Primitive (Reference.show reference)
                 in
-                let is_enum = GlobalResolution.is_enum global_resolution parent_annotation in
                 if is_enum then
                   (* If a type annotation is provided for _value_, the members of the enum must
                      match that type. *)
@@ -4771,6 +4811,22 @@ module State (Context : Context) = struct
               >>| emit_invalid_enumeration_literal_errors ~resolution ~location ~errors
               |> Option.value ~default:errors
             in
+            let check_enumeration_member_annotations errors =
+              let expression_is_ellipses =
+                match value with
+                | Some { Node.value = Expression.Constant Constant.Ellipsis; _ } -> true
+                | _ -> false
+              in
+              (* Enum member definitions may not have type annotations. *)
+              match TypeInfo.Unit.annotation target_annotation with
+              | Type.Literal (Type.EnumerationMember _)
+                when (has_explicit_annotation && not expression_is_ellipses) && is_enum ->
+                  emit_error
+                    ~errors
+                    ~location
+                    ~kind:(Error.IllegalAnnotationTarget { target; kind = EnumerationMember })
+              | _ -> errors
+            in
             let check_previously_annotated errors =
               match name with
               | Name.Identifier identifier ->
@@ -4853,6 +4909,7 @@ module State (Context : Context) = struct
             |> check_undefined_attribute_target
             |> check_nested_explicit_type_alias
             |> check_enumeration_literal
+            |> check_enumeration_member_annotations
             |> check_previously_annotated
             |> check_assignment_to_readonly_type
           in
@@ -5512,7 +5569,6 @@ module State (Context : Context) = struct
           in
           annotation_errors, is_final, Option.map final_annotation ~f:unwrap_type_qualifiers
     in
-
     match Node.value target, value with
     | Expression.Name (Name.Identifier name), Some value
       when Reference.create name
@@ -5596,13 +5652,7 @@ module State (Context : Context) = struct
       let is_invalid_enumeration_member = function
         | Type.Literal (Type.EnumerationMember { enumeration_type; member_name }) ->
             let global_resolution = Resolution.global_resolution resolution in
-            let is_enumeration =
-              GlobalResolution.class_exists global_resolution (Type.show enumeration_type)
-              && GlobalResolution.less_or_equal
-                   global_resolution
-                   ~left:enumeration_type
-                   ~right:Type.enumeration
-            in
+            let is_enumeration = GlobalResolution.is_enum global_resolution enumeration_type in
             let is_member_of_enumeration =
               let literal_expression =
                 Node.create

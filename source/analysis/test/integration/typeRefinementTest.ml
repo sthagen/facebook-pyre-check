@@ -661,6 +661,94 @@ let test_check_if_else_clause =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
            {|
+    from enum import Enum
+    class Color(Enum):
+      RED = 1
+      BLUE = 2
+
+    def foo(x: Color) -> None:
+      if x == Color.RED:
+        reveal_type(x)
+      reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `typing_extensions.Literal[Color.RED]`.";
+             "Revealed type [-1]: Revealed type for `x` is `Color`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: int) -> None:
+      if x == 1:
+        reveal_type(x)
+      reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `typing_extensions.Literal[1]`.";
+             "Revealed type [-1]: Revealed type for `x` is `int`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: bool) -> None:
+      if x:
+        reveal_type(x)
+      else:
+        reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `bool` (inferred: \
+              `typing_extensions.Literal[True]`).";
+             "Revealed type [-1]: Revealed type for `x` is `bool` (inferred: \
+              `typing_extensions.Literal[False]`).";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: bool) -> None:
+      if not x:
+        reveal_type(x)
+      else:
+        reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `bool` (inferred: \
+              `typing_extensions.Literal[False]`).";
+             "Revealed type [-1]: Revealed type for `x` is `bool` (inferred: \
+              `typing_extensions.Literal[True]`).";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: bool) -> None:
+      if x:
+        return
+      reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `bool` (inferred: \
+              `typing_extensions.Literal[False]`).";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: bool) -> None:
+      if not x:
+        return
+      reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `bool` (inferred: \
+              `typing_extensions.Literal[True]`).";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
     import typing
     def foo(x: typing.Optional[int]) -> None:
       if x is None:
@@ -686,6 +774,79 @@ let test_check_if_else_clause =
            [
              "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`).";
              "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: typing.Optional[int]) -> None:
+      if x is not None:
+        reveal_type(x)
+      else:
+        reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`).";
+             "Revealed type [-1]: Revealed type for `x` is `None`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: typing.Optional[int]) -> None:
+      if not x:
+        reveal_type(x)
+      else:
+        reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]`.";
+             "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: \
+              `int`).";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: typing.Optional[int]) -> None:
+      if x is None:
+        return
+      reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`).";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: typing.Optional[int]) -> None:
+      if x:
+        return
+      reveal_type(x)
+  |}
+           ["Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: typing.Optional[int]) -> None:
+      if x is not None:
+        return
+      reveal_type(x)
+  |}
+           ["Revealed type [-1]: Revealed type for `x` is `None`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+    import typing
+    def foo(x: typing.Optional[int]) -> None:
+      if not x:
+        return
+      reveal_type(x)
+  |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`).";
            ];
     ]
 

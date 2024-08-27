@@ -53,17 +53,9 @@ val get_module_metadata : t -> Reference.t -> Module.Metadata.t option
 
 val resolve_exports : t -> ?from:Reference.t -> Reference.t -> ResolvedReference.t option
 
-val get_type_alias
-  :  t ->
-  ?replace_unbound_parameters_with_any:bool ->
-  Type.Primitive.t ->
-  Type.t option
+val get_type_alias : t -> Type.Primitive.t -> Type.t option
 
-val get_variable
-  :  t ->
-  ?replace_unbound_parameters_with_any:bool ->
-  Type.Primitive.t ->
-  Type.Variable.t option
+val get_variable : t -> Type.Primitive.t -> Type.Variable.t option
 
 val parse_annotation_without_validating_type_parameters
   :  t ->
@@ -161,7 +153,7 @@ val resolve_define
   :  t ->
   implementation:Define.Signature.t option ->
   overloads:Define.Signature.t list ->
-  variable_map:(?replace_unbound_parameters_with_any:bool -> string -> Type.Variable.t option) ->
+  scoped_type_variables:Type.Variable.t Identifier.Map.t option ->
   AttributeResolution.resolved_define
 
 val signature_select
