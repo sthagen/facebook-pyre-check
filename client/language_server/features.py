@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-from typing import Dict
+from typing import Callable, Dict
 
 
 class _Availability(enum.Enum):
@@ -63,6 +63,26 @@ class TypeCoverageAvailability(enum.Enum):
     EXPRESSION_LEVEL = "expression_level"
 
 
+class CustomAvailability:
+    _check: Callable[[], bool]
+
+    def __init__(self, check: Callable[[], bool]) -> None:
+        self._check = check
+
+    @staticmethod
+    def from_enabled(enabled: bool) -> CustomAvailability:
+        return CustomAvailability(check=lambda: enabled)
+
+    def get_availability(self) -> _Availability:
+        return _Availability.from_enabled(self._check())
+
+    def is_enabled(self) -> bool:
+        return self._check()
+
+    def is_disabled(self) -> bool:
+        return not self._check()
+
+
 # User-facing features
 HoverAvailability = _Availability
 DefinitionAvailability = _AvailabilityWithShadow
@@ -77,8 +97,8 @@ RenameAvailability = _Availability
 SymbolSearchAvailability = _Availability
 InlayHintAvailability = _Availability
 FormattingAvailability = _Availability
-PerTargetTypeErrorsAvailability = _Availability
-PythonAutoTargetsAvailability = _Availability
+PerTargetTypeErrorsAvailability = CustomAvailability
+PythonAutoTargetsAvailability = CustomAvailability
 
 # Telemetry: is the editor able to forward events somewhere?
 TelemetryAvailability = _Availability
@@ -94,7 +114,7 @@ class LanguageServerFeatures:
     type_coverage: TypeCoverageAvailability = TypeCoverageAvailability.DISABLED
     type_errors: TypeErrorsAvailability = TypeErrorsAvailability.ENABLED
     per_target_type_errors: PerTargetTypeErrorsAvailability = (
-        PerTargetTypeErrorsAvailability.DISABLED
+        PerTargetTypeErrorsAvailability.from_enabled(False)
     )
     unsaved_changes: UnsavedChangesAvailability = UnsavedChangesAvailability.DISABLED
     telemetry: TelemetryAvailability = TelemetryAvailability.DISABLED
@@ -105,7 +125,7 @@ class LanguageServerFeatures:
     inlay_hint: InlayHintAvailability = InlayHintAvailability.DISABLED
     formatting: FormattingAvailability = FormattingAvailability.DISABLED
     python_auto_targets: PythonAutoTargetsAvailability = (
-        PythonAutoTargetsAvailability.DISABLED
+        PythonAutoTargetsAvailability.from_enabled(False)
     )
 
     def capabilities(self) -> Dict[str, bool]:

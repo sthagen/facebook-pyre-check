@@ -276,8 +276,6 @@ module UninstantiatedAttributeTable = struct
 
   let to_list { attributes; names } = List.rev_map !names ~f:(Stdlib.Hashtbl.find attributes)
 
-  let names { names; _ } = !names
-
   let compare ({ names = left_names; _ } as left) ({ names = right_names; _ } as right) =
     let left_names = !left_names in
     let right_names = !right_names in
@@ -2303,31 +2301,6 @@ let callable_call_special_cases
   | _ -> None
 
 
-module AttributeDetail = struct
-  type kind =
-    | Simple
-    | Variable
-    | Property
-    | Method
-  [@@deriving show, compare, sexp]
-
-  type t = {
-    kind: kind;
-    name: string;
-    detail: string;
-  }
-  [@@deriving show, compare, sexp]
-
-  let from_attribute attr =
-    let open AnnotatedAttribute in
-    let name = name attr in
-    let detail = parent_name attr in
-    match uninstantiated_annotation attr with
-    | UninstantiatedAnnotation.{ kind = Property _; _ } -> { kind = Property; name; detail }
-    | { kind = Attribute (Callable _); _ } -> { kind = Method; name; detail }
-    | _ -> { kind = Variable; name; detail }
-end
-
 class base ~queries:(Queries.{ controls; _ } as queries) =
   object (self)
     method get_typed_dictionary ~cycle_detections annotation =
@@ -3185,49 +3158,6 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       >>| Sequence.fold ~f:collect ~init:([], Identifier.Set.empty)
       >>| fst
       >>| List.rev
-
-    method attribute_names
-        ~cycle_detections
-        ~transitive
-        ~accessed_through_class
-        ~include_generated_attributes
-        ?(special_method = false)
-        class_name =
-      let collect sofar table =
-        let add ((sofar_list, sofar_set) as sofar) name =
-          if Set.mem sofar_set name then
-            sofar
-          else
-            name :: sofar_list, Set.add sofar_set name
-        in
-        UninstantiatedAttributeTable.names table |> List.fold ~f:add ~init:sofar
-      in
-      self#uninstantiated_attribute_tables
-        ~cycle_detections
-        ~transitive
-        ~accessed_through_class
-        ~include_generated_attributes
-        ~special_method
-        class_name
-      >>| Sequence.fold ~f:collect ~init:([], Identifier.Set.empty)
-      >>| fst
-      >>| List.rev
-
-    method attribute_details
-        ~cycle_detections
-        ~transitive
-        ~accessed_through_class
-        ~include_generated_attributes
-        ?(special_method = false)
-        class_name =
-      self#uninstantiated_attributes
-        ~cycle_detections
-        ~transitive
-        ~accessed_through_class
-        ~include_generated_attributes
-        ~special_method
-        class_name
-      >>| List.map ~f:AttributeDetail.from_attribute
 
     method instantiate_attribute
         ~cycle_detections
@@ -5418,10 +5348,6 @@ module ReadOnly = struct
   let uninstantiated_attributes =
     add_all_caches_and_empty_cycle_detections (fun o -> o#uninstantiated_attributes)
 
-
-  let attribute_names = add_all_caches_and_empty_cycle_detections (fun o -> o#attribute_names)
-
-  let attribute_details = add_all_caches_and_empty_cycle_detections (fun o -> o#attribute_details)
 
   let check_invalid_type_arguments =
     add_all_caches_and_empty_cycle_detections (fun o ->

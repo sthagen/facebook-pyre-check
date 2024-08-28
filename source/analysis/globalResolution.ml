@@ -268,22 +268,6 @@ let uninstantiated_attributes
     ?dependency
 
 
-let attribute_details
-    ({ dependency; _ } as resolution)
-    ?(transitive = false)
-    ?(accessed_through_class = false)
-    ?(include_generated_attributes = true)
-    name
-  =
-  AttributeResolution.ReadOnly.attribute_details
-    (attribute_resolution resolution)
-    ~transitive
-    ~accessed_through_class
-    ~include_generated_attributes
-    name
-    ?dependency
-
-
 let instantiate_attribute ({ dependency; _ } as resolution) ?instantiated =
   AttributeResolution.ReadOnly.instantiate_attribute
     (attribute_resolution resolution)
@@ -312,23 +296,6 @@ let signature_select ({ dependency; _ } as resolution) =
 let check_invalid_type_arguments ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.check_invalid_type_arguments
     (attribute_resolution resolution)
-    ?dependency
-
-
-let attribute_names
-    ({ dependency; _ } as resolution)
-    ?(transitive = false)
-    ?(accessed_through_class = false)
-    ?(include_generated_attributes = true)
-    ?instantiated:_
-    name
-  =
-  AttributeResolution.ReadOnly.attribute_names
-    (attribute_resolution resolution)
-    ~transitive
-    ~accessed_through_class
-    ~include_generated_attributes
-    name
     ?dependency
 
 

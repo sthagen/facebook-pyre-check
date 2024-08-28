@@ -123,14 +123,6 @@ val uninstantiated_attributes
   Type.Primitive.t ->
   AnnotatedAttribute.uninstantiated list option
 
-val attribute_details
-  :  t ->
-  ?transitive:bool ->
-  ?accessed_through_class:bool ->
-  ?include_generated_attributes:bool ->
-  Type.Primitive.t ->
-  AttributeResolution.AttributeDetail.t list option
-
 val instantiate_attribute
   :  t ->
   ?instantiated:Type.t ->
@@ -170,15 +162,6 @@ val check_invalid_type_arguments
   :  t ->
   Type.t ->
   AttributeResolution.type_parameters_mismatch list * Type.t
-
-val attribute_names
-  :  t ->
-  ?transitive:bool ->
-  ?accessed_through_class:bool ->
-  ?include_generated_attributes:bool ->
-  ?instantiated:Type.t ->
-  Type.Primitive.t ->
-  string list option
 
 val location_of_global : t -> Reference.t -> Location.WithModule.t option
 

@@ -311,8 +311,6 @@ val set : t -> t
 
 val string : t
 
-val any_literal_string : t
-
 val literal_string : string -> t
 
 val literal_bytes : string -> t
@@ -665,6 +663,8 @@ module Variable : sig
   include module type of struct
     include Record.Variable
   end
+
+  val name : 'a record -> string
 
   module Namespace : sig
     include module type of struct
