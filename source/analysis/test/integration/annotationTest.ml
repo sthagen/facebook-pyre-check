@@ -1424,6 +1424,17 @@ let test_check_tuple_typeform =
               x: tuple[int, ..., int]
             |}
            ["Invalid type [31]: Expression `tuple[(int, ..., int)]` is not a valid type."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              x: tuple[*tuple[str], ...]
+              y: tuple[str, ...]
+              z: tuple[*tuple[str, ...], ...]
+            |}
+           [
+             "Invalid type [31]: Expression `tuple[(*tuple[str], ...)]` is not a valid type.";
+             "Invalid type [31]: Expression `tuple[(*tuple[(str, ...)], ...)]` is not a valid type.";
+           ];
     ]
 
 
@@ -2412,6 +2423,22 @@ let test_check_union_shorthand =
 let test_check_unpack =
   test_list
     [
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_strict_type_errors
+           {|
+              from typing import Generic
+              from typing_extensions import TypeVarTuple, Unpack
+
+              Ts = TypeVarTuple("Ts")
+              Ts2 = TypeVarTuple("Ts2")
+
+              class Array(Generic[Unpack[Ts, Ts2]]):
+                  pass
+            |}
+           [
+             "Invalid type [31]: Expression `typing.Generic[typing_extensions.Unpack[(Ts, Ts2)]]` \
+              is not a valid type.";
+           ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_strict_type_errors
            {|
