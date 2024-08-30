@@ -163,7 +163,7 @@ let test_unresolved_select =
         let resolved =
           (Resolution.resolve_expression_to_type_with_locals resolution) ~locals:[] expression
         in
-        { AttributeResolution.Argument.expression = Some expression; kind; resolved }
+        { SignatureSelection.Argument.expression = Some expression; kind; resolved }
       in
       GlobalResolution.signature_select
         global_resolution
@@ -277,7 +277,7 @@ let test_unresolved_select =
           let resolved =
             (Resolution.resolve_expression_to_type_with_locals resolution) ~locals:[] expression
           in
-          { AttributeResolution.Argument.expression = Some expression; kind; resolved }
+          { SignatureSelection.Argument.expression = Some expression; kind; resolved }
         in
         List.map arguments ~f:create_argument
       in
@@ -757,7 +757,7 @@ let test_unresolved_select =
                Type.union [Type.integer; Type.string],
                Type.variable
                  "test._T_float_or_str"
-                 ~constraints:(Type.Variable.Explicit [Type.float; Type.string]),
+                 ~constraints:(Type.Record.TypeVarConstraints.Explicit [Type.float; Type.string]),
                None,
                1 ));
       labeled_test_case __FUNCTION__ __LINE__

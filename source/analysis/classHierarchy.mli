@@ -66,7 +66,7 @@ end
 module GenericMetadata : sig
   type t =
     | NotGeneric
-    | GenericBase of Type.Variable.t list
+    | GenericBase of Type.GenericParameter.t list
     | InvalidGenericBase
   [@@deriving sexp, show, compare]
 end
@@ -102,8 +102,14 @@ val method_resolution_order_linearize
 
 val immediate_parents : (module Handler) -> Type.Primitive.t -> Type.Primitive.t list
 
+val generic_parameters
+  :  ?empty_for_nongeneric:bool ->
+  (module Handler) ->
+  Type.Primitive.t ->
+  Type.GenericParameter.t list option
+
 val generic_parameters_as_variables
-  :  ?default:Type.Variable.t list option ->
+  :  ?empty_for_nongeneric:bool ->
   (module Handler) ->
   Type.Primitive.t ->
   Type.Variable.t list option

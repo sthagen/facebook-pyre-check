@@ -1540,6 +1540,36 @@ let test_qualify_source =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_qualify
            {|
+      with item as (a, b):
+        foo(a, b)
+    |}
+           {|
+      with item as ($local_qualifier$a, $local_qualifier$b):
+        foo($local_qualifier$a, $local_qualifier$b)
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
+      with item as [a, b]:
+        foo(a, b)
+    |}
+           {|
+      with item as [$local_qualifier$a, $local_qualifier$b]:
+        foo($local_qualifier$a, $local_qualifier$b)
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
+      with item as (*a,):
+        foo(a)
+    |}
+           {|
+      with item as (*$local_qualifier$a,):
+        foo($local_qualifier$a,)
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
       try:
         variable = 1
       except:
@@ -1998,6 +2028,36 @@ let test_qualify_source =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_qualify
            {|
+        for (x, y) in []:
+           foo(x, y)
+    |}
+           {|
+        for ($local_qualifier$x, $local_qualifier$y) in []:
+           foo($local_qualifier$x, $local_qualifier$y)
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
+        for [x, y] in []:
+           foo(x, y)
+    |}
+           {|
+        for [$local_qualifier$x, $local_qualifier$y] in []:
+           foo($local_qualifier$x, $local_qualifier$y)
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
+        for (*x,) in []:
+           foo(x)
+    |}
+           {|
+        for (*$local_qualifier$x,) in []:
+           foo($local_qualifier$x)
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
       def f():
         d = {}
         k = "k"
@@ -2025,21 +2085,13 @@ let test_qualify_source =
 
 
 let test_qualify_ast =
-  let module Context = struct
-    let source_relative = "relative"
-
-    let source_qualifier = Reference.create "source_qualifier"
-  end
-  in
-  let module Qualify = Preprocessing.Qualify (Context) in
+  let module Qualify = Preprocessing.Qualify in
   let scope =
     {
-      Qualify.qualifier = Reference.create "qualifier";
+      Qualify.module_name = Reference.create "qualifier";
+      parent = ModuleContext.create_toplevel ();
       aliases = String.Map.singleton "a" { Qualify.name = Reference.create "b" };
       locals = String.Set.empty;
-      is_top_level = true;
-      is_in_function = false;
-      is_class_toplevel = false;
     }
   in
   let assert_qualify_statement statement expected _ =

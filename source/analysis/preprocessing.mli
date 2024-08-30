@@ -104,22 +104,14 @@ val preprocess_no_wildcards : Source.t -> Source.t
 
 (* Following are exposed for testing only *)
 
-module type QualifyContext = sig
-  val source_relative : string
-
-  val source_qualifier : Reference.t
-end
-
-module Qualify (_ : QualifyContext) : sig
+module Qualify : sig
   type alias = { name: Reference.t }
 
   type scope = {
-    qualifier: Reference.t;
+    module_name: Reference.t;
+    parent: ModuleContext.t;
     aliases: alias Core.String.Map.t;
     locals: Core.String.Set.t;
-    is_top_level: bool;
-    is_in_function: bool;
-    is_class_toplevel: bool;
   }
 
   val qualify_statement : scope:scope -> Statement.t -> scope * Statement.t

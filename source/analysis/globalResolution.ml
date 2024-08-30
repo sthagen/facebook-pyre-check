@@ -181,9 +181,9 @@ let class_hierarchy ({ dependency; _ } as resolution) =
     (class_hierarchy_environment resolution)
 
 
-let generic_parameters_as_variables ?default ({ dependency; _ } as resolution) =
+let generic_parameters_as_variables ({ dependency; _ } as resolution) =
   ClassHierarchyEnvironment.ReadOnly.generic_parameters_as_variables
-    ?default
+    ~empty_for_nongeneric:false
     ?dependency
     (class_hierarchy_environment resolution)
 
@@ -349,7 +349,7 @@ let is_invariance_mismatch resolution ~left ~right =
       in
       let due_to_invariant_variable (variance, left, right) =
         match variance, left, right with
-        | Type.Variable.Invariant, Type.Argument.Single left, Type.Argument.Single right ->
+        | Type.Record.Variance.Invariant, Type.Argument.Single left, Type.Argument.Single right ->
             less_or_equal resolution ~left ~right
         | _ -> false
       in
@@ -478,48 +478,72 @@ module ConstraintsSet = struct
     TypeOrder.OrderedConstraintsSet.solve constraints ~order:(full_order global_resolution)
 end
 
-let extract_type_arguments resolution ~source ~target =
-  match source with
-  | Type.Top
-  | Bottom
-  | Any ->
-      (* TODO (T63159626): These special cases may not make sense. *)
-      None
-  | _ ->
-      ClassHierarchy.generic_parameters_as_variables (class_hierarchy resolution) target
-      >>= fun variables ->
-      let namespace = Type.Variable.Namespace.create_fresh () in
-      List.map variables ~f:(Type.Variable.namespace ~namespace)
-      |> Type.Variable.all_unary
-      >>= fun unaries ->
-      let solve_against =
-        List.map unaries ~f:(fun unary -> Type.Argument.Single (Type.Variable unary))
-        |> Type.parametric target
-      in
-      TypeOrder.OrderedConstraintsSet.add_and_simplify
-        ConstraintsSet.empty
-        ~new_constraint:(LessOrEqual { left = source; right = solve_against })
-        ~order:(full_order resolution)
-      |> ConstraintsSet.solve ~global_resolution:resolution
-      >>= fun solution ->
-      List.map unaries ~f:(TypeConstraints.Solution.instantiate_single_type_var solution)
-      |> Option.all
+(* Given a concrete subtype of a type like `Foo[T, U]` extract the type arguments for `T` and `U`.
+   This should never be used except on hardcoded types known in advance to have all unary TypeVar
+   parameters because it does not handle TypeVarTuple or ParamSpec. *)
+let extract_unary_type_arguments__unsafe resolution ~source ~target =
+  ClassHierarchy.generic_parameters_as_variables (class_hierarchy resolution) target
+  >>= fun variables ->
+  let namespace = Type.Variable.Namespace.create_fresh () in
+  List.map variables ~f:(Type.Variable.namespace ~namespace)
+  |> Type.Variable.all_unary
+  >>= fun unaries ->
+  let solve_against =
+    List.map unaries ~f:(fun unary -> Type.Argument.Single (Type.Variable unary))
+    |> Type.parametric target
+  in
+  TypeOrder.OrderedConstraintsSet.add_and_simplify
+    ConstraintsSet.empty
+    ~new_constraint:(LessOrEqual { left = source; right = solve_against })
+    ~order:(full_order resolution)
+  |> ConstraintsSet.solve ~global_resolution:resolution
+  >>= fun solution ->
+  List.map unaries ~f:(TypeConstraints.Solution.instantiate_single_type_var solution) |> Option.all
 
 
-let type_of_iteration_value global_resolution iterator_type =
+let type_of_iteration_value global_resolution maybe_iterator_type =
   match
-    extract_type_arguments global_resolution ~target:"typing.Iterable" ~source:iterator_type
+    extract_unary_type_arguments__unsafe
+      global_resolution
+      ~target:"typing.Iterable"
+      ~source:maybe_iterator_type
   with
   | Some [iteration_type] -> Some iteration_type
   | _ -> None
 
 
-(* Determine the appropriate type for `yield` expressions in a generator function, based on the
-   return annotation. *)
-let type_of_generator_send_and_return global_resolution generator_type =
+let type_of_awaited_value global_resolution maybe_awaitable_type =
+  match
+    extract_unary_type_arguments__unsafe
+      global_resolution
+      ~target:"typing.Awaitable"
+      ~source:maybe_awaitable_type
+  with
+  | Some [awaited_type] -> Some awaited_type
+  | _ -> None
+
+
+let type_of_mapping_key_and_value global_resolution maybe_mapping_type =
   (* First match against Generator *)
   match
-    extract_type_arguments global_resolution ~target:"typing.Generator" ~source:generator_type
+    extract_unary_type_arguments__unsafe
+      global_resolution
+      ~target:"typing.Mapping"
+      ~source:maybe_mapping_type
+  with
+  | Some [key_type; value_type] -> Some (key_type, value_type)
+  | _ -> None
+
+
+(* Determine the appropriate type for `yield` expressions in a generator function, based on the
+   return annotation. *)
+let type_of_generator_send_and_return global_resolution maybe_generator_type =
+  (* First match against Generator *)
+  match
+    extract_unary_type_arguments__unsafe
+      global_resolution
+      ~target:"typing.Generator"
+      ~source:maybe_generator_type
   with
   | Some [_yield_type; send_type; return_type] -> send_type, return_type
   | _ -> (
@@ -527,10 +551,10 @@ let type_of_generator_send_and_return global_resolution generator_type =
          because, if the user mixes these types up we still ought to resolve their yield expressions
          to reasonable types *)
       match
-        extract_type_arguments
+        extract_unary_type_arguments__unsafe
           global_resolution
           ~target:"typing.AsyncGenerator"
-          ~source:generator_type
+          ~source:maybe_generator_type
       with
       | Some [_yield_type; send_type] -> send_type, Type.none
       | _ ->

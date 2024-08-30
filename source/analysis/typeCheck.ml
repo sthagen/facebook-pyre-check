@@ -216,7 +216,7 @@ let errors_from_not_found
                 | ( "__setitem__",
                     Some
                       ({
-                         AttributeResolution.Argument.expression =
+                         SignatureSelection.Argument.expression =
                            Some
                              {
                                Node.value = Constant (Constant.String { value = field_name; _ });
@@ -234,9 +234,7 @@ let errors_from_not_found
               Error.create_mismatch ~resolution:global_resolution ~actual ~expected ~covariant:true
             in
             let is_mutating_method_on_readonly self_argument_type =
-              Int.equal
-                position
-                AttributeResolution.SignatureSelection.reserved_position_for_self_argument
+              Int.equal position SignatureSelection.reserved_position_for_self_argument
               && Type.ReadOnly.is_readonly self_argument_type
             in
             let default_location_and_error =
@@ -1224,7 +1222,7 @@ module State (Context : Context) = struct
           ({ Callee.base = { expression; resolved_base }; attribute = { name; _ }; _ } as
           callee_attribute)
       = function
-      | [{ AttributeResolution.Argument.resolved; _ }] as arguments ->
+      | [{ SignatureSelection.Argument.resolved; _ }] as arguments ->
           let found_inverse_operator =
             inverse_operator name
             >>= (fun name -> find_method ~parent:resolved ~name ~special_method:false)
@@ -1235,7 +1233,7 @@ module State (Context : Context) = struct
               let inverted_arguments =
                 [
                   {
-                    AttributeResolution.Argument.expression = Some expression;
+                    SignatureSelection.Argument.expression = Some expression;
                     resolved = resolved_base;
                     kind = Positional;
                   };
@@ -1268,7 +1266,8 @@ module State (Context : Context) = struct
                   callable_from_type annotation
                   >>| fun callable -> known_callable_before_application callable)
               |> Option.all
-          | Type.Variable ({ constraints = Type.Variable.Explicit _; _ } as explicit) ->
+          | Type.Variable
+              ({ constraints = Type.Record.TypeVarConstraints.Explicit _; _ } as explicit) ->
               let upper_bound = Type.Variable.TypeVar.upper_bound explicit in
               let callee =
                 match callee with
@@ -1279,7 +1278,7 @@ module State (Context : Context) = struct
                     Callee.NonAttribute { callee with resolved = upper_bound }
               in
               get_callables callee
-          | Type.Variable { constraints = Type.Variable.Bound parent; _ } ->
+          | Type.Variable { constraints = Type.Record.TypeVarConstraints.Bound parent; _ } ->
               let callee =
                 match callee with
                 | Callee.Attribute { attribute; base; expression } ->
@@ -1307,7 +1306,7 @@ module State (Context : Context) = struct
           match callee, callable, arguments with
           | ( Callee.Attribute { base = { expression; resolved_base }; _ },
               { Type.Callable.kind = Type.Callable.Named name; _ },
-              [{ AttributeResolution.Argument.resolved; _ }] )
+              [{ SignatureSelection.Argument.resolved; _ }] )
             when not is_inverted_operator ->
               inverse_operator (Reference.last name)
               >>= (fun name -> find_method ~parent:resolved ~name ~special_method:false)
@@ -1316,7 +1315,7 @@ module State (Context : Context) = struct
                     let arguments =
                       [
                         {
-                          AttributeResolution.Argument.expression = Some expression;
+                          SignatureSelection.Argument.expression = Some expression;
                           kind = Positional;
                           resolved = resolved_base;
                         };
@@ -1409,7 +1408,7 @@ module State (Context : Context) = struct
             match undefined_attributes, operator_name_to_symbol name with
             | ( [
                   UnknownCallableAttribute
-                    { arguments = [{ AttributeResolution.Argument.resolved; _ }]; _ };
+                    { arguments = [{ SignatureSelection.Argument.resolved; _ }]; _ };
                 ],
                 Some operator_name ) ->
                 Some
@@ -1557,7 +1556,7 @@ module State (Context : Context) = struct
     |> fun { resolution; errors = new_errors; resolved; _ } ->
     ( resolution,
       List.append new_errors errors,
-      { AttributeResolution.Argument.kind; expression = Some expression; resolved } )
+      { SignatureSelection.Argument.kind; expression = Some expression; resolved } )
 
 
   (* The `forward_call_with_arguments` function accepts arguments as *expressions* and will traverse
@@ -2005,13 +2004,8 @@ module State (Context : Context) = struct
               base = None;
             }
         | _ -> (
-            match
-              GlobalResolution.extract_type_arguments
-                global_resolution
-                ~target:"typing.Awaitable"
-                ~source:resolved
-            with
-            | Some [awaited_type] ->
+            match GlobalResolution.type_of_awaited_value global_resolution resolved with
+            | Some awaited_type ->
                 {
                   resolution;
                   resolved = awaited_type;
@@ -3037,12 +3031,9 @@ module State (Context : Context) = struct
                     None, resolution, errors
                 | _ -> (
                     match
-                      GlobalResolution.extract_type_arguments
-                        global_resolution
-                        ~source
-                        ~target:"typing.Mapping"
+                      GlobalResolution.type_of_mapping_key_and_value global_resolution source
                     with
-                    | Some [new_key; new_value] ->
+                    | Some (new_key, new_value) ->
                         ( Some
                             ( GlobalResolution.join global_resolution key new_key,
                               GlobalResolution.join global_resolution value new_value ),
@@ -4087,13 +4078,8 @@ module State (Context : Context) = struct
         | Some name -> (
             let reference = name_to_reference_exn name in
             let { Resolved.resolved; _ } = forward_expression ~resolution right in
-            match
-              GlobalResolution.extract_type_arguments
-                global_resolution
-                ~target:"typing.Iterable"
-                ~source:resolved
-            with
-            | Some [element_type] -> (
+            match GlobalResolution.type_of_iteration_value global_resolution resolved with
+            | Some element_type -> (
                 let { name = partitioned_name; attribute_path; _ } =
                   partition_name ~resolution name
                 in
@@ -4468,13 +4454,8 @@ module State (Context : Context) = struct
       match unbounded_annotation with
       | Some annotation -> annotation
       | None -> (
-          match
-            GlobalResolution.extract_type_arguments
-              global_resolution
-              ~target:"typing.Iterable"
-              ~source:annotation
-          with
-          | Some [element_type] -> element_type
+          match GlobalResolution.type_of_iteration_value global_resolution annotation with
+          | Some element_type -> element_type
           | _ -> Type.Any)
     in
     let nonuniform_sequence_arguments expected_size annotation =
@@ -5358,7 +5339,7 @@ module State (Context : Context) = struct
           in
           let value_argument =
             {
-              AttributeResolution.Argument.kind = Call.Argument.Positional;
+              SignatureSelection.Argument.kind = Call.Argument.Positional;
               expression = value;
               resolved = guide_annotation_type;
             }
@@ -5944,10 +5925,10 @@ module State (Context : Context) = struct
               | ( Type.Variable { Type.Record.Variable.TypeVar.variance = left; _ },
                   Type.Variable { Type.Record.Variable.TypeVar.variance = right; _ } ) -> (
                   match left, right with
-                  | Type.Variable.Covariant, Type.Variable.Invariant
-                  | Type.Variable.Contravariant, Type.Variable.Invariant
-                  | Type.Variable.Covariant, Type.Variable.Contravariant
-                  | Type.Variable.Contravariant, Type.Variable.Covariant ->
+                  | Type.Record.Variance.Covariant, Type.Record.Variance.Invariant
+                  | Type.Record.Variance.Contravariant, Type.Record.Variance.Invariant
+                  | Type.Record.Variance.Covariant, Type.Record.Variance.Contravariant
+                  | Type.Record.Variance.Contravariant, Type.Record.Variance.Covariant ->
                       emit_error
                         ~errors
                         ~location

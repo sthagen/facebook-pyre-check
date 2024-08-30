@@ -43,23 +43,27 @@ module QualifiedParameterName = struct
 end
 
 module Record = struct
-  module Variable = struct
-    type state =
-      | Free of { escaped: bool }
-      | InFunction
+  module Variance = struct
+    type t =
+      | Covariant
+      | Contravariant
+      | Invariant
     [@@deriving compare, eq, sexp, show, hash]
+  end
 
-    type 'annotation constraints =
+  module TypeVarConstraints = struct
+    type 'annotation t =
       | Bound of 'annotation
       | Explicit of 'annotation list
       | Unconstrained
       | LiteralIntegers
     [@@deriving compare, eq, sexp, show, hash]
+  end
 
-    type variance =
-      | Covariant
-      | Contravariant
-      | Invariant
+  module Variable = struct
+    type state =
+      | Free of { escaped: bool }
+      | InFunction
     [@@deriving compare, eq, sexp, show, hash]
 
     module Namespace = struct
@@ -69,14 +73,18 @@ module Record = struct
     module TypeVar = struct
       type 'annotation record = {
         name: Identifier.t;
-        constraints: 'annotation constraints;
-        variance: variance;
+        constraints: 'annotation TypeVarConstraints.t;
+        variance: Variance.t;
         state: state;
         namespace: Namespace.t;
       }
       [@@deriving compare, eq, sexp, show, hash]
 
-      let create ?(constraints = Unconstrained) ?(variance = Invariant) name =
+      let create
+          ?(constraints = TypeVarConstraints.Unconstrained)
+          ?(variance = Variance.Invariant)
+          name
+        =
         { name; constraints; variance; state = Free { escaped = false }; namespace = 0 }
     end
 
@@ -340,6 +348,46 @@ module Containers = struct
   include Hashable.Make (T)
 end
 
+module GenericParameter = struct
+  type t =
+    | GpTypeVar of {
+        name: Identifier.t;
+        variance: Record.Variance.t;
+        constraints: T.t Record.TypeVarConstraints.t;
+      }
+    | GpTypeVarTuple of { name: Identifier.t }
+    | GpParamSpec of { name: Identifier.t }
+  [@@deriving compare, eq, sexp, show, hash]
+
+  let to_variable = function
+    | GpTypeVar
+        {
+          name : Identifier.t;
+          variance : Record.Variance.t;
+          constraints : T.t Record.TypeVarConstraints.t;
+        } ->
+        Record.Variable.TypeVarVariable (Record.Variable.TypeVar.create ~variance ~constraints name)
+    | GpTypeVarTuple { name : Identifier.t } ->
+        Record.Variable.TypeVarTupleVariable (Record.Variable.TypeVarTuple.create name)
+    | GpParamSpec { name : Identifier.t } ->
+        Record.Variable.ParamSpecVariable (Record.Variable.ParamSpec.create name)
+    [@@deriving compare, eq, sexp, show, hash]
+
+
+  let of_variable = function
+    | Record.Variable.TypeVarVariable { Record.Variable.TypeVar.name; variance; constraints; _ } ->
+        GpTypeVar
+          {
+            name : Identifier.t;
+            variance : Record.Variance.t;
+            constraints : T.t Record.TypeVarConstraints.t;
+          }
+    | Record.Variable.TypeVarTupleVariable { Record.Variable.TypeVarTuple.name; _ } ->
+        GpTypeVarTuple { name }
+    | Record.Variable.ParamSpecVariable { Record.Variable.ParamSpec.name; _ } ->
+        GpParamSpec { name }
+end
+
 module Constructors = struct
   open T
 
@@ -583,7 +631,8 @@ module VisitWithTransform = struct
         | Variable ({ constraints; _ } as variable) ->
             let constraints =
               match constraints with
-              | Record.Variable.Bound bound -> Record.Variable.Bound (visit_annotation bound ~state)
+              | Record.TypeVarConstraints.Bound bound ->
+                  Record.TypeVarConstraints.Bound (visit_annotation bound ~state)
               | Explicit constraints -> Explicit (List.map constraints ~f:(visit_annotation ~state))
               | Unconstrained -> Unconstrained
               | LiteralIntegers -> LiteralIntegers
@@ -1009,7 +1058,7 @@ module Predicates = struct
 end
 
 (* The Canonicalization module contains logic related to representing types. Pretty printing uses
-   the cannonicalizations, but so does some other logic like the `Type.t -> Expression.t`
+   the canonicalizations, but so does some other logic like the `Type.t -> Expression.t`
    conversion. *)
 module Canonicalization = struct
   open T
@@ -1023,6 +1072,24 @@ module Canonicalization = struct
     | "set" -> "typing.Set"
     | "type" -> "typing.Type"
     | _ -> name
+
+
+  let alternate_name_to_canonical_name_map =
+    [
+      "typing.ChainMap", "collections.ChainMap";
+      "typing.Counter", "collections.Counter";
+      "typing.DefaultDict", "collections.defaultdict";
+      "typing.Deque", "collections.deque";
+      "typing.Dict", "dict";
+      "typing.FrozenSet", "frozenset";
+      "typing.List", "list";
+      "typing.Set", "set";
+      "typing.Type", "type";
+      "typing_extensions.Protocol", "typing.Protocol";
+      "pyre_extensions.Generic", "typing.Generic";
+      "pyre_extensions.generic.Generic", "typing.Generic";
+    ]
+    |> Identifier.Table.of_alist_exn
 
 
   let parameter_variable_type_representation = function
@@ -1275,11 +1342,17 @@ module PrettyPrinting = struct
   and show annotation = Format.asprintf "%a" pp annotation
 
   and pp_concise format annotation =
-    let pp_comma_separated =
-      Format.pp_print_list ~pp_sep:(fun format () -> Format.fprintf format ", ") pp_concise
+    let pp_pipe_separated =
+      Format.pp_print_list ~pp_sep:(fun format () -> Format.fprintf format " | ") pp_concise
     in
-    let strip_qualification identifier =
-      String.split ~on:'.' identifier |> List.last |> Option.value ~default:identifier
+    let canonicalize_and_strip_qualification identifier =
+      let canonical_identifier =
+        Hashtbl.find Canonicalization.alternate_name_to_canonical_name_map identifier
+        |> Option.value ~default:identifier
+      in
+      String.split ~on:'.' canonical_identifier
+      |> List.last
+      |> Option.value ~default:canonical_identifier
     in
     let signature_to_string { Record.Callable.annotation; parameters; _ } =
       let parameters =
@@ -1323,28 +1396,27 @@ module PrettyPrinting = struct
         Format.fprintf format "%s" (signature_to_string implementation)
     | Any -> Format.fprintf format "Any"
     | Literal (Boolean literal) ->
-        Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
-    | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
-    | Literal (String (LiteralValue literal)) ->
-        Format.fprintf format "typing_extensions.Literal['%s']" literal
-    | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
-    | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
+        Format.fprintf format "Literal[%s]" (if literal then "True" else "False")
+    | Literal (Integer literal) -> Format.fprintf format "Literal[%d]" literal
+    | Literal (String (LiteralValue literal)) -> Format.fprintf format "Literal['%s']" literal
+    | Literal (String AnyLiteral) -> Format.fprintf format "LiteralString"
+    | Literal (Bytes literal) -> Format.fprintf format "Literal[b'%s']" literal
     | Literal (EnumerationMember { enumeration_type; member_name }) ->
-        Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
+        Format.fprintf format "Literal[%s.%s]" (show enumeration_type) member_name
     | NoneType -> Format.fprintf format "None"
     | Parametric { name; arguments } ->
-        let name = strip_qualification (Canonicalization.reverse_substitute name) in
-        Format.fprintf format "%s[%a]" name (pp_arguments ~pp_type:pp) arguments
+        let name = canonicalize_and_strip_qualification name in
+        Format.fprintf format "%s[%a]" name (pp_arguments ~pp_type:pp_concise) arguments
     | ParamSpecComponent component -> Variable.ParamSpec.Components.pp_concise format component
     | Primitive "..." -> Format.fprintf format "..."
-    | Primitive name -> Format.fprintf format "%s" (strip_qualification name)
-    | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
+    | Primitive name -> Format.fprintf format "%s" (canonicalize_and_strip_qualification name)
+    | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp_concise type_
     | RecursiveType { name; _ } -> Format.fprintf format "%s" name
     | Top -> Format.fprintf format "unknown"
     | Tuple (Concatenation { middle = UnboundedElements argument; prefix = []; suffix = [] }) ->
-        Format.fprintf format "Tuple[%a, ...]" pp_concise argument
+        Format.fprintf format "tuple[%a, ...]" pp_concise argument
     | Tuple ordered_type ->
-        Format.fprintf format "Tuple[%a]" (OrderedTypes.pp_concise ~pp_type:pp_concise) ordered_type
+        Format.fprintf format "tuple[%a]" (OrderedTypes.pp_concise ~pp_type:pp_concise) ordered_type
     | TypeOperation (Compose ordered_type) ->
         Format.fprintf
           format
@@ -1353,9 +1425,9 @@ module PrettyPrinting = struct
           ordered_type
     | Union [NoneType; argument]
     | Union [argument; NoneType] ->
-        Format.fprintf format "Optional[%a]" pp_concise argument
-    | Union arguments -> Format.fprintf format "Union[%a]" pp_comma_separated arguments
-    | Variable { name; _ } -> Format.fprintf format "%s" (strip_qualification name)
+        Format.fprintf format "%a | None" pp_concise argument
+    | Union arguments -> Format.fprintf format "%a" pp_pipe_separated arguments
+    | Variable { name; _ } -> Format.fprintf format "%s" (canonicalize_and_strip_qualification name)
 
 
   and show_concise annotation = Format.asprintf "%a" pp_concise annotation
@@ -3022,8 +3094,8 @@ module Variable = struct
     type t =
       | DTypeVar of {
           name: Identifier.t;
-          constraints: Expression.t constraints;
-          variance: variance;
+          constraints: Expression.t Record.TypeVarConstraints.t;
+          variance: Record.Variance.t;
         }
       | DTypeVarTuple of { name: Identifier.t }
       | DParamSpec of { name: Identifier.t }
@@ -3051,7 +3123,7 @@ module Variable = struct
               List.find_map ~f:bound arguments
             in
             if not (List.is_empty explicits) then
-              Record.Variable.Explicit explicits
+              Record.TypeVarConstraints.Explicit explicits
             else if Option.is_some bound then
               Bound (Option.value_exn bound)
             else
@@ -3064,17 +3136,17 @@ module Variable = struct
                   value = { Node.value = Constant Constant.True; _ };
                 }
                 when String.equal (Identifier.sanitized name) "covariant" ->
-                  Some Record.Variable.Covariant
+                  Some Record.Variance.Covariant
               | {
                   Call.Argument.name = Some { Node.value = name; _ };
                   value = { Node.value = Constant Constant.True; _ };
                 }
                 when String.equal (Identifier.sanitized name) "contravariant" ->
-                  Some Contravariant
+                  Some Record.Variance.Contravariant
               | _ -> None
             in
             List.find_map arguments ~f:variance_definition
-            |> Option.value ~default:Record.Variable.Invariant
+            |> Option.value ~default:Record.Variance.Invariant
           in
 
           Some (DTypeVar { name = Reference.show target; constraints; variance })
@@ -3094,7 +3166,7 @@ module Variable = struct
                {
                  name = Reference.show target;
                  constraints = LiteralIntegers;
-                 variance = Record.Variable.Invariant;
+                 variance = Record.Variance.Invariant;
                })
       | {
           Node.value =
@@ -3186,7 +3258,7 @@ module Variable = struct
     | Declaration.DTypeVar { name; constraints; variance } ->
         let constraints =
           match constraints with
-          | Bound expression -> Bound (create_type expression)
+          | Bound expression -> Record.TypeVarConstraints.Bound (create_type expression)
           | Explicit expressions -> Explicit (List.map ~f:create_type expressions)
           | Unconstrained -> Unconstrained
           | LiteralIntegers -> LiteralIntegers
@@ -4114,24 +4186,6 @@ let resolved_empty_aliases ?replace_unbound_parameters_with_any:_ _ = None
 
 let resolved_empty_variables _ = None
 
-let alternate_name_to_canonical_name_map =
-  [
-    "typing.ChainMap", "collections.ChainMap";
-    "typing.Counter", "collections.Counter";
-    "typing.DefaultDict", "collections.defaultdict";
-    "typing.Deque", "collections.deque";
-    "typing.Dict", "dict";
-    "typing.FrozenSet", "frozenset";
-    "typing.List", "list";
-    "typing.Set", "set";
-    "typing.Type", "type";
-    "typing_extensions.Protocol", "typing.Protocol";
-    "pyre_extensions.Generic", "typing.Generic";
-    "pyre_extensions.generic.Generic", "typing.Generic";
-  ]
-  |> Identifier.Table.of_alist_exn
-
-
 let arguments_from_unpacked_annotation annotation ~variables =
   let open Record.OrderedTypes.Concatenation in
   let unpacked_variadic_to_argument = function
@@ -4397,80 +4451,35 @@ let rec create_logic ~resolve_aliases ~variables { Node.value = expression; _ } 
     else
       None
   in
-  let create_from_subscript
-      ~location
-      ~base
-      ~subscript_index:({ Node.value = index_value; _ } as subscript_index)
-    =
-    let create_parametric ~base ~subscript_index =
-      let parametric name =
-        let arguments =
-          let element_to_arguments = function
-            | { Node.value = Expression.List elements; _ } ->
-                [
-                  Record.Argument.CallableParameters
-                    (Defined (List.mapi ~f:extract_parameter elements));
-                ]
-            | element -> (
-                let parsed = create_logic element in
-                match arguments_from_unpacked_annotation ~variables parsed with
-                | Some arguments -> arguments
-                | None -> (
-                    match substitute_parameter_variadic parsed with
-                    | Some variable -> [Record.Argument.CallableParameters (FromParamSpec variable)]
-                    | _ -> [Record.Argument.Single parsed]))
-          in
-          match subscript_index with
-          | { Node.value = Expression.Tuple elements; _ } ->
-              List.concat_map elements ~f:element_to_arguments
-          | element -> element_to_arguments element
+  let create_from_subscript ~base ~subscript_index =
+    let create_parametric name =
+      let arguments =
+        let element_to_arguments = function
+          | { Node.value = Expression.List elements; _ } ->
+              [
+                Record.Argument.CallableParameters
+                  (Defined (List.mapi ~f:extract_parameter elements));
+              ]
+          | element -> (
+              let parsed = create_logic element in
+              match arguments_from_unpacked_annotation ~variables parsed with
+              | Some arguments -> arguments
+              | None -> (
+                  match substitute_parameter_variadic parsed with
+                  | Some variable -> [Record.Argument.CallableParameters (FromParamSpec variable)]
+                  | _ -> [Record.Argument.Single parsed]))
         in
-        Parametric { name; arguments } |> resolve_aliases
+        match subscript_index with
+        | { Node.value = Expression.Tuple elements; _ } ->
+            List.concat_map elements ~f:element_to_arguments
+        | element -> element_to_arguments element
       in
-      match create_logic base, Node.value base with
-      | Primitive name, _ -> parametric name
-      | _, Name _ -> parametric (Expression.show base)
-      | _ -> Top
+      Parametric { name; arguments } |> resolve_aliases
     in
-    match base, index_value with
-    | ( {
-          Node.value =
-            Expression.Name
-              (Name.Attribute
-                {
-                  base =
-                    {
-                      Node.value =
-                        Expression.Name
-                          (Name.Identifier "typing" | Name.Identifier "typing_extensions");
-                      _;
-                    };
-                  attribute = "Literal";
-                  _;
-                });
-          _;
-        },
-        _ ) ->
-        let arguments =
-          match index_value with
-          | Expression.Tuple arguments -> Some (List.map arguments ~f:Node.value)
-          | argument -> Some [argument]
-        in
-        arguments
-        >>| List.map ~f:create_literal
-        >>= Option.all
-        >>| Constructors.union
-        |> Option.value ~default:Top
-    | _, _ -> (
-        match parse_callable_if_appropriate ~location ~base ~subscript_index with
-        | Some callable_type -> callable_type
-        | None ->
-            (* This is actually the case that almost all parametric type annotations eventually hit;
-               everything above is just special-casing some unusual scenarios where we customize
-               behavior.
-
-               TODO(T84854853): Add back support for `Length` and `Product`. *)
-            create_parametric ~base ~subscript_index)
+    match create_logic base, Node.value base with
+    | Primitive name, _ -> create_parametric name
+    | _, Name _ -> create_parametric (Expression.show base)
+    | _ -> Top
   in
   let resolve_variables_then_aliases alias_name =
     match variables alias_name with
@@ -4479,8 +4488,42 @@ let rec create_logic ~resolve_aliases ~variables { Node.value = expression; _ } 
   in
   let result =
     match expression with
-    | Subscript { base; index = subscript_index } ->
-        create_from_subscript ~location:(Node.location base) ~base ~subscript_index
+    | Subscript
+        {
+          base =
+            {
+              Node.value =
+                Expression.Name
+                  (Name.Attribute
+                    {
+                      base =
+                        {
+                          Node.value =
+                            Expression.Name (Name.Identifier ("typing" | "typing_extensions"));
+                          _;
+                        };
+                      attribute = "Literal";
+                      _;
+                    });
+              _;
+            };
+          index = subscript_index;
+        } ->
+        let arguments =
+          match Node.value subscript_index with
+          | Expression.Tuple arguments -> Some (List.map arguments ~f:Node.value)
+          | argument -> Some [argument]
+        in
+        arguments
+        >>| List.map ~f:create_literal
+        >>= Option.all
+        >>| Constructors.union
+        |> Option.value ~default:Top
+    | Subscript { base; index = subscript_index } -> (
+        let location = Node.location base in
+        match parse_callable_if_appropriate ~location ~base ~subscript_index with
+        | Some callable_type -> callable_type
+        | None -> create_from_subscript ~base ~subscript_index)
     | Starred (Once expr) ->
         let base =
           Expression.Name
@@ -4494,7 +4537,7 @@ let rec create_logic ~resolve_aliases ~variables { Node.value = expression; _ } 
                })
           |> Node.create ~location:(Node.location expr)
         in
-        create_from_subscript ~location:(Node.location expr) ~base ~subscript_index:expr
+        create_from_subscript ~base ~subscript_index:expr
     | Constant Constant.NoneLiteral -> Constructors.none
     | Name (Name.Identifier identifier) ->
         let sanitized = Identifier.sanitized identifier in
@@ -4555,7 +4598,7 @@ let rec create_logic ~resolve_aliases ~variables { Node.value = expression; _ } 
             Constructors.read_only head
         | _ -> result
       in
-      match Hashtbl.find alternate_name_to_canonical_name_map name with
+      match Hashtbl.find Canonicalization.alternate_name_to_canonical_name_map name with
       | Some name -> Parametric { name; arguments }
       | None -> replace_with_special_form ~name arguments)
   | Union elements -> Constructors.union elements

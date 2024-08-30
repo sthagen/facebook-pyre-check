@@ -15,9 +15,9 @@ open Test
 let empty_lookup _ = None
 
 let type_var_declaration_and_variable
-    ?(declaration_constraints = Type.Variable.Unconstrained)
-    ?(type_constraints = Type.Variable.Unconstrained)
-    ?(variance = Type.Variable.Invariant)
+    ?(declaration_constraints = Type.Record.TypeVarConstraints.Unconstrained)
+    ?(type_constraints = Type.Record.TypeVarConstraints.Unconstrained)
+    ?(variance = Type.Record.Variance.Invariant)
     name
   =
   ( Type.Variable.Declaration.DTypeVar { name; constraints = declaration_constraints; variance },
@@ -1161,22 +1161,24 @@ let test_concise _ =
     "(callable: (x: int) -> float) -> int";
   assert_concise Type.Any "Any";
   assert_concise Type.NoneType "None";
-  assert_concise (Type.optional Type.integer) "Optional[int]";
+  assert_concise (Type.optional Type.integer) "int | None";
   assert_concise (Type.parametric "parametric" ![Type.Top; Type.Top]) "parametric[]";
   assert_concise (Type.parametric "parametric" ![Type.Top; Type.float]) "parametric[unknown, float]";
   assert_concise (Type.Primitive "a.b.c") "c";
-  assert_concise (Type.tuple [Type.integer; Type.Any]) "Tuple[int, Any]";
+  assert_concise (Type.tuple [Type.integer; Type.Any]) "tuple[int, Any]";
   assert_concise
     (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.integer))
-    "Tuple[int, ...]";
-  assert_concise (Type.union [Type.integer; Type.string]) "Union[int, str]";
-  assert_concise (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T") "T";
+    "tuple[int, ...]";
+  assert_concise (Type.union [Type.integer; Type.string]) "int | str";
+  assert_concise
+    (Type.variable ~constraints:(Type.Record.TypeVarConstraints.Explicit [Type.Top]) "T")
+    "T";
   assert_concise
     (Type.Literal
        (Type.EnumerationMember
           { enumeration_type = Type.Primitive "test.MyEnum"; member_name = "ONE" }))
-    "typing_extensions.Literal[test.MyEnum.ONE]";
-  assert_concise (Type.Literal (Type.String AnyLiteral)) "typing_extensions.LiteralString";
+    "Literal[test.MyEnum.ONE]";
+  assert_concise (Type.Literal (Type.String AnyLiteral)) "LiteralString";
   ()
 
 
@@ -1255,11 +1257,11 @@ let test_primitives _ =
   assert_equal
     []
     (Type.collect_primitive_types
-       (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T"));
+       (Type.variable ~constraints:(Type.Record.TypeVarConstraints.Explicit [Type.Top]) "T"));
   assert_equal
     [Type.integer]
     (Type.collect_primitive_types
-       (Type.variable ~constraints:(Type.Variable.Explicit [Type.integer]) "T"));
+       (Type.variable ~constraints:(Type.Record.TypeVarConstraints.Explicit [Type.integer]) "T"));
   assert_equal
     [Type.integer]
     (Type.collect_primitive_types (Type.parametric "parametric" ![Type.integer; Type.Top]));
@@ -1298,10 +1300,12 @@ let test_elements _ =
        (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.integer)));
   assert_equal
     []
-    (Type.collect_names (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T"));
+    (Type.collect_names
+       (Type.variable ~constraints:(Type.Record.TypeVarConstraints.Explicit [Type.Top]) "T"));
   assert_equal
     ["int"]
-    (Type.collect_names (Type.variable ~constraints:(Type.Variable.Explicit [Type.integer]) "T"));
+    (Type.collect_names
+       (Type.variable ~constraints:(Type.Record.TypeVarConstraints.Explicit [Type.integer]) "T"));
   assert_equal
     ["int"; "parametric"]
     (Type.collect_names (Type.parametric "parametric" ![Type.integer; Type.Top]));
@@ -1352,8 +1356,12 @@ let test_exists _ =
   assert_true (top_exists (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.Top)));
   assert_false
     (top_exists (Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.integer)));
-  assert_true (top_exists (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T"));
-  assert_false (top_exists (Type.variable ~constraints:(Type.Variable.Explicit [Type.integer]) "T"));
+  assert_true
+    (top_exists
+       (Type.variable ~constraints:(Type.Record.TypeVarConstraints.Explicit [Type.Top]) "T"));
+  assert_false
+    (top_exists
+       (Type.variable ~constraints:(Type.Record.TypeVarConstraints.Explicit [Type.integer]) "T"));
   assert_true (top_exists (Type.parametric "parametric" ![Type.integer; Type.Top]));
   assert_false (top_exists (Type.parametric "parametric" ![Type.integer; Type.string]));
   assert_true (top_exists (Type.tuple [Type.Top; Type.string]));
@@ -2685,17 +2693,17 @@ let test_parse_type_variable_declarations _ =
   assert_parses_declaration
     "typing.TypeVar('_T')"
     (DTypeVar
-       { name = "target"; constraints = Unconstrained; variance = Type.Record.Variable.Invariant });
+       { name = "target"; constraints = Unconstrained; variance = Type.Record.Variance.Invariant });
 
   assert_parses_declaration
     "typing.TypeVar('_T', covariant=True)"
     (DTypeVar
-       { name = "target"; constraints = Unconstrained; variance = Type.Record.Variable.Covariant });
+       { name = "target"; constraints = Unconstrained; variance = Type.Record.Variance.Covariant });
 
   assert_parses_declaration
     "typing.TypeVar('_T', covariant=False)"
     (DTypeVar
-       { name = "target"; constraints = Unconstrained; variance = Type.Record.Variable.Invariant });
+       { name = "target"; constraints = Unconstrained; variance = Type.Record.Variance.Invariant });
 
   assert_parses_declaration
     "typing.TypeVar('_T', contravariant=True)"
@@ -2703,20 +2711,20 @@ let test_parse_type_variable_declarations _ =
        {
          name = "target";
          constraints = Unconstrained;
-         variance = Type.Record.Variable.Contravariant;
+         variance = Type.Record.Variance.Contravariant;
        });
 
   assert_parses_declaration
     "typing.TypeVar('_T', name=int)"
     (DTypeVar
-       { name = "target"; constraints = Unconstrained; variance = Type.Record.Variable.Invariant });
+       { name = "target"; constraints = Unconstrained; variance = Type.Record.Variance.Invariant });
   assert_parses_declaration_with_bounds
     "typing.TypeVar('_T', int)"
     (DTypeVar
        {
          name = "target";
-         constraints = Type.Record.Variable.Explicit [Type.expression Type.integer];
-         variance = Type.Record.Variable.Invariant;
+         constraints = Type.Record.TypeVarConstraints.Explicit [Type.expression Type.integer];
+         variance = Type.Record.Variance.Invariant;
        });
 
   assert_parses_declaration_with_bounds
@@ -2724,8 +2732,9 @@ let test_parse_type_variable_declarations _ =
     (DTypeVar
        {
          name = "target";
-         constraints = Type.Record.Variable.Bound (Type.expression (Type.Primitive "\"C\""));
-         variance = Type.Record.Variable.Invariant;
+         constraints =
+           Type.Record.TypeVarConstraints.Bound (Type.expression (Type.Primitive "\"C\""));
+         variance = Type.Record.Variance.Invariant;
        });
 
   assert_parses_declaration_with_bounds
@@ -2734,9 +2743,9 @@ let test_parse_type_variable_declarations _ =
        {
          name = "target";
          constraints =
-           Type.Record.Variable.Explicit
+           Type.Record.TypeVarConstraints.Explicit
              [Type.expression (Type.Primitive "\"C\""); Type.expression (Type.Primitive "X")];
-         variance = Type.Record.Variable.Invariant;
+         variance = Type.Record.Variance.Invariant;
        });
 
   assert_parses_declaration_with_bounds
@@ -2744,8 +2753,8 @@ let test_parse_type_variable_declarations _ =
     (DTypeVar
        {
          name = "target";
-         constraints = Type.Record.Variable.Explicit [Type.expression Type.integer];
-         variance = Type.Record.Variable.Invariant;
+         constraints = Type.Record.TypeVarConstraints.Explicit [Type.expression Type.integer];
+         variance = Type.Record.Variance.Invariant;
        });
 
   assert_parses_declaration_with_bounds
@@ -2754,8 +2763,9 @@ let test_parse_type_variable_declarations _ =
        {
          name = "target";
          constraints =
-           Type.Record.Variable.Bound (Type.expression (Type.Primitive "\"typing.Callable\""));
-         variance = Type.Record.Variable.Invariant;
+           Type.Record.TypeVarConstraints.Bound
+             (Type.expression (Type.Primitive "\"typing.Callable\""));
+         variance = Type.Record.Variance.Invariant;
        });
 
   assert_declaration_does_not_parse "typing.TypeVarTuple('Ts', covariant=True)";
@@ -4062,7 +4072,7 @@ let test_show _ =
   assert_show
     (Type.ReadOnly (Type.list Type.integer))
     ~expected_full:"pyre_extensions.ReadOnly[typing.List[int]]"
-    ~expected_concise:"pyre_extensions.ReadOnly[typing.List[int]]";
+    ~expected_concise:"pyre_extensions.ReadOnly[list[int]]";
   ()
 
 

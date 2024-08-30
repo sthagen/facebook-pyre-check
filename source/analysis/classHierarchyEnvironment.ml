@@ -206,7 +206,9 @@ module IncomingDataComputation = struct
           | Some arguments -> (
               match List.map arguments ~f:Type.Argument.to_variable |> Option.all with
               | None -> ClassHierarchy.GenericMetadata.InvalidGenericBase
-              | Some variables -> ClassHierarchy.GenericMetadata.GenericBase variables)
+              | Some variables ->
+                  ClassHierarchy.GenericMetadata.GenericBase
+                    (List.map ~f:Type.GenericParameter.of_variable variables))
         in
         Some { ClassHierarchy.Edges.parents; generic_metadata }
 end
@@ -227,8 +229,15 @@ module OutgoingDataComputation = struct
     end : ClassHierarchy.Handler)
 
 
-  let generic_parameters_as_variables queries ?(default = None) class_name =
-    ClassHierarchy.generic_parameters_as_variables ~default (class_hierarchy queries) class_name
+  let generic_parameters queries ?(empty_for_nongeneric = false) class_name =
+    ClassHierarchy.generic_parameters ~empty_for_nongeneric (class_hierarchy queries) class_name
+
+
+  let generic_parameters_as_variables queries ?(empty_for_nongeneric = false) class_name =
+    ClassHierarchy.generic_parameters_as_variables
+      ~empty_for_nongeneric
+      (class_hierarchy queries)
+      class_name
 end
 
 module EdgesValue = struct
@@ -319,6 +328,10 @@ module ReadOnly = struct
             ?dependency;
         get_edges = get_edges read_only ?dependency;
       }
+
+
+  let generic_parameters read_only ?dependency =
+    outgoing_queries ?dependency read_only |> OutgoingDataComputation.generic_parameters
 
 
   let generic_parameters_as_variables read_only ?dependency =

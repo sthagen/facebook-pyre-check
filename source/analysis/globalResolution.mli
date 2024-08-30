@@ -73,11 +73,7 @@ val param_spec_from_vararg_annotations
 
 val immediate_parents : t -> Type.Primitive.t -> string list
 
-val generic_parameters_as_variables
-  :  ?default:Type.Variable.t list option ->
-  t ->
-  Type.Primitive.t ->
-  Type.Variable.t list option
+val generic_parameters_as_variables : t -> Type.Primitive.t -> Type.Variable.t list option
 
 val has_transitive_successor : t -> successor:Type.Primitive.t -> Type.Primitive.t -> bool
 
@@ -153,7 +149,7 @@ val signature_select
   :  t ->
   resolve_with_locals:
     (locals:(Reference.t * TypeInfo.Unit.t) list -> Expression.expression Node.t -> Type.t) ->
-  arguments:Type.t AttributeResolution.Argument.t list ->
+  arguments:Type.t SignatureSelection.Argument.t list ->
   location:Location.t ->
   callable:Type.Callable.t ->
   self_argument:Type.t option ->
@@ -210,10 +206,11 @@ val is_consistent_with
   expression:Ast.Expression.t option ->
   bool
 
-(* If the given type is a subtype of generic type `AsName[X]`, return X *)
-val extract_type_arguments : t -> source:Type.t -> target:string -> Type.t list option
-
 val type_of_iteration_value : t -> Type.t -> Type.t option
+
+val type_of_awaited_value : t -> Type.t -> Type.t option
+
+val type_of_mapping_key_and_value : t -> Type.t -> (Type.t * Type.t) option
 
 val type_of_generator_send_and_return : t -> Type.t -> Type.t * Type.t
 
@@ -224,3 +221,6 @@ val nonvalidating_annotation_parser : t -> AnnotatedCallable.annotation_parser
 val overrides : t -> Type.Primitive.t -> name:Identifier.t -> AnnotatedAttribute.instantiated option
 
 val refine : t -> TypeInfo.Unit.t -> Type.t -> TypeInfo.Unit.t
+
+(* Exposed in the API for testing only *)
+val extract_unary_type_arguments__unsafe : t -> source:Type.t -> target:string -> Type.t list option
