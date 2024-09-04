@@ -194,6 +194,7 @@ let get_parameter_argument_mapping
     ~order
     ~location
     ~resolve
+    ~get_typed_dictionary
     arguments
   =
   let open Type.Callable in
@@ -401,7 +402,8 @@ let get_parameter_argument_mapping
                   ~arguments
                   ~parameters:parameters_tail
                   { parameter_argument_mapping_with_reasons with parameter_argument_mapping }))
-    | ({ kind = DoubleStar; resolved; expression; _ } as argument) :: arguments_tail, _ -> (
+    | ({ kind = DoubleStar; resolved; expression; _ } as argument) :: arguments_tail, parameters
+      -> (
         (* Double starred argument. Check if its type is assignable to Mapping[str, Any] *)
         let mapping_type = Type.parametric "typing.Mapping" [Single Type.string; Single Type.Any] in
         let parameter_argument_mapping_with_reasons =
@@ -413,8 +415,14 @@ let get_parameter_argument_mapping
             in
             add_annotation_error expression resolved error_factory
         in
-        (* Expand the double starred argument if it is a constant. *)
+        (* Expand the double starred argument if it is a constant, or if a typed dictionary is being
+           matched against a non-kwargs parameter *)
         let maybe_expanded_arguments =
+          let should_expand_typed_dictionary =
+            match parameters with
+            | CallableParamType.Keywords _ :: _ -> false
+            | _ -> true
+          in
           match expression with
           | Some { Node.value = Dictionary items; _ } ->
               let filtered_arguments =
@@ -450,6 +458,23 @@ let get_parameter_argument_mapping
                 Some filtered_arguments
               else
                 None
+          | Some expression when should_expand_typed_dictionary -> (
+              (* Expand typed dictionaries *)
+              match get_typed_dictionary resolved with
+              | Some { Type.TypedDictionary.fields; _ } ->
+                  let accumulate_argument { Type.TypedDictionary.name; annotation; _ } so_far =
+                    {
+                      Argument.WithPosition.kind =
+                        Named
+                          { Node.value = "$parameter$" ^ name; location = Node.location expression };
+                      expression = None;
+                      position = argument.position;
+                      resolved = annotation;
+                    }
+                    :: so_far
+                  in
+                  Some (List.fold_right ~init:[] ~f:accumulate_argument fields)
+              | _ -> None)
           | _ -> None
         in
         match maybe_expanded_arguments with
@@ -624,6 +649,7 @@ let check_arguments_against_parameters
     ~order
     ~resolve_mutable_literals
     ~resolve_with_locals
+    ~get_typed_dictionary
     ~location
     ~callable
     { ParameterArgumentMapping.parameter_argument_mapping; reasons }
@@ -909,6 +935,31 @@ let check_arguments_against_parameters
         bind_arguments_to_variadic
           ~expected:(Type.OrderedTypes.create_unbounded_concatenation parameter_annotation)
           ~arguments
+    | CallableParamType.Keywords parameter_annotation, [] when Type.is_unpack parameter_annotation
+      -> (
+        (* Check that unmatched typed dictionary kwargs has no required fields *)
+        match Type.unpack_value parameter_annotation with
+        | None -> signature_match
+        | Some parameter_annotation -> (
+            (* We will emit an error in typechecking if the unpacked kwargs is not a typed
+               dictionary *)
+            match get_typed_dictionary parameter_annotation with
+            | None -> signature_match
+            | Some { Type.TypedDictionary.fields; _ } -> (
+                let missing_typed_dictionary_arguments =
+                  List.filter_map fields ~f:(fun { Type.TypedDictionary.name; required; _ } ->
+                      if required then
+                        Some (MissingArgument (Named name))
+                      else
+                        None)
+                in
+                match missing_typed_dictionary_arguments with
+                | [] -> signature_match
+                | _ ->
+                    {
+                      signature_match with
+                      reasons = { reasons with arity = missing_typed_dictionary_arguments @ arity };
+                    })))
     | CallableParamType.Keywords _, [] ->
         (* Parameter was not matched, but empty is acceptable for variable arguments and keyword
            arguments. *)
@@ -922,6 +973,152 @@ let check_arguments_against_parameters
         (* Parameter was not matched *)
         let reasons = { reasons with arity = MissingArgument (PositionalOnly index) :: arity } in
         { signature_match with reasons }
+    | Keywords parameter_annotation, arguments when Type.is_unpack parameter_annotation -> (
+        match Type.unpack_value parameter_annotation with
+        | None -> signature_match
+        | Some parameter_annotation -> (
+            (* We will emit an error in typechecking if the unpacked kwargs is not a typed
+               dictionary *)
+            match get_typed_dictionary parameter_annotation with
+            | None -> signature_match
+            | Some { Type.TypedDictionary.fields; _ } -> (
+                let rec check ~arguments ~unmatched_fields signature_match =
+                  match arguments with
+                  | [] -> unmatched_fields, signature_match
+                  | Default :: tail -> check signature_match ~unmatched_fields ~arguments:tail
+                  | MatchedArgument { argument = { expression; position; kind; resolved }; _ }
+                    :: tail -> (
+                      let argument_location = get_location ~expression ~default:location in
+                      let name =
+                        match kind with
+                        | Named name -> Some name
+                        | _ -> None
+                      in
+                      let check_argument
+                          ~signature_match
+                          ~position
+                          ~parameter_annotation
+                          argument_annotation
+                        =
+                        check_argument_and_set_constraints_and_reasons
+                          ~position
+                          ~argument_location
+                          ~argument_annotation
+                          ~parameter_annotation
+                          ~name
+                          signature_match
+                      in
+                      let add_annotation_error
+                          ({ reasons = { annotation; _ }; _ } as signature_match)
+                          error
+                        =
+                        {
+                          signature_match with
+                          reasons = { reasons with annotation = error :: annotation };
+                        }
+                      in
+                      match kind with
+                      | DoubleStar -> (
+                          let argument_annotation, weakening_error =
+                            if Type.Variable.all_variables_are_resolved parameter_annotation then
+                              let { WeakenMutableLiterals.resolved; typed_dictionary_errors } =
+                                resolve_mutable_literals
+                                  ~resolve:(resolve_with_locals ~locals:[])
+                                  ~expression
+                                  ~resolved
+                                  ~expected:parameter_annotation
+                              in
+                              let weakening_error =
+                                if List.is_empty typed_dictionary_errors then
+                                  None
+                                else
+                                  Some (TypedDictionaryInitializationError typed_dictionary_errors)
+                              in
+                              resolved, weakening_error
+                            else
+                              resolved, None
+                          in
+                          (* Check that unpacked typed dictionary does not collide with already
+                             bound kwargs fields *)
+                          let signature_match =
+                            match get_typed_dictionary argument_annotation with
+                            | None -> signature_match
+                            | Some { Type.TypedDictionary.fields; _ } -> (
+                                let extra_field_errors =
+                                  List.filter_map fields ~f:(fun { Type.TypedDictionary.name; _ } ->
+                                      if Map.find unmatched_fields name |> Option.is_some then
+                                        None
+                                      else
+                                        Some (UnexpectedKeyword name))
+                                in
+                                match extra_field_errors with
+                                | [] -> signature_match
+                                | _ ->
+                                    {
+                                      signature_match with
+                                      reasons = { reasons with arity = extra_field_errors @ arity };
+                                    })
+                          in
+                          let unmatched_fields = Identifier.Map.empty in
+                          match weakening_error with
+                          | Some weakening_error ->
+                              unmatched_fields, add_annotation_error signature_match weakening_error
+                          | None ->
+                              argument_annotation
+                              |> check_argument ~signature_match ~position ~parameter_annotation
+                              |> check ~unmatched_fields ~arguments:tail)
+                      | Named { Node.value = argument_name; _ } -> (
+                          let argument_name = Identifier.sanitized argument_name in
+                          match Map.find unmatched_fields argument_name with
+                          | Some { Type.TypedDictionary.annotation; _ } ->
+                              check_argument
+                                ~signature_match
+                                ~position
+                                ~parameter_annotation:annotation
+                                resolved
+                              |> check
+                                   ~unmatched_fields:(Map.remove unmatched_fields argument_name)
+                                   ~arguments:tail
+                          | None ->
+                              check
+                                ~unmatched_fields
+                                ~arguments:tail
+                                {
+                                  signature_match with
+                                  reasons =
+                                    {
+                                      reasons with
+                                      arity = UnexpectedKeyword argument_name :: arity;
+                                    };
+                                })
+                      | SingleStar
+                      | Positional ->
+                          (* These should not be matched with kwargs in the first place *)
+                          check signature_match ~unmatched_fields ~arguments:tail)
+                in
+                let unmatched_fields, signature_match =
+                  let fields_map =
+                    List.map fields ~f:(fun ({ Type.TypedDictionary.name; _ } as field) ->
+                        Identifier.sanitized name, field)
+                    |> Identifier.Map.of_alist_reduce ~f:(fun first _ -> first)
+                  in
+                  check ~unmatched_fields:fields_map ~arguments:(List.rev arguments) signature_match
+                in
+                let missing_typed_dictionary_arguments =
+                  Map.data unmatched_fields
+                  |> List.filter_map ~f:(fun { Type.TypedDictionary.name; required; _ } ->
+                         if required then
+                           Some (MissingArgument (Named name))
+                         else
+                           None)
+                in
+                match missing_typed_dictionary_arguments with
+                | [] -> signature_match
+                | _ ->
+                    {
+                      signature_match with
+                      reasons = { reasons with arity = missing_typed_dictionary_arguments @ arity };
+                    })))
     | PositionalOnly { annotation = parameter_annotation; _ }, arguments
     | KeywordOnly { annotation = parameter_annotation; _ }, arguments
     | Named { annotation = parameter_annotation; _ }, arguments
@@ -1050,7 +1247,7 @@ let check_arguments_against_parameters
     if Option.is_some solution then
       signature_match
     else
-      (* All other cases should have been able to been blamed on a specefic argument, this is the
+      (* All other cases should have been able to been blamed on a specific argument, this is the
          only global failure. *)
       {
         signature_match with
@@ -1183,6 +1380,7 @@ let rec check_arguments_against_signature
     ~order
     ~resolve_mutable_literals
     ~resolve_with_locals
+    ~get_typed_dictionary
     ~location
     ~callable
     ~self_argument
@@ -1208,6 +1406,8 @@ let rec check_arguments_against_signature
       ~order
       ~resolve_mutable_literals
       ~resolve_with_locals
+      ~get_typed_dictionary
+      ~callable
   in
   match all_parameters with
   | Defined parameters ->
@@ -1218,8 +1418,9 @@ let rec check_arguments_against_signature
         ~order
         ~location
         ~resolve:(resolve_with_locals ~locals:[])
+        ~get_typed_dictionary
         arguments
-      |> check_arguments_against_parameters ~callable
+      |> check_arguments_against_parameters
       |> fun signature_match -> [signature_match]
   | Undefined -> [base_signature_match]
   | FromParamSpec { head; variable } when Type.Variable.ParamSpec.is_free variable -> (
@@ -1256,8 +1457,9 @@ let rec check_arguments_against_signature
           ~order
           ~location
           ~resolve:(resolve_with_locals ~locals:[])
+          ~get_typed_dictionary
           front
-        |> check_arguments_against_parameters ~callable
+        |> check_arguments_against_parameters
       in
       let solve_back parameters =
         let constraints_set =
@@ -1271,6 +1473,7 @@ let rec check_arguments_against_signature
           ~order
           ~resolve_mutable_literals
           ~resolve_with_locals
+          ~get_typed_dictionary
           ~location
           ~callable
           ~self_argument
@@ -1317,8 +1520,9 @@ let rec check_arguments_against_signature
             ~order
             ~location
             ~resolve:(resolve_with_locals ~locals:[])
+            ~get_typed_dictionary
             arguments
-          |> check_arguments_against_parameters ~callable
+          |> check_arguments_against_parameters
           |> fun signature_match -> [signature_match]
       | _ ->
           [
@@ -1517,6 +1721,7 @@ let select_closest_signature_for_function_call
     ~order
     ~resolve_with_locals
     ~resolve_mutable_literals
+    ~get_typed_dictionary
     ~arguments
     ~location
     ~callable:({ Type.Callable.implementation; overloads; _ } as callable)
@@ -1528,6 +1733,7 @@ let select_closest_signature_for_function_call
         ~order
         ~resolve_with_locals
         ~resolve_mutable_literals
+        ~get_typed_dictionary
         ~location
         ~callable
         ~self_argument

@@ -128,6 +128,8 @@ module Record : sig
       [@@deriving compare, eq, sexp, show, hash]
 
       val annotation : 'annotation t -> 'annotation option
+
+      val name : 'annotation t -> Identifier.t option
     end
 
     type kind =
@@ -501,6 +503,8 @@ val coroutine_value : t -> t option
 
 val class_variable_value : t -> t option
 
+val unpack_value : t -> t option
+
 val final_value : t -> [> `NoArgument | `NotFinal | `Ok of t ]
 
 val is_any : t -> bool
@@ -577,6 +581,8 @@ val primitive_name : t -> Identifier.t option
 val create_literal : Expression.expression -> t option
 
 val is_partially_typed : t -> bool
+
+val is_unpack : t -> bool
 
 val is_untyped : t -> bool
 

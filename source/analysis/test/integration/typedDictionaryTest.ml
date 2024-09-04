@@ -2340,6 +2340,197 @@ let test_extraneous_fields =
     ]
 
 
+let test_unpack =
+  test_list
+    [
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(**kwargs: Unpack[Movie]) -> None:
+    x = kwargs["name"]
+    reveal_type(x)
+    y = kwargs["year"]
+    reveal_type(y)
+kwargs: Movie = {"name": "Life of Brian", "year": 1979}
+foo(**kwargs)
+            |}
+           [
+             "Revealed type [-1]: Revealed type for `x` is `str`.";
+             "Revealed type [-1]: Revealed type for `y` is `int`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+class Movie2(TypedDict):
+    name: str
+def foo(**kwargs: Unpack[Movie]) -> None:
+  pass
+kwargs: Movie2 = {"name": "Life of Brian"}
+foo(**kwargs)
+            |}
+           [
+             "Incompatible parameter type [6]: In call `foo`, for 1st positional argument, \
+              expected `Movie` but got `Movie2`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing_extensions import Unpack
+def foo(**kwargs: Unpack[str]) -> None:
+    pass
+            |}
+           [
+             "Invalid type [31]: `Unpack` in kwargs may only be used with typed dictionaries. \
+              `str` is not a typed dictionary.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(name: str, **kwargs: Unpack[Movie]) -> None:
+    pass
+            |}
+           ["Duplicate parameter [65]: Duplicate parameter name `name`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(name: str, /, **kwargs: Unpack[Movie]) -> None:
+    pass
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(**kwargs: Unpack[Movie]) -> None:
+    pass
+foo(**{"name": "Life of Brian", "year": 1979})
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(**kwargs: Unpack[Movie]) -> None:
+    pass
+foo(name="Life of Brian", year=1979)
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(**kwargs: Unpack[Movie]) -> None:
+    pass
+foo(name=1979, year=1979)
+            |}
+           [
+             "Incompatible parameter type [6]: In call `foo`, for argument `name`, expected `str` \
+              but got `int`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(**kwargs: Unpack[Movie]) -> None:
+    pass
+foo(name="Life of Brian")
+            |}
+           ["Missing argument [20]: Call `foo` expects argument `year`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(**kwargs: Unpack[Movie]) -> None:
+    pass
+foo(name="Life of Brian", year=1979, other_name="foo")
+            |}
+           ["Unexpected keyword [28]: Unexpected keyword argument `other_name` to call `foo`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(**kwargs: Unpack[Movie]) -> None:
+    pass
+foo()
+            |}
+           ["Missing argument [20]: Call `foo` expects argument `year`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+class Movie2(TypedDict):
+    name: str
+def foo(year: int, **kwargs: Unpack[Movie2]) -> None:
+  pass
+kwargs: Movie = {"name": "Life of Brian", "year": 1979}
+foo(**kwargs)
+            |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict):
+    name: str
+    year: int
+def foo(**kwargs: Unpack[Movie]) -> None:
+  pass
+kwargs: Movie = {"name": "Life of Brian", "year": 1979}
+foo(name="foo", **kwargs)
+            |}
+           ["Unexpected keyword [28]: Unexpected keyword argument `name` to call `foo`."];
+    ]
+
+
 let () =
   "typed_dictionary"
   >::: [
@@ -2350,5 +2541,6 @@ let () =
          test_check_optional_typed_dictionary;
          test_required_not_required_fields;
          test_extraneous_fields;
+         test_unpack;
        ]
   |> Test.run

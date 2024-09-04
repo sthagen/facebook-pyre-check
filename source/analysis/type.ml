@@ -220,6 +220,16 @@ module Record = struct
         | Variable (Concrete annotation) -> Some annotation
         | Keywords annotation -> Some annotation
         | _ -> None
+
+
+      let name = function
+        | Named { name; _ }
+        | KeywordOnly { name; _ } ->
+            Some name
+        | Variable _
+        | Keywords _
+        | PositionalOnly _ ->
+            None
     end
 
     type kind =
@@ -810,6 +820,16 @@ module Extractions = struct
     | Parametric { name = "typing.ClassVar"; arguments = [Single argument] } -> final_value argument
     | Primitive ("typing.Final" | "typing_extensions.Final") -> `NoArgument
     | _ -> `NotFinal
+
+
+  let unpack_value = function
+    | Parametric
+        {
+          name = "typing.Unpack" | "typing_extensions.Unpack" | "pyre_extensions.Unpack";
+          arguments = [Single argument];
+        } ->
+        Some argument
+    | _ -> None
 end
 
 module Predicates = struct
@@ -984,6 +1004,16 @@ module Predicates = struct
       | _ -> false
     in
     Visitors.exists annotation ~predicate
+
+
+  let is_unpack = function
+    | Parametric
+        {
+          name = "typing.Unpack" | "typing_extensions.Unpack" | "pyre_extensions.Unpack";
+          arguments = [_];
+        } ->
+        true
+    | _ -> false
 
 
   let is_untyped = function

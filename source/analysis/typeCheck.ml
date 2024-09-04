@@ -5850,52 +5850,45 @@ module State (Context : Context) = struct
               emit_error ~errors ~location ~kind:(Error.UndefinedImport undefined_import)) )
     | Class ({ Class.type_params; _ } as class_statement) ->
         let this_class_name = Reference.show class_statement.name in
-        let dataclass_options_from_decorator class_name =
-          match GlobalResolution.get_class_summary global_resolution class_name with
-          | Some summary -> begin
-              let extracted_options =
-                DataclassOptions.dataclass_options
-                  ~first_matching_class_decorator:
-                    (GlobalResolution.first_matching_class_decorator global_resolution)
-                  summary
-              in
-              match extracted_options with
-              | Some option -> Some option.frozen
-              | None -> None
-            end
-          | None -> None
-        in
-        let get_dataclass_options_from_metaclass class_name =
-          let extract_options =
-            DataclassOptions.options_from_custom_dataclass_transform_base_class_or_metaclass
-              ~get_class_summary:(GlobalResolution.get_class_summary global_resolution)
-              ~successors:(GlobalResolution.successors global_resolution)
+        let check_dataclass_inheritance base_types_with_location errors =
+          let dataclass_options_from_decorator class_name =
+            match GlobalResolution.get_class_summary global_resolution class_name with
+            | Some summary -> begin
+                let extracted_options =
+                  DataclassOptions.dataclass_options
+                    ~first_matching_class_decorator:
+                      (GlobalResolution.first_matching_class_decorator global_resolution)
+                    summary
+                in
+                match extracted_options with
+                | Some option -> Some option.frozen
+                | None -> None
+              end
+            | None -> None
           in
-          let optional_summary = GlobalResolution.get_class_summary global_resolution class_name in
-          match optional_summary with
-          | Some summary -> begin
-              match extract_options summary with
-              | Some option -> Some option.frozen
-              | None -> None
-            end
-          | None -> None
-        in
-        let is_class_frozen =
-          Option.first_some
-            (dataclass_options_from_decorator this_class_name)
-            (get_dataclass_options_from_metaclass this_class_name)
-        in
-        (* The checks here run once per top-level class definition. Nested classes and functions are
-           analyzed separately. *)
-        let base_types_and_locations =
-          let type_and_location base_expression =
-            ( GlobalResolution.parse_annotation global_resolution base_expression,
-              base_expression.Node.location )
+          let get_dataclass_options_from_metaclass class_name =
+            let extract_options =
+              DataclassOptions.options_from_custom_dataclass_transform_base_class_or_metaclass
+                ~get_class_summary:(GlobalResolution.get_class_summary global_resolution)
+                ~successors:(GlobalResolution.successors global_resolution)
+            in
+            let optional_summary =
+              GlobalResolution.get_class_summary global_resolution class_name
+            in
+            match optional_summary with
+            | Some summary -> begin
+                match extract_options summary with
+                | Some option -> Some option.frozen
+                | None -> None
+              end
+            | None -> None
           in
-          Class.base_classes class_statement |> List.map ~f:type_and_location
-        in
-        let check_base_class errors (base_type, _) =
-          let check_frozen_inheritance errors =
+          let is_class_frozen =
+            Option.first_some
+              (dataclass_options_from_decorator this_class_name)
+              (get_dataclass_options_from_metaclass this_class_name)
+          in
+          let check_frozen_inheritance errors (base_type, _) =
             match base_type with
             | Type.Primitive base_class_name
             | Type.Parametric { name = base_class_name; _ } -> begin
@@ -5936,12 +5929,19 @@ module State (Context : Context) = struct
                 (* If the base type isn't valid, we can't get dataclass inheritance errors. *)
                 errors
           in
+          List.fold ~init:errors ~f:check_frozen_inheritance base_types_with_location
+        in
+        let check_variance_inheritance base_types_with_location errors =
           (* Check that variance isn't widened on inheritence. *)
-          let check_variance_inheritance errors =
-            let check_pair errors extended actual =
-              match extended, actual with
-              | ( Type.Variable { Type.Record.Variable.TypeVar.variance = left; _ },
-                  Type.Variable { Type.Record.Variable.TypeVar.variance = right; _ } ) -> (
+          let check_variance_for_base errors (base_type, _) =
+            let check_pair errors argument parameter =
+              match argument, parameter with
+              | ( Type.Argument.Single
+                    (Type.Variable { Type.Record.Variable.TypeVar.variance = left; _ } as
+                    annotation),
+                  Type.Variable.TypeVarVariable
+                    ({ Type.Record.Variable.TypeVar.variance = right; _ } as parameter_variable) )
+                -> (
                   match left, right with
                   | Type.Record.Variance.Covariant, Type.Record.Variance.Invariant
                   | Type.Record.Variance.Contravariant, Type.Record.Variance.Invariant
@@ -5952,64 +5952,73 @@ module State (Context : Context) = struct
                         ~location
                         ~kind:
                           (Error.InvalidTypeVariance
-                             { annotation = extended; origin = Error.Inheritance actual })
+                             {
+                               annotation;
+                               origin = Error.Inheritance (Type.Variable parameter_variable);
+                             })
                   | _ -> errors)
               | _, _ -> errors
             in
-            let check_duplicate_type_parameters errors parametric base =
-              let rec get_duplicate_typevars variables duplicates =
-                match variables with
-                | variable :: rest when List.exists ~f:(Type.Variable.equal variable) rest ->
-                    get_duplicate_typevars rest (variable :: duplicates)
-                | _ -> duplicates
-              in
-              let emit_duplicate_errors errors variable =
-                emit_error ~errors ~location ~kind:(Error.DuplicateTypeVariables { variable; base })
-              in
-              List.fold_left
-                ~f:emit_duplicate_errors
-                ~init:errors
-                (get_duplicate_typevars (Type.Variable.all_free_variables parametric) [])
-            in
             match base_type with
-            | Type.Parametric { name; _ } as parametric when String.equal name "typing.Generic" ->
-                check_duplicate_type_parameters errors parametric GenericBase
-            | Type.Parametric { name; arguments = extended_arguments } as parametric ->
-                let errors =
-                  if String.equal name "typing.Protocol" then
-                    check_duplicate_type_parameters errors parametric ProtocolBase
-                  else
-                    errors
+            | Type.Parametric { name; arguments } -> begin
+                let parameters =
+                  GlobalResolution.generic_parameters_as_variables global_resolution name
+                  |> Option.value ~default:[]
                 in
-                Type.Argument.all_singles extended_arguments
-                >>| (fun extended_arguments ->
-                      let actual_arguments =
-                        GlobalResolution.generic_parameters_as_variables global_resolution name
-                        >>= Type.Variable.all_unary
-                        >>| List.map ~f:(fun unary -> Type.Variable unary)
-                        |> Option.value ~default:[]
-                      in
-                      match
-                        List.fold2 extended_arguments actual_arguments ~init:errors ~f:check_pair
-                      with
-                      | Ok errors -> errors
-                      | Unequal_lengths -> errors)
-                |> Option.value ~default:errors
+                match List.fold2 arguments parameters ~init:errors ~f:check_pair with
+                | Ok errors -> errors
+                | Unequal_lengths -> errors
+              end
             | _ -> errors
           in
-          let errors = errors |> check_frozen_inheritance |> check_variance_inheritance in
-          errors
+          List.fold ~init:errors ~f:check_variance_for_base base_types_with_location
         in
-        let check_generic_protocols base_types_and_locations errors =
+        let check_duplicate_type_parameters generic_and_protocol_bases_with_location errors =
+          let check_duplicates_in_base errors (base_type, _) =
+            match base_type with
+            | Type.Parametric { name; _ } as parametric ->
+                let base_kind =
+                  if String.equal name "typing.Protocol" then
+                    Error.ProtocolBase
+                  else
+                    Error.GenericBase
+                in
+                let rec get_duplicate_typevars variables duplicates =
+                  match variables with
+                  | variable :: rest when List.exists ~f:(Type.Variable.equal variable) rest ->
+                      get_duplicate_typevars rest (variable :: duplicates)
+                  | _ -> duplicates
+                in
+                let emit_duplicate_errors errors variable =
+                  emit_error
+                    ~errors
+                    ~location
+                    ~kind:(Error.DuplicateTypeVariables { variable; base = base_kind })
+                in
+                List.fold_left
+                  ~f:emit_duplicate_errors
+                  ~init:errors
+                  (get_duplicate_typevars (Type.Variable.all_free_variables parametric) [])
+            | _ -> errors
+          in
+          List.fold
+            ~init:errors
+            ~f:check_duplicates_in_base
+            generic_and_protocol_bases_with_location
+        in
+        let check_generic_protocols generic_and_protocol_bases_with_location errors =
           let has_subscripted_protocol =
-            List.find base_types_and_locations ~f:(fun (base, _) ->
+            List.find generic_and_protocol_bases_with_location ~f:(fun (base, _) ->
                 match base with
                 | Type.Parametric { name = "typing.Protocol"; _ } -> true
                 | _ -> false)
             |> Option.is_some
           in
           if has_subscripted_protocol then
-            List.fold ~init:errors base_types_and_locations ~f:(fun errors (base, location) ->
+            List.fold
+              ~init:errors
+              generic_and_protocol_bases_with_location
+              ~f:(fun errors (base, location) ->
                 match base with
                 | Type.Parametric { name = "typing.Generic"; _ } ->
                     emit_error ~errors ~location ~kind:(InvalidInheritance GenericProtocol)
@@ -6017,16 +6026,22 @@ module State (Context : Context) = struct
           else
             errors
         in
-        let check_protocol_bases base_types_and_locations errors =
-          let has_unsubscripted_protocol =
-            List.find base_types_and_locations ~f:(fun (base, _) ->
+        let check_protocol_bases
+            generic_and_protocol_bases_with_location
+            base_types_with_location
+            errors
+          =
+          let has_protocol_base =
+            List.find generic_and_protocol_bases_with_location ~f:(fun (base, _) ->
                 match base with
-                | Type.Primitive "typing.Protocol" -> true
+                | Type.Primitive "typing.Protocol"
+                | Type.Parametric { name = "typing.Protocol"; _ } ->
+                    true
                 | _ -> false)
             |> Option.is_some
           in
-          if has_unsubscripted_protocol then
-            List.fold ~init:errors base_types_and_locations ~f:(fun errors (base, location) ->
+          if has_protocol_base then
+            List.fold ~init:errors base_types_with_location ~f:(fun errors (base, location) ->
                 match base with
                 | Type.Primitive "typing.Protocol" -> errors
                 | Type.Parametric { name = "typing.Generic"; _ } -> errors
@@ -6036,9 +6051,28 @@ module State (Context : Context) = struct
             errors
         in
         let errors =
-          List.fold ~f:check_base_class ~init:[] base_types_and_locations
-          |> check_generic_protocols base_types_and_locations
-          |> check_protocol_bases base_types_and_locations
+          (* The checks here run once per top-level class definition. Nested classes and functions
+             are analyzed separately. *)
+          let generic_and_protocol_bases_with_location, base_types_with_location =
+            let type_and_location base_expression =
+              let base_type = GlobalResolution.parse_annotation global_resolution base_expression in
+              match base_type with
+              | Type.Primitive "typing.Protocol"
+              | Type.Parametric { name = "typing.Generic" | "typing.Protocol"; _ } ->
+                  Core.Either.first (base_type, base_expression.Node.location)
+              | _ -> Core.Either.second (base_type, base_expression.Node.location)
+            in
+            List.partition_map ~f:type_and_location (Class.base_classes class_statement)
+          in
+          (* TODO(T200263444) Several of the `generic_and_protocol_bases_with_location`-based checks
+             will almost certainly need updating when we support PEP 695-style classes. *)
+          let empty_errors = [] in
+          empty_errors
+          |> check_dataclass_inheritance base_types_with_location
+          |> check_variance_inheritance base_types_with_location
+          |> check_duplicate_type_parameters generic_and_protocol_bases_with_location
+          |> check_generic_protocols generic_and_protocol_bases_with_location
+          |> check_protocol_bases generic_and_protocol_bases_with_location base_types_with_location
         in
         let type_params_errors =
           match type_params with
@@ -6296,14 +6330,42 @@ module State (Context : Context) = struct
       List.fold unbound_names ~init:errors ~f:add_unbound_name_error
     in
     let check_duplicate_parameters errors =
+      let non_positional_parameter_names =
+        List.filter_map parameter_types ~f:(fun parameter ->
+            Type.Callable.CallableParamType.name parameter >>| Identifier.sanitized)
+        |> Identifier.Set.of_list
+      in
       let duplicate_parameters, _ =
         List.fold
           parameters
           ~init:([], Identifier.Set.empty)
-          ~f:(fun (duplicates, seen) { Node.value = { Parameter.name; _ }; location } ->
-            match Set.mem seen name with
-            | true -> (name, location) :: duplicates, seen
-            | false -> duplicates, Set.add seen name)
+          ~f:(fun (duplicates, seen) { Node.value = { Parameter.name; annotation; _ }; location } ->
+            if String.is_prefix ~prefix:"**" name then
+              match
+                annotation
+                >>| GlobalResolution.parse_annotation global_resolution
+                >>| Type.unpack_value
+                |> Option.value ~default:None
+                >>| GlobalResolution.get_typed_dictionary global_resolution
+                |> Option.value ~default:None
+              with
+              | Some { Type.TypedDictionary.fields; _ } ->
+                  (* It's OK for typed-dictionary fields in kwargs to collide with positional-only
+                     parameter names, but we should throw an error if there's a name collision with
+                     a keyword parameter *)
+                  List.fold
+                    fields
+                    ~init:(duplicates, seen)
+                    ~f:(fun (duplicates, seen) { Type.TypedDictionary.name; _ } ->
+                      match Set.mem seen name && Set.mem non_positional_parameter_names name with
+                      | true -> (name, location) :: duplicates, seen
+                      | false -> duplicates, Set.add seen name)
+              | _ -> duplicates, seen
+            else
+              let name = Identifier.sanitized name in
+              match Set.mem seen name with
+              | true -> (name, location) :: duplicates, seen
+              | false -> duplicates, Set.add seen name)
       in
       List.fold duplicate_parameters ~init:errors ~f:(fun errors (name, location) ->
           emit_error ~errors ~location ~kind:(Error.DuplicateParameter name))
@@ -6321,8 +6383,8 @@ module State (Context : Context) = struct
       List.fold
         parameters_to_check
         ~init:(errors, true)
-        ~f:(fun (errors, positional_only_allowed) param ->
-          match param with
+        ~f:(fun (errors, positional_only_allowed) parameter_type ->
+          match parameter_type with
           | Type.Callable.CallableParamType.PositionalOnly { index; _ }
             when not positional_only_allowed ->
               let location =
@@ -6761,9 +6823,14 @@ module State (Context : Context) = struct
                     ( add_missing_parameter_annotation_error ~errors ~given_annotation:None None,
                       TypeInfo.Unit.create_mutable Type.Any ))
           in
+          (* TODO(T179087506): PEP 692 error when unpacked type is not a typed dictionary *)
           let apply_starred_annotations annotation =
             if String.is_prefix ~prefix:"**" name then
-              Type.dictionary ~key:Type.string ~value:annotation
+              match Type.unpack_value annotation with
+              | Some unpack_type
+                when GlobalResolution.is_typed_dictionary global_resolution unpack_type ->
+                  unpack_type
+              | _ -> Type.dictionary ~key:Type.string ~value:annotation
             else if String.is_prefix ~prefix:"*" name then
               Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation annotation)
             else
@@ -6771,6 +6838,21 @@ module State (Context : Context) = struct
           in
           let transform type_ =
             Type.Variable.mark_all_variables_as_bound type_ |> apply_starred_annotations
+          in
+          let errors =
+            match
+              TypeInfo.Unit.annotation annotation
+              |> Type.Variable.mark_all_variables_as_bound
+              |> Type.unpack_value
+            with
+            | Some unpack_type
+              when String.is_prefix ~prefix:"**" name
+                   && not (GlobalResolution.is_typed_dictionary global_resolution unpack_type) ->
+                emit_error
+                  ~errors
+                  ~location
+                  ~kind:(Error.InvalidType (Error.KwargsUnpack unpack_type))
+            | _ -> errors
           in
           errors, TypeInfo.Unit.transform_types ~f:transform annotation
         in
