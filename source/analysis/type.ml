@@ -49,6 +49,11 @@ module Record = struct
       | Contravariant
       | Invariant
     [@@deriving compare, eq, sexp, show, hash]
+
+    let show_lowercase = function
+      | Covariant -> "covariant"
+      | Contravariant -> "contravariant"
+      | Invariant -> "invariant"
   end
 
   module TypeVarConstraints = struct
@@ -356,46 +361,6 @@ module Containers = struct
   module Map = Map.Make (T)
   module Set = Set.Make (T)
   include Hashable.Make (T)
-end
-
-module GenericParameter = struct
-  type t =
-    | GpTypeVar of {
-        name: Identifier.t;
-        variance: Record.Variance.t;
-        constraints: T.t Record.TypeVarConstraints.t;
-      }
-    | GpTypeVarTuple of { name: Identifier.t }
-    | GpParamSpec of { name: Identifier.t }
-  [@@deriving compare, eq, sexp, show, hash]
-
-  let to_variable = function
-    | GpTypeVar
-        {
-          name : Identifier.t;
-          variance : Record.Variance.t;
-          constraints : T.t Record.TypeVarConstraints.t;
-        } ->
-        Record.Variable.TypeVarVariable (Record.Variable.TypeVar.create ~variance ~constraints name)
-    | GpTypeVarTuple { name : Identifier.t } ->
-        Record.Variable.TypeVarTupleVariable (Record.Variable.TypeVarTuple.create name)
-    | GpParamSpec { name : Identifier.t } ->
-        Record.Variable.ParamSpecVariable (Record.Variable.ParamSpec.create name)
-    [@@deriving compare, eq, sexp, show, hash]
-
-
-  let of_variable = function
-    | Record.Variable.TypeVarVariable { Record.Variable.TypeVar.name; variance; constraints; _ } ->
-        GpTypeVar
-          {
-            name : Identifier.t;
-            variance : Record.Variance.t;
-            constraints : T.t Record.TypeVarConstraints.t;
-          }
-    | Record.Variable.TypeVarTupleVariable { Record.Variable.TypeVarTuple.name; _ } ->
-        GpTypeVarTuple { name }
-    | Record.Variable.ParamSpecVariable { Record.Variable.ParamSpec.name; _ } ->
-        GpParamSpec { name }
 end
 
 module Constructors = struct
@@ -2595,16 +2560,6 @@ module Variable = struct
 
     let pair variable value = TypeVarPair (variable, value)
 
-    let is_contravariant = function
-      | { variance = Contravariant; _ } -> true
-      | _ -> false
-
-
-    let is_covariant = function
-      | { variance = Covariant; _ } -> true
-      | _ -> false
-
-
     let is_free = function
       | { state = Free _; _ } -> true
       | _ -> false
@@ -3571,6 +3526,57 @@ module Variable = struct
     | TypeVarVariable variable -> Argument.Single (TypeVar.self_reference variable)
     | ParamSpecVariable variable -> Argument.CallableParameters (ParamSpec.self_reference variable)
     | TypeVarTupleVariable variadic -> Argument.Unpacked (Variadic variadic)
+end
+
+module GenericParameter = struct
+  type t =
+    | GpTypeVar of {
+        name: Identifier.t;
+        variance: Record.Variance.t;
+        constraints: T.t Record.TypeVarConstraints.t;
+      }
+    | GpTypeVarTuple of { name: Identifier.t }
+    | GpParamSpec of { name: Identifier.t }
+  [@@deriving compare, eq, sexp, show, hash]
+
+  let to_variable = function
+    | GpTypeVar
+        {
+          name : Identifier.t;
+          variance : Record.Variance.t;
+          constraints : T.t Record.TypeVarConstraints.t;
+        } ->
+        Record.Variable.TypeVarVariable (Record.Variable.TypeVar.create ~variance ~constraints name)
+    | GpTypeVarTuple { name : Identifier.t } ->
+        Record.Variable.TypeVarTupleVariable (Record.Variable.TypeVarTuple.create name)
+    | GpParamSpec { name : Identifier.t } ->
+        Record.Variable.ParamSpecVariable (Record.Variable.ParamSpec.create name)
+    [@@deriving compare, eq, sexp, show, hash]
+
+
+  let of_variable = function
+    | Record.Variable.TypeVarVariable { Record.Variable.TypeVar.name; variance; constraints; _ } ->
+        GpTypeVar
+          {
+            name : Identifier.t;
+            variance : Record.Variance.t;
+            constraints : T.t Record.TypeVarConstraints.t;
+          }
+    | Record.Variable.TypeVarTupleVariable { Record.Variable.TypeVarTuple.name; _ } ->
+        GpTypeVarTuple { name }
+    | Record.Variable.ParamSpecVariable { Record.Variable.ParamSpec.name; _ } ->
+        GpParamSpec { name }
+
+
+  let look_up_variance parameters =
+    let variance_by_name =
+      let add_to_lookup so_far = function
+        | GpTypeVar { name; variance; _ } -> Map.set so_far ~key:name ~data:variance
+        | _ -> so_far
+      in
+      List.fold parameters ~f:add_to_lookup ~init:Identifier.Map.empty
+    in
+    fun variable_name -> Map.find variance_by_name variable_name
 end
 
 module ToExpression = struct

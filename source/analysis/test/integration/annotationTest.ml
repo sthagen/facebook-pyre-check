@@ -1707,14 +1707,39 @@ let test_check_invalid_type_variables =
       @@ assert_type_errors
            {|
               import typing
+
+              T = typing.TypeVar("T", contravariant=True)
+
+              def foo(x: T) -> None:
+                def inner(y: T) -> T:
+                    return y
+                print(inner(x))
+            |}
+           [];
+      (* Pyre currently does not model functions as type constructors, and as a result does not care
+         about variance checks for generic functions or methods. For motivation see summary of
+         D62068860 *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              import typing
               T = typing.TypeVar("T", covariant=True)
               def foo(x: T) -> T:
                 return x
             |}
-           [
-             "Invalid type variance [46]: The type variable `Variable[T](covariant)` is covariant "
-             ^ "and cannot be a parameter type.";
-           ];
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+              import typing
+              T = typing.TypeVar("T", covariant=True)
+              S = typing.TypeVar("S")
+
+              class Foo(typing.Generic[S]):
+                def foo(self, x: T) -> T:
+                  return x
+            |}
+           [];
     ]
 
 

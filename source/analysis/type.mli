@@ -15,6 +15,8 @@ module Record : sig
       | Contravariant
       | Invariant
     [@@deriving compare, eq, sexp, show, hash]
+
+    val show_lowercase : t -> string
   end
 
   module TypeVarConstraints : sig
@@ -230,22 +232,6 @@ and t =
 [@@deriving compare, eq, sexp, show, hash]
 
 type type_t = t [@@deriving compare, eq, sexp, show]
-
-module GenericParameter : sig
-  type t =
-    | GpTypeVar of {
-        name: Identifier.t;
-        variance: Record.Variance.t;
-        constraints: type_t Record.TypeVarConstraints.t;
-      }
-    | GpTypeVarTuple of { name: Identifier.t }
-    | GpParamSpec of { name: Identifier.t }
-  [@@deriving compare, eq, sexp, show, hash]
-
-  val to_variable : t -> type_t Record.Variable.record
-
-  val of_variable : type_t Record.Variable.record -> t
-end
 
 module Map : Map.S with type Key.t = t
 
@@ -767,10 +753,6 @@ module Variable : sig
       string ->
       t
 
-    val is_contravariant : t -> bool
-
-    val is_covariant : t -> bool
-
     val upper_bound : t -> type_t
 
     val is_escaped_and_free : t -> bool
@@ -908,6 +890,24 @@ module Variable : sig
   val all_unary : t list -> TypeVar.t list option
 
   val to_argument : t -> Argument.t
+end
+
+module GenericParameter : sig
+  type t =
+    | GpTypeVar of {
+        name: Identifier.t;
+        variance: Record.Variance.t;
+        constraints: type_t Record.TypeVarConstraints.t;
+      }
+    | GpTypeVarTuple of { name: Identifier.t }
+    | GpParamSpec of { name: Identifier.t }
+  [@@deriving compare, eq, sexp, show, hash]
+
+  val to_variable : t -> type_t Record.Variable.record
+
+  val of_variable : type_t Record.Variable.record -> t
+
+  val look_up_variance : t list -> Identifier.t -> Record.Variance.t option
 end
 
 val namespace_insensitive_compare : t -> t -> int
