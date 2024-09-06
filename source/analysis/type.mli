@@ -39,7 +39,6 @@ module Record : sig
       type 'annotation record = {
         name: Identifier.t;
         constraints: 'annotation TypeVarConstraints.t;
-        variance: Variance.t;
         state: state;
         namespace: Namespace.t;
       }
@@ -747,11 +746,7 @@ module Variable : sig
 
     include VariableKind with type t = unary_t and type domain = type_t
 
-    val create
-      :  ?constraints:type_t Record.TypeVarConstraints.t ->
-      ?variance:Record.Variance.t ->
-      string ->
-      t
+    val create : ?constraints:type_t Record.TypeVarConstraints.t -> string -> t
 
     val upper_bound : t -> type_t
 
@@ -903,20 +898,58 @@ module GenericParameter : sig
     | GpParamSpec of { name: Identifier.t }
   [@@deriving compare, eq, sexp, show, hash]
 
+  val of_declaration : Variable.Declaration.t -> create_type:(Expression.t -> type_t) -> t
+
   val to_variable : t -> type_t Record.Variable.record
 
-  val of_variable : type_t Record.Variable.record -> t
-
   val look_up_variance : t list -> Identifier.t -> Record.Variance.t option
+
+  module ZipTwoArgumentsLists : sig
+    type result =
+      | TypeVarZipResult of {
+          name: Identifier.t;
+          variance: Record.Variance.t;
+          left: type_t;
+          right: type_t;
+        }
+      | TypeVarTupleZipResult of {
+          name: Identifier.t;
+          left: type_t Record.OrderedTypes.record;
+          right: type_t Record.OrderedTypes.record;
+        }
+      | ParamSpecZipResult of {
+          name: Identifier.t;
+          left: type_t Record.Callable.record_parameters;
+          right: type_t Record.Callable.record_parameters;
+        }
+      | MismatchedKindsZipResult of {
+          parameter: t;
+          left: type_t Record.Argument.record;
+          right: type_t Record.Argument.record;
+        }
+      | MismatchedLengthsZipResult of {
+          remaining_parameters: t list;
+          remaining_left: type_t Record.Argument.record list;
+          remaining_right: type_t Record.Argument.record list;
+        }
+      | MismatchedVariadicZipResult of {
+          parameter: t;
+          left: type_t Record.Argument.record list;
+          right: type_t Record.Argument.record list;
+        }
+    [@@deriving compare, sexp, show]
+
+    val zip
+      :  left_arguments:type_t Record.Argument.record list ->
+      right_arguments:type_t Record.Argument.record list ->
+      t list ->
+      result list
+  end
 end
 
 val namespace_insensitive_compare : t -> t -> int
 
-val variable
-  :  ?constraints:type_t Record.TypeVarConstraints.t ->
-  ?variance:Record.Variance.t ->
-  string ->
-  t
+val variable : ?constraints:type_t Record.TypeVarConstraints.t -> string -> t
 
 val is_concrete : t -> bool
 

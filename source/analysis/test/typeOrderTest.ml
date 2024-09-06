@@ -40,6 +40,14 @@ let concrete_connect ?arguments =
   MockClassHierarchyHandler.connect ?arguments
 
 
+let concrete_connect_with_variance ~arguments_with_variances =
+  let arguments_with_variances =
+    arguments_with_variances
+    |> List.map ~f:(fun (single, variance) -> Type.Argument.Single single, variance)
+  in
+  MockClassHierarchyHandler.connect_with_variance ~arguments_with_variances
+
+
 let make_attributes ~class_name =
   let parse_attribute (name, annotation) =
     AnnotatedAttribute.create
@@ -249,8 +257,8 @@ let variance_order =
   (* Variance examples borrowed from https://www.python.org/dev/peps/pep-0483 *)
   let variable_t = Type.variable "_T" in
   let variable_t_2 = Type.variable "_T_2" in
-  let variable_t_co = Type.variable "_T_co" ~variance:Covariant in
-  let variable_t_contra = Type.variable "_T_contra" ~variance:Contravariant in
+  let variable_t_co = Type.variable "_T_co" in
+  let variable_t_contra = Type.variable "_T_contra" in
   insert order "LinkedList";
   insert order "Map";
   insert order "Box";
@@ -265,25 +273,33 @@ let variance_order =
     ~predecessor:"Map"
     ~successor:"typing.Generic"
     ~arguments:[variable_t; variable_t_2];
-  concrete_connect order ~predecessor:"Box" ~successor:"typing.Generic" ~arguments:[variable_t_co];
-  concrete_connect
+  concrete_connect_with_variance
+    order
+    ~predecessor:"Box"
+    ~successor:"typing.Generic"
+    ~arguments_with_variances:[variable_t_co, Type.Record.Variance.Covariant];
+  concrete_connect_with_variance
     order
     ~predecessor:"Sink"
     ~successor:"typing.Generic"
-    ~arguments:[variable_t_contra];
+    ~arguments_with_variances:[variable_t_contra, Type.Record.Variance.Contravariant];
   insert order "Base";
   insert order "Derived";
-  concrete_connect
+  concrete_connect_with_variance
     order
     ~predecessor:"Base"
     ~successor:"typing.Generic"
-    ~arguments:[variable_t_contra];
-  concrete_connect order ~predecessor:"Derived" ~successor:"Base" ~arguments:[variable_t_co];
-  concrete_connect
+    ~arguments_with_variances:[variable_t_contra, Type.Record.Variance.Contravariant];
+  concrete_connect_with_variance
+    order
+    ~predecessor:"Derived"
+    ~successor:"Base"
+    ~arguments_with_variances:[variable_t_co, Type.Record.Variance.Covariant];
+  concrete_connect_with_variance
     order
     ~predecessor:"Derived"
     ~successor:"typing.Generic"
-    ~arguments:[variable_t_co];
+    ~arguments_with_variances:[variable_t_co, Type.Record.Variance.Covariant];
   handler order
 
 
@@ -323,27 +339,27 @@ let multiplane_variance_order =
   insert order "bool";
   connect order ~predecessor:"int" ~successor:"float";
   insert order "typing.Generic";
-  let variable_t_co = Type.variable "_T_co" ~variance:Covariant in
-  let variable_t_contra = Type.variable "_T_contra" ~variance:Contravariant in
+  let variable_t_co = Type.variable "_T_co" in
+  let variable_t_contra = Type.variable "_T_contra" in
   insert order "A";
   insert order "B";
   insert order "C";
   insert order "D";
-  concrete_connect
+  concrete_connect_with_variance
     order
     ~predecessor:"A"
     ~successor:"typing.Generic"
-    ~arguments:[variable_t_co; variable_t_contra];
-  concrete_connect
+    ~arguments_with_variances:[variable_t_co, Covariant; variable_t_contra, Contravariant];
+  concrete_connect_with_variance
     order
     ~predecessor:"B"
     ~successor:"A"
-    ~arguments:[variable_t_contra; variable_t_co];
-  concrete_connect
+    ~arguments_with_variances:[variable_t_contra, Contravariant; variable_t_co, Covariant];
+  concrete_connect_with_variance
     order
     ~predecessor:"B"
     ~successor:"typing.Generic"
-    ~arguments:[variable_t_contra; variable_t_co];
+    ~arguments_with_variances:[variable_t_contra, Contravariant; variable_t_co, Covariant];
   concrete_connect order ~predecessor:"C" ~successor:"B" ~arguments:[Type.integer; Type.integer];
   concrete_connect order ~predecessor:"D" ~successor:"B" ~arguments:[Type.float; Type.float];
   handler order
@@ -384,27 +400,27 @@ let parallel_planes_variance_order =
   insert order "object";
   connect order ~predecessor:"int" ~successor:"float";
   insert order "typing.Generic";
-  let variable_t_co = Type.variable "_T_co" ~variance:Covariant in
-  let variable_t_contra = Type.variable "_T_contra" ~variance:Contravariant in
+  let variable_t_co = Type.variable "_T_co" in
+  let variable_t_contra = Type.variable "_T_contra" in
   insert order "A";
   insert order "B";
   insert order "C";
   insert order "D";
-  concrete_connect
+  concrete_connect_with_variance
     order
     ~predecessor:"A"
     ~successor:"typing.Generic"
-    ~arguments:[variable_t_co; variable_t_contra];
-  concrete_connect
+    ~arguments_with_variances:[variable_t_co, Covariant; variable_t_contra, Contravariant];
+  concrete_connect_with_variance
     order
     ~predecessor:"B"
     ~successor:"A"
-    ~arguments:[variable_t_co; variable_t_contra];
-  concrete_connect
+    ~arguments_with_variances:[variable_t_co, Covariant; variable_t_contra, Contravariant];
+  concrete_connect_with_variance
     order
     ~predecessor:"B"
     ~successor:"typing.Generic"
-    ~arguments:[variable_t_co; variable_t_contra];
+    ~arguments_with_variances:[variable_t_co, Covariant; variable_t_contra, Contravariant];
   concrete_connect order ~predecessor:"C" ~successor:"B" ~arguments:[Type.integer; Type.integer];
   concrete_connect order ~predecessor:"D" ~successor:"B" ~arguments:[Type.float; Type.float];
   handler order
@@ -446,7 +462,7 @@ let default =
     ~successor:typing_mapping;
   let variable = Type.variable "_T" in
   let other_variable = Type.variable "_T2" in
-  let variable_covariant = Type.variable "_T_co" ~variance:Covariant in
+  let variable_covariant = Type.variable "_T_co" in
   insert order "typing.Sequence";
   concrete_connect
     order
@@ -470,22 +486,22 @@ let default =
     ~arguments:[variable];
   concrete_connect order ~predecessor:"set" ~successor:"typing.AbstractSet" ~arguments:[variable];
   insert order "typing.Iterator";
-  concrete_connect
+  concrete_connect_with_variance
     order
     ~predecessor:"typing.Iterator"
     ~successor:"typing.Generic"
-    ~arguments:[variable_covariant];
+    ~arguments_with_variances:[variable_covariant, Covariant];
   insert order "typing.Iterable";
-  concrete_connect
+  concrete_connect_with_variance
     order
     ~predecessor:"typing.Iterator"
     ~successor:"typing.Iterable"
-    ~arguments:[variable_covariant];
-  concrete_connect
+    ~arguments_with_variances:[variable_covariant, Covariant];
+  concrete_connect_with_variance
     order
     ~predecessor:"typing.Iterable"
     ~successor:"typing.Generic"
-    ~arguments:[variable_covariant];
+    ~arguments_with_variances:[variable_covariant, Covariant];
   concrete_connect order ~predecessor:"list" ~successor:"typing.Iterable" ~arguments:[variable];
   concrete_connect order ~predecessor:"list" ~successor:"typing.Iterator" ~arguments:[variable];
   insert order "tuple";
@@ -511,11 +527,11 @@ let default =
   insert order "AnyIterable";
   connect order ~predecessor:"AnyIterable" ~successor:"typing.Iterable";
   insert order "typing.Mapping";
-  concrete_connect
+  concrete_connect_with_variance
     order
     ~predecessor:"typing.Mapping"
     ~successor:"typing.Generic"
-    ~arguments:[variable; variable_covariant];
+    ~arguments_with_variances:[variable, Invariant; variable_covariant, Covariant];
   insert order "dict";
 
   concrete_connect
@@ -814,9 +830,9 @@ let test_less_or_equal =
       ~predecessor:typed_dictionary
       ~arguments:[Type.string; Type.object_primitive]
       ~successor:typing_mapping;
-    concrete_connect
+    concrete_connect_with_variance
       order
-      ~arguments:[Type.variable "_T"; Type.variable ~variance:Covariant "_TCov"]
+      ~arguments_with_variances:[Type.variable "_T", Invariant; Type.variable "_TCov", Covariant]
       ~predecessor:typing_mapping
       ~successor:"typing.Generic";
     insert order "dict";
@@ -2052,8 +2068,8 @@ let test_join =
     Identifier.Table.of_alist_exn
       [
         "_T", Type.variable "_T";
-        "_T_co", Type.variable "_T_co" ~variance:Covariant;
-        "_T_contra", Type.variable "_T_contra" ~variance:Contravariant;
+        "_T_co", Type.variable "_T_co";
+        "_T_contra", Type.variable "_T_contra";
       ]
     |> Hashtbl.find
   in
