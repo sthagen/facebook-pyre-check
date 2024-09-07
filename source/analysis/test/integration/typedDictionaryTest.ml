@@ -1177,6 +1177,18 @@ let test_check_typed_dictionaries =
               reveal_type(movie["bar"])
             |}
            ["Revealed type [-1]: Revealed type for `movie[\"bar\"]` is `str`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_test_typed_dictionary
+           {|
+              from mypy_extensions import TypedDict
+              class MyDict(TypedDict):
+                x: int
+              isinstance(None, MyDict)
+            |}
+           [
+             "TypedDict used in isinstance [71]: TypedDict classes may not be used for instance \
+              checks.";
+           ];
     ]
 
 
@@ -2528,6 +2540,217 @@ kwargs: Movie = {"name": "Life of Brian", "year": 1979}
 foo(name="foo", **kwargs)
             |}
            ["Unexpected keyword [28]: Unexpected keyword argument `name` to call `foo`."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict, total=False):
+    name: str
+def foo(name: str) -> None:
+  pass
+kwargs: Movie = {"name": "Life of Brian"}
+foo(**kwargs)
+            |}
+           [
+             "Missing argument [20]: Call `foo` expects argument `name` to be a required typed \
+              dictionary key, as the corresponding parameter has no default.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict
+from typing_extensions import Unpack
+class Movie(TypedDict, total=False):
+    name: str
+def foo(name: str = "") -> None:
+  pass
+kwargs: Movie = {"name": "Life of Brian"}
+foo(**kwargs)
+            |}
+           [];
+      (* https://typing.readthedocs.io/en/latest/spec/callables.html#source-and-destination-contain-kwargs *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict, Protocol
+from typing_extensions import Unpack
+class Animal(TypedDict):
+    name: str
+
+class Dog(Animal):
+    breed: str
+
+class AcceptDog(Protocol):
+  def __call__(self, **kwargs: Unpack[Dog]) -> None: ...
+
+class AcceptAnimal(Protocol):
+  def __call__(self, **kwargs: Unpack[Animal]) -> None: ...
+
+accept_animal: AcceptAnimal = ...
+accept_dog: AcceptDog = ...
+
+# OK! Expression of type Dog can be
+# assigned to a variable of type Animal.
+accept_dog = accept_animal
+            |}
+           [];
+      (* https://typing.readthedocs.io/en/latest/spec/callables.html#source-and-destination-contain-kwargs *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict, Protocol
+from typing_extensions import Unpack
+class Animal(TypedDict):
+    name: str
+
+class Dog(Animal):
+    breed: str
+
+class AcceptDog(Protocol):
+  def __call__(self, **kwargs: Unpack[Dog]) -> None: ...
+
+class AcceptAnimal(Protocol):
+  def __call__(self, **kwargs: Unpack[Animal]) -> None: ...
+
+accept_animal: AcceptAnimal = ...
+accept_dog: AcceptDog = ...
+
+# WRONG! Expression of type Animal
+# cannot be assigned to a variable of type Dog.
+accept_animal = accept_dog
+            |}
+           [
+             "Incompatible variable type [9]: accept_animal is declared to have type \
+              `AcceptAnimal` but is used as type `AcceptDog`.";
+           ];
+      (* https://typing.readthedocs.io/en/latest/spec/callables.html#source-contains-kwargs-and-destination-doesn-t
+         A function that takes an unpacked typed dictionary kwargs can be called as a function that
+         takes the equivalent keyword-only parameters with default values for non-required fields *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict, Protocol
+from typing_extensions import Unpack, NotRequired
+
+class Animal(TypedDict):
+    name: str
+
+class Dog(Animal):
+    breed: str
+
+class Example(TypedDict):
+    animal: Animal
+    string: str
+    number: NotRequired[int]
+
+class Src(Protocol):
+  def __call__(self, **kwargs: Unpack[Example]) -> None: ...
+
+class Dest(Protocol):
+  def __call__(self, *, animal: Dog, string: str, number: int = 1) -> None: ...
+
+src: Src = ...
+dest: Dest = ...
+
+dest = src
+            |}
+           [];
+      (* https://typing.readthedocs.io/en/latest/spec/callables.html#source-contains-kwargs-and-destination-doesn-t
+         This one isn't valid because Dest can be called using positional arguments *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict, Protocol
+from typing_extensions import Unpack, NotRequired
+
+class Animal(TypedDict):
+    name: str
+
+class Dog(Animal):
+    breed: str
+
+class Example(TypedDict):
+    animal: Animal
+    string: str
+    number: NotRequired[int]
+
+class Src(Protocol):
+  def __call__(self, **kwargs: Unpack[Example]) -> None: ...
+
+class Dest(Protocol):
+  def __call__(self, animal: Dog, string: str, number: int = 1) -> None: ...
+
+src: Src = ...
+dest: Dest = ...
+
+dest = src
+            |}
+           [
+             "Incompatible variable type [9]: dest is declared to have type `Dest` but is used as \
+              type `Src`.";
+           ];
+      (* https://typing.readthedocs.io/en/latest/spec/callables.html#source-contains-kwargs-and-destination-doesn-t
+         This one isn't valid because Dest can be called using positional arguments *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict, Protocol
+from typing_extensions import Unpack
+
+class Animal(TypedDict):
+    name: str
+
+class Dog(Animal):
+    breed: str
+
+class Src(Protocol):
+  def __call__(self, **kwargs: Unpack[Animal]) -> None: ...
+
+class Dest(Protocol):
+  def __call__(self, name: str) -> None: ...
+
+src: Src = ...
+dest: Dest = ...
+
+dest = src
+            |}
+           [
+             "Incompatible variable type [9]: dest is declared to have type `Dest` but is used as \
+              type `Src`.";
+           ];
+      (* https://typing.readthedocs.io/en/latest/spec/callables.html#source-contains-traditionally-typed-kwargs-t *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors_inject_typing_and_typing_extensions
+           {|
+from typing import TypedDict, Protocol
+from typing_extensions import Unpack
+
+class Vehicle:
+    ...
+
+class Car(Vehicle):
+    ...
+
+class Motorcycle(Vehicle):
+    ...
+
+class Vehicles(TypedDict):
+    car: Car
+    moto: Motorcycle
+
+class Dest(Protocol):
+  def __call__(self, **kwargs: Unpack[Vehicles]) -> None: ...
+
+class Src(Protocol):
+  def __call__(self, **kwargs: Vehicle) -> None: ...
+
+src: Src = ...
+dest: Dest = ...
+
+dest = src
+            |}
+           [];
     ]
 
 

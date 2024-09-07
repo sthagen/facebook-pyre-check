@@ -341,7 +341,7 @@ module Qualify = struct
             let scope, alias = qualify_local_identifier_ignore_preexisting ~scope simple_name in
             scope, Reference.create alias
         | _ -> scope, qualify_reference ~scope name)
-    | NestingContext.Class _ -> scope, qualify_reference ~scope name
+    | NestingContext.Class _
     | NestingContext.TopLevel ->
         let scope =
           let qualifier = NestingContext.to_qualifier ~module_name parent in
@@ -361,23 +361,7 @@ module Qualify = struct
     | _ -> Name.Identifier identifier
 
 
-  let rec qualify_target ~scope target =
-    let rec renamed_scope scope target =
-      match target with
-      | { Node.value = Expression.Tuple elements; _ }
-      | { Node.value = Expression.List elements; _ } ->
-          List.fold elements ~init:scope ~f:renamed_scope
-      | { Node.value = Expression.Starred (Starred.Once element); _ } -> renamed_scope scope element
-      | { Node.value = Name (Name.Identifier name); _ } ->
-          let scope, _ = qualify_local_identifier ~scope name in
-          scope
-      | _ -> scope
-    in
-    let scope = renamed_scope scope target in
-    scope, qualify_expression ~qualify_strings:DoNotQualify ~scope target
-
-
-  and qualify_comprehension_target ~scope target =
+  let rec qualify_comprehension_target ~scope target =
     let rec renamed_scope scope target =
       match target with
       | { Node.value = Expression.Tuple elements; _ } ->
@@ -730,14 +714,91 @@ module Qualify = struct
     { Node.value; location }
 
 
-  let rec explore_scope ~scope statements =
+  let explore_scope ~scope statements =
+    let rec explore_locals ({ locals; _ } as scope) { Node.value; _ } =
+      match value with
+      | Statement.If { If.body; orelse; _ } ->
+          let scope = List.fold body ~init:scope ~f:explore_locals in
+          List.fold orelse ~init:scope ~f:explore_locals
+      | Statement.For { For.body; orelse; _ } ->
+          let scope = List.fold body ~init:scope ~f:explore_locals in
+          List.fold orelse ~init:scope ~f:explore_locals
+      | Statement.Global identifiers ->
+          let locals =
+            let register_global locals identifier = Set.add locals identifier in
+            List.fold identifiers ~init:locals ~f:register_global
+          in
+          { scope with locals }
+      | Statement.Nonlocal identifiers ->
+          let locals =
+            let register_nonlocal locals identifier = Set.add locals identifier in
+            List.fold identifiers ~init:locals ~f:register_nonlocal
+          in
+          { scope with locals }
+      | Statement.Try { Try.body; handlers; orelse; finally; handles_exception_group = _ } ->
+          let scope = List.fold body ~init:scope ~f:explore_locals in
+          let scope =
+            let explore_handler scope { Try.Handler.body; _ } =
+              List.fold body ~init:scope ~f:explore_locals
+            in
+            List.fold handlers ~init:scope ~f:explore_handler
+          in
+          let scope = List.fold orelse ~init:scope ~f:explore_locals in
+          List.fold finally ~init:scope ~f:explore_locals
+      | Statement.With { With.body; _ } -> List.fold body ~init:scope ~f:explore_locals
+      | Statement.While { While.body; orelse; _ } ->
+          let scope = List.fold body ~init:scope ~f:explore_locals in
+          List.fold orelse ~init:scope ~f:explore_locals
+      | _ -> scope
+    in
     let global_alias ~module_name ~parent ~name =
       let qualifier = NestingContext.to_qualifier ~module_name parent in
       { name = Reference.combine qualifier (Reference.create name) }
     in
     let local_alias ~name = { name } in
-    let explore_scope ({ module_name; parent; aliases; locals } as scope) { Node.value; _ } =
-      let is_in_function = NestingContext.is_function parent in
+    let add_local_alias_to_scope ~scope:({ module_name; parent; aliases; locals } as scope) name =
+      let renamed =
+        if is_qualified name then
+          name
+        else
+          let qualifier = NestingContext.to_qualifier ~module_name parent in
+          get_qualified_local_identifier name ~qualifier
+      in
+      {
+        scope with
+        aliases = Map.set aliases ~key:name ~data:{ name = Reference.create renamed };
+        locals = Set.add locals name;
+      }
+    in
+    let add_class_attribute_alias_to_scope
+        ~scope:({ module_name; parent; aliases; _ } as scope)
+        name
+      =
+      let qualified =
+        let qualifier = NestingContext.to_qualifier ~module_name parent in
+        let sanitized = Identifier.sanitized name in
+        Reference.create ~prefix:qualifier sanitized
+      in
+      { scope with aliases = Map.set aliases ~key:name ~data:(local_alias ~name:qualified) }
+    in
+    let explore_single_target ~scope:({ parent; locals; _ } as scope) name =
+      if NestingContext.is_class parent then
+        add_class_attribute_alias_to_scope ~scope name
+      else if Set.mem locals name then
+        scope
+      else
+        add_local_alias_to_scope ~scope name
+    in
+    let rec explore_target ~scope = function
+      | { Node.value = Expression.Tuple elements; _ }
+      | { Node.value = Expression.List elements; _ } ->
+          List.fold elements ~init:scope ~f:(fun scope target -> explore_target ~scope target)
+      | { Node.value = Expression.(Starred (Starred.Once element)); _ } ->
+          explore_target ~scope element
+      | { Node.value = Name (Name.Identifier name); _ } -> explore_single_target ~scope name
+      | _ -> scope
+    in
+    let rec explore_aliases ({ module_name; parent; aliases; _ } as scope) { Node.value; _ } =
       match value with
       | Statement.Assign
           {
@@ -753,7 +814,7 @@ module Qualify = struct
                 ~key:target_name
                 ~data:(global_alias ~module_name ~parent ~name:target_name);
           }
-      | Class { Class.name; _ } ->
+      | Statement.Class { Class.name; _ } ->
           let class_name = Reference.show name in
           {
             scope with
@@ -763,22 +824,12 @@ module Qualify = struct
                 ~key:class_name
                 ~data:(global_alias ~module_name ~parent ~name:class_name);
           }
-      | Define { Define.signature = { name; _ }; _ } when is_in_function ->
+      | Statement.Define { Define.signature = { name; _ }; _ } ->
           qualify_function_name ~scope name |> fst
-      | Define { Define.signature = { name; _ }; _ } when not is_in_function ->
-          let define_name = Reference.show name in
-          {
-            scope with
-            aliases =
-              Map.set
-                aliases
-                ~key:define_name
-                ~data:(global_alias ~module_name ~parent ~name:define_name);
-          }
-      | If { If.body; orelse; _ } ->
-          let scope = explore_scope ~scope body in
-          explore_scope ~scope orelse
-      | Import { Import.from = Some { Node.value = from; _ }; imports }
+      | Statement.If { If.body; orelse; _ } ->
+          let scope = List.fold body ~init:scope ~f:explore_aliases in
+          List.fold orelse ~init:scope ~f:explore_aliases
+      | Statement.Import { Import.from = Some { Node.value = from; _ }; imports }
         when not (String.equal (Reference.show from) "builtins") ->
           let import aliases { Node.value = { Import.name; alias }; _ } =
             match alias with
@@ -793,7 +844,7 @@ module Qualify = struct
                   ~data:(local_alias ~name:(Reference.combine from name))
           in
           { scope with aliases = List.fold imports ~init:aliases ~f:import }
-      | Import { Import.from = None; imports } ->
+      | Statement.Import { Import.from = None; imports } ->
           let import aliases { Node.value = { Import.name; alias }; _ } =
             match alias with
             | Some alias ->
@@ -802,36 +853,40 @@ module Qualify = struct
             | None -> aliases
           in
           { scope with aliases = List.fold imports ~init:aliases ~f:import }
-      | For { For.body; orelse; _ } ->
-          let scope = explore_scope ~scope body in
-          explore_scope ~scope orelse
-      | Global identifiers ->
-          let locals =
-            let register_global locals identifier = Set.add locals identifier in
-            List.fold identifiers ~init:locals ~f:register_global
-          in
-          { scope with locals }
-      | Nonlocal identifiers ->
-          let locals =
-            let register_nonlocal locals identifier = Set.add locals identifier in
-            List.fold identifiers ~init:locals ~f:register_nonlocal
-          in
-          { scope with locals }
-      | Try { Try.body; handlers; orelse; finally; handles_exception_group = _ } ->
-          let scope = explore_scope ~scope body in
+      | Statement.For { For.target; body; orelse; _ } ->
+          let scope = explore_target ~scope target in
+          let scope = List.fold body ~init:scope ~f:explore_aliases in
+          List.fold orelse ~init:scope ~f:explore_aliases
+      | Statement.Try { Try.body; handlers; orelse; finally; handles_exception_group = _ } ->
+          let scope = List.fold body ~init:scope ~f:explore_aliases in
           let scope =
-            let explore_handler scope { Try.Handler.body; _ } = explore_scope ~scope body in
+            let explore_handler scope { Try.Handler.name; body; _ } =
+              let scope =
+                match name with
+                | Some { Node.value = name; _ } -> explore_single_target ~scope name
+                | None -> scope
+              in
+              List.fold body ~init:scope ~f:explore_aliases
+            in
             List.fold handlers ~init:scope ~f:explore_handler
           in
-          let scope = explore_scope ~scope orelse in
-          explore_scope ~scope finally
-      | With { With.body; _ } -> explore_scope ~scope body
-      | While { While.body; orelse; _ } ->
-          let scope = explore_scope ~scope body in
-          explore_scope ~scope orelse
+          let scope = List.fold orelse ~init:scope ~f:explore_aliases in
+          List.fold finally ~init:scope ~f:explore_aliases
+      | Statement.With { With.items; body; _ } ->
+          let explore_with_item scope (_, alias) =
+            match alias with
+            | Some alias -> explore_target ~scope alias
+            | None -> scope
+          in
+          let scope = List.fold items ~init:scope ~f:explore_with_item in
+          List.fold body ~init:scope ~f:explore_aliases
+      | Statement.While { While.body; orelse; _ } ->
+          let scope = List.fold body ~init:scope ~f:explore_aliases in
+          List.fold orelse ~init:scope ~f:explore_aliases
       | _ -> scope
     in
-    List.fold statements ~init:scope ~f:explore_scope
+    let scope = List.fold statements ~init:scope ~f:explore_locals in
+    List.fold statements ~init:scope ~f:explore_aliases
 
 
   let rec qualify_statements ~scope statements =
@@ -905,14 +960,14 @@ module Qualify = struct
                       Name.Attribute { base; attribute = sanitized; special = false }
                     in
                     let scope =
-                      let aliases =
-                        let update = function
-                          | Some alias -> alias
-                          | None -> local_alias ~name:(name_to_reference_exn qualified)
-                        in
-                        Map.update aliases name ~f:update
-                      in
-                      { scope with aliases }
+                      {
+                        scope with
+                        aliases =
+                          Map.set
+                            aliases
+                            ~key:name
+                            ~data:(local_alias ~name:(name_to_reference_exn qualified));
+                      }
                     in
                     scope, Name qualified
                 | Starred (Starred.Once name) ->
@@ -999,7 +1054,7 @@ module Qualify = struct
           List.map decorators ~f:(qualify_expression ~qualify_strings:DoNotQualify ~scope)
         in
         (* Take care to qualify the function name before parameters, as parameters shadow it. *)
-        let scope, qualified_function_name = qualify_function_name ~scope name in
+        let _, qualified_function_name = qualify_function_name ~scope name in
         let inner_scope =
           let parent = NestingContext.create_function ~parent (Reference.last name) in
           { scope with parent }
@@ -1132,9 +1187,9 @@ module Qualify = struct
       | Expression expression ->
           scope, Expression (qualify_expression ~qualify_strings:DoNotQualify ~scope expression)
       | For ({ For.target; iterator; body; orelse; _ } as block) ->
-          let renamed_scope, target = qualify_target ~scope target in
-          let body_scope, body = qualify_statements ~scope:renamed_scope body in
-          let orelse_scope, orelse = qualify_statements ~scope:renamed_scope orelse in
+          let target = qualify_expression ~qualify_strings:DoNotQualify ~scope target in
+          let body_scope, body = qualify_statements ~scope body in
+          let orelse_scope, orelse = qualify_statements ~scope orelse in
           ( join_scopes body_scope orelse_scope,
             For
               {
@@ -1183,16 +1238,21 @@ module Qualify = struct
       | Try { Try.body; handlers; orelse; finally; handles_exception_group } ->
           let body_scope, body = qualify_statements ~scope body in
           let handler_scopes, handlers =
-            let qualify_handler { Try.Handler.kind; name; body } =
-              let renamed_scope, name =
-                match name with
-                | None -> scope, name
-                | Some { Node.value = target; location } ->
-                    let scope, renamed = qualify_local_identifier ~scope target in
-                    scope, Some { Node.value = renamed; location }
+            let qualify_exception_name ~scope:{ aliases; _ } { Node.value; location } =
+              let value =
+                match Map.find aliases value with
+                | None -> value
+                | Some { name; _ } ->
+                    (* FIXME(grievejia): This assumes that `name` is always qualified as a local
+                       identifier. This may not be true when we are inside class toplevel. *)
+                    Reference.show name
               in
+              { Node.value; location }
+            in
+            let qualify_handler { Try.Handler.kind; name; body } =
+              let name = Option.map name ~f:(qualify_exception_name ~scope) in
               let kind = kind >>| qualify_expression ~qualify_strings:DoNotQualify ~scope in
-              let scope, body = qualify_statements ~scope:renamed_scope body in
+              let scope, body = qualify_statements ~scope body in
               scope, { Try.Handler.kind; name; body }
             in
             List.map handlers ~f:qualify_handler |> List.unzip
@@ -1206,23 +1266,11 @@ module Qualify = struct
           in
           scope, Try { Try.body; handlers; orelse; finally; handles_exception_group }
       | With ({ With.items; body; _ } as block) ->
-          let scope, items =
-            let qualify_item (scope, reversed_items) (name, alias) =
-              let scope, item =
-                let renamed_scope, alias =
-                  match alias with
-                  | Some alias ->
-                      let scope, alias = qualify_target ~scope alias in
-                      scope, Some alias
-                  | _ -> scope, alias
-                in
-                renamed_scope, (qualify_expression ~qualify_strings:DoNotQualify ~scope name, alias)
-              in
-              scope, item :: reversed_items
-            in
-            let scope, reversed_items = List.fold items ~init:(scope, []) ~f:qualify_item in
-            scope, List.rev reversed_items
+          let qualify_item ~scope (name, alias) =
+            ( qualify_expression ~qualify_strings:DoNotQualify ~scope name,
+              Option.map alias ~f:(qualify_expression ~qualify_strings:DoNotQualify ~scope) )
           in
+          let items = List.map items ~f:(qualify_item ~scope) in
           let scope, body = qualify_statements ~scope body in
           scope, With { block with With.items; body }
       | While { While.test; body; orelse } ->
@@ -4358,13 +4406,21 @@ module SelfType = struct
                           base =
                             {
                               Node.value =
-                                Name
-                                  (Attribute
-                                    {
-                                      base = { Node.value = Name (Identifier "pyre_extensions"); _ };
-                                      attribute = "ReadOnly";
-                                      special = false;
-                                    });
+                                ( Name
+                                    (Attribute
+                                      {
+                                        base = { Node.value = Name (Identifier "typing"); _ };
+                                        attribute = "_PyreReadOnly_";
+                                        special = false;
+                                      })
+                                | Name
+                                    (Attribute
+                                      {
+                                        base =
+                                          { Node.value = Name (Identifier "pyre_extensions"); _ };
+                                        attribute = "ReadOnly";
+                                        special = false;
+                                      }) );
                               _;
                             };
                           index =

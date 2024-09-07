@@ -589,17 +589,17 @@ let test_qualify_source =
            "\ntry:\n\tb\nexcept b as b:\n\tb\nelse:\n\tb\nfinally:\n\tb"
            "\n\
             try:\n\
-            \ta\n\
-            except a as $local_qualifier$b:\n\
+            \t$local_qualifier$b\n\
+            except $local_qualifier$b as $local_qualifier$b:\n\
             \t$local_qualifier$b\n\
             else:\n\
-            \ta\n\
+            \t$local_qualifier$b\n\
             finally:\n\
-            \ta";
+            \t$local_qualifier$b";
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_qualify_statement
            "\nwith b as b: b"
-           "\nwith a as $local_qualifier$b: $local_qualifier$b";
+           "\nwith $local_qualifier$b as $local_qualifier$b: $local_qualifier$b";
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_qualify_statement "\nwhile b: b" "\nwhile a: a";
       labeled_test_case __FUNCTION__ __LINE__ @@ assert_qualify_statement "yield b" "yield a";
@@ -1238,7 +1238,7 @@ let test_qualify_source =
       def b(): pass
     |}
            {|
-      for $local_qualifier$b in []: pass
+      for qualifier.b in []: pass
       def qualifier.b(): pass
     |};
       labeled_test_case __FUNCTION__ __LINE__
@@ -1416,6 +1416,20 @@ let test_qualify_source =
       def qualifier.foo():
         $local_qualifier$constant = 2
         global constant
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
+      constant = 0
+      def foo():
+        while True:
+          constant += 1
+    |}
+           {|
+      $local_qualifier$constant = 0
+      def qualifier.foo():
+        while True:
+          $local_qualifier?foo$constant += 1
     |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_qualify
@@ -1622,6 +1636,20 @@ let test_qualify_source =
           ...
         def qualifier.C.x():
           ...
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
+      x: int = ...
+      class C:
+        x: int = ...
+        y = x
+    |}
+           {|
+      $local_qualifier$x: int = ...
+      class qualifier.C:
+        qualifier.C.x: int = ...
+        qualifier.C.y = qualifier.C.x
     |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_qualify
@@ -1928,6 +1956,30 @@ let test_qualify_source =
 
       $local_qualifier$hello: int = 1
       $local_qualifier$foo: typing.Annotated["int", qualifier.Foo("hello")]
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
+      class A:
+         for x in []:
+           x
+    |}
+           {|
+      class qualifier.A:
+         for qualifier.A.x in []:
+           qualifier.A.x
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_qualify
+           {|
+      class A:
+         with item as x:
+           x
+    |}
+           {|
+      class qualifier.A:
+         with item as qualifier.A.x:
+           qualifier.A.x
     |};
       (* Don't qualify x within d["x"]. *)
       labeled_test_case __FUNCTION__ __LINE__
