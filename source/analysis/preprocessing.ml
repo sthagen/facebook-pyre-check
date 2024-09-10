@@ -302,13 +302,6 @@ module Qualify = struct
         renamed )
 
 
-  let qualify_local_identifier ~scope:({ locals; _ } as scope) name =
-    if Set.mem locals name then
-      scope, name
-    else
-      qualify_local_identifier_ignore_preexisting ~scope name
-
-
   let prefix_identifier ~scope:({ aliases; locals; _ } as scope) ~prefix name =
     let stars, name = Identifier.split_star name in
     if is_qualified name then
@@ -814,6 +807,9 @@ module Qualify = struct
                 ~key:target_name
                 ~data:(global_alias ~module_name ~parent ~name:target_name);
           }
+      | Statement.Assign { Assign.target; _ }
+      | Statement.AugmentedAssign { AugmentedAssign.target; _ } ->
+          explore_target ~scope target
       | Statement.Class { Class.name; _ } ->
           let class_name = Reference.show name in
           {
@@ -883,28 +879,80 @@ module Qualify = struct
       | Statement.While { While.body; orelse; _ } ->
           let scope = List.fold body ~init:scope ~f:explore_aliases in
           List.fold orelse ~init:scope ~f:explore_aliases
+      | Statement.TypeAlias { name; _ } -> explore_target ~scope name
       | _ -> scope
     in
     let scope = List.fold statements ~init:scope ~f:explore_locals in
     List.fold statements ~init:scope ~f:explore_aliases
 
 
-  let rec qualify_statements ~scope statements =
-    let scope, reversed_statements =
-      let qualify (scope, statements) statement =
-        let scope, statement = qualify_statement ~scope statement in
-        scope, statement :: statements
-      in
-      List.fold statements ~init:(scope, []) ~f:qualify
-    in
-    scope, List.rev reversed_statements
-
+  let rec qualify_statements ~scope statements = List.map statements ~f:(qualify_statement ~scope)
 
   and qualify_statement ~scope ({ Node.value; _ } as statement) =
-    let scope, value =
-      let local_alias ~name = { name } in
-      let qualify_assign ~target ~annotation ~value =
-        let qualify_value ~qualify_potential_alias_strings ~scope value =
+    let value =
+      let qualify_assign_target
+          ~scope:({ module_name; parent; aliases; _ } as scope)
+          ~annotation
+          target
+        =
+        let is_special_form_assignment =
+          match target, annotation with
+          | ( { Node.value = Expression.Name (Name.Identifier _); _ },
+              Some { Node.value = Expression.Name (Name.Identifier "_SpecialForm"); _ } ) ->
+              true
+          | _ -> false
+        in
+        if is_special_form_assignment then
+          target
+        else
+          let location = Node.location target in
+          let is_class_toplevel = NestingContext.is_class parent in
+          match Node.value target with
+          | Expression.Name (Name.Identifier name) when is_class_toplevel -> (
+              match Map.find aliases name with
+              | None -> target
+              | Some { name } ->
+                  Node.create
+                    ~location
+                    (Expression.Name (create_name_from_reference ~location name)))
+          | Expression.Name (Attribute attribute as name) ->
+              let value =
+                if is_class_toplevel then
+                  match name_to_reference name with
+                  | Some reference ->
+                      let qualifier = NestingContext.to_qualifier ~module_name parent in
+                      qualify_if_needed ~qualifier reference
+                      |> create_name_from_reference ~location
+                      |> fun name -> Expression.Name name
+                  | None ->
+                      let { Name.Attribute.base; _ } = attribute in
+                      let qualified_base =
+                        qualify_expression ~qualify_strings:DoNotQualify ~scope base
+                      in
+                      Expression.Name (Name.Attribute { attribute with base = qualified_base })
+                else
+                  match qualify_attribute_name ~qualify_strings:DoNotQualify ~scope attribute with
+                  | Name.Identifier name ->
+                      Expression.Name (Name.Identifier (Identifier.sanitized name))
+                  | qualified -> Name qualified
+              in
+              Node.create ~location value
+          | Expression.Tuple _
+          | Expression.List _
+          | Expression.Starred _
+          | Expression.Name (Name.Identifier _)
+          | Expression.Subscript _ ->
+              qualify_expression ~qualify_strings:DoNotQualify ~scope target
+          | _ ->
+              (* This case is allowed in the type signatures, but should be prevented by the parser,
+                 because the python grammar has no additional valid target forms *)
+              target
+      in
+      let qualify_assign_annotation ~scope annotation =
+        qualify_expression ~qualify_strings:Qualify ~scope annotation
+      in
+      let qualify_assign_value ~scope:({ parent; _ } as scope) ~qualified_annotation value =
+        let do_qualify_assign_value ~qualify_potential_alias_strings ~scope value =
           match value with
           | { Node.value = Expression.Constant (Constant.String _); _ } ->
               (* String literal assignments might be type aliases. *)
@@ -913,129 +961,13 @@ module Qualify = struct
               qualify_expression ~qualify_strings:qualify_potential_alias_strings value ~scope
           | _ -> qualify_expression ~qualify_strings:DoNotQualify value ~scope
         in
-        let target_scope, target =
-          let is_special_form_assignment =
-            match target, annotation with
-            | ( { Node.value = Expression.Name (Name.Identifier _); _ },
-                Some { Node.value = Expression.Name (Name.Identifier "_SpecialForm"); _ } ) ->
-                true
-            | _ -> false
-          in
-          if is_special_form_assignment then
-            scope, target
-          else
-            let rec qualify_assignment_target
-                ~scope:({ module_name; parent; aliases; _ } as scope)
-                target
-              =
-              let scope, value =
-                let qualify_targets scope elements =
-                  let qualify_element (scope, reversed_elements) element =
-                    let scope, element = qualify_assignment_target ~scope element in
-                    scope, element :: reversed_elements
-                  in
-                  let scope, reversed_elements =
-                    List.fold elements ~init:(scope, []) ~f:qualify_element
-                  in
-                  scope, List.rev reversed_elements
-                in
-                let location = Node.location target in
-                let is_class_toplevel = NestingContext.is_class parent in
-                match Node.value target with
-                | Expression.Tuple elements ->
-                    let scope, elements = qualify_targets scope elements in
-                    scope, Expression.Tuple elements
-                | List elements ->
-                    let scope, elements = qualify_targets scope elements in
-                    scope, List elements
-                | Name (Name.Identifier name) when is_class_toplevel ->
-                    let sanitized = Identifier.sanitized name in
-                    let qualified =
-                      let base =
-                        let qualifier = NestingContext.to_qualifier ~module_name parent in
-                        Node.create
-                          ~location
-                          (Expression.Name (create_name_from_reference ~location qualifier))
-                      in
-                      Name.Attribute { base; attribute = sanitized; special = false }
-                    in
-                    let scope =
-                      {
-                        scope with
-                        aliases =
-                          Map.set
-                            aliases
-                            ~key:name
-                            ~data:(local_alias ~name:(name_to_reference_exn qualified));
-                      }
-                    in
-                    scope, Name qualified
-                | Starred (Starred.Once name) ->
-                    let scope, name = qualify_assignment_target ~scope name in
-                    scope, Starred (Starred.Once name)
-                | Name (Name.Identifier name) ->
-                    (* Incrementally number local variables to avoid shadowing. *)
-                    let scope =
-                      let scope, _ = qualify_local_identifier ~scope name in
-                      scope
-                    in
-                    scope, Expression.Name (qualify_identifier_name ~location ~scope name)
-                | Name (Attribute attribute as name) ->
-                    let name =
-                      if is_class_toplevel then
-                        match name_to_reference name with
-                        | Some reference ->
-                            let qualifier = NestingContext.to_qualifier ~module_name parent in
-                            qualify_if_needed ~qualifier reference
-                            |> create_name_from_reference ~location
-                            |> fun name -> Expression.Name name
-                        | None ->
-                            let { Name.Attribute.base; _ } = attribute in
-                            let qualified_base =
-                              qualify_expression ~qualify_strings:DoNotQualify ~scope base
-                            in
-                            Expression.Name
-                              (Name.Attribute { attribute with base = qualified_base })
-                      else
-                        match
-                          qualify_attribute_name ~qualify_strings:DoNotQualify ~scope attribute
-                        with
-                        | Name.Identifier name ->
-                            Expression.Name (Name.Identifier (Identifier.sanitized name))
-                        | qualified -> Name qualified
-                    in
-                    scope, name
-                | Subscript { Subscript.base; index } ->
-                    ( scope,
-                      Subscript
-                        {
-                          Subscript.base =
-                            qualify_expression ~qualify_strings:DoNotQualify ~scope base;
-                          index = qualify_expression ~qualify_strings:DoNotQualify ~scope index;
-                        } )
-                | target ->
-                    (* This case is allowed in the type signatures, but should be prevented by the
-                       parser, because the python grammar has no additional valid target forms *)
-                    scope, target
-              in
-              scope, { target with Node.value }
-            in
-            qualify_assignment_target ~scope target
+        let qualify_potential_alias_strings =
+          match qualified_annotation >>| Expression.show, parent with
+          | Some "typing_extensions.TypeAlias", _ -> Qualify
+          | None, NestingContext.TopLevel -> OptionallyQualify
+          | _, _ -> DoNotQualify
         in
-        let qualified_annotation =
-          annotation >>| qualify_expression ~qualify_strings:Qualify ~scope
-        in
-        let qualified_value =
-          let qualify_potential_alias_strings =
-            let { parent; _ } = scope in
-            match qualified_annotation >>| Expression.show, parent with
-            | Some "typing_extensions.TypeAlias", _ -> Qualify
-            | None, NestingContext.TopLevel -> OptionallyQualify
-            | _, _ -> DoNotQualify
-          in
-          value >>| qualify_value ~scope:target_scope ~qualify_potential_alias_strings
-        in
-        target_scope, target, qualified_annotation, qualified_value
+        do_qualify_assign_value ~qualify_potential_alias_strings ~scope value
       in
       let qualify_define
           scope
@@ -1060,7 +992,7 @@ module Qualify = struct
           { scope with parent }
         in
         let inner_scope, parameters = qualify_parameters ~scope:inner_scope parameters in
-        let _, body =
+        let body =
           let scope = explore_scope ~scope:inner_scope body in
           qualify_statements ~scope body
         in
@@ -1074,7 +1006,7 @@ module Qualify = struct
             legacy_parent;
           }
         in
-        scope, { define with signature; body }
+        { define with signature; body }
       in
       let qualify_class ({ Class.name; base_arguments; parent; body; decorators; _ } as definition) =
         let qualify_base ({ Call.Argument.value; _ } as argument) =
@@ -1091,14 +1023,14 @@ module Qualify = struct
           let original_scope =
             { scope with parent = NestingContext.create_class ~parent (Reference.last name) }
           in
-          let scope = explore_scope body ~scope:original_scope in
-          let qualify (scope, statements) ({ Node.location; value } as statement) =
-            let scope, statement =
+          let qualify (scope, sofar) ({ Node.value; location } as statement) =
+            let new_scope = explore_scope ~scope [statement] in
+            let result =
               match value with
               | Statement.Define
                   ({ signature = { name; parameters; return_annotation; decorators; _ }; _ } as
                   define) ->
-                  let _, define = qualify_define original_scope define in
+                  let define = qualify_define original_scope define in
                   let _, parameters = qualify_parameters ~scope parameters in
                   let return_annotation =
                     return_annotation >>| qualify_expression ~scope ~qualify_strings:Qualify
@@ -1128,13 +1060,35 @@ module Qualify = struct
                   let signature =
                     { define.signature with name; parameters; decorators; return_annotation }
                   in
-                  scope, { Node.location; value = Statement.Define { define with signature } }
-              | _ -> qualify_statement statement ~scope
+                  { Node.value = Statement.Define { define with signature }; location }
+              | Statement.Assign { Assign.target; annotation; value } ->
+                  let qualified_annotation =
+                    Option.map annotation ~f:(qualify_assign_annotation ~scope)
+                  in
+                  let value =
+                    Option.map value ~f:(qualify_assign_value ~scope ~qualified_annotation)
+                  in
+                  let target = qualify_assign_target ~scope:new_scope ~annotation target in
+                  {
+                    Node.value =
+                      Statement.Assign { Assign.target; annotation = qualified_annotation; value };
+                    location;
+                  }
+              | AugmentedAssign { AugmentedAssign.target; operator; value } ->
+                  let value = qualify_assign_value ~scope ~qualified_annotation:None value in
+                  let target = qualify_assign_target ~scope:new_scope ~annotation:None target in
+                  {
+                    Node.value =
+                      Statement.AugmentedAssign { AugmentedAssign.target; operator; value };
+                    location;
+                  }
+              | _ -> qualify_statement statement ~scope:new_scope
             in
-            scope, statement :: statements
+            new_scope, result :: sofar
           in
-          List.fold body ~init:(scope, []) ~f:qualify |> snd |> List.rev
+          List.fold body ~init:(original_scope, []) ~f:qualify |> snd |> List.rev
         in
+
         {
           definition with
           (* Ignore aliases, imports, etc. when declaring a class name. *)
@@ -1145,99 +1099,76 @@ module Qualify = struct
           decorators;
         }
       in
-      let join_scopes left right =
-        let merge ~key:_ = function
-          | `Both (left, _) -> Some left
-          | `Left left -> Some left
-          | `Right right -> Some right
-        in
-        {
-          left with
-          aliases = Map.merge left.aliases right.aliases ~f:merge;
-          locals = Set.union left.locals right.locals;
-        }
-      in
       match value with
       | Statement.Assign { Assign.target; annotation; value } ->
-          let scope, target, annotation, value = qualify_assign ~target ~annotation ~value in
-          scope, Statement.Assign { Assign.target; annotation; value }
-      | AugmentedAssign { AugmentedAssign.target; operator; value } ->
-          let scope, target, _, value =
-            qualify_assign ~target ~annotation:None ~value:(Some value)
+          let target = qualify_assign_target ~scope ~annotation target in
+          let qualified_annotation = Option.map annotation ~f:(qualify_assign_annotation ~scope) in
+          let qualified_value =
+            Option.map value ~f:(qualify_assign_value ~scope ~qualified_annotation)
           in
-          let value = Option.value_exn value in
-          scope, Statement.AugmentedAssign { AugmentedAssign.target; operator; value }
+          Statement.Assign
+            { Assign.target; annotation = qualified_annotation; value = qualified_value }
+      | AugmentedAssign { AugmentedAssign.target; operator; value } ->
+          let value = qualify_assign_value ~scope ~qualified_annotation:None value in
+          let target = qualify_assign_target ~scope ~annotation:None target in
+          Statement.AugmentedAssign { AugmentedAssign.target; operator; value }
       | Assert { Assert.test; message; origin } ->
-          ( scope,
-            Assert
-              {
-                Assert.test = qualify_expression ~qualify_strings:DoNotQualify ~scope test;
-                message =
-                  Option.map message ~f:(qualify_expression ~qualify_strings:DoNotQualify ~scope);
-                origin;
-              } )
-      | Class definition -> scope, Class (qualify_class definition)
+          Assert
+            {
+              Assert.test = qualify_expression ~qualify_strings:DoNotQualify ~scope test;
+              message =
+                Option.map message ~f:(qualify_expression ~qualify_strings:DoNotQualify ~scope);
+              origin;
+            }
+      | Class definition -> Class (qualify_class definition)
       | Define define ->
-          let scope, define = qualify_define scope define in
-          scope, Define define
+          let define = qualify_define scope define in
+          Define define
       | Delete expressions ->
-          ( scope,
-            Delete
-              (List.map expressions ~f:(qualify_expression ~qualify_strings:DoNotQualify ~scope)) )
+          Delete (List.map expressions ~f:(qualify_expression ~qualify_strings:DoNotQualify ~scope))
       | Expression expression ->
-          scope, Expression (qualify_expression ~qualify_strings:DoNotQualify ~scope expression)
+          Expression (qualify_expression ~qualify_strings:DoNotQualify ~scope expression)
       | For ({ For.target; iterator; body; orelse; _ } as block) ->
           let target = qualify_expression ~qualify_strings:DoNotQualify ~scope target in
-          let body_scope, body = qualify_statements ~scope body in
-          let orelse_scope, orelse = qualify_statements ~scope orelse in
-          ( join_scopes body_scope orelse_scope,
-            For
-              {
-                block with
-                For.target;
-                iterator = qualify_expression ~qualify_strings:DoNotQualify ~scope iterator;
-                body;
-                orelse;
-              } )
-      | Global identifiers -> scope, Global identifiers
+          let body = qualify_statements ~scope body in
+          let orelse = qualify_statements ~scope orelse in
+          For
+            {
+              block with
+              For.target;
+              iterator = qualify_expression ~qualify_strings:DoNotQualify ~scope iterator;
+              body;
+              orelse;
+            }
       | If { If.test; body; orelse } ->
-          let body_scope, body = qualify_statements ~scope body in
-          let orelse_scope, orelse = qualify_statements ~scope orelse in
-          ( join_scopes body_scope orelse_scope,
-            If
-              {
-                If.test = qualify_expression ~qualify_strings:DoNotQualify ~scope test;
-                body;
-                orelse;
-              } )
+          let body = qualify_statements ~scope body in
+          let orelse = qualify_statements ~scope orelse in
+          If
+            { If.test = qualify_expression ~qualify_strings:DoNotQualify ~scope test; body; orelse }
       | Match { Match.subject; cases } ->
-          let case_scopes, cases = List.map cases ~f:(qualify_match_case ~scope) |> List.unzip in
-          ( List.fold case_scopes ~init:scope ~f:join_scopes,
-            Match
-              {
-                Match.subject = qualify_expression ~qualify_strings:DoNotQualify ~scope subject;
-                cases;
-              } )
-      | Nonlocal identifiers -> scope, Nonlocal identifiers
+          let cases = List.map cases ~f:(qualify_match_case ~scope) in
+          Match
+            {
+              Match.subject = qualify_expression ~qualify_strings:DoNotQualify ~scope subject;
+              cases;
+            }
       | Raise { Raise.expression; from } ->
-          ( scope,
-            Raise
-              {
-                Raise.expression =
-                  expression >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
-                from = from >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
-              } )
+          Raise
+            {
+              Raise.expression =
+                expression >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
+              from = from >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
+            }
       | Return ({ Return.expression; _ } as return) ->
-          ( scope,
-            Return
-              {
-                return with
-                Return.expression =
-                  expression >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
-              } )
+          Return
+            {
+              return with
+              Return.expression =
+                expression >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
+            }
       | Try { Try.body; handlers; orelse; finally; handles_exception_group } ->
-          let body_scope, body = qualify_statements ~scope body in
-          let handler_scopes, handlers =
+          let body = qualify_statements ~scope body in
+          let handlers =
             let qualify_exception_name ~scope:{ aliases; _ } { Node.value; location } =
               let value =
                 match Map.find aliases value with
@@ -1252,61 +1183,53 @@ module Qualify = struct
             let qualify_handler { Try.Handler.kind; name; body } =
               let name = Option.map name ~f:(qualify_exception_name ~scope) in
               let kind = kind >>| qualify_expression ~qualify_strings:DoNotQualify ~scope in
-              let scope, body = qualify_statements ~scope body in
-              scope, { Try.Handler.kind; name; body }
+              let body = qualify_statements ~scope body in
+              { Try.Handler.kind; name; body }
             in
-            List.map handlers ~f:qualify_handler |> List.unzip
+            List.map handlers ~f:qualify_handler
           in
-          let orelse_scope, orelse = qualify_statements ~scope:body_scope orelse in
-          let finally_scope, finally = qualify_statements ~scope finally in
-          let scope =
-            List.fold handler_scopes ~init:body_scope ~f:join_scopes
-            |> join_scopes orelse_scope
-            |> join_scopes finally_scope
-          in
-          scope, Try { Try.body; handlers; orelse; finally; handles_exception_group }
+          let orelse = qualify_statements ~scope orelse in
+          let finally = qualify_statements ~scope finally in
+          Try { Try.body; handlers; orelse; finally; handles_exception_group }
       | With ({ With.items; body; _ } as block) ->
           let qualify_item ~scope (name, alias) =
             ( qualify_expression ~qualify_strings:DoNotQualify ~scope name,
               Option.map alias ~f:(qualify_expression ~qualify_strings:DoNotQualify ~scope) )
           in
           let items = List.map items ~f:(qualify_item ~scope) in
-          let scope, body = qualify_statements ~scope body in
-          scope, With { block with With.items; body }
+          let body = qualify_statements ~scope body in
+          With { block with With.items; body }
       | While { While.test; body; orelse } ->
-          let body_scope, body = qualify_statements ~scope body in
-          let orelse_scope, orelse = qualify_statements ~scope orelse in
-          ( join_scopes body_scope orelse_scope,
-            While
-              {
-                While.test = qualify_expression ~qualify_strings:DoNotQualify ~scope test;
-                body;
-                orelse;
-              } )
-      | TypeAlias { TypeAlias.name; type_params; value } -> (
-          let scope, target, _, value =
-            qualify_assign ~target:name ~annotation:None ~value:(Some value)
-          in
-          match value with
-          | Some value -> scope, Statement.TypeAlias { TypeAlias.name = target; type_params; value }
-          | None -> failwith "ERROR: A type alias value is non-optional")
+          let body = qualify_statements ~scope body in
+          let orelse = qualify_statements ~scope orelse in
+          While
+            {
+              While.test = qualify_expression ~qualify_strings:DoNotQualify ~scope test;
+              body;
+              orelse;
+            }
+      | TypeAlias { TypeAlias.name; type_params; value } ->
+          let value = qualify_assign_value ~scope ~qualified_annotation:None value in
+          let target = qualify_assign_target ~scope ~annotation:None name in
+          Statement.TypeAlias { TypeAlias.name = target; type_params; value }
       | Break
       | Continue
       | Import _
+      | Global _
+      | Nonlocal _
       | Pass ->
-          scope, value
+          value
     in
-    scope, { statement with Node.value }
+    { statement with Node.value }
 
 
   and qualify_match_case ~scope { Match.Case.pattern; guard; body } =
-    let body_scope, body = qualify_statements ~scope body in
-    ( body_scope,
-      {
-        Match.Case.pattern = qualify_pattern ~scope pattern;
-        guard = guard >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
-        body;
-      } )
+    let body = qualify_statements ~scope body in
+    {
+      Match.Case.pattern = qualify_pattern ~scope pattern;
+      guard = guard >>| qualify_expression ~qualify_strings:DoNotQualify ~scope;
+      body;
+    }
 end
 
 (* Qualification is a way to differentiate names between files/functions/etc. It currently renames the names making them unique.
@@ -1322,7 +1245,7 @@ let qualify ({ Source.module_path = { ModulePath.qualifier; _ }; statements; _ }
   in
   let statements =
     let scope = Qualify.explore_scope ~scope statements in
-    Qualify.qualify_statements ~scope statements |> snd
+    Qualify.qualify_statements ~scope statements
   in
   { source with Source.statements }
 
