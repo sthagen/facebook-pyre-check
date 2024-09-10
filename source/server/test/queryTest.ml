@@ -174,7 +174,7 @@ let test_parse_query context =
   ()
 
 
-let assert_queries_with_local_root
+let assert_query_and_response_json
     ?custom_source_root
     ?build_system_initializer
     ?no_validation_on_class_lookup_failure
@@ -199,6 +199,7 @@ let assert_queries_with_local_root
         ~cmp:String.equal
         ~pp_diff:(Test.diff ~print:String.pp)
         ~printer:Fn.id
+        ~msg:(Format.asprintf "Mismatched response for query `%s`" query)
         (Yojson.Safe.pretty_to_string @@ Yojson.Safe.from_string expected_response)
         (Yojson.Safe.pretty_to_string @@ Yojson.Safe.from_string actual_response);
       Lwt.return_unit
@@ -218,7 +219,7 @@ let assert_queries_with_local_root
 module QueryTestTypes = struct
   open Query.Response
 
-  let assert_type_query_response_with_local_root
+  let assert_query_and_response_typed
       ?custom_source_root
       ?(handle = "test.py")
       ?no_validation_on_class_lookup_failure
@@ -232,7 +233,7 @@ module QueryTestTypes = struct
       |> Response.to_yojson
       |> Yojson.Safe.to_string
     in
-    assert_queries_with_local_root
+    assert_query_and_response_json
       ?custom_source_root
       ?no_validation_on_class_lookup_failure
       ~context
@@ -265,12 +266,9 @@ end
 
 let test_handle_query_basic context =
   let open Query.Response in
-  let assert_type_query_response_with_local_root =
-    QueryTestTypes.assert_type_query_response_with_local_root ~context
-  in
+  let assert_query_and_response_typed = QueryTestTypes.assert_query_and_response_typed ~context in
   let assert_type_query_response ?custom_source_root ?handle ~source ~query response =
-    assert_type_query_response_with_local_root ?custom_source_root ?handle ~source ~query (fun _ ->
-        response)
+    assert_query_and_response_typed ?custom_source_root ?handle ~source ~query (fun _ -> response)
   in
   let open Lwt.Infix in
   let open Test in
@@ -371,7 +369,7 @@ let test_handle_query_basic context =
     ~query:"superclasses(Unknown)"
     (Single (Base.Superclasses []))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~handle:"test.py"
     ~source:"a = 2"
     ~query:"path_of_module(test)"
@@ -380,7 +378,7 @@ let test_handle_query_basic context =
         (Base.FoundPath
            (PyrePath.create_relative ~root:local_root ~relative:"test.py" |> PyrePath.absolute)))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~handle:"test.pyi"
     ~source:"a = 2"
     ~query:"path_of_module(test)"
@@ -548,10 +546,8 @@ let test_handle_types_query context =
   let open Query.Response in
   let open Lwt.Infix in
   let open Test in
-  let assert_type_query_response_with_local_root =
-    QueryTestTypes.assert_type_query_response_with_local_root ~context
-  in
-  assert_type_query_response_with_local_root
+  let assert_query_and_response_typed = QueryTestTypes.assert_query_and_response_typed ~context in
+  assert_query_and_response_typed
     ~source:{|
       def foo(x: int = 10, y: str = "bar") -> None:
         a = 42
@@ -613,14 +609,14 @@ let test_handle_types_query context =
   in
   let handle = "test.py" in
   let path = PyrePath.append custom_source_root ~element:handle |> PyrePath.absolute in
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~custom_source_root
     ~handle
     ~source:""
     ~query:"typechecked_paths()"
     (fun _ -> Single (Base.TypecheckedPaths [path]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
        def foo(x: int, y: str) -> str:
@@ -681,7 +677,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
         x = 4
         y = 3
@@ -704,7 +700,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
               def identity(a: int) -> int: ...
             |}
@@ -749,7 +745,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
       def foo():
         if True:
@@ -787,7 +783,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
        def foo():
          for x in [1, 2]:
@@ -831,7 +827,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
         def foo() -> None:
@@ -874,7 +870,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
        with open() as x:
         y = 2
@@ -897,7 +893,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
       while x is True:
         y = 1
@@ -920,7 +916,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
        def foo(x: int) -> str:
@@ -973,7 +969,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
        def foo(x: typing.List[int]) -> None:
         pass
@@ -1018,7 +1014,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
        class Foo:
          x = 1
@@ -1048,7 +1044,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
         # foo.py
@@ -1093,7 +1089,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
       # foo.py
@@ -1123,7 +1119,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|[x for x in [1, 2, 3]]|}
     ~query:"types(path='test.py')"
     (fun _ ->
@@ -1146,7 +1142,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|(x for x in [1, 2, 3])|}
     ~query:"types(path='test.py')"
     (fun _ ->
@@ -1177,7 +1173,7 @@ let test_handle_types_query context =
              };
            ]))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
       name = "Foo"
       age = 42
@@ -1209,7 +1205,7 @@ let test_handle_types_query context =
      the special-case code in CreateDefinitionAndAnnotationLookupVisitor, where we only resolve the
      outermost expression. Note that replacing `x==0` with `x` will include the reference to `x`,
      but compound expressions fail. *)
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|[x for x in [0] if x==0]|}
     ~query:"types(path='test.py')"
     (fun _ ->
@@ -1237,10 +1233,8 @@ let test_handle_references_used_by_file_query context =
   let open Query.Response in
   let open Lwt.Infix in
   let open Test in
-  let assert_type_query_response_with_local_root =
-    QueryTestTypes.assert_type_query_response_with_local_root ~context
-  in
-  assert_type_query_response_with_local_root
+  let assert_query_and_response_typed = QueryTestTypes.assert_query_and_response_typed ~context in
+  assert_query_and_response_typed
     ~source:{|
       def foo(x: int = 10, y: str = "bar") -> None:
         a = 42
@@ -1296,7 +1290,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
        def foo(x: int, y: str) -> str:
@@ -1356,7 +1350,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
         x = 4
         y = 3
@@ -1378,7 +1372,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
               def identity(a: int) -> int: ...
             |}
@@ -1422,7 +1416,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
       def foo():
         if True:
@@ -1459,7 +1453,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
        def foo():
          for x in [1, 2]:
@@ -1501,7 +1495,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
         def foo() -> None:
@@ -1543,7 +1537,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
        with open() as x:
         y = 2
@@ -1565,7 +1559,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
       while x is True:
         y = 1
@@ -1587,7 +1581,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
        def foo(x: int) -> str:
@@ -1639,7 +1633,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
        def foo(x: typing.List[int]) -> None:
         pass
@@ -1683,7 +1677,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
        class Foo:
          x = 1
@@ -1712,7 +1706,7 @@ let test_handle_references_used_by_file_query context =
                ];
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
       # foo.py
@@ -1766,7 +1760,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
       # foo.py
@@ -1797,7 +1791,7 @@ let test_handle_references_used_by_file_query context =
                |> QueryTestTypes.create_types_at_locations;
            }))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
         # foo.py
@@ -1883,7 +1877,7 @@ let test_handle_references_used_by_file_query context =
   >>= fun () ->
   (* Failure occurs because no_validation_on_class_lookup_failure must be true for
      references_used_by_file queries *)
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:{|
         x = 4
         y = 3
@@ -1898,7 +1892,7 @@ let test_handle_references_used_by_file_query context =
             true for all 'references_used_by_file queries'. Please set the value of \
             'no_validation_on_class_lookup_failure' to true."))
   >>= fun () ->
-  assert_type_query_response_with_local_root
+  assert_query_and_response_typed
     ~source:
       {|
         from other_module import subscription
@@ -2206,7 +2200,7 @@ let test_handle_query_callees_with_location context =
       );
     ]
   in
-  assert_queries_with_local_root
+  assert_query_and_response_json
     ~context
     ~sources:
       [
@@ -2377,7 +2371,7 @@ let test_handle_query_defines context =
       );
     ]
   in
-  assert_queries_with_local_root
+  assert_query_and_response_json
     ~context
     ~sources:
       [
@@ -2722,7 +2716,7 @@ let test_expression_level_coverage context =
         build_foo_and_bar_response "foo.py" "foo" "one.py" "one" );
     ]
   in
-  assert_queries_with_local_root
+  assert_query_and_response_json
     ~custom_source_root
     ~context
     ~sources
@@ -2766,7 +2760,7 @@ let test_type_at_location context =
     |} );
     ]
   in
-  assert_queries_with_local_root
+  assert_query_and_response_json
     ~custom_source_root
     ~context
     ~sources
@@ -2919,7 +2913,7 @@ let test_dump_call_graph context =
       );
     ]
   in
-  assert_queries_with_local_root
+  assert_query_and_response_json
     ~custom_source_root
     ~context
     ~sources
@@ -3028,7 +3022,7 @@ let test_global_leaks context =
       );
     ]
   in
-  assert_queries_with_local_root
+  assert_query_and_response_json
     ~custom_source_root
     ~context
     ~sources
