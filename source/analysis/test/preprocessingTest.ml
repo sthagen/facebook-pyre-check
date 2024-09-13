@@ -4342,14 +4342,8 @@ let test_toplevel_assigns =
 
 
 let test_replace_lazy_import =
-  let is_lazy_import { Node.value; _ } =
-    match value with
-    | Expression.Name name -> (
-        match name_to_reference name with
-        | Some reference when Reference.equal reference (Reference.create "lazy_import") -> true
-        | _ -> false)
-    | _ -> false
-  in
+  let my_lazy_import = !&"my.own.lazy_import" in
+  let is_lazy_import = Reference.equal my_lazy_import in
   let assert_replaced source expected _ =
     let parse = parse ~handle:"test.py" in
     assert_source_equal
@@ -4363,36 +4357,124 @@ let test_replace_lazy_import =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_replaced
            {|
+       import my
+       x = my.own.lazy_import("a.b.c")
+    |}
+           {|
+       import my
+       import a.b.c as x
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_replaced
+           {|
+       from my import own
+       x = own.lazy_import("a.b.c")
+    |}
+           {|
+       from my import own
+       import a.b.c as x
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_replaced
+           {|
+       from my.own import lazy_import
        x = lazy_import("a.b.c")
     |}
            {|
+       from my.own import lazy_import
        import a.b.c as x
     |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_replaced
            {|
-       x: Any = lazy_import("a.b.c")
+       import not_my
+       x = not_my.own.lazy_import("a.b.c")
     |}
            {|
+       import not_my
+       x = not_my.own.lazy_import("a.b.c")
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_replaced
+           {|
+       from not_my.own import lazy_import
+       x = lazy_import("a.b.c")
+    |}
+           {|
+       from not_my.own import lazy_import
+       x = lazy_import("a.b.c")
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_replaced
+           {|
+       import my as derp
+       x = derp.own.lazy_import("a.b.c")
+    |}
+           {|
+       import my as derp
        import a.b.c as x
     |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_replaced
            {|
-       x = lazy_import("a.b", "c")
+       import my.own as derp
+       x = derp.lazy_import("a.b.c")
     |}
            {|
+       import my.own as derp
+       import a.b.c as x
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_replaced
+           {|
+       from my import own as derp
+       x = derp.lazy_import("a.b.c")
+    |}
+           {|
+       from my import own as derp
+       import a.b.c as x
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_replaced
+           {|
+       from my.own import lazy_import as derp
+       x = derp("a.b.c")
+    |}
+           {|
+       from my.own import lazy_import as derp
+       import a.b.c as x
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_replaced
+           {|
+       import my
+       x: Any = my.own.lazy_import("a.b.c")
+    |}
+           {|
+       import my
+       import a.b.c as x
+    |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_replaced
+           {|
+       import my
+       x = my.own.lazy_import("a.b", "c")
+    |}
+           {|
+       import my
        from a.b import c as x
     |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_replaced
            {|
+       import my
        if derp:
-         x = lazy_import("a.b.c")
+         x = my.own.lazy_import("a.b.c")
        else:
-         y = lazy_import("a.b", "c")
+         y = my.own.lazy_import("a.b", "c")
     |}
            {|
+       import my
        if derp:
          import a.b.c as x
        else:
@@ -4401,12 +4483,14 @@ let test_replace_lazy_import =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_replaced
            {|
+       import my
        while derp:
-         x = lazy_import("a.b.c")
+         x = my.own.lazy_import("a.b.c")
        else:
-         y = lazy_import("a.b", "c")
+         y = my.own.lazy_import("a.b", "c")
     |}
            {|
+       import my
        while derp:
          import a.b.c as x
        else:
@@ -4415,24 +4499,28 @@ let test_replace_lazy_import =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_replaced
            {|
+       import my
        with derp as d:
-         x = lazy_import("a.b.c")
+         x = my.own.lazy_import("a.b.c")
     |}
            {|
+       import my
        with derp as d:
          import a.b.c as x
     |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_replaced
            {|
+       import my
        try:
-         x = lazy_import("a.b.c")
+         x = my.own.lazy_import("a.b.c")
        except:
-         y = lazy_import("a.b", "c")
+         y = my.own.lazy_import("a.b", "c")
        finally:
-         z: Any = lazy_import("a", "b")
+         z: Any = my.own.lazy_import("a", "b")
     |}
            {|
+       import my
        try:
          import a.b.c as x
        except:
@@ -4443,12 +4531,14 @@ let test_replace_lazy_import =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_replaced
            {|
+       import my
        def foo():
-         x = lazy_import("a.b.c")
+         x = my.own.lazy_import("a.b.c")
        class Foo:
-         y = lazy_import("a.b", "c")
+         y = my.own.lazy_import("a.b", "c")
     |}
            {|
+       import my
        def foo():
          import a.b.c as x
        class Foo:
@@ -4457,57 +4547,10 @@ let test_replace_lazy_import =
     ]
 
 
-let test_replace_mypy_extensions_stub =
-  let given =
-    parse
-      ~handle:"mypy_extensions.pyi"
-      {|
-      from typing import Dict, Type, TypeVar, Optional, Union, Any, Generic
-
-      _T = TypeVar('_T')
-      _U = TypeVar('_U')
-
-      def TypedDict(typename: str, fields: Dict[str, Type[_T]], total: bool = ...) -> Type[dict]:
-        ...
-
-      def Arg(type: _T = ..., name: Optional[str] = ...) -> _T: ...
-      def DefaultArg(type: _T = ..., name: Optional[str] = ...) -> _T: ...
-    |}
-  in
-  let expected =
-    parse
-      ~handle:"mypy_extensions.pyi"
-      {|
-      from typing import Dict, Type, TypeVar, Optional, Union, Any, Generic
-
-      _T = TypeVar('_T')
-      _U = TypeVar('_U')
-
-      TypedDict: typing._SpecialForm = ...
-
-      def Arg(type: _T = ..., name: Optional[str] = ...) -> _T: ...
-      def DefaultArg(type: _T = ..., name: Optional[str] = ...) -> _T: ...
-    |}
-  in
-  test_list
-    [
-      (labeled_test_case __FUNCTION__ __LINE__
-      @@ fun _ ->
-      assert_source_equal
-        ~location_insensitive:true
-        expected
-        (Preprocessing.replace_mypy_extensions_stub given));
-    ]
-
-
 let test_expand_typed_dictionaries =
   let assert_expand ?(handle = "") source expected _ =
-    let expected = parse ~handle ~coerce_special_methods:true expected |> Preprocessing.qualify in
-    let actual =
-      parse ~handle source
-      |> Preprocessing.qualify
-      |> Preprocessing.expand_typed_dictionary_declarations
-    in
+    let expected = parse ~handle ~coerce_special_methods:true expected in
+    let actual = parse ~handle source |> Preprocessing.expand_typed_dictionary_declarations in
     assert_source_equal ~location_insensitive:true expected actual
   in
   test_list
@@ -4804,12 +4847,8 @@ let test_expand_typed_dictionaries =
 
 let test_expand_typed_dictionaries__required_not_required =
   let assert_expand ?(handle = "") source expected _ =
-    let expected = parse ~handle ~coerce_special_methods:true expected |> Preprocessing.qualify in
-    let actual =
-      parse ~handle source
-      |> Preprocessing.qualify
-      |> Preprocessing.expand_typed_dictionary_declarations
-    in
+    let expected = parse ~handle ~coerce_special_methods:true expected in
+    let actual = parse ~handle source |> Preprocessing.expand_typed_dictionary_declarations in
     assert_source_equal ~location_insensitive:true expected actual
   in
   test_list
@@ -4856,12 +4895,8 @@ let test_expand_typed_dictionaries__required_not_required =
 
 let test_sqlalchemy_declarative_base =
   let assert_expand ?(handle = "") source expected _ =
-    let expected = parse ~handle ~coerce_special_methods:true expected |> Preprocessing.qualify in
-    let actual =
-      parse ~handle source
-      |> Preprocessing.qualify
-      |> Preprocessing.expand_sqlalchemy_declarative_base
-    in
+    let expected = parse ~handle ~coerce_special_methods:true expected in
+    let actual = parse ~handle source |> Preprocessing.expand_sqlalchemy_declarative_base in
     assert_source_equal ~location_insensitive:true expected actual
   in
   test_list
@@ -7623,7 +7658,6 @@ let () =
          test_toplevel_assigns;
          test_transform_ast;
          test_replace_lazy_import;
-         test_replace_mypy_extensions_stub;
          test_expand_typed_dictionaries;
          test_expand_typed_dictionaries__required_not_required;
          test_sqlalchemy_declarative_base;

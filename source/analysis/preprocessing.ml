@@ -50,13 +50,61 @@ let expand_relative_imports
   Transform.transform qualifier source |> Transform.source
 
 
+let extract_reference_from_callee_name ~scopes value =
+  let rec collect ~sofar = function
+    | Name.Identifier name -> (
+        let open Scope in
+        match ScopeStack.lookup (Lazy.force scopes) name with
+        | Some
+            {
+              Access.binding =
+                {
+                  Binding.kind =
+                    Binding.Kind.(ImportName (Import.From { module_name; original_name }));
+                  _;
+                };
+              _;
+            } ->
+            let original_name = Option.value original_name ~default:name in
+            Some
+              (List.append (Reference.as_list module_name) (original_name :: sofar)
+              |> Reference.create_from_list)
+        | Some
+            {
+              Access.binding =
+                { Binding.kind = Binding.Kind.(ImportName (Import.Module { original_name })); _ };
+              _;
+            } ->
+            let original_names =
+              Option.value_map original_name ~f:Reference.as_list ~default:[name]
+            in
+            Some (List.append original_names sofar |> Reference.create_from_list)
+        | _ -> Some (Reference.create_from_list (name :: sofar)))
+    | Name.Attribute { base = { Node.value = Expression.Name base_name; _ }; attribute; _ } ->
+        collect ~sofar:(attribute :: sofar) base_name
+    | _ -> None
+  in
+  collect ~sofar:[] value
+
+
+let create_callee_name_matcher ~scopes reference_should_match name =
+  match extract_reference_from_callee_name ~scopes name with
+  | Some reference when reference_should_match reference -> true
+  | _ -> false
+
+
+let create_callee_name_matcher_from_references ~scopes references_to_match =
+  let reference_set = Reference.Set.of_list references_to_match in
+  create_callee_name_matcher ~scopes (Set.mem reference_set)
+
+
 let is_type_variable_definition callee =
   name_is ~name:"typing.TypeVar" callee
   || name_is ~name:"$local_typing$TypeVar" callee
   || name_is ~name:"typing_extensions.IntVar" callee
 
 
-let transform_string_annotation_expression ~relative =
+let transform_string_annotation_expression_after_qualification ~relative =
   let rec transform_expression
       {
         Node.location =
@@ -129,7 +177,93 @@ let transform_string_annotation_expression ~relative =
   transform_expression
 
 
-let transform_annotations ~transform_annotation_expression source =
+let transform_string_annotation_expression_before_qualification ~scopes ~relative =
+  let is_literal =
+    create_callee_name_matcher_from_references
+      ~scopes
+      [Reference.create "typing.Literal"; Reference.create "typing_extensions.Literal"]
+  in
+  let is_type_variable_definition =
+    create_callee_name_matcher_from_references
+      ~scopes
+      [Reference.create "typing.TypeVar"; Reference.create "typing_extensions.TypeVar"]
+  in
+  let rec transform_expression
+      {
+        Node.location =
+          { Location.start = { Location.line = start_line; column = start_column }; _ } as location;
+        value;
+      }
+    =
+    let transform_argument ({ Call.Argument.value; _ } as argument) =
+      { argument with Call.Argument.value = transform_expression value }
+    in
+    let value =
+      match value with
+      | Expression.Name (Name.Attribute ({ base; _ } as name)) ->
+          Expression.Name (Name.Attribute { name with base = transform_expression base })
+      | Expression.Subscript { Subscript.base; index } -> (
+          match base with
+          | { Node.value = Expression.Name name; _ } when is_literal name ->
+              (* Don't transform arguments in Literals. *)
+              value
+          | _ -> Expression.Subscript { base; index = transform_expression index })
+      | Expression.Call
+          {
+            callee = { Node.value = Expression.Name name; _ } as callee;
+            arguments = variable_name :: remaining_arguments;
+          }
+        when is_type_variable_definition name ->
+          Expression.Call
+            {
+              callee;
+              arguments = variable_name :: List.map ~f:transform_argument remaining_arguments;
+            }
+      | List elements -> List (List.map elements ~f:transform_expression)
+      | Constant (Constant.String { StringLiteral.value = string_value; _ }) -> (
+          (* Start at column + 1 since parsing begins after the opening quote of the string
+             literal. *)
+          match
+            PyreMenhirParser.Parser.parse
+              ~start_line
+              ~start_column:(start_column + 1)
+              [string_value ^ "\n"]
+              ~relative
+          with
+          | Ok [{ Node.value = Expression ({ Node.value = Name _; _ } as expression); _ }]
+          | Ok [{ Node.value = Expression ({ Node.value = Subscript _; _ } as expression); _ }]
+          | Ok [{ Node.value = Expression ({ Node.value = BinaryOperator _; _ } as expression); _ }]
+          | Ok [{ Node.value = Expression ({ Node.value = Call _; _ } as expression); _ }] ->
+              Transform.map_location expression ~transform_location:(fun _ -> location)
+              |> Node.value
+          | Ok _
+          | Error _ ->
+              (* TODO(T76231928): replace this silent ignore with something typeCheck.ml can use *)
+              value)
+      | Tuple elements -> Tuple (List.map elements ~f:transform_expression)
+      | _ -> value
+    in
+    { Node.value; location }
+  in
+  transform_expression
+
+
+let transform_annotations ~scopes ~transform_annotation_expression source =
+  let is_type_alias =
+    create_callee_name_matcher_from_references
+      ~scopes
+      [Reference.create "typing.TypeAlias"; Reference.create "typing_extensions.TypeAlias"]
+  in
+  let is_type_variable_definition =
+    create_callee_name_matcher_from_references
+      ~scopes
+      [Reference.create "typing.TypeVar"; Reference.create "typing_extensions.TypeVar"]
+  in
+  let is_cast =
+    create_callee_name_matcher_from_references
+      ~scopes
+      [Reference.create "pyre_extensions.safe_cast"; Reference.create "typing.cast"]
+  in
   let module Transform = Transform.Make (struct
     type t = unit
 
@@ -139,27 +273,12 @@ let transform_annotations ~transform_annotation_expression source =
 
     let transform_assign ~assign:({ Assign.annotation; value = assign_value; _ } as assign) =
       match annotation with
-      | Some
-          {
-            Node.value =
-              Expression.Name
-                (Name.Attribute
-                  {
-                    base =
-                      {
-                        Node.value =
-                          Expression.Name (Name.Identifier ("typing" | "typing_extensions"));
-                        _;
-                      };
-                    attribute = "TypeAlias";
-                    _;
-                  });
-            _;
-          } ->
+      | Some { Node.value = Expression.Name name; _ } when is_type_alias name ->
           { assign with Assign.value = assign_value >>| transform_annotation_expression }
       | _ -> (
           match assign_value >>| Node.value with
-          | Some (Expression.Call { callee; _ }) when is_type_variable_definition callee ->
+          | Some (Expression.Call { callee = { Node.value = Expression.Name name; _ }; _ })
+            when is_type_variable_definition name ->
               {
                 assign with
                 Assign.annotation = annotation >>| transform_annotation_expression;
@@ -231,11 +350,8 @@ let transform_annotations ~transform_annotation_expression source =
       in
       let value =
         match Node.value expression with
-        | Expression.Call { callee; arguments }
-          when name_is ~name:"pyre_extensions.safe_cast" callee
-               || name_is ~name:"typing.cast" callee
-               || name_is ~name:"cast" callee
-               || name_is ~name:"safe_cast" callee ->
+        | Expression.Call { callee = { Node.value = Expression.Name name; _ } as callee; arguments }
+          when is_cast name ->
             Expression.Call { callee; arguments = transform_arguments arguments }
         | value -> value
       in
@@ -246,14 +362,19 @@ let transform_annotations ~transform_annotation_expression source =
 
 
 let expand_string_annotations ({ Source.module_path; _ } as source) =
+  let scopes = lazy (Scope.ScopeStack.create source) in
   transform_annotations
+    ~scopes
     ~transform_annotation_expression:
-      (transform_string_annotation_expression ~relative:(ModulePath.relative module_path))
+      (transform_string_annotation_expression_before_qualification
+         ~scopes
+         ~relative:(ModulePath.relative module_path))
     source
 
 
 let expand_strings_in_annotation_expression =
-  transform_string_annotation_expression ~relative:"$path_placeholder_for_alias_string_annotations"
+  transform_string_annotation_expression_after_qualification
+    ~relative:"$path_placeholder_for_alias_string_annotations"
 
 
 let get_qualified_local_identifier ~qualifier name =
@@ -1960,17 +2081,13 @@ let dequalify_map ({ Source.module_path = { ModulePath.qualifier; _ }; _ } as so
   ImportDequalifier.transform map source |> fun { ImportDequalifier.state; _ } -> state
 
 
-let is_lazy_import { Node.value; _ } =
-  match value with
-  | Expression.Name name -> (
-      match name_to_reference name with
-      | Some reference when Set.mem Recognized.lazy_import_functions (Reference.show reference) ->
-          true
-      | _ -> false)
-  | _ -> false
+let default_is_lazy_import reference =
+  Set.mem Recognized.lazy_import_functions (Reference.show reference)
 
 
-let replace_lazy_import ?(is_lazy_import = is_lazy_import) source =
+let replace_lazy_import ?(is_lazy_import = default_is_lazy_import) source =
+  let scopes = lazy (Scope.ScopeStack.create source) in
+  let is_callee_name_lazy_import = create_callee_name_matcher ~scopes is_lazy_import in
   let module LazyImportTransformer = Transform.MakeStatementTransformer (struct
     type t = unit
 
@@ -1985,7 +2102,7 @@ let replace_lazy_import ?(is_lazy_import = is_lazy_import) source =
                   Node.value =
                     Expression.Call
                       {
-                        callee;
+                        callee = { Node.value = Expression.Name callee_name; _ };
                         arguments =
                           [
                             {
@@ -2005,7 +2122,7 @@ let replace_lazy_import ?(is_lazy_import = is_lazy_import) source =
                 };
             _;
           }
-        when is_lazy_import callee ->
+        when is_callee_name_lazy_import callee_name ->
           ( (),
             [
               Statement.Import
@@ -2034,7 +2151,7 @@ let replace_lazy_import ?(is_lazy_import = is_lazy_import) source =
                   Node.value =
                     Expression.Call
                       {
-                        callee;
+                        callee = { Node.value = Expression.Name callee_name; _ };
                         arguments =
                           [
                             {
@@ -2065,7 +2182,7 @@ let replace_lazy_import ?(is_lazy_import = is_lazy_import) source =
                 };
             _;
           }
-        when is_lazy_import callee ->
+        when is_callee_name_lazy_import callee_name ->
           ( (),
             [
               Statement.Import
@@ -2091,41 +2208,17 @@ let replace_lazy_import ?(is_lazy_import = is_lazy_import) source =
   LazyImportTransformer.transform () source |> LazyImportTransformer.source
 
 
-let replace_mypy_extensions_stub ({ Source.module_path; statements; _ } as source) =
-  if String.is_suffix (ModulePath.relative module_path) ~suffix:"mypy_extensions.pyi" then
-    let typed_dictionary_stub ~location =
-      let node value = Node.create ~location value in
-      Statement.Assign
-        {
-          target = node (Expression.Name (Name.Identifier "TypedDict"));
-          annotation =
-            Some
-              (node
-                 (Expression.Name
-                    (Name.Attribute
-                       {
-                         base = { Node.value = Name (Name.Identifier "typing"); location };
-                         attribute = "_SpecialForm";
-                         special = false;
-                       })));
-          value = Some (node (Expression.Constant Constant.Ellipsis));
-        }
-      |> node
-    in
-    let replace_typed_dictionary_define = function
-      | { Node.location; value = Statement.Define { signature = { name; _ }; _ } }
-        when String.equal (Reference.show name) "TypedDict" ->
-          typed_dictionary_stub ~location
-      | statement -> statement
-    in
-    { source with statements = List.map ~f:replace_typed_dictionary_define statements }
-  else
-    source
-
-
-let expand_typed_dictionary_declarations
-    ({ Source.statements; module_path = { ModulePath.qualifier; _ }; _ } as source)
-  =
+let expand_typed_dictionary_declarations ({ Source.statements; _ } as source) =
+  let scopes = lazy (Scope.ScopeStack.create source) in
+  let is_typed_dictionatry =
+    create_callee_name_matcher_from_references
+      ~scopes
+      [
+        Reference.create "mypy_extensions.TypedDict";
+        Reference.create "typing_extensions.TypedDict";
+        Reference.create "typing.TypedDict";
+      ]
+  in
   let rec expand_typed_dictionaries ({ Node.location; value } as statement) =
     let expanded_declaration =
       let string_literal identifier =
@@ -2140,46 +2233,23 @@ let expand_typed_dictionary_declarations
         | _ -> None
       in
       let base_is_typed_dictionary = function
-        | {
-            Call.Argument.name = None;
-            value =
-              {
-                Node.value =
-                  Name
-                    (Name.Attribute
-                      {
-                        base =
-                          {
-                            Node.value =
-                              Name
-                                (Name.Identifier
-                                  ("mypy_extensions" | "typing_extensions" | "typing"));
-                            _;
-                          };
-                        attribute = "TypedDict";
-                        _;
-                      });
-                _;
-              };
-          } ->
+        | { Call.Argument.name = None; value = { Node.value = Expression.Name name; _ } }
+          when is_typed_dictionatry name ->
             true
         | _ -> false
       in
       let bases_include_typed_dictionary bases = List.exists bases ~f:base_is_typed_dictionary in
       let extract_totality_from_base base =
-        let is_total ~total = String.equal (Identifier.sanitized total) "total" in
         match base with
         | {
-         Call.Argument.name = Some { value = total; _ };
+         Call.Argument.name = Some { value = "total"; _ };
          value = { Node.value = Expression.Constant Constant.True; _ };
-        }
-          when is_total ~total ->
+        } ->
             Some true
         | {
-         Call.Argument.name = Some { value = total; _ };
+         Call.Argument.name = Some { value = "total"; _ };
          value = { Node.value = Expression.Constant Constant.False; _ };
-        }
-          when is_total ~total ->
+        } ->
             Some false
         | _ -> None
       in
@@ -2204,13 +2274,7 @@ let expand_typed_dictionary_declarations
                       (Statement.Assign
                          {
                            target =
-                             Expression.Name
-                               (Name.Attribute
-                                  {
-                                    base = from_reference ~location class_reference;
-                                    attribute = attribute_name;
-                                    special = false;
-                                  })
+                             Expression.Name (Name.Identifier attribute_name)
                              |> Node.create ~location;
                            annotation = Some value;
                            value =
@@ -2283,25 +2347,7 @@ let expand_typed_dictionary_declarations
                   Node.value =
                     Call
                       {
-                        callee =
-                          {
-                            Node.value =
-                              Name
-                                (Name.Attribute
-                                  {
-                                    base =
-                                      {
-                                        Node.value =
-                                          Name
-                                            (Name.Identifier
-                                              ("mypy_extensions" | "typing_extensions" | "typing"));
-                                        _;
-                                      };
-                                    attribute = "TypedDict";
-                                    _;
-                                  });
-                            _;
-                          };
+                        callee = { Node.value = Expression.Name callee_name; _ };
                         arguments =
                           { Call.Argument.name = None; value = name }
                           :: {
@@ -2314,11 +2360,12 @@ let expand_typed_dictionary_declarations
                   _;
                 };
             _;
-          } ->
+          }
+        when is_typed_dictionatry callee_name ->
           extract_string_literal name
           >>= (fun name ->
                 typed_dictionary_class_declaration
-                  ~name:(string_literal (Reference.show (Reference.create ~prefix:qualifier name)))
+                  ~name:(string_literal name)
                   ~parent:(NestingContext.create_toplevel ())
                   ~fields:
                     (List.filter_map entries ~f:(fun entry ->
@@ -2345,12 +2392,14 @@ let expand_typed_dictionary_declarations
               | {
                   Node.value =
                     Statement.Assign
-                      { target = { Node.value = Name name; _ }; annotation = Some annotation; _ };
+                      {
+                        target = { Node.value = Name (Name.Identifier name); _ };
+                        annotation = Some annotation;
+                        _;
+                      };
                   _;
                 } ->
-                  Reference.drop_prefix ~prefix:class_name (name_to_reference_exn name)
-                  |> Reference.single
-                  >>| fun name -> string_literal name, annotation
+                  Some (string_literal name, annotation)
               | _ -> None
             in
             List.filter_map body ~f:extract
@@ -2798,19 +2847,9 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
 
 
 let expand_new_types ({ Source.statements; _ } as source) =
-  let imported_newtype_from_typing =
-    lazy
-      (let open Scope in
-      let scopes = ScopeStack.create source in
-      match ScopeStack.lookup scopes "NewType" with
-      | Some
-          {
-            Access.binding = { Binding.kind = Binding.Kind.(ImportName (Import.From source)); _ };
-            _;
-          }
-        when Reference.equal source (Reference.create "typing") ->
-          true
-      | _ -> false)
+  let scopes = lazy (Scope.ScopeStack.create source) in
+  let is_newtype =
+    create_callee_name_matcher_from_references ~scopes [Reference.create "typing.NewType"]
   in
   let create_class_for_newtype
       ~location
@@ -2871,46 +2910,7 @@ let expand_new_types ({ Source.statements; _ } as source) =
                   Node.value =
                     Call
                       {
-                        callee =
-                          {
-                            Node.value =
-                              Name
-                                (Name.Attribute
-                                  {
-                                    base = { Node.value = Name (Name.Identifier "typing"); _ };
-                                    attribute = "NewType";
-                                    _;
-                                  });
-                            _;
-                          };
-                        arguments =
-                          [
-                            {
-                              Call.Argument.value =
-                                {
-                                  Node.value =
-                                    Constant (Constant.String { StringLiteral.value = name; _ });
-                                  _;
-                                };
-                              _;
-                            };
-                            base_argument;
-                          ];
-                      };
-                  _;
-                };
-            _;
-          } ->
-          create_class_for_newtype ~location ~base_argument (Reference.create name)
-      | Statement.Assign
-          {
-            Assign.value =
-              Some
-                {
-                  Node.value =
-                    Call
-                      {
-                        callee = { Node.value = Name (Name.Identifier "NewType"); _ };
+                        callee = { Node.value = Expression.Name callee_name; _ };
                         arguments =
                           [
                             {
@@ -2929,7 +2929,7 @@ let expand_new_types ({ Source.statements; _ } as source) =
                 };
             _;
           }
-        when Lazy.force imported_newtype_from_typing ->
+        when is_newtype callee_name ->
           create_class_for_newtype ~location ~base_argument (Reference.create name)
       | _ -> value
     in
@@ -2941,7 +2941,7 @@ let expand_new_types ({ Source.statements; _ } as source) =
 let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
   let expand_declarative_base_instance ({ Node.location; value } as statement) =
     let expanded_declaration =
-      let declarative_base_class_declaration ~base_module class_name_reference =
+      let declarative_base_class_declaration class_name =
         let metaclass =
           {
             Call.Argument.name = Some (Node.create ~location "metaclass");
@@ -2949,14 +2949,12 @@ let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
               Node.create
                 ~location
                 (Expression.Name
-                   (create_name
-                      ~location
-                      (Format.asprintf "%s.ext.declarative.DeclarativeMeta" base_module)));
+                   (create_name ~location "sqlalchemy.ext.declarative.DeclarativeMeta"));
           }
         in
         Statement.Class
           {
-            name = class_name_reference;
+            name = Reference.create class_name;
             base_arguments = [metaclass];
             decorators = [];
             parent = NestingContext.create_toplevel ();
@@ -2965,21 +2963,22 @@ let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
             type_params = [];
           }
       in
+      let scopes = lazy (Scope.ScopeStack.create source) in
+      let is_declarative_base =
+        create_callee_name_matcher_from_references
+          ~scopes
+          [Reference.create "sqlalchemy.ext.declarative.declarative_base"]
+      in
       match value with
       | Statement.Assign
           {
-            target = { Node.value = Name name; _ };
+            target = { Node.value = Name (Name.Identifier target); _ };
             value =
-              Some { Node.value = Call { callee = { Node.value = Name function_name; _ }; _ }; _ };
+              Some { Node.value = Call { callee = { Node.value = Name callee_name; _ }; _ }; _ };
             _;
-          } -> (
-          match
-            ( name_to_reference function_name >>| Reference.show,
-              name_to_reference name >>| Reference.delocalize )
-          with
-          | Some "sqlalchemy.ext.declarative.declarative_base", Some class_name_reference ->
-              declarative_base_class_declaration ~base_module:"sqlalchemy" class_name_reference
-          | _ -> value)
+          }
+        when is_declarative_base callee_name ->
+          declarative_base_class_declaration target
       | _ -> value
     in
     { statement with Node.value = expanded_declaration }
@@ -3124,6 +3123,19 @@ module AccessCollector = struct
 
 
   and from_statement collected { Node.value; _ } =
+    (* remove type parameters from the name access set for the parameters and return types *)
+    let type_param_names_set type_params =
+      List.map type_params ~f:(fun { Node.value; _ } ->
+          match value with
+          | Ast.Expression.TypeParam.TypeVar { name; _ } -> name
+          | Ast.Expression.TypeParam.TypeVarTuple name -> name
+          | Ast.Expression.TypeParam.ParamSpec name -> name)
+      |> Identifier.Set.of_list
+    in
+    let remove_bound_names type_param_names_set =
+      Set.filter ~f:(fun { Define.NameAccess.name; _ } -> not (Set.mem type_param_names_set name))
+    in
+
     let from_optional_expression collected =
       Option.value_map ~default:collected ~f:(from_expression collected)
     in
@@ -3146,8 +3158,13 @@ module AccessCollector = struct
         in
         List.fold ~init:collected ~f:from_expression decorators
     | Define
-        { Define.signature = { Define.Signature.decorators; parameters; return_annotation; _ }; _ }
-      ->
+        {
+          Define.signature =
+            { Define.Signature.decorators; parameters; return_annotation; type_params; _ };
+          _;
+        } ->
+        let type_param_names_set = type_param_names_set type_params in
+        let remove_bound_names = remove_bound_names type_param_names_set in
         let collected = List.fold ~init:collected ~f:from_expression decorators in
         let collected =
           List.fold
@@ -3155,9 +3172,17 @@ module AccessCollector = struct
             ~init:collected
             ~f:(fun sofar { Node.value = { Parameter.annotation; value; _ }; _ } ->
               let sofar = from_optional_expression sofar annotation in
+              let sofar = sofar |> remove_bound_names in
               from_optional_expression sofar value)
         in
-        from_optional_expression collected return_annotation
+        let collected_from_return_annotataion =
+          from_optional_expression collected return_annotation
+        in
+        let collected_from_return_annotataion =
+          collected_from_return_annotataion |> remove_bound_names
+        in
+        let collected = Set.union collected_from_return_annotataion collected in
+        collected
     | Delete expressions -> List.fold expressions ~init:collected ~f:from_expression
     | Expression expression -> from_expression collected expression
     | For { For.target; iterator; body; orelse; _ } ->
@@ -3233,11 +3258,12 @@ module AccessCollector = struct
               from_optional_expression collected target)
         in
         from_statements collected body
-    | TypeAlias { TypeAlias.name; value; _ } ->
-        (* TODO migeedz: verify that this is the correct way to handle TypeAliases in this
-           function *)
+    | TypeAlias { TypeAlias.name; value; type_params; _ } ->
+        (* remove type prarams from the accesses *)
+        let type_param_names_set = type_param_names_set type_params in
+        let remove_bound_names = remove_bound_names type_param_names_set in
         let collected = from_expression collected name in
-        from_optional_expression collected (Some value)
+        from_optional_expression collected (Some value) |> remove_bound_names
     | Break
     | Continue
     | Global _
@@ -4722,12 +4748,11 @@ let preprocess_after_wildcards source =
   |> populate_unbound_names
   |> replace_union_shorthand
   |> mangle_private_attributes
-  |> qualify
   |> replace_lazy_import
   |> expand_string_annotations
-  |> replace_mypy_extensions_stub
   |> expand_typed_dictionary_declarations
   |> expand_sqlalchemy_declarative_base
+  |> qualify
   |> expand_named_tuples
   |> inline_six_metaclass
   |> expand_pytorch_register_buffer

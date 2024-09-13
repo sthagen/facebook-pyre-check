@@ -22,8 +22,11 @@ module Binding = struct
 
     module Import = struct
       type t =
-        | From of Reference.t
-        | Module
+        | From of {
+            module_name: Reference.t;
+            original_name: string option;
+          }
+        | Module of { original_name: Reference.t option }
       [@@deriving sexp, compare, hash]
     end
 
@@ -217,23 +220,39 @@ module Binding = struct
         of_statements sofar orelse
     | Statement.Import { Import.imports; from } ->
         let binding_of_import sofar { Node.value = { Import.alias; name }; location } =
-          let import_status =
-            match from with
-            | Some { Node.value = from; _ } -> Kind.Import.From from
-            | None -> Kind.Import.Module
-          in
-          match alias with
-          | Some alias -> { kind = Kind.ImportName import_status; name = alias; location } :: sofar
-          | None -> (
-              match from with
-              | Some _ ->
-                  (* `name` must be a simple name *)
-                  { kind = Kind.ImportName import_status; name = Reference.show name; location }
-                  :: sofar
-              | None ->
-                  (* `import a.b` actually binds name a *)
-                  let name = Reference.as_list name |> List.hd_exn in
-                  { kind = Kind.ImportName import_status; name; location } :: sofar)
+          match from, alias with
+          | None, None ->
+              (* `import a.b` actually binds name a *)
+              let name = Reference.as_list name |> List.hd_exn in
+              { kind = Kind.(ImportName (Import.Module { original_name = None })); name; location }
+              :: sofar
+          | None, Some alias ->
+              {
+                kind = Kind.(ImportName (Import.Module { original_name = Some name }));
+                name = alias;
+                location;
+              }
+              :: sofar
+          | Some { Node.value = from; _ }, None ->
+              (* `name` must be a simple name *)
+              {
+                kind = Kind.(ImportName (Import.From { module_name = from; original_name = None }));
+                name = Reference.show name;
+                location;
+              }
+              :: sofar
+          | Some { Node.value = from; _ }, Some alias ->
+              (* `name` must be a simple name *)
+              {
+                kind =
+                  Kind.(
+                    ImportName
+                      (Import.From
+                         { module_name = from; original_name = Some (Reference.show name) }));
+                name = alias;
+                location;
+              }
+              :: sofar
         in
         List.fold imports ~init:sofar ~f:binding_of_import
     | Match { Match.subject; cases } ->
