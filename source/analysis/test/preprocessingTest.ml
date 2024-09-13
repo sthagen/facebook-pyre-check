@@ -4915,9 +4915,7 @@ let test_sqlalchemy_declarative_base =
 
 let test_transform_ast =
   let assert_expand ?(handle = "qualifier.py") source expected _ =
-    let parse source =
-      parse source ~handle |> Preprocessing.qualify |> Preprocessing.expand_implicit_returns
-    in
+    let parse source = parse source ~handle |> Preprocessing.expand_implicit_returns in
     assert_source_equal
       ~location_insensitive:true
       (parse expected)
@@ -5106,13 +5104,13 @@ let test_transform_ast =
       State = TypeVar("State")
 
       class LoopState(Generic[State], NamedTuple):
-        def __new__(cls, blah: int, state: State) -> NamedTuple: ...
+        def __new__(cls, blah: int, state: State) -> typing.NamedTuple: ...
         def __init__(self, blah: int, state: State) -> None:
           self.blah = blah
           self.state = state
-        _fields: typing.ClassVar[Tuple[str, str]] = ('blah', 'state')
-        blah: Final[int] = ...
-        state: Final[State] = ...
+        _fields: typing.ClassVar[typing.Tuple[str, str]] = ('blah', 'state')
+        blah: typing.Final[int] = ...
+        state: typing.Final[State] = ...
     |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_expand
@@ -5131,13 +5129,13 @@ let test_transform_ast =
       State = TypeVar("State")
 
       class LoopState(NamedTuple, Generic[State]):
-        def __new__(cls, blah: int, state: State) -> NamedTuple: ...
+        def __new__(cls, blah: int, state: State) -> typing.NamedTuple: ...
         def __init__(self, blah: int, state: State) -> None:
           self.blah = blah
           self.state = state
-        _fields: typing.ClassVar[Tuple[str, str]] = ('blah', 'state')
-        blah: Final[int] = ...
-        state: Final[State] = ...
+        _fields: typing.ClassVar[typing.Tuple[str, str]] = ('blah', 'state')
+        blah: typing.Final[int] = ...
+        state: typing.Final[State] = ...
     |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_expand
@@ -6854,10 +6852,8 @@ let test_mangle_private_attributes =
 
 let test_six_metaclass_decorator =
   let assert_replace ?(handle = "test.py") source expected _ =
-    let expected = parse ~handle ~coerce_special_methods:true expected |> Preprocessing.qualify in
-    let actual =
-      parse ~handle source |> Preprocessing.qualify |> Preprocessing.inline_six_metaclass
-    in
+    let expected = parse ~handle ~coerce_special_methods:true expected in
+    let actual = parse ~handle source |> Preprocessing.inline_six_metaclass in
     assert_source_equal ~location_insensitive:true expected actual
   in
   test_list
@@ -6985,10 +6981,8 @@ let test_expand_import_python_calls =
 
 let test_expand_pytorch_register_buffer =
   let assert_expand ?(handle = "test.py") source expected _ =
-    let expected = parse ~handle expected |> Preprocessing.qualify in
-    let actual =
-      parse ~handle source |> Preprocessing.qualify |> Preprocessing.expand_pytorch_register_buffer
-    in
+    let expected = parse ~handle expected in
+    let actual = parse ~handle source |> Preprocessing.expand_pytorch_register_buffer in
     assert_source_equal ~location_insensitive:true expected actual
   in
   test_list
@@ -7089,10 +7083,8 @@ let test_expand_pytorch_register_buffer =
 
 let test_expand_self_type =
   let assert_expand ?(handle = "test.py") source expected _ =
-    let expected = parse ~handle expected |> Preprocessing.qualify in
-    let actual =
-      parse ~handle source |> Preprocessing.qualify |> Preprocessing.SelfType.expand_self_type
-    in
+    let expected = parse ~handle expected in
+    let actual = parse ~handle source |> Preprocessing.SelfType.expand_self_type in
     assert_source_equal ~location_insensitive:true expected actual
   in
   test_list
@@ -7111,7 +7103,7 @@ let test_expand_self_type =
           return self
   |}
            {|
-      _Self_test_Shape__ = typing.TypeVar("_Self_test_Shape__", bound="Shape")
+      _Self_test_Shape__ = typing.TypeVar("_Self_test_Shape__", bound=Shape)
 
       from typing_extensions import Self
 
@@ -7155,7 +7147,7 @@ let test_expand_self_type =
           def set_scale(self, scale: float) -> Self: ...
   |}
            {|
-      _Self_test_Outer_Inner__ = typing.TypeVar("_Self_test_Outer_Inner__", bound="Outer.Inner")
+      _Self_test_Outer_Inner__ = typing.TypeVar("_Self_test_Outer_Inner__", bound=Outer.Inner)
 
       from typing_extensions import Self
 
@@ -7175,8 +7167,8 @@ let test_expand_self_type =
         def set_radius(self, scale: float) -> Self: ...
   |}
            {|
-      _Self_test_Base__ = typing.TypeVar("_Self_test_Base__", bound="Base")
-      _Self_test_Circle__ = typing.TypeVar("_Self_test_Circle__", bound="Circle")
+      _Self_test_Base__ = typing.TypeVar("_Self_test_Base__", bound=Base)
+      _Self_test_Circle__ = typing.TypeVar("_Self_test_Circle__", bound=Circle)
 
       from typing_extensions import Self
 
@@ -7199,7 +7191,7 @@ let test_expand_self_type =
           return cls(config["scale"])
   |}
            {|
-      _Self_test_Shape__ = typing.TypeVar("_Self_test_Shape__", bound="Shape")
+      _Self_test_Shape__ = typing.TypeVar("_Self_test_Shape__", bound=Shape)
 
       from typing_extensions import Self
 
@@ -7229,7 +7221,7 @@ let test_expand_self_type =
           return self
      |}
            {|
-      _Self_test_Merger__ = typing.TypeVar("_Self_test_Merger__", bound="Merger")
+      _Self_test_Merger__ = typing.TypeVar("_Self_test_Merger__", bound=Merger)
 
       from typing_extensions import Self
 
@@ -7254,13 +7246,13 @@ let test_expand_self_type =
         def readonly_method(self: ReadOnly[Self]) -> None: ...
       |}
            {|
-      _Self_test_Foo__ = typing.TypeVar("_Self_test_Foo__", bound="Foo")
+      _Self_test_Foo__ = typing.TypeVar("_Self_test_Foo__", bound=Foo)
 
       from typing_extensions import Self
       from pyre_extensions import ReadOnly
 
       class Foo:
-        def readonly_method(self: ReadOnly[_Self_test_Foo__]) -> None: ...
+        def readonly_method(self: pyre_extensions.ReadOnly[_Self_test_Foo__]) -> None: ...
       |};
       (* ReadOnly method with `typing.Self`. *)
       labeled_test_case __FUNCTION__ __LINE__
@@ -7273,13 +7265,32 @@ let test_expand_self_type =
         def readonly_method(self: ReadOnly[Self]) -> None: ...
       |}
            {|
-      _Self_test_Foo__ = typing.TypeVar("_Self_test_Foo__", bound="Foo")
+      _Self_test_Foo__ = typing.TypeVar("_Self_test_Foo__", bound=Foo)
 
       from typing import Self
       from pyre_extensions import ReadOnly
 
       class Foo:
-        def readonly_method(self: ReadOnly[_Self_test_Foo__]) -> None: ...
+        def readonly_method(self: pyre_extensions.ReadOnly[_Self_test_Foo__]) -> None: ...
+      |};
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_expand
+           ~handle:"typing.pyi"
+           {|
+      Self: _SpecialForm
+      class _PyreReadOnly_: pass
+
+      class Foo:
+        def readonly_method(self: _PyreReadOnly_[Self]) -> None: ...
+      |}
+           {|
+      _Self_typing_Foo__ = typing.TypeVar("_Self_typing_Foo__", bound=Foo)
+
+      Self: _SpecialForm
+      class _PyreReadOnly_: pass
+
+      class Foo:
+        def readonly_method(self: pyre_extensions.ReadOnly[_Self_typing_Foo__]) -> None: ...
       |};
       (* ReadOnly method that does not use `typing_extensions.Self`. *)
       labeled_test_case __FUNCTION__ __LINE__
@@ -7311,7 +7322,7 @@ let test_expand_self_type =
         def readonly_classmethod(cls: ReadOnly[Type[Self]]) -> None: ...
       |}
            {|
-      _Self_test_Foo__ = typing.TypeVar("_Self_test_Foo__", bound="Foo")
+      _Self_test_Foo__ = typing.TypeVar("_Self_test_Foo__", bound=Foo)
 
       from typing import Type
       from typing_extensions import Self
@@ -7319,19 +7330,15 @@ let test_expand_self_type =
 
       class Foo:
         @classmethod
-        def readonly_classmethod(cls: ReadOnly[typing.Type[_Self_test_Foo__]]) -> None: ...
+        def readonly_classmethod(cls: pyre_extensions.ReadOnly[typing.Type[_Self_test_Foo__]]) -> None: ...
       |};
     ]
 
 
 let test_inline_keyword_only_attribute =
   let assert_expand ?(handle = "test.py") source expected _ =
-    let expected = parse ~handle expected |> Preprocessing.qualify in
-    let actual =
-      parse ~handle source
-      |> Preprocessing.qualify
-      |> Preprocessing.add_dataclass_keyword_only_specifiers
-    in
+    let expected = parse ~handle expected in
+    let actual = parse ~handle source |> Preprocessing.add_dataclass_keyword_only_specifiers in
     assert_source_equal ~location_insensitive:true expected actual
   in
   test_list
@@ -7463,8 +7470,8 @@ let test_inline_keyword_only_attribute =
     @dataclass
     class A:
       x: int = field(kw_only=True)
-      y: int = field(kw_only=True, default = ...)
-      z: int = field(kw_only=True, default = ...)
+      y: int = dataclasses.field(kw_only=True, default = ...)
+      z: int = dataclasses.field(kw_only=True, default = ...)
   |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_expand
@@ -7517,7 +7524,7 @@ let test_inline_keyword_only_attribute =
     @dataclass
     class A:
       x: int = 5
-      y: int = field(kw_only=True, default=5)
+      y: int = dataclasses.field(kw_only=True, default=5)
   |};
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_expand
@@ -7534,17 +7541,15 @@ let test_inline_keyword_only_attribute =
 
     @dataclass
     class A:
-      x: List[int] = dataclasses.field(kw_only = True, default = [1], default_factory = list, init = False, repr = False, hash = True, compare = False, metadata = { "stuff":0 })
+      x: List[int] = field(kw_only = True, default = [1], default_factory = list, init = False, repr = False, hash = True, compare = False, metadata = { "stuff":0 })
   |};
     ]
 
 
 let test_expand_enum_functional_syntax =
   let assert_expand ?(handle = "test.py") source expected _ =
-    let expected = parse ~handle expected |> Preprocessing.qualify in
-    let actual =
-      parse ~handle source |> Preprocessing.qualify |> Preprocessing.expand_enum_functional_syntax
-    in
+    let expected = parse ~handle expected in
+    let actual = parse ~handle source |> Preprocessing.expand_enum_functional_syntax in
     assert_source_equal ~location_insensitive:true expected actual
   in
   test_list

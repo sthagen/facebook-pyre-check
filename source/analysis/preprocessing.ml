@@ -93,8 +93,12 @@ let create_callee_name_matcher ~scopes reference_should_match name =
   | _ -> false
 
 
-let create_callee_name_matcher_from_references ~scopes references_to_match =
-  let reference_set = Reference.Set.of_list references_to_match in
+let create_callee_name_matcher_from_references ~qualifier ~scopes references_to_match =
+  let reference_set =
+    references_to_match
+    |> List.map ~f:(Reference.drop_prefix ~prefix:qualifier)
+    |> Reference.Set.of_list
+  in
   create_callee_name_matcher ~scopes (Set.mem reference_set)
 
 
@@ -177,14 +181,16 @@ let transform_string_annotation_expression_after_qualification ~relative =
   transform_expression
 
 
-let transform_string_annotation_expression_before_qualification ~scopes ~relative =
+let transform_string_annotation_expression_before_qualification ~qualifier ~scopes ~relative =
   let is_literal =
     create_callee_name_matcher_from_references
+      ~qualifier
       ~scopes
       [Reference.create "typing.Literal"; Reference.create "typing_extensions.Literal"]
   in
   let is_type_variable_definition =
     create_callee_name_matcher_from_references
+      ~qualifier
       ~scopes
       [Reference.create "typing.TypeVar"; Reference.create "typing_extensions.TypeVar"]
   in
@@ -248,19 +254,26 @@ let transform_string_annotation_expression_before_qualification ~scopes ~relativ
   transform_expression
 
 
-let transform_annotations ~scopes ~transform_annotation_expression source =
+let transform_annotations
+    ~scopes
+    ~transform_annotation_expression
+    ({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source)
+  =
   let is_type_alias =
     create_callee_name_matcher_from_references
+      ~qualifier
       ~scopes
       [Reference.create "typing.TypeAlias"; Reference.create "typing_extensions.TypeAlias"]
   in
   let is_type_variable_definition =
     create_callee_name_matcher_from_references
+      ~qualifier
       ~scopes
       [Reference.create "typing.TypeVar"; Reference.create "typing_extensions.TypeVar"]
   in
   let is_cast =
     create_callee_name_matcher_from_references
+      ~qualifier
       ~scopes
       [Reference.create "pyre_extensions.safe_cast"; Reference.create "typing.cast"]
   in
@@ -367,6 +380,7 @@ let expand_string_annotations ({ Source.module_path; _ } as source) =
     ~scopes
     ~transform_annotation_expression:
       (transform_string_annotation_expression_before_qualification
+         ~qualifier:(ModulePath.qualifier module_path)
          ~scopes
          ~relative:(ModulePath.relative module_path))
     source
@@ -2132,10 +2146,7 @@ let replace_lazy_import ?(is_lazy_import = default_is_lazy_import) source =
                     [
                       {
                         Node.value =
-                          {
-                            Import.name = Reference.create literal;
-                            alias = Some (Identifier.sanitized identifier);
-                          };
+                          { Import.name = Reference.create literal; alias = Some identifier };
                         location;
                       };
                     ];
@@ -2192,10 +2203,7 @@ let replace_lazy_import ?(is_lazy_import = default_is_lazy_import) source =
                     [
                       {
                         Node.value =
-                          {
-                            Import.name = Reference.create import_literal;
-                            alias = Some (Identifier.sanitized identifier);
-                          };
+                          { Import.name = Reference.create import_literal; alias = Some identifier };
                         location;
                       };
                     ];
@@ -2208,10 +2216,13 @@ let replace_lazy_import ?(is_lazy_import = default_is_lazy_import) source =
   LazyImportTransformer.transform () source |> LazyImportTransformer.source
 
 
-let expand_typed_dictionary_declarations ({ Source.statements; _ } as source) =
+let expand_typed_dictionary_declarations
+    ({ Source.statements; module_path = { ModulePath.qualifier; _ }; _ } as source)
+  =
   let scopes = lazy (Scope.ScopeStack.create source) in
   let is_typed_dictionatry =
     create_callee_name_matcher_from_references
+      ~qualifier
       ~scopes
       [
         Reference.create "mypy_extensions.TypedDict";
@@ -2451,50 +2462,24 @@ let expand_typed_dictionary_declarations ({ Source.statements; _ } as source) =
   { source with Source.statements = List.map ~f:expand_typed_dictionaries statements }
 
 
-let expand_named_tuples ({ Source.statements; _ } as source) =
+let expand_named_tuples
+    ({ Source.statements; module_path = { ModulePath.qualifier; _ }; _ } as source)
+  =
+  let scopes = lazy (Scope.ScopeStack.create source) in
+  let is_named_tuple =
+    create_callee_name_matcher_from_references
+      ~qualifier
+      ~scopes
+      [Reference.create "typing.NamedTuple"; Reference.create "collections.namedtuple"]
+  in
   let rec expand_named_tuples ~parent ({ Node.location; value } as statement) =
     let extract_attributes expression =
       match expression with
       | {
-          Node.location;
-          value =
-            Expression.Call
-              {
-                callee =
-                  {
-                    Node.value =
-                      Name
-                        (Name.Attribute
-                          {
-                            base = { Node.value = Name (Name.Identifier "typing"); _ };
-                            attribute = "NamedTuple";
-                            _;
-                          });
-                    _;
-                  };
-                arguments;
-              };
-        }
-      | {
-          Node.location;
-          value =
-            Call
-              {
-                callee =
-                  {
-                    Node.value =
-                      Name
-                        (Name.Attribute
-                          {
-                            base = { Node.value = Name (Name.Identifier "collections"); _ };
-                            attribute = "namedtuple";
-                            _;
-                          });
-                    _;
-                  };
-                arguments;
-              };
-        } ->
+       Node.location;
+       value = Expression.Call { callee = { Node.value = Name callee_name; _ }; arguments };
+      }
+        when is_named_tuple callee_name ->
           let any_annotation =
             Expression.Name (create_name ~location "typing.Any") |> Node.create ~location
           in
@@ -2533,14 +2518,14 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                 List.filter_map arguments ~f:(fun argument ->
                     match argument with
                     | { Call.Argument.name = Some { Node.value = name; _ }; value } ->
-                        Some (Identifier.sanitized name, value, None)
+                        Some (name, value, None)
                     | _ -> None)
             | _ -> []
           in
           Some attributes
       | _ -> None
     in
-    let fields_attribute ~parent ~location attributes =
+    let fields_attribute ~location attributes =
       let node = Node.create ~location in
       let value =
         attributes
@@ -2561,16 +2546,16 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
       in
       Statement.Assign
         {
-          Assign.target = Reference.create ~prefix:parent "_fields" |> from_reference ~location;
+          Assign.target = Node.create ~location (Expression.Name (Name.Identifier "_fields"));
           annotation = Some fields_annotation;
           value = Some value;
         }
       |> Node.create ~location
     in
-    let tuple_attributes ~parent ~location attributes =
+    let tuple_attributes ~location attributes =
       let attribute_statements =
         let attribute { Node.value = name, annotation, _value; location } =
-          let target = Reference.create ~prefix:parent name |> from_reference ~location in
+          let target = Node.create ~location (Expression.Name (Name.Identifier name)) in
           let annotation =
             let location = Node.location annotation in
             {
@@ -2594,9 +2579,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
         in
         List.map attributes ~f:attribute
       in
-      let fields_attribute =
-        List.map attributes ~f:Node.value |> fields_attribute ~parent ~location
-      in
+      let fields_attribute = List.map attributes ~f:Node.value |> fields_attribute ~location in
       fields_attribute :: attribute_statements
     in
     let tuple_constructors ~class_name ~parent ~location attributes =
@@ -2607,7 +2590,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
             | Some { Node.value = Expression.Constant Constant.Ellipsis; _ } -> None
             | _ -> value
           in
-          Parameter.create ?value ~location ~annotation ~name:("$parameter$" ^ name) ()
+          Parameter.create ?value ~location ~annotation ~name ()
         in
         List.map attributes ~f:to_parameter
       in
@@ -2624,11 +2607,11 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                         attribute = "NamedTuple";
                         special = false;
                       })),
-              Parameter.create ~location ~name:"$parameter$cls" () )
+              Parameter.create ~location ~name:"cls" () )
           else
             ( "__init__",
               Node.create ~location (Expression.Constant Constant.NoneLiteral),
-              Parameter.create ~location ~name:"$parameter$self" () )
+              Parameter.create ~location ~name:"self" () )
         in
         let assignments =
           if is_new || List.is_empty parameters then
@@ -2649,11 +2632,8 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                          (Expression.Name
                             (Attribute
                                {
-                                 base =
-                                   Node.create
-                                     (Expression.Name (Identifier "$parameter$self"))
-                                     ~location;
-                                 attribute = name |> Identifier.sanitized;
+                                 base = Node.create (Expression.Name (Identifier "self")) ~location;
+                                 attribute = name;
                                  special = false;
                                }));
                      annotation = None;
@@ -2668,7 +2648,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
           {
             signature =
               {
-                name = Reference.create ~prefix:class_name name;
+                name = Reference.create name;
                 parameters = self_parameter :: parameters;
                 decorators = [];
                 return_annotation = Some return_annotation;
@@ -2694,27 +2674,26 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
     in
     let value =
       match value with
-      | Statement.Assign { Assign.target = { Node.value = Name name; _ }; value = expression; _ }
+      | Statement.Assign
+          { Assign.target = { Node.value = Name (Name.Identifier name); _ }; value = expression; _ }
         -> (
-          let name = name_to_reference name >>| Reference.delocalize in
-          match Option.map expression ~f:extract_attributes |> Option.join, name with
-          | Some attributes, Some name
+          match Option.map expression ~f:extract_attributes |> Option.join with
+          | Some attributes
           (* TODO (T42893621): properly handle the excluded case *)
-            when not (Reference.is_prefix ~prefix:(Reference.create "$parameter$cls") name) ->
+            when not (String.is_prefix ~prefix:"cls" name) ->
               let constructors =
                 tuple_constructors
-                  ~class_name:name
-                  ~parent:(NestingContext.create_class ~parent (Reference.last name))
+                  ~class_name:(Reference.create name)
+                  ~parent:(NestingContext.create_class ~parent name)
                   ~location
                   attributes
               in
               let attributes =
-                List.map attributes ~f:(Node.create ~location)
-                |> tuple_attributes ~parent:name ~location
+                List.map attributes ~f:(Node.create ~location) |> tuple_attributes ~location
               in
               Statement.Class
                 {
-                  Class.name;
+                  Class.name = Reference.create name;
                   base_arguments = [tuple_base ~location];
                   parent;
                   body = constructors @ attributes;
@@ -2725,23 +2704,8 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
           | _ -> value)
       | Class ({ Class.name; base_arguments; parent; body; _ } as original) ->
           let is_named_tuple_primitive = function
-            | {
-                Call.Argument.value =
-                  {
-                    Node.value =
-                      Name
-                        ( Name.Identifier "typing.NamedTuple"
-                        | Name.Attribute
-                            {
-                              base = { Node.value = Name (Name.Identifier "typing"); _ };
-                              attribute = "NamedTuple";
-                              _;
-                            } );
-                    _;
-                  };
-                _;
-              } ->
-                true
+            | { Call.Argument.value = { Node.value = Name callee_name; _ }; _ } ->
+                is_named_tuple callee_name
             | _ -> false
           in
           if List.exists ~f:is_named_tuple_primitive base_arguments then
@@ -2774,7 +2738,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                    ~parent:(NestingContext.create_class ~parent (Reference.last name))
                    ~location
             in
-            let tuple_attributes = tuple_attributes ~parent:name ~location attributes in
+            let tuple_attributes = tuple_attributes ~location attributes in
             Class { original with Class.body = constructors @ tuple_attributes @ other }
           else
             let extract_named_tuples (bases, attributes_sofar) ({ Call.Argument.value; _ } as base) =
@@ -2803,8 +2767,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                         attributes
                   in
                   let attributes =
-                    List.map attributes ~f:(Node.create ~location)
-                    |> tuple_attributes ~parent:name ~location
+                    List.map attributes ~f:(Node.create ~location) |> tuple_attributes ~location
                   in
                   tuple_base ~location :: bases, attributes_sofar @ constructors @ attributes
               | None -> base :: bases, attributes_sofar
@@ -2846,10 +2809,14 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
   }
 
 
-let expand_new_types ({ Source.statements; _ } as source) =
+let expand_new_types ({ Source.statements; module_path = { ModulePath.qualifier; _ }; _ } as source)
+  =
   let scopes = lazy (Scope.ScopeStack.create source) in
   let is_newtype =
-    create_callee_name_matcher_from_references ~scopes [Reference.create "typing.NewType"]
+    create_callee_name_matcher_from_references
+      ~qualifier
+      ~scopes
+      [Reference.create "typing.NewType"]
   in
   let create_class_for_newtype
       ~location
@@ -2938,7 +2905,9 @@ let expand_new_types ({ Source.statements; _ } as source) =
   { source with Source.statements = List.map statements ~f:expand_new_type }
 
 
-let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
+let expand_sqlalchemy_declarative_base
+    ({ Source.statements; module_path = { ModulePath.qualifier; _ }; _ } as source)
+  =
   let expand_declarative_base_instance ({ Node.location; value } as statement) =
     let expanded_declaration =
       let declarative_base_class_declaration class_name =
@@ -2966,6 +2935,7 @@ let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
       let scopes = lazy (Scope.ScopeStack.create source) in
       let is_declarative_base =
         create_callee_name_matcher_from_references
+          ~qualifier
           ~scopes
           [Reference.create "sqlalchemy.ext.declarative.declarative_base"]
       in
@@ -2984,6 +2954,19 @@ let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
     { statement with Node.value = expanded_declaration }
   in
   { source with Source.statements = List.map ~f:expand_declarative_base_instance statements }
+
+
+let type_param_names_set type_params =
+  List.map type_params ~f:(fun { Node.value; _ } ->
+      match value with
+      | Ast.Expression.TypeParam.TypeVar { name; _ } -> name
+      | Ast.Expression.TypeParam.TypeVarTuple name -> name
+      | Ast.Expression.TypeParam.ParamSpec name -> name)
+  |> Identifier.Set.of_list
+
+
+let remove_bound_names type_param_names_set =
+  Set.filter ~f:(fun { Define.NameAccess.name; _ } -> not (Set.mem type_param_names_set name))
 
 
 module NameAccessSet = Set.Make (Define.NameAccess)
@@ -3123,19 +3106,6 @@ module AccessCollector = struct
 
 
   and from_statement collected { Node.value; _ } =
-    (* remove type parameters from the name access set for the parameters and return types *)
-    let type_param_names_set type_params =
-      List.map type_params ~f:(fun { Node.value; _ } ->
-          match value with
-          | Ast.Expression.TypeParam.TypeVar { name; _ } -> name
-          | Ast.Expression.TypeParam.TypeVarTuple name -> name
-          | Ast.Expression.TypeParam.ParamSpec name -> name)
-      |> Identifier.Set.of_list
-    in
-    let remove_bound_names type_param_names_set =
-      Set.filter ~f:(fun { Define.NameAccess.name; _ } -> not (Set.mem type_param_names_set name))
-    in
-
     let from_optional_expression collected =
       Option.value_map ~default:collected ~f:(from_expression collected)
     in
@@ -3571,7 +3541,7 @@ let populate_unbound_names ({ Source.module_path = { ModulePath.qualifier; _ }; 
         let unbound_names = AccessCollector.from_define define |> compute_unbound_names ~scopes in
         let body = transform_statements ~scopes body in
         { Node.location; value = Statement.Define { define with body; unbound_names } }
-    | { Node.location; value = Class ({ Class.body; _ } as class_) } ->
+    | { Node.location; value = Class ({ Class.body; type_params; _ } as class_) } ->
         let top_level_unbound_names =
           let scopes =
             ScopeStack.extend
@@ -3583,6 +3553,14 @@ let populate_unbound_names ({ Source.module_path = { ModulePath.qualifier; _ }; 
         (* Use parent scope here as classes do not open up new scopes for the methods defined in
            it. *)
         let body = transform_statements ~scopes body in
+
+        (* collect class type parameters and remove them from the access set *)
+        let type_param_names_set = type_param_names_set type_params in
+        let remove_bound_names = remove_bound_names type_param_names_set in
+        let top_level_unbound_names =
+          Set.to_list (NameAccessSet.of_list top_level_unbound_names |> remove_bound_names)
+        in
+
         { Node.location; value = Class { class_ with body; top_level_unbound_names } }
     (* The rest is just boilerplates to make sure every nested define gets visited *)
     | { Node.location; value = For for_ } ->
@@ -3794,7 +3772,6 @@ let mangle_private_attributes source =
 
     let should_mangle identifier =
       (* Ensure there are at least two leading underscores and at most one trailing underscore. *)
-      let identifier = Identifier.sanitized identifier in
       let thrift_typing_import_special_case =
         (* TODO(T97954725): Remove special casing *)
         String.equal identifier "__T"
@@ -4055,7 +4032,16 @@ let expand_import_python_calls ({ Source.module_path = { ModulePath.qualifier; _
 
    Preprocess this into `self.foo: Tensor = tensor` to add the attribute and avoid spurious "missing
    attribute" errors. *)
-let expand_pytorch_register_buffer source =
+let expand_pytorch_register_buffer
+    ({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source)
+  =
+  let scopes = lazy (Scope.ScopeStack.create source) in
+  let is_register_buffer =
+    create_callee_name_matcher_from_references
+      ~qualifier
+      ~scopes
+      [Reference.create "self.register_buffer"]
+  in
   let module TransformRegisterBuffer = Transform.MakeStatementTransformer (struct
     type t = unit
 
@@ -4066,7 +4052,7 @@ let expand_pytorch_register_buffer source =
             Node.value =
               Expression.Call
                 {
-                  callee;
+                  callee = { Node.value = Expression.Name callee_name; _ };
                   arguments =
                     {
                       name = None;
@@ -4078,14 +4064,21 @@ let expand_pytorch_register_buffer source =
                         };
                     }
                     :: { value = initial_value; _ }
-                    :: ([] | [{ name = Some { Node.value = "$parameter$persistent"; _ }; _ }]);
+                    :: ([] | [{ name = Some { Node.value = "persistent"; _ }; _ }]);
                 };
             location;
           }
-        when sanitized callee |> name_is ~name:"self.register_buffer" ->
+        when is_register_buffer callee_name ->
           let annotation =
-            Reference.create "torch.Tensor"
-            |> from_reference ~location
+            Node.create
+              ~location
+              (Expression.Name
+                 (Name.Attribute
+                    {
+                      base = Node.create ~location (Expression.Name (Name.Identifier "torch"));
+                      attribute = "Tensor";
+                      special = false;
+                    }))
             |> Option.some_if (not (is_none initial_value))
           in
           ( (),
@@ -4093,9 +4086,16 @@ let expand_pytorch_register_buffer source =
               Statement.Assign
                 {
                   target =
-                    Format.asprintf "$parameter$self.%s" attribute_name
-                    |> Reference.create
-                    |> from_reference ~location;
+                    Node.create
+                      ~location
+                      (Expression.Name
+                         (Name.Attribute
+                            {
+                              base =
+                                Node.create ~location (Expression.Name (Name.Identifier "self"));
+                              attribute = attribute_name;
+                              special = false;
+                            }));
                   annotation;
                   value = Some initial_value;
                 }
@@ -4124,48 +4124,54 @@ let expand_pytorch_register_buffer source =
 
 
 (* Inline the KW_ONLY pseudo-field into field(kw_only) for all subsequent attributes. *)
-let add_dataclass_keyword_only_specifiers source =
-  let is_dataclass_decorator expression =
-    match Decorator.from_expression expression with
-    | Some { Decorator.name = { Node.value = name; _ }; _ } ->
-        Reference.equal name (Reference.create_from_list ["dataclasses"; "dataclass"])
-    | None -> false
+let add_dataclass_keyword_only_specifiers
+    ({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source)
+  =
+  let scopes = lazy (Scope.ScopeStack.create source) in
+  let is_dataclass =
+    create_callee_name_matcher_from_references
+      ~qualifier
+      ~scopes
+      [Reference.create "dataclasses.dataclass"]
+  in
+  let is_dataclass_keyword_only =
+    create_callee_name_matcher_from_references
+      ~qualifier
+      ~scopes
+      [Reference.create "dataclasses.KW_ONLY"]
+  in
+  let is_dataclass_field =
+    create_callee_name_matcher_from_references
+      ~qualifier
+      ~scopes
+      [Reference.create "dataclasses.field"]
+  in
+  let is_dataclass_decorator { Node.value; _ } =
+    match value with
+    | Expression.Name name
+    | Expression.Call { callee = { Node.value = Expression.Name name; _ }; _ } ->
+        is_dataclass name
+    | _ -> false
   in
   let is_keyword_only_pseudo_field statement =
     match statement with
     | {
      Node.value =
        Statement.Assign
-         {
-           target = _;
-           annotation =
-             Some
-               {
-                 Node.value =
-                   Expression.Name
-                     (Name.Attribute
-                       {
-                         base = { Node.location = _; value = Name (Name.Identifier "dataclasses") };
-                         attribute = "KW_ONLY";
-                         special = false;
-                       });
-                 _;
-               };
-           _;
-         };
+         { target = _; annotation = Some { Node.value = Expression.Name name; _ }; _ };
      _;
     } ->
-        true
+        is_dataclass_keyword_only name
     | _ -> false
   in
   let is_not_keyword_only_pseudo_field statement = not (is_keyword_only_pseudo_field statement) in
   let is_keyword_only_argument = function
-    | { Call.Argument.name = Some { value = "$parameter$kw_only"; _ }; _ } -> true
+    | { Call.Argument.name = Some { value = "kw_only"; _ }; _ } -> true
     | _ -> false
   in
   let keyword_only_argument =
     {
-      Call.Argument.name = Some ("$parameter$kw_only" |> Node.create_with_default_location);
+      Call.Argument.name = Some ("kw_only" |> Node.create_with_default_location);
       value = Expression.Constant Constant.True |> Node.create_with_default_location;
     }
   in
@@ -4183,23 +4189,10 @@ let add_dataclass_keyword_only_specifiers source =
           | {
            value =
              Expression.Call
-               {
-                 callee =
-                   {
-                     value =
-                       Expression.Name
-                         (Name.Attribute
-                           {
-                             base = { value = Expression.Name (Name.Identifier "dataclasses"); _ };
-                             attribute = "field";
-                             special = false;
-                           });
-                     _;
-                   } as callee;
-                 arguments;
-               };
+               { callee = { value = Expression.Name callee_name; _ } as callee; arguments };
            _;
-          } ->
+          }
+            when is_dataclass_field callee_name ->
               let arguments =
                 if List.exists arguments ~f:is_keyword_only_argument then
                   arguments
@@ -4213,8 +4206,7 @@ let add_dataclass_keyword_only_specifiers source =
                 [
                   keyword_only_argument;
                   {
-                    Call.Argument.name =
-                      Some ("$parameter$default" |> Node.create_with_default_location);
+                    Call.Argument.name = Some (Node.create_with_default_location "default");
                     value = value |> Node.create_with_default_location;
                   };
                 ]
@@ -4287,16 +4279,19 @@ module SelfType = struct
     Format.asprintf "_Self_%s__" (Reference.as_list class_reference |> String.concat ~sep:"_")
 
 
-  let replace_self_type_with ~synthetic_type_variable =
-    let map_name ~mapper:_ = function
-      | Name.Attribute
-          {
-            base = { Node.value = Name (Identifier ("typing_extensions" | "typing")); location };
-            attribute = "Self";
-            _;
-          } ->
-          create_name_from_reference ~location synthetic_type_variable
-      | name -> name
+  let is_self ~qualifier ~scopes =
+    create_callee_name_matcher_from_references
+      ~qualifier
+      ~scopes
+      [Reference.create "typing.Self"; Reference.create "typing_extensions.Self"]
+
+
+  let replace_self_type_with ~qualifier ~scopes ~synthetic_type_variable =
+    let map_name ~mapper:_ name =
+      if is_self ~qualifier ~scopes name then
+        create_name_from_reference ~location:Location.any synthetic_type_variable
+      else
+        name
     in
     Mapper.map ~mapper:(Mapper.create_transformer ~map_name ())
 
@@ -4305,18 +4300,14 @@ module SelfType = struct
      whether it was changed. But our current `Visit.Transformer` or `Expression.Mapper` APIs aren't
      powerful enough to express such a use. So, we do a separate check to decide whether we want to
      replace Self types in a signature. *)
-  let signature_uses_self_type { Define.Signature.return_annotation; parameters; _ } =
+  let signature_uses_self_type
+      ~qualifier
+      ~scopes
+      { Define.Signature.return_annotation; parameters; _ }
+    =
     let expression_uses_self_type expression =
-      let fold_name ~folder:_ ~state = function
-        | Name.Attribute
-            {
-              base = { Node.value = Name (Identifier ("typing_extensions" | "typing")); _ };
-              attribute = "Self";
-              _;
-            } ->
-            true
-        | _ -> state
-      in
+      let fold_name ~folder:_ ~state name = is_self ~qualifier ~scopes name || state in
+
       let folder = Folder.create_with_uniform_location_fold ~fold_name () in
       Folder.fold ~folder ~state:false expression
     in
@@ -4341,131 +4332,98 @@ module SelfType = struct
 
      Otherwise, if we have a concrete annotation, such as `self: Foo`, then we cannot bind it using
      a synthesized TypeVar. *)
-  let can_bind_self_parameter_using_self_type_variable = function
+  let can_bind_self_parameter_using_self_type_variable ~qualifier ~scopes parameter =
+    let is_readonly =
+      create_callee_name_matcher_from_references
+        ~qualifier
+        ~scopes
+        [Reference.create "typing._PyreReadOnly_"; Reference.create "pyre_extensions.ReadOnly"]
+    in
+    let is_type =
+      create_callee_name_matcher_from_references
+        ~qualifier
+        ~scopes
+        [Reference.create "typing.Type"; Reference.create "typing_extensions.Type"]
+    in
+    let is_self = is_self ~qualifier ~scopes in
+    match parameter with
+    | { Node.value = { Parameter.annotation = None; _ }; _ } :: _ -> true
     | {
         Node.value =
           {
             Parameter.annotation =
-              ( None
-              | Some
-                  {
-                    Node.value =
-                      Subscript
-                        {
-                          base =
-                            {
-                              Node.value =
-                                ( Name
-                                    (Attribute
-                                      {
-                                        base = { Node.value = Name (Identifier "typing"); _ };
-                                        attribute = "_PyreReadOnly_";
-                                        special = false;
-                                      })
-                                | Name
-                                    (Attribute
-                                      {
-                                        base =
-                                          { Node.value = Name (Identifier "pyre_extensions"); _ };
-                                        attribute = "ReadOnly";
-                                        special = false;
-                                      }) );
-                              _;
-                            };
-                          index =
-                            {
-                              Node.value =
-                                ( Name
-                                    (Attribute
-                                      {
-                                        base =
-                                          {
-                                            Node.value =
-                                              Name (Identifier ("typing_extensions" | "typing"));
-                                            _;
-                                          };
-                                        attribute = "Self";
-                                        special = false;
-                                      })
-                                | Subscript
-                                    {
-                                      base =
-                                        {
-                                          Node.value =
-                                            Name
-                                              (Attribute
-                                                {
-                                                  base =
-                                                    {
-                                                      Node.value =
-                                                        Name
-                                                          (Identifier
-                                                            ("typing_extensions" | "typing"));
-                                                      _;
-                                                    };
-                                                  attribute = "Type";
-                                                  special = false;
-                                                });
-                                          _;
-                                        };
-                                      index =
-                                        {
-                                          Node.value =
-                                            Name
-                                              (Attribute
-                                                {
-                                                  base =
-                                                    {
-                                                      Node.value =
-                                                        Name
-                                                          (Identifier
-                                                            ("typing_extensions" | "typing"));
-                                                      _;
-                                                    };
-                                                  attribute = "Self";
-                                                  special = false;
-                                                });
-                                          _;
-                                        };
-                                    } );
-                              _;
-                            };
-                        };
-                    _;
-                  } );
+              Some
+                {
+                  Node.value =
+                    Subscript
+                      {
+                        base = { Node.value = Expression.Name base_name; _ };
+                        index = { Node.value = Expression.Name index_name; _ };
+                      };
+                  _;
+                };
             _;
           };
         _;
       }
       :: _ ->
-        true
+        is_readonly base_name && is_self index_name
+    | {
+        Node.value =
+          {
+            Parameter.annotation =
+              Some
+                {
+                  Node.value =
+                    Subscript
+                      {
+                        base = { Node.value = Expression.Name base_name; _ };
+                        index =
+                          {
+                            Node.value =
+                              Subscript
+                                {
+                                  base = { Node.value = Expression.Name inner_base_name; _ };
+                                  index = { Node.value = Expression.Name inner_index_name; _ };
+                                };
+                            _;
+                          };
+                      };
+                  _;
+                };
+            _;
+          };
+        _;
+      }
+      :: _ ->
+        is_readonly base_name && is_type inner_base_name && is_self inner_index_name
     | _ -> false
 
 
   let replace_self_type_in_signature
       ~qualifier
-      ({ Define.Signature.parameters; return_annotation; legacy_parent; _ } as signature)
+      ~scopes
+      ({ Define.Signature.parameters; return_annotation; parent; _ } as signature)
     =
     match
-      ( legacy_parent,
-        can_bind_self_parameter_using_self_type_variable parameters,
+      ( parent,
+        can_bind_self_parameter_using_self_type_variable ~qualifier ~scopes parameters,
         parameters,
         return_annotation )
     with
-    | ( Some parent,
+    | ( NestingContext.Class _,
         true,
         ({ Node.value = self_or_class_parameter_value; location } as self_or_class_parameter)
         :: rest_parameters,
         return_annotation )
-      when signature_uses_self_type signature ->
-        let mangled_self_type_variable_reference =
-          self_variable_name parent |> get_qualified_local_identifier ~qualifier |> Reference.create
+      when signature_uses_self_type ~qualifier ~scopes signature ->
+        let qualified_parent_name = NestingContext.to_qualifier ~module_name:qualifier parent in
+        let self_type_variable_reference =
+          self_variable_name qualified_parent_name |> Reference.create
         in
         let self_or_class_parameter =
           let annotation =
-            let variable_annotation =
-              from_reference ~location mangled_self_type_variable_reference
-            in
+            let variable_annotation = from_reference ~location self_type_variable_reference in
             if Define.Signature.is_class_method signature then
               subscript ~location "typing.Type" [variable_annotation] |> Node.create ~location
             else
@@ -4494,7 +4452,9 @@ module SelfType = struct
               let annotation =
                 replace_self_type_with
                   annotation
-                  ~synthetic_type_variable:mangled_self_type_variable_reference
+                  ~qualifier
+                  ~scopes
+                  ~synthetic_type_variable:self_type_variable_reference
               in
               { parameter with value = { parameter_value with annotation = Some annotation } }
           | parameter -> parameter
@@ -4508,28 +4468,37 @@ module SelfType = struct
             return_annotation =
               return_annotation
               >>| replace_self_type_with
-                    ~synthetic_type_variable:mangled_self_type_variable_reference;
+                    ~qualifier
+                    ~scopes
+                    ~synthetic_type_variable:self_type_variable_reference;
           },
           parent )
         |> Option.some
     | _ -> None
 
 
-  let make_type_variable_definition ~qualifier class_reference =
+  let make_type_variable_definition ~qualifier nesting_context =
     let location = Location.any in
-    let self_variable_reference =
-      self_variable_name class_reference
-      |> get_qualified_local_identifier ~qualifier
-      |> Reference.create
-    in
+    let qualified_class_name = NestingContext.to_qualifier ~module_name:qualifier nesting_context in
+    let self_variable_name = self_variable_name qualified_class_name in
     Statement.Assign
       {
-        target = from_reference ~location self_variable_reference;
+        target = Node.create ~location (Expression.Name (Name.Identifier self_variable_name));
         value =
           Some
             (Expression.Call
                {
-                 callee = Reference.create "typing.TypeVar" |> from_reference ~location;
+                 callee =
+                   Node.create
+                     ~location
+                     (Expression.Name
+                        (Name.Attribute
+                           {
+                             base =
+                               Node.create ~location (Expression.Name (Name.Identifier "typing"));
+                             attribute = "TypeVar";
+                             special = false;
+                           }));
                  arguments =
                    [
                      {
@@ -4537,23 +4506,17 @@ module SelfType = struct
                        value =
                          Expression.Constant
                            (Constant.String
-                              {
-                                StringLiteral.kind = String;
-                                value = self_variable_name class_reference;
-                              })
+                              { StringLiteral.kind = String; value = self_variable_name })
                          |> Node.create_with_default_location;
                      };
                      {
-                       Call.Argument.name =
-                         Some (Node.create_with_default_location "$parameter$bound");
+                       Call.Argument.name = Some (Node.create_with_default_location "bound");
                        value =
-                         Expression.Constant
-                           (Constant.String
-                              {
-                                StringLiteral.kind = String;
-                                value = Reference.show class_reference;
-                              })
-                         |> Node.create_with_default_location;
+                         from_reference
+                           ~location:Location.any
+                           (NestingContext.to_qualifier
+                              ~module_name:Reference.empty
+                              nesting_context);
                      };
                    ];
                }
@@ -4563,9 +4526,12 @@ module SelfType = struct
     |> Node.create_with_default_location
 
 
+  module NestingContextSet = Set.Make (NestingContext)
+
   let expand_self_type ({ Source.module_path = { qualifier; _ }; _ } as source) =
+    let scopes = lazy (Scope.ScopeStack.create source) in
     let module Transform = Transform.MakeStatementTransformer (struct
-      type classes_with_self = Reference.Set.t
+      type classes_with_self = NestingContextSet.t
 
       type t = classes_with_self
 
@@ -4573,7 +4539,7 @@ module SelfType = struct
         let classes_with_self, value =
           match value with
           | Statement.Define ({ signature; _ } as define) -> (
-              match replace_self_type_in_signature ~qualifier signature with
+              match replace_self_type_in_signature ~qualifier ~scopes signature with
               | Some (signature, class_with_self) ->
                   Set.add sofar class_with_self, Statement.Define { define with signature }
               | None -> sofar, value)
@@ -4583,7 +4549,7 @@ module SelfType = struct
     end)
     in
     let { Transform.source; state = classes_with_self } =
-      Transform.transform Reference.Set.empty source
+      Transform.transform NestingContextSet.empty source
     in
     let type_variable_definitions =
       Set.to_list classes_with_self |> List.map ~f:(make_type_variable_definition ~qualifier)
@@ -4595,11 +4561,15 @@ end
 let expand_enum_functional_syntax
     ({ Source.statements; module_path = { ModulePath.qualifier; _ }; _ } as source)
   =
+  let scopes = lazy (Scope.ScopeStack.create source) in
+  let is_enum =
+    create_callee_name_matcher_from_references ~qualifier ~scopes [Reference.create "enum.Enum"]
+  in
   let expand_enum_functional_declaration
       needs_enum_import_so_far
       ({ Node.location; value } as statement)
     =
-    let enum_class_declaration ~class_reference members =
+    let enum_class_declaration ~class_name members =
       let assignments =
         let field_for_member = function
           | {
@@ -4610,14 +4580,7 @@ let expand_enum_functional_syntax
               _;
             } ->
               let target =
-                Expression.Name
-                  (Name.Attribute
-                     {
-                       base = from_reference ~location class_reference;
-                       attribute = attribute_name;
-                       special = false;
-                     })
-                |> Node.create ~location
+                Expression.Name (Name.Identifier attribute_name) |> Node.create ~location
               in
               let value =
                 Expression.Call
@@ -4646,7 +4609,7 @@ let expand_enum_functional_syntax
       in
       Statement.Class
         {
-          name = class_reference;
+          name = class_name;
           base_arguments;
           decorators = [];
           parent = NestingContext.create_toplevel ();
@@ -4664,18 +4627,7 @@ let expand_enum_functional_syntax
                 Node.value =
                   Call
                     {
-                      callee =
-                        {
-                          Node.value =
-                            Name
-                              (Name.Attribute
-                                {
-                                  base = { Node.value = Name (Name.Identifier "enum"); _ };
-                                  attribute = "Enum";
-                                  _;
-                                });
-                          _;
-                        };
+                      callee = { Node.value = Expression.Name callee_name; _ };
                       arguments =
                         [
                           {
@@ -4702,11 +4654,10 @@ let expand_enum_functional_syntax
                 _;
               };
           _;
-        } ->
+        }
+      when is_enum callee_name ->
         let expanded_declaration =
-          enum_class_declaration
-            ~class_reference:(Reference.create ~prefix:qualifier class_name)
-            members
+          enum_class_declaration ~class_name:(Reference.create class_name) members
         in
         true, { statement with Node.value = expanded_declaration }
     | _ -> needs_enum_import_so_far, statement
@@ -4752,13 +4703,13 @@ let preprocess_after_wildcards source =
   |> expand_string_annotations
   |> expand_typed_dictionary_declarations
   |> expand_sqlalchemy_declarative_base
-  |> qualify
   |> expand_named_tuples
   |> inline_six_metaclass
   |> expand_pytorch_register_buffer
   |> add_dataclass_keyword_only_specifiers
   |> SelfType.expand_self_type
   |> expand_enum_functional_syntax
+  |> qualify
   |> populate_captures
 
 
