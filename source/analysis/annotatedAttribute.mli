@@ -7,48 +7,6 @@
 
 open Ast
 
-module UninstantiatedAnnotation : sig
-  type property_annotation = {
-    self: Type.t option;
-    value: Type.t option;
-  }
-  [@@deriving compare, show, sexp]
-
-  type kind =
-    | Attribute of Type.t
-    | Property of {
-        getter: property_annotation;
-        setter: property_annotation option;
-      }
-  [@@deriving compare, show, sexp]
-
-  type t = {
-    accessed_via_metaclass: bool;
-    kind: kind;
-  }
-  [@@deriving compare, show, sexp]
-end
-
-module InstantiatedAnnotation : sig
-  type t [@@deriving show]
-end
-
-type read_only =
-  | Refinable of { overridable: bool }
-  | Unrefinable
-[@@deriving eq, show, compare, sexp]
-
-type visibility =
-  | ReadOnly of read_only
-  | ReadWrite
-[@@deriving eq, show, compare, sexp]
-
-type initialized =
-  | OnClass
-  | OnlyOnInstance
-  | NotInitialized
-[@@deriving eq, show, compare, sexp]
-
 type invalid_decorator_reason =
   | CouldNotResolve
   | CouldNotResolveArgument of { argument_index: int }
@@ -72,9 +30,58 @@ type problem =
     }
 [@@deriving eq, show, compare, sexp]
 
+type decorated_method = {
+  undecorated_signature: Type.Callable.t;
+  decorators: (Expression.t list, problem) Result.t;
+}
+[@@deriving compare, sexp]
+
+module UninstantiatedAnnotation : sig
+  type property_annotation = {
+    self: Type.t option;
+    value: Type.t option;
+  }
+  [@@deriving compare, sexp]
+
+  type kind =
+    | Attribute of Type.t
+    | DecoratedMethod of decorated_method
+    | Property of {
+        getter: property_annotation;
+        setter: property_annotation option;
+      }
+  [@@deriving compare, sexp]
+
+  type t = {
+    accessed_via_metaclass: bool;
+    kind: kind;
+  }
+  [@@deriving compare, sexp]
+end
+
+module InstantiatedAnnotation : sig
+  type t [@@deriving show]
+end
+
+type read_only =
+  | Refinable of { overridable: bool }
+  | Unrefinable
+[@@deriving eq, show, compare, sexp]
+
+type visibility =
+  | ReadOnly of read_only
+  | ReadWrite
+[@@deriving eq, show, compare, sexp]
+
+type initialized =
+  | OnClass
+  | OnlyOnInstance
+  | NotInitialized
+[@@deriving eq, show, compare, sexp]
+
 type 'a t [@@deriving eq, show, compare, sexp]
 
-type uninstantiated = UninstantiatedAnnotation.t t [@@deriving show, compare, sexp]
+type uninstantiated = UninstantiatedAnnotation.t t [@@deriving compare, sexp]
 
 type instantiated = InstantiatedAnnotation.t t [@@deriving eq, show, compare, sexp]
 
@@ -92,7 +99,6 @@ val create
   property:bool ->
   uninstantiated_annotation:Type.t option ->
   undecorated_signature:Type.Callable.t option ->
-  problem:problem option ->
   instantiated
 
 val create_uninstantiated
@@ -107,7 +113,6 @@ val create_uninstantiated
   visibility:visibility ->
   property:bool ->
   undecorated_signature:Type.Callable.t option ->
-  problem:problem option ->
   'a t
 
 val annotation : instantiated -> TypeInfo.Unit.t
@@ -152,11 +157,12 @@ val with_visibility : 'a t -> visibility:visibility -> 'a t
 
 val undecorated_signature : 'a t -> Type.Callable.t option
 
-val problem : 'a t -> problem option
+val problem : instantiated -> problem option
 
 val instantiate
   :  'a t ->
   annotation:Type.t ->
   original_annotation:Type.t ->
   uninstantiated_annotation:Type.t option ->
+  problem:problem option ->
   instantiated

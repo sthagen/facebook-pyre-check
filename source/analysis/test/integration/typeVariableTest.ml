@@ -14,6 +14,7 @@ let test_type_variable_scoping =
     [
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
+           ~handle:"test.pyi"
            {|
               from typing import TypeVar
               T = TypeVar("T")
@@ -113,6 +114,28 @@ let test_type_variable_scoping =
              "Revealed type [-1]: Revealed type for `test.func2` is \
               `typing.Callable(func2)[[Keywords(Variable[T])], Variable[T]]`.";
            ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           ~other_sources:
+             [
+               {
+                 Test.handle = "foo.pyi";
+                 source =
+                   {|
+                     from typing import overload
+                     @overload
+                     def f[T](y: list[T]) -> T: ...
+                     @overload
+                     def f(y: str) -> str: ...
+                   |};
+               };
+             ]
+           {|
+             import foo
+             x1: int = foo.f([42])
+             x2: str = foo.f("foo")
+           |}
+           [];
     ]
 
 
