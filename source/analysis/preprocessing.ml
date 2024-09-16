@@ -2480,24 +2480,55 @@ let expand_named_tuples
        value = Expression.Call { callee = { Node.value = Name callee_name; _ }; arguments };
       }
         when is_named_tuple callee_name ->
+          let should_rename_invalid_attributes =
+            let extract_rename_argument argument =
+              match argument with
+              | {
+               Call.Argument.name = Some { value = "rename"; _ };
+               value = { Node.value = Expression.Constant Constant.True; _ };
+              } ->
+                  Some true
+              | {
+               Call.Argument.name = Some { value = "rename"; _ };
+               value = { Node.value = Expression.Constant Constant.False; _ };
+              } ->
+                  Some false
+              | _ -> None
+            in
+            List.find_map arguments ~f:extract_rename_argument |> Option.value ~default:false
+          in
           let any_annotation =
             Expression.Name (create_name ~location "typing.Any") |> Node.create ~location
           in
+          let attribute_default_values =
+            let extract_default_values argument =
+              match argument with
+              | {
+               Call.Argument.name = Some { value = "defaults"; _ };
+               value = { Node.value = Expression.Tuple items; _ };
+              } ->
+                  Some items
+              | _ -> None
+            in
+            List.find_map arguments ~f:extract_default_values |> Option.value ~default:[]
+          in
           let attributes =
             match arguments with
-            | [
-             _;
-             {
-               Call.Argument.value =
-                 { value = Constant (Constant.String { StringLiteral.value = serialized; _ }); _ };
-               _;
-             };
-            ] ->
+            | _
+              :: {
+                   Call.Argument.value =
+                     {
+                       value = Constant (Constant.String { StringLiteral.value = serialized; _ });
+                       _;
+                     };
+                   _;
+                 }
+              :: _ ->
                 Str.split (Str.regexp "[, ]") serialized
                 |> List.map ~f:(fun name -> name, any_annotation, None)
                 |> List.filter ~f:(fun (name, _, _) -> not (String.is_empty name))
-            | [_; { Call.Argument.value = { Node.value = List arguments; _ }; _ }]
-            | [_; { Call.Argument.value = { Node.value = Tuple arguments; _ }; _ }] ->
+            | _ :: { Call.Argument.value = { Node.value = List arguments; _ }; _ } :: _
+            | _ :: { Call.Argument.value = { Node.value = Tuple arguments; _ }; _ } :: _ ->
                 let get_name ({ Node.value; _ } as expression) =
                   match value with
                   | Expression.Constant (Constant.String { StringLiteral.value = name; _ }) ->
@@ -2517,12 +2548,52 @@ let expand_named_tuples
             | _ :: arguments ->
                 List.filter_map arguments ~f:(fun argument ->
                     match argument with
+                    | {
+                     Call.Argument.name =
+                       Some { Node.value = "$parameter$rename" | "$parameter$defaults"; _ };
+                     _;
+                    } ->
+                        None
                     | { Call.Argument.name = Some { Node.value = name; _ }; value } ->
                         Some (name, value, None)
                     | _ -> None)
             | _ -> []
           in
-          Some attributes
+          (* https://docs.python.org/3/library/collections.html#namedtuple-factory-function-for-tuples-with-named-fields
+             if rename=True is set, invalid or duplicate field names are renamed to their index with
+             an underscore prefix *)
+          let rename_attributes attributes =
+            Core.List.foldi
+              ~f:(fun idx (attributes, seen) ((name, annotation, value) as attribute) ->
+                if
+                  should_rename_invalid_attributes
+                  && (Set.mem seen name || not (Identifier.is_valid_identifier name))
+                then
+                  ("_" ^ string_of_int idx, annotation, value) :: attributes, seen
+                else
+                  attribute :: attributes, Set.add seen name)
+              ~init:([], Identifier.Set.empty)
+              attributes
+            |> fst
+          in
+          let rec assign_attribute_defaults defaults attributes =
+            match attributes, defaults with
+            | _, []
+            | [], _ ->
+                attributes
+            | (name, annotation, None) :: attributes, default :: defaults ->
+                (name, annotation, Some default) :: assign_attribute_defaults defaults attributes
+            | attribute :: attributes, defaults ->
+                attribute :: assign_attribute_defaults defaults attributes
+          in
+          (* rename_attributes reverses the list of attributes, but that's OK since we want to
+             assign default values starting from the end. After default values are assigned, we
+             reverse the attributes so they are ordered correctly. *)
+          Some
+            (attributes
+            |> rename_attributes
+            |> assign_attribute_defaults (List.rev attribute_default_values)
+            |> List.rev)
       | _ -> None
     in
     let fields_attribute ~location attributes =

@@ -44,13 +44,15 @@
   literalTest
   methodTest
   modeTest
+  namedTupleTest
   overloadTest
   overrideTest
   parseErrorTest
   protocolTest
+  pyreReadOnlyTest
   redundantCastTest
   typeRefinementTest
-  readOnlyTypeCheckTest
+  readOnlyTest
   returnTest
   revealLocalsTest
   revealTypeTest

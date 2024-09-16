@@ -49,14 +49,6 @@ module AttributeReadOnly : sig
 
   val class_metadata_environment : t -> ClassSuccessorMetadataEnvironment.ReadOnly.t
 
-  val get_typed_dictionary
-    :  t ->
-    ?dependency:DependencyKey.registered ->
-    Type.t ->
-    Type.TypedDictionary.t option
-
-  val full_order : ?dependency:DependencyKey.registered -> t -> TypeOrder.order
-
   val check_invalid_type_arguments
     :  t ->
     ?dependency:DependencyKey.registered ->
@@ -71,6 +63,45 @@ module AttributeReadOnly : sig
     Expression.expression Node.t ->
     Type.t
 
+  val resolve_define_undecorated
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    callable_name:Reference.t option ->
+    implementation:Define.Signature.t option ->
+    overloads:Define.Signature.t list ->
+    scoped_type_variables:Type.Variable.t Identifier.Map.t option ->
+    AnnotatedAttribute.decorated_method
+
+  val metaclass : t -> ?dependency:DependencyKey.registered -> Type.Primitive.t -> Type.t option
+
+  val uninstantiated_attributes
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    transitive:bool ->
+    accessed_through_class:bool ->
+    include_generated_attributes:bool ->
+    ?special_method:bool ->
+    string ->
+    AnnotatedAttribute.uninstantiated list option
+
+  val constraints
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    target:Type.Primitive.t ->
+    ?arguments:Type.Argument.t list ->
+    instantiated:Type.t ->
+    unit ->
+    TypeConstraints.Solution.t
+
+  val instantiate_attribute
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    accessed_through_class:bool ->
+    accessed_through_readonly:bool ->
+    ?instantiated:Type.t ->
+    AnnotatedAttribute.uninstantiated ->
+    AnnotatedAttribute.instantiated
+
   val attribute
     :  t ->
     ?dependency:DependencyKey.registered ->
@@ -84,26 +115,13 @@ module AttributeReadOnly : sig
     string ->
     AnnotatedAttribute.instantiated option
 
-  val uninstantiated_attributes
+  val get_typed_dictionary
     :  t ->
     ?dependency:DependencyKey.registered ->
-    transitive:bool ->
-    accessed_through_class:bool ->
-    include_generated_attributes:bool ->
-    ?special_method:bool ->
-    string ->
-    AnnotatedAttribute.uninstantiated list option
+    Type.t ->
+    Type.TypedDictionary.t option
 
-  val metaclass : t -> ?dependency:DependencyKey.registered -> Type.Primitive.t -> Type.t option
-
-  val constraints
-    :  t ->
-    ?dependency:DependencyKey.registered ->
-    target:Type.Primitive.t ->
-    ?arguments:Type.Argument.t list ->
-    instantiated:Type.t ->
-    unit ->
-    TypeConstraints.Solution.t
+  val full_order : ?dependency:DependencyKey.registered -> t -> TypeOrder.order
 
   val resolve_define
     :  t ->
@@ -113,15 +131,6 @@ module AttributeReadOnly : sig
     overloads:Define.Signature.t list ->
     scoped_type_variables:Type.Variable.t Identifier.Map.t option ->
     resolved_define
-
-  val resolve_define_undecorated
-    :  t ->
-    ?dependency:DependencyKey.registered ->
-    callable_name:Reference.t option ->
-    implementation:Define.Signature.t option ->
-    overloads:Define.Signature.t list ->
-    scoped_type_variables:Type.Variable.t Identifier.Map.t option ->
-    AnnotatedAttribute.decorated_method
 
   val signature_select
     :  t ->
@@ -150,15 +159,6 @@ module AttributeReadOnly : sig
     left:Type.t ->
     right:Type.t ->
     bool
-
-  val instantiate_attribute
-    :  t ->
-    ?dependency:DependencyKey.registered ->
-    accessed_through_class:bool ->
-    accessed_through_readonly:bool ->
-    ?instantiated:Type.t ->
-    AnnotatedAttribute.uninstantiated ->
-    AnnotatedAttribute.instantiated
 
   val global : t -> ?dependency:DependencyKey.registered -> Reference.t -> Global.t option
 end
