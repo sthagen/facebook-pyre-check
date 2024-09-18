@@ -1931,6 +1931,22 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           Some table
       | _ -> None
 
+    (* Get all the uninstantiated attribute tables for a class.
+     *
+     * This normally produces a Sequence.t (which is lazy) of the uninstantiated attribute table
+     * for each class in the method resolution order (MRO) of the class with name `class_name`,
+     * plus potentially the metaclass hierarchy as well.
+     *
+     * There are a few flags controlling behavior; in particular
+     * - if `transistive` is false we don't traverse the MRO, only the current
+     *   class.
+     * - if `accessed_through_class` and `special_method` are both set, then we will skip straight
+     *   to the metaclass hierarchy.
+     *
+     * Note that the behavior of jumping straight to the metaclass hierarchy
+     * on special methods is consistent with the runtime, see more details at
+     * https://docs.python.org/3/reference/datamodel.html.
+     *)
     method uninstantiated_attribute_tables
         ~cycle_detections
         ~transitive
@@ -1985,6 +2001,13 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       in
       get_class_metadata class_name >>| handle
 
+    (* Collect all of the uninstantiated attributes from all the individual
+     * uninstantiated attribute tables into one big list.
+     *
+     * This operation is expensive and should be avoided when type checking
+     * dependent code; it should only be used when performing once-per-class
+     * checks (e.g. in typeCheck.ml when checking the body of a class).
+     *)
     method uninstantiated_attributes
         ~cycle_detections
         ~transitive
@@ -2013,21 +2036,30 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       >>| fst
       >>| List.rev
 
-    method constraints ~cycle_detections ~target ?arguments ~instantiated () =
+    (* Take a type `current_type` and the name `source_type_name` of an ancestor class (potentially a
+     * metaclass) of that type, compute the constraints on the type parameters of the source
+     * type (expressed as `Type.Variable.t` values).
+     *
+     * These constraints represent the substitution needed to take an uninstantiated
+     * attribute coming from the source type's attribute table (which will be expressed in terms of the
+     * parameters of that type, as variables) and instantiate it for `current_type`.
+     *
+     * The implementation has two steps:
+     * - take the source type and parameterize it by its own parameters, as arguments
+     * - solve for (parameterized source type) <: (current_type)
+     *)
+    method constraints_for_instantiate ~cycle_detections ~source_type_name ~current_type () =
       let Queries.{ generic_parameters_as_variables; _ } = queries in
-      let arguments =
-        match arguments with
-        | None ->
-            generic_parameters_as_variables target
-            >>| List.map ~f:Type.Variable.to_argument
-            |> Option.value ~default:[]
-        | Some arguments -> arguments
+      let parameters_as_arguments =
+        generic_parameters_as_variables source_type_name
+        >>| List.map ~f:Type.Variable.to_argument
+        |> Option.value ~default:[]
       in
-      if List.is_empty arguments then
+      if List.is_empty parameters_as_arguments then
         TypeConstraints.Solution.empty
       else
-        let right = Type.parametric target arguments in
-        match instantiated, right with
+        let right = Type.parametric source_type_name parameters_as_arguments in
+        match current_type, right with
         | Type.Primitive name, Parametric { name = right_name; _ } when String.equal name right_name
           ->
             (* TODO(T42259381) This special case is only necessary because constructor calls
@@ -2038,7 +2070,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             let order = self#full_order ~cycle_detections in
             TypeOrder.OrderedConstraintsSet.add_and_simplify
               ConstraintsSet.empty
-              ~new_constraint:(LessOrEqual { left = instantiated; right })
+              ~new_constraint:(LessOrEqual { left = current_type; right })
               ~order
             |> TypeOrder.OrderedConstraintsSet.solve ~order
             (* TODO(T39598018): error in this case somehow, something must be wrong *)
@@ -2124,7 +2156,13 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         match instantiated with
         | None -> annotation
         | Some instantiated -> (
-            let solution = self#constraints ~target:class_name ~instantiated ~cycle_detections () in
+            let solution =
+              self#constraints_for_instantiate
+                ~source_type_name:class_name
+                ~current_type:instantiated
+                ~cycle_detections
+                ()
+            in
             let instantiate annotation = TypeConstraints.Solution.instantiate solution annotation in
             match annotation with
             | `Attribute annotation -> `Attribute (instantiate annotation)
@@ -3950,8 +3988,6 @@ module ReadOnly = struct
 
   let metaclass = add_all_caches_and_empty_cycle_detections (fun o -> o#metaclass)
 
-  let constraints = add_all_caches_and_empty_cycle_detections (fun o -> o#constraints)
-
   let resolve_define = add_all_caches_and_empty_cycle_detections (fun o -> o#resolve_define)
 
   let resolve_define_undecorated =
@@ -3987,6 +4023,12 @@ module ReadOnly = struct
       OutgoingDataComputation.Queries.
         { global_annotation = global_annotation ?dependency read_only }
       reference
+
+
+  module Testing = struct
+    let constraints_for_instantiate =
+      add_all_caches_and_empty_cycle_detections (fun o -> o#constraints_for_instantiate)
+  end
 end
 
 module AttributeReadOnly = ReadOnly
