@@ -582,7 +582,7 @@ let test_all_attributes =
       ~parent
       name
     =
-    AnnotatedAttribute.create
+    AnnotatedAttribute.create_instantiated
       ~abstract:false
       ~annotation
       ~original_annotation:annotation
@@ -778,7 +778,7 @@ let test_attribute_from_class_name =
       | _ -> None
     in
     Some
-      (AnnotatedAttribute.create
+      (AnnotatedAttribute.create_instantiated
          ~annotation
          ~original_annotation:annotation
          ~uninstantiated_annotation
@@ -1068,7 +1068,7 @@ let test_invalid_type_parameters =
       GlobalResolution.create global_environment
     in
     let actual_mismatches, actual_transformed_type =
-      GlobalResolution.check_invalid_type_arguments global_resolution given_type
+      GlobalResolution.validate_and_sanitize_type_arguments global_resolution given_type
     in
     assert_equal
       ~cmp:[%equal: Type.t]
@@ -1095,7 +1095,7 @@ let test_invalid_type_parameters =
       in
       parse_single_expression ~preprocess:true annotation
       (* Avoid `GlobalResolution.parse_annotation` because that calls
-         `check_invalid_type_arguments`. *)
+         `validate_and_sanitize_type_arguments`. *)
       |> Type.create ~variables:variable_aliases ~aliases:Type.resolved_empty_aliases
     in
     assert_invalid_type_parameters_direct
@@ -1900,7 +1900,7 @@ let test_metaclasses =
 let test_overrides =
   let create_simple_callable_attribute ?(initialized = Attribute.OnClass) ~signature ~parent name =
     let annotation = Type.Callable signature in
-    AnnotatedAttribute.create
+    AnnotatedAttribute.create_instantiated
       ~abstract:false
       ~annotation
       ~original_annotation:annotation

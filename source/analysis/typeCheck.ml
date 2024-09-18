@@ -460,7 +460,7 @@ module State (Context : Context) = struct
 
   let add_invalid_type_parameters_errors ~resolution ~location ~errors annotation =
     let mismatches, annotation =
-      GlobalResolution.check_invalid_type_arguments resolution annotation
+      GlobalResolution.validate_and_sanitize_type_arguments resolution annotation
     in
     let add_error errors mismatch =
       match annotation with
@@ -5822,6 +5822,25 @@ module State (Context : Context) = struct
                     else
                       resolution, errors
                 | _ -> resolution, errors)
+            | Name (Attribute { Name.Attribute.base; _ }) ->
+                let { Resolved.resolved; _ } = forward_expression ~resolution base in
+                if
+                  NamedTuple.is_named_tuple ~global_resolution ~annotation:resolved
+                  && not (Type.is_any resolved)
+                then
+                  resolution, emit_error ~errors ~location ~kind:Error.TupleDelete
+                else
+                  resolution, errors
+            | Subscript { Subscript.base; _ } ->
+                let { Resolved.resolved; _ } = forward_expression ~resolution base in
+                if
+                  (Type.is_tuple resolved
+                  || NamedTuple.is_named_tuple ~global_resolution ~annotation:resolved)
+                  && not (Type.is_any resolved)
+                then
+                  resolution, emit_error ~errors ~location ~kind:Error.TupleDelete
+                else
+                  resolution, errors
             | _ -> resolution, errors
           in
           resolution, List.append errors errors_sofar
@@ -7712,7 +7731,9 @@ module State (Context : Context) = struct
         let unarize unary =
           let fix_invalid_arguments_in_bounds unary =
             match
-              GlobalResolution.check_invalid_type_arguments global_resolution (Type.Variable unary)
+              GlobalResolution.validate_and_sanitize_type_arguments
+                global_resolution
+                (Type.Variable unary)
             with
             | _, Type.Variable unary -> unary
             | _ -> failwith "did not transform"

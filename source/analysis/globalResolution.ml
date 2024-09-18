@@ -162,8 +162,8 @@ let get_variable ({ dependency; _ } as resolution) =
   TypeAliasEnvironment.ReadOnly.get_variable ?dependency (alias_environment resolution)
 
 
-let parse_annotation_without_validating_type_parameters ({ dependency; _ } as resolution) =
-  TypeAliasEnvironment.ReadOnly.parse_annotation_without_validating_type_parameters
+let parse_annotation_without_sanitizing_type_arguments ({ dependency; _ } as resolution) =
+  TypeAliasEnvironment.ReadOnly.parse_annotation_without_sanitizing_type_arguments
     ?dependency
     (alias_environment resolution)
 
@@ -306,8 +306,8 @@ let signature_select ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.signature_select ?dependency (attribute_resolution resolution)
 
 
-let check_invalid_type_arguments ({ dependency; _ } as resolution) =
-  AttributeResolution.ReadOnly.check_invalid_type_arguments
+let validate_and_sanitize_type_arguments ({ dependency; _ } as resolution) =
+  AttributeResolution.ReadOnly.validate_and_sanitize_type_arguments
     (attribute_resolution resolution)
     ?dependency
 
@@ -395,7 +395,7 @@ let attribute_from_class_name
     | None -> (
         match get_class_summary resolution class_name with
         | Some _ ->
-            AnnotatedAttribute.create
+            AnnotatedAttribute.create_instantiated
               ~annotation:Type.Top
               ~original_annotation:Type.Top
               ~uninstantiated_annotation:(Some Type.Top)

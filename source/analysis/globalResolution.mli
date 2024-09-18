@@ -57,7 +57,7 @@ val get_type_alias : t -> Type.Primitive.t -> Type.t option
 
 val get_variable : t -> Type.Primitive.t -> Type.Variable.t option
 
-val parse_annotation_without_validating_type_parameters
+val parse_annotation_without_sanitizing_type_arguments
   :  t ->
   ?modify_aliases:(?replace_unbound_parameters_with_any:bool -> Type.t -> Type.t) ->
   variables:(string -> Type.Variable.t option) ->
@@ -165,7 +165,7 @@ val signature_select
   self_argument:Type.t option ->
   SignatureSelectionTypes.instantiated_return_annotation
 
-val check_invalid_type_arguments
+val validate_and_sanitize_type_arguments
   :  t ->
   Type.t ->
   AttributeResolution.type_parameters_mismatch list * Type.t

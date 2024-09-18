@@ -91,7 +91,7 @@ module Queries = struct
       names:string list -> ClassSummary.t Ast.Node.t -> Ast.Statement.Decorator.t option;
     exists_matching_class_decorator: names:string list -> ClassSummary.t Ast.Node.t -> bool;
     class_exists: string -> bool;
-    parse_annotation_without_validating_type_parameters:
+    parse_annotation_without_sanitizing_type_arguments:
       ?modify_aliases:(?replace_unbound_parameters_with_any:bool -> Type.t -> Type.t) ->
       variables:(string -> Type.Variable.t option) ->
       ?allow_untracked:bool ->
@@ -262,7 +262,7 @@ end
 let apply_dataclass_transforms_to_table
     ~queries:(Queries.{ get_class_summary; successors; _ } as queries)
     ~definition
-    create_attribute
+    create_uninstantiated_attribute
     instantiate_attribute
     class_name
     table
@@ -387,7 +387,7 @@ let apply_dataclass_transforms_to_table
               | { Node.location; _ } ->
                   Node.create (Expression.Constant Constant.Ellipsis) ~location
             in
-            ( create_attribute
+            ( create_uninstantiated_attribute
                 ~scoped_type_variables:None
                 ~parent
                 ?defined:None
@@ -782,7 +782,18 @@ let callable_call_special_cases
 
 class base ~queries:(Queries.{ controls; _ } as queries) =
   object (self)
-    method check_invalid_type_arguments
+    (* Given a `Type.t`, recursively search for parameteric forms with invalid
+     * type arguments. If we find such arguments:
+     * - (validate) record the problems in a
+     *   `TypeParameterValidationTypes.type_parameters_mismatch list`
+     * - (sanitize) convert any problematic arguments to gradual forms (e.g.
+     *   `Any` for unary type parameters, `...` for param specs)
+     *
+     * The `parse_annotation` code relies on (sanitize), and `typeCheck.ml`
+     * relies on (validate) to eventually produce user-facing errors on bad
+     * annotations.
+     *)
+    method validate_and_sanitize_type_arguments
         ?(replace_unbound_parameters_with_any = true)
         ~cycle_detections
         annotation =
@@ -991,12 +1002,23 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       in
       InvalidTypeParametersTransform.visit [] annotation
 
+    (* Convert a type expression of type `Expression.t` to a `Type.t`.
+     *
+     * In the process several sanitization phases happen:
+     * - TypeAliasEnvironment will verify that all types map to valid classes
+     *   (Pyre incorrectly assumes all types are classes; we use `missingFromStubs.ml`
+     *   to fabricate classes for special forms that aren't really classes).
+     * - TypeAliasEnvironment will expand type aliases eagerly.
+     * - The `validate_and_sanitize_type_arguments` transform will convert invalid
+     *   type arguments (which can be invalid because of arity mismatches or because
+     *   they fail to meet constraints) to gradual forms.
+     *)
     method parse_annotation
         ~cycle_detections
         ?(validation = ParsingValidation.parse_annotation_validation_kind controls)
         ~(scoped_type_variables : Type.Variable.t Identifier.Map.t option)
         expression =
-      let { Queries.parse_annotation_without_validating_type_parameters; get_variable; _ } =
+      let { Queries.parse_annotation_without_sanitizing_type_arguments; get_variable; _ } =
         queries
       in
       let variables_before_modify =
@@ -1012,7 +1034,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       let modify_variables ?replace_unbound_parameters_with_any = function
         | Type.Variable.TypeVarVariable variable ->
             let visited_variable =
-              self#check_invalid_type_arguments
+              self#validate_and_sanitize_type_arguments
                 ?replace_unbound_parameters_with_any
                 (Variable variable)
                 ~cycle_detections
@@ -1023,8 +1045,8 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               | Variable variable -> Type.Variable.TypeVarVariable variable
               | _ ->
                   failwith
-                    "Impossible: check_invalid_type_arguments received a variable variant as input \
-                     and output a different variant."
+                    "Impossible: validate_and_sanitize_type_arguments received a variable variant \
+                     as input and output a different variant."
             end
         | result -> result
       in
@@ -1033,7 +1055,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       in
       let modify_aliases ?replace_unbound_parameters_with_any = function
         | alias ->
-            self#check_invalid_type_arguments
+            self#validate_and_sanitize_type_arguments
               ?replace_unbound_parameters_with_any
               alias
               ~cycle_detections
@@ -1047,7 +1069,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             false
       in
       let annotation =
-        parse_annotation_without_validating_type_parameters
+        parse_annotation_without_sanitizing_type_arguments
           ~modify_aliases
           ~variables
           ~allow_untracked
@@ -1056,13 +1078,30 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       let result =
         match validation with
         | ValidatePrimitivesAndTypeParameters ->
-            self#check_invalid_type_arguments annotation ~cycle_detections |> snd
+            self#validate_and_sanitize_type_arguments annotation ~cycle_detections |> snd
         | NoValidation
         | ValidatePrimitives ->
             annotation
       in
       result
 
+    (* Given a define signature (which arrives in the form of an overloads list plus
+     * an optional implementation - the implementation is optional for stubs), produce
+     * an `AnnotatedAttribute.decorated_method` value that tracks:
+     * - the type of the raw function signature without resolving decorators
+     * - all of the decorators that are consistently applied (which are resolved later)
+     * - an `AnnotatedAttribute.problem` whenever decorators are inconsistent across overloads
+     *
+     * How this relates to other parts of AttributeResolution and TypeCheck:
+     * - uninstantiated attribute tables store method types in this form, which allows
+     *   us to defer the expensive work of resolving and applying decorators and gives
+     *   much better cache performance.
+     * - Decorators can modify the signature; that logic is handled downstream in the
+     *   `apply_decorators` function.
+     * - The `resolve_define` function combines both steps into one; this is what
+     *   is used both for resolving globals and inside of TypeCheck to get the types
+     *   of locally-defined functions.
+     *)
     method resolve_define_undecorated
         ~cycle_detections
         ~callable_name
@@ -1121,7 +1160,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         match overloads, implementation with
         | ( ({ Ast.Statement.Define.Signature.decorators = head_decorators; _ } as overload) :: tail,
             _ ) ->
-            let purify =
+            let filter_overload_decorator =
               let is_not_overload_decorator decorator =
                 not
                   (Ast.Statement.Define.Signature.is_overloaded_function
@@ -1133,7 +1172,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               let equal left right =
                 Int.equal (Ast.Expression.location_insensitive_compare left right) 0
               in
-              if List.equal equal sofar (purify current) then
+              if List.equal equal sofar (filter_overload_decorator current) then
                 Ok sofar
               else
                 Error (AnnotatedAttribute.DifferingDecorators { offender = parsed })
@@ -1147,7 +1186,10 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                 ( parsed :: reversed_parsed_overloads,
                   Result.bind decorators_sofar ~f:(enforce_equality ~parsed ~current) )
               in
-              List.fold tail ~f:collect ~init:([parse overload], Result.Ok (purify head_decorators))
+              List.fold
+                tail
+                ~f:collect
+                ~init:([parse overload], Result.Ok (filter_overload_decorator head_decorators))
             in
             let parsed_implementation, decorators =
               match implementation with
@@ -1171,11 +1213,19 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       in
       { AnnotatedAttribute.undecorated_signature; decorators }
 
+    (* Given the name of a class, return the metaclass as a `Type.t`.
+     *
+     * This requires a specific search order, see
+     * https://docs.python.org/3/reference/datamodel.html#determining-the-appropriate-metaclass
+     *
+     * This method is mostly self-explanatory but Pyre's handling of `GenericMeta`, which hasn't
+     * even existed in the runtime for several years, is special: in `missingFromStubs.ml` we
+     * make up `GenericMeta` as a fake metaclass, and then we treat a class as having this
+     * metaclass only if `Generic` is a *direct* parent of the current class, without checking
+     * all ancestors as we would for normal metaclass resolution.
+     *)
     method metaclass ~cycle_detections target =
       let Queries.{ get_class_summary; _ } = queries in
-      (* See
-         https://docs.python.org/3/reference/datamodel.html#determining-the-appropriate-metaclass
-         for why we need to consider all metaclasses. *)
       let rec handle
           ({ Node.value = { ClassSummary.bases = { base_classes; metaclass; _ }; _ }; _ } as
           original)
@@ -1198,8 +1248,6 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                      not ([%compare.equal: ClassSummary.t Node.t] base_class original))
             in
             let filter_generic_meta base_metaclasses =
-              (* We only want a class directly inheriting from Generic to have a metaclass of
-                 GenericMeta. *)
               if
                 List.exists
                   ~f:(fun base ->
@@ -1233,7 +1281,15 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       in
       get_class_summary target >>| handle
 
-    method create_attribute
+    (* Create an uninstantiated attribute. This operation essentially
+     * "lifts" the ClassSummary.Attribute.t type to the type level, producing
+     * an `AnnotatedAttribute.uninstantiated` value.
+     *
+     * Note that for methods, decorators are not yet applied in the resulting
+     * type, we track the callable type of the undecorated signature but defer
+     * applying decorators until instantiation.
+     *)
+    method create_uninstantiated_attribute
         ~scoped_type_variables
         ~cycle_detections
         ~parent
@@ -1488,6 +1544,9 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           | _ -> false)
         ~undecorated_signature
 
+    (* Special-case attribute table factory used as a helper in
+     * single_uninstantiated_attribute_table.
+     *)
     method sqlalchemy_attribute_table
         ~cycle_detections
         ~include_generated_attributes
@@ -1507,7 +1566,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           |> List.map ~f:(fun (_, attribute) -> attribute)
         in
         let unannotated_attribute { Node.value = attribute; _ } =
-          self#create_attribute
+          self#create_uninstantiated_attribute
             ~scoped_type_variables:None
             ~cycle_detections
             ~parent
@@ -1613,6 +1672,16 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         table;
       table
 
+    (* Special-case attribute table factory used as a helper in
+     * single_uninstantiated_attribute_table.
+     *
+     * This creates overloaded method signatures that approximate the behavior
+     * of TypedDictionary, mostly using helpers defined in the
+     * `Type.TypedDictionary` module.
+     *
+     * These methods are only sufficient for type checking some kinds of code involving
+     * TypedDictionary, often we still have to special-case the logic.
+     *)
     method typed_dictionary_special_methods_table
         ~cycle_detections
         ~include_generated_attributes
@@ -1651,7 +1720,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           ClassSummary.attributes ~include_generated_attributes ~in_test class_summary
           |> Identifier.SerializableMap.bindings
           |> List.map ~f:(fun (_, field_attribute) ->
-                 ( self#create_attribute
+                 ( self#create_uninstantiated_attribute
                      ~scoped_type_variables:None
                      ~cycle_detections
                      ~parent:parent_definition
@@ -1746,6 +1815,24 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       if include_generated_attributes then add_special_methods ();
       table
 
+    (* Create an UninstantiatedAttributeTable value with all of the uninstantiated
+     * attributes defined on the body of a class.
+     * 
+     * The output of this function is generally cached in the `AttributeCache`
+     * environment layer, which is critical for performance.
+     *
+     * Note that in the standard case this does *not* contain any inherited attributes;
+     * we usually have to traverse a lazy sequence of these tables to find an attribute
+     * on a class. 
+     *
+     * The granularity is usually the same as ClassSummary, which is why caching this
+     * table turns out to work well for performance.
+     *
+     * Dataclasses are heavily special-cased via the
+     * `apply_dataclass_transforms_to_table` helper, which also flattens fields
+     * defined in all dataclass ancestors (so the granularity of this table for
+     * dataclasses is substantially different than normal classes).
+     *)
     method single_uninstantiated_attribute_table
         ~cycle_detections
         ~include_generated_attributes
@@ -1777,7 +1864,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         let add_actual () =
           let collect_attributes attribute =
             let created_attribute =
-              self#create_attribute
+              self#create_uninstantiated_attribute
                 ~scoped_type_variables:(scoped_type_variables_as_map class_parameters)
                 (Node.value attribute)
                 ~cycle_detections
@@ -1798,7 +1885,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             apply_dataclass_transforms_to_table
               ~queries
               ~definition:parent
-              (self#create_attribute ~cycle_detections)
+              (self#create_uninstantiated_attribute ~cycle_detections)
               (self#instantiate_attribute
                  ~cycle_detections
                  ?instantiated:None
@@ -2054,6 +2141,9 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                   ( instantiate_property_annotation getter,
                     setter >>| instantiate_property_annotation ))
       in
+      let ({ ConstraintsSet.get_named_tuple_fields; _ } as order) =
+        self#full_order ~cycle_detections
+      in
       let annotation, original =
         let instantiated =
           match instantiated with
@@ -2069,30 +2159,31 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             Type.Callable.CallableParamType.Named
               { name = "self"; annotation = Type.Top; default = false }
           in
+          let tuple_getitem_overloads members =
+            let { Type.Callable.overloads; _ } = callable in
+            let overload index member =
+              {
+                Type.Callable.annotation = member;
+                parameters =
+                  Defined
+                    [
+                      self_parameter;
+                      Named { name = "x"; annotation = Type.literal_integer index; default = false };
+                    ];
+              }
+            in
+            let overloads =
+              List.mapi ~f:overload members
+              @ List.map2_exn
+                  ~f:overload
+                  (List.init ~f:(fun x -> -x - 1) (List.length members))
+                  (List.rev members)
+              @ overloads
+            in
+            Type.Callable { callable with overloads }
+          in
           match instantiated, attribute_name, class_name with
-          | Type.Tuple (Concrete members), "__getitem__", _ ->
-              let { Type.Callable.overloads; _ } = callable in
-              let overload index member =
-                {
-                  Type.Callable.annotation = member;
-                  parameters =
-                    Defined
-                      [
-                        self_parameter;
-                        Named
-                          { name = "x"; annotation = Type.literal_integer index; default = false };
-                      ];
-                }
-              in
-              let overloads =
-                List.mapi ~f:overload members
-                @ List.map2_exn
-                    ~f:overload
-                    (List.init ~f:(fun x -> -x - 1) (List.length members))
-                    (List.rev members)
-                @ overloads
-              in
-              Type.Callable { callable with overloads }
+          | Type.Tuple (Concrete members), "__getitem__", _ -> tuple_getitem_overloads members
           | ( Parametric { name = "type"; arguments = [Single (Type.Primitive name)] },
               "__getitem__",
               "typing.GenericMeta" ) ->
@@ -2188,6 +2279,10 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               >>= Option.all
               >>| Type.union
               |> Option.value ~default:(Type.Callable callable)
+          | _, "__getitem__", _ -> (
+              match get_named_tuple_fields instantiated with
+              | Some members -> tuple_getitem_overloads members
+              | None -> Type.Callable callable)
           | _ -> Type.Callable callable
         in
         match annotation with
@@ -2202,7 +2297,6 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               match value_annotation with
               | None -> Type.Top
               | Some annotation -> (
-                  let order = self#full_order ~cycle_detections in
                   let constraints =
                     match self_annotation with
                     | Some annotation ->
@@ -2228,7 +2322,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               | Type.Callable callable -> special_case_methods callable
               | other -> other
             in
-            let order () = self#full_order ~cycle_detections in
+            let order () = order in
             let special =
               callable_call_special_cases
                 ~instantiated:(Some instantiated)
@@ -2471,7 +2565,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           ~order
       with
       | Some callable ->
-          AnnotatedAttribute.create
+          AnnotatedAttribute.create_instantiated
             ~annotation:callable
             ~original_annotation:callable
             ~uninstantiated_annotation:None
@@ -3527,9 +3621,9 @@ let create_queries ~class_metadata_environment ~dependency =
       class_exists =
         unannotated_global_environment class_metadata_environment
         |> UnannotatedGlobalEnvironment.ReadOnly.class_exists ?dependency;
-      parse_annotation_without_validating_type_parameters =
+      parse_annotation_without_sanitizing_type_arguments =
         alias_environment class_metadata_environment
-        |> TypeAliasEnvironment.ReadOnly.parse_annotation_without_validating_type_parameters
+        |> TypeAliasEnvironment.ReadOnly.parse_annotation_without_sanitizing_type_arguments
              ?dependency;
       param_spec_from_vararg_annotations =
         alias_environment class_metadata_environment
@@ -3840,9 +3934,9 @@ module ReadOnly = struct
     add_all_caches_and_empty_cycle_detections (fun o -> o#uninstantiated_attributes)
 
 
-  let check_invalid_type_arguments =
+  let validate_and_sanitize_type_arguments =
     add_all_caches_and_empty_cycle_detections (fun o ->
-        o#check_invalid_type_arguments ~replace_unbound_parameters_with_any:true)
+        o#validate_and_sanitize_type_arguments ~replace_unbound_parameters_with_any:true)
 
 
   let parse_annotation read_only ?dependency ~scoped_type_variables =
