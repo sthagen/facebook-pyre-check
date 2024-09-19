@@ -1529,9 +1529,9 @@ let test_is_not_instantiated _ =
 
 
 let test_is_meta _ =
-  assert_true (Type.is_meta (Type.parametric "type" ![Type.integer]));
-  assert_false (Type.is_meta Type.integer);
-  assert_false (Type.is_meta (Type.parametric "typing.Type" ![Type.integer]))
+  assert_true (Type.is_builtins_type (Type.parametric "type" ![Type.integer]));
+  assert_false (Type.is_builtins_type Type.integer);
+  assert_false (Type.is_builtins_type (Type.parametric "typing.Type" ![Type.integer]))
 
 
 let test_is_none _ =
@@ -3846,21 +3846,21 @@ let test_resolve_alias_before_handling_callable _ =
   ()
 
 
-let test_class_data_for_attribute_lookup _ =
+let test_class_attribute_lookups_for_type _ =
   let assert_class_data annotation expected =
     assert_equal
       ~printer:(fun x ->
-        [%sexp_of: Type.class_data_for_attribute_lookup list option] x |> Sexp.to_string_hum)
+        [%sexp_of: Type.class_attribute_lookup_data list option] x |> Sexp.to_string_hum)
       expected
-      (Type.class_data_for_attribute_lookup annotation)
+      (Type.class_attribute_lookups_for_type annotation)
   in
   assert_class_data Type.Any (Some []);
   assert_class_data
-    (Type.meta Type.integer)
+    (Type.builtins_type Type.integer)
     (Some
        [
          {
-           instantiated = Type.integer;
+           type_for_lookup = Type.integer;
            accessed_through_class = true;
            class_name = "int";
            accessed_through_readonly = false;
@@ -3871,7 +3871,7 @@ let test_class_data_for_attribute_lookup _ =
     (Some
        [
          {
-           instantiated = Type.optional Type.integer;
+           type_for_lookup = Type.optional Type.integer;
            accessed_through_class = false;
            class_name = "typing.Optional";
            accessed_through_readonly = false;
@@ -3882,13 +3882,13 @@ let test_class_data_for_attribute_lookup _ =
     (Some
        [
          {
-           instantiated = Type.integer;
+           type_for_lookup = Type.integer;
            accessed_through_class = false;
            class_name = "int";
            accessed_through_readonly = false;
          };
          {
-           instantiated = Type.string;
+           type_for_lookup = Type.string;
            accessed_through_class = false;
            class_name = "str";
            accessed_through_readonly = false;
@@ -3899,13 +3899,13 @@ let test_class_data_for_attribute_lookup _ =
     (Some
        [
          {
-           instantiated = Type.list Type.integer;
+           type_for_lookup = Type.list Type.integer;
            accessed_through_class = false;
            class_name = "list";
            accessed_through_readonly = false;
          };
          {
-           instantiated = Type.Primitive "Foo";
+           type_for_lookup = Type.Primitive "Foo";
            accessed_through_class = false;
            class_name = "Foo";
            accessed_through_readonly = false;
@@ -3916,13 +3916,13 @@ let test_class_data_for_attribute_lookup _ =
     (Some
        [
          {
-           instantiated = Type.list Type.integer;
+           type_for_lookup = Type.list Type.integer;
            accessed_through_class = false;
            class_name = "list";
            accessed_through_readonly = false;
          };
          {
-           instantiated = Type.Primitive "Foo";
+           type_for_lookup = Type.Primitive "Foo";
            accessed_through_class = false;
            class_name = "Foo";
            accessed_through_readonly = false;
@@ -3939,13 +3939,13 @@ let test_class_data_for_attribute_lookup _ =
     (Some
        [
          {
-           instantiated = Type.integer;
+           type_for_lookup = Type.integer;
            accessed_through_class = false;
            class_name = "int";
            accessed_through_readonly = false;
          };
          {
-           instantiated = Type.tuple [Type.Primitive "Foo"; tree_annotation];
+           type_for_lookup = Type.tuple [Type.Primitive "Foo"; tree_annotation];
            accessed_through_class = false;
            class_name = "tuple";
            accessed_through_readonly = false;
@@ -3962,7 +3962,7 @@ let test_class_data_for_attribute_lookup _ =
     (Some
        [
          {
-           instantiated = Type.list (Type.union [Type.integer; recursive_list]);
+           type_for_lookup = Type.list (Type.union [Type.integer; recursive_list]);
            accessed_through_class = false;
            class_name = "list";
            accessed_through_readonly = false;
@@ -3978,7 +3978,7 @@ let test_class_data_for_attribute_lookup _ =
     (Some
        [
          {
-           instantiated = Type.integer;
+           type_for_lookup = Type.integer;
            accessed_through_class = false;
            class_name = "int";
            accessed_through_readonly = false;
@@ -3990,7 +3990,7 @@ let test_class_data_for_attribute_lookup _ =
     (Some
        [
          {
-           instantiated = Type.Primitive "Foo";
+           type_for_lookup = Type.Primitive "Foo";
            accessed_through_class = false;
            class_name = "Foo";
            accessed_through_readonly = true;
@@ -4001,35 +4001,35 @@ let test_class_data_for_attribute_lookup _ =
     (Some
        [
          {
-           instantiated = Type.list (Type.Primitive "Foo");
+           type_for_lookup = Type.list (Type.Primitive "Foo");
            accessed_through_class = false;
            class_name = "list";
            accessed_through_readonly = false;
          };
          {
-           instantiated = Type.Primitive "Foo";
+           type_for_lookup = Type.Primitive "Foo";
            accessed_through_class = false;
            class_name = "Foo";
            accessed_through_readonly = true;
          };
        ]);
   assert_class_data
-    (Type.meta (Type.PyreReadOnly.create (Type.Primitive "Foo")))
+    (Type.builtins_type (Type.PyreReadOnly.create (Type.Primitive "Foo")))
     (Some
        [
          {
-           instantiated = Type.Primitive "Foo";
+           type_for_lookup = Type.Primitive "Foo";
            accessed_through_class = true;
            class_name = "Foo";
            accessed_through_readonly = true;
          };
        ]);
   assert_class_data
-    (Type.PyreReadOnly.create (Type.meta (Type.Primitive "Foo")))
+    (Type.PyreReadOnly.create (Type.builtins_type (Type.Primitive "Foo")))
     (Some
        [
          {
-           instantiated = Type.Primitive "Foo";
+           type_for_lookup = Type.Primitive "Foo";
            accessed_through_class = true;
            class_name = "Foo";
            accessed_through_readonly = true;
@@ -4221,7 +4221,7 @@ let () =
          "fields_from_constructor" >:: test_fields_from_constructor;
          "map_callable_annotation" >:: test_map_callable_annotation;
          "type_parameters_for_bounded_tuple_union" >:: test_type_parameters_for_bounded_tuple_union;
-         "class_data_for_attribute_lookup" >:: test_class_data_for_attribute_lookup;
+         "class_attribute_lookups_for_type" >:: test_class_attribute_lookups_for_type;
          "show" >:: test_show;
          "is_truthy" >:: test_is_truthy;
          "is_falsy" >:: test_is_falsy;

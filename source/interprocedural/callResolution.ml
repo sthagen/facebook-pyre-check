@@ -62,7 +62,7 @@ let is_super ~pyre_in_context ~define expression =
       let annotation =
         PyrePysaApi.InContext.resolve_expression_to_type pyre_in_context expression
       in
-      if Type.is_meta annotation then
+      if Type.is_builtins_type annotation then
         let type_parameter = Type.single_argument annotation in
         match type_parameter with
         | Type.Parametric { name = parent_name; _ }
@@ -120,8 +120,8 @@ let resolve_attribute_access_ignoring_untracked ~pyre_in_context ~base_type ~att
       Type.Any
 
 
-let defining_attribute ~pyre_in_context parent_type attribute =
-  Type.split parent_type
+let defining_attribute ~pyre_in_context type_for_lookup attribute =
+  Type.split type_for_lookup
   |> fst
   |> Type.primitive_name
   >>= fun class_name ->
@@ -130,7 +130,7 @@ let defining_attribute ~pyre_in_context parent_type attribute =
       (PyrePysaApi.InContext.pyre_api pyre_in_context)
       ~transitive:true
       ~name:attribute
-      ~instantiated:parent_type
+      ~type_for_lookup
       class_name
   in
   instantiated_attribute

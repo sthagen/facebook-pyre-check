@@ -1620,8 +1620,8 @@ module State (Context : Context) = struct
     let reference = name_to_reference name in
     let access_as_attribute () =
       let find_attribute
-          ({ Type.instantiated; accessed_through_class; class_name; accessed_through_readonly } as
-          class_data)
+          ({ Type.type_for_lookup; accessed_through_class; class_name; accessed_through_readonly }
+          as class_data)
         =
         let name = attribute in
         match
@@ -1633,14 +1633,14 @@ module State (Context : Context) = struct
             ~accessed_through_readonly
             ~special_method:special
             ~name
-            ~instantiated
+            ~type_for_lookup
         with
         | Some attribute ->
             let attribute =
               if not (AnnotatedAttribute.defined attribute) then
                 Resolution.fallback_attribute
                   class_name
-                  ~instantiated:(Some resolved_base)
+                  ~type_for_lookup:(Some resolved_base)
                   ~accessed_through_class
                   ~resolution
                   ~name
@@ -1652,14 +1652,14 @@ module State (Context : Context) = struct
               if AnnotatedAttribute.defined attribute then
                 None
               else
-                Some instantiated
+                Some type_for_lookup
             in
             (* Collect @property's in the call graph. *)
             Some (class_data, attribute, undefined_target)
         | None -> None
       in
       match
-        Type.class_data_for_attribute_lookup resolved_base
+        Type.class_attribute_lookups_for_type resolved_base
         >>| List.map ~f:find_attribute
         >>= Option.all
       with
@@ -1701,10 +1701,10 @@ module State (Context : Context) = struct
           }
       | Some (head_attribute_info :: tail_attributes_info) ->
           let add_attributes_to_context attribute_info =
-            let get_instantiated { Type.instantiated; _ } = instantiated in
+            let get_type_for_lookup { Type.type_for_lookup; _ } = type_for_lookup in
             let attributes_with_instantiated =
               List.map attribute_info ~f:(fun (class_data, attribute, _) ->
-                  attribute, get_instantiated class_data)
+                  attribute, get_type_for_lookup class_data)
             in
             Context.Builder.add_property_callees
               ~global_resolution
@@ -1785,7 +1785,8 @@ module State (Context : Context) = struct
                   resolution
                   ~name
                   ~attribute_path
-                  ~global_fallback:(Type.is_meta (TypeInfo.Unit.annotation global_annotation))
+                  ~global_fallback:
+                    (Type.is_builtins_type (TypeInfo.Unit.annotation global_annotation))
               in
               match local_override with
               | Some local_annotation -> local_annotation
@@ -1858,7 +1859,7 @@ module State (Context : Context) = struct
                   |> Option.is_some
               | _ -> false
             in
-            Type.is_meta resolved_base && is_global ()
+            Type.is_builtins_type resolved_base && is_global ()
           in
           if is_global_meta then
             Some (Resolved.Class resolved_base)
@@ -2180,7 +2181,7 @@ module State (Context : Context) = struct
             arguments = [{ Call.Argument.value; _ }];
           } ->
           (* Resolve `type()` calls. *)
-          let resolved = resolve_expression_type ~resolution value |> Type.meta in
+          let resolved = resolve_expression_type ~resolution value |> Type.builtins_type in
           { resolution; errors = []; resolved; resolved_annotation = None; base = None }
       | Call { callee = { Node.location; value = Name (Name.Identifier "reveal_locals") }; _ } ->
           (* Special case reveal_locals(). *)
@@ -2463,10 +2464,10 @@ module State (Context : Context) = struct
                            expected =
                              Type.union
                                [
-                                 Type.meta Type.Any;
+                                 Type.builtins_type Type.Any;
                                  Type.Tuple
                                    (Type.OrderedTypes.create_unbounded_concatenation
-                                      (Type.meta Type.Any));
+                                      (Type.builtins_type Type.Any));
                                ];
                            due_to_invariance = false;
                          };
@@ -2474,14 +2475,14 @@ module State (Context : Context) = struct
             in
             let rec is_compatible annotation =
               match annotation with
-              | _ when Type.is_meta annotation || Type.is_untyped annotation -> true
+              | _ when Type.is_builtins_type annotation || Type.is_untyped annotation -> true
               | Type.Primitive "typing._Alias" -> true
               | Type.Tuple (Concatenation concatenation) ->
                   Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
-                  >>| (fun annotation -> Type.is_meta annotation)
+                  >>| (fun annotation -> Type.is_builtins_type annotation)
                   |> Option.value ~default:false
               | Type.Tuple (Type.OrderedTypes.Concrete annotations) ->
-                  List.for_all ~f:Type.is_meta annotations
+                  List.for_all ~f:Type.is_builtins_type annotations
               | Type.Union annotations -> List.for_all annotations ~f:is_compatible
               | _ -> false
             in
@@ -2645,7 +2646,7 @@ module State (Context : Context) = struct
           in
           let { Resolved.resolution = updated_resolution; resolved; errors = updated_errors; _ } =
             let target_and_dynamic resolved_callee =
-              if Type.is_meta resolved_callee then
+              if Type.is_builtins_type resolved_callee then
                 Some (Type.single_argument resolved_callee), false
               else
                 match resolved_base with
@@ -2694,7 +2695,7 @@ module State (Context : Context) = struct
                   List.fold_left
                     ~f:forward_inner_callable
                     ~init:(callee_resolution, callee_errors, [])
-                    (List.map ~f:Type.meta resolved_callees)
+                    (List.map ~f:Type.builtins_type resolved_callees)
                 in
                 {
                   resolution;
@@ -2766,13 +2767,13 @@ module State (Context : Context) = struct
           { ComparisonOperator.left; right; operator = ComparisonOperator.NotIn as operator } ->
           let resolve_in_call
               (resolution, errors, joined_annotation)
-              { Type.instantiated; class_name; accessed_through_class; _ }
+              { Type.type_for_lookup; class_name; accessed_through_class; _ }
             =
             let resolve_method
                 ?(accessed_through_class = false)
                 ?(special_method = false)
                 class_name
-                instantiated
+                type_for_lookup
                 name
               =
               GlobalResolution.attribute_from_class_name
@@ -2782,7 +2783,7 @@ module State (Context : Context) = struct
                 class_name
                 ~special_method
                 ~name
-                ~instantiated
+                ~type_for_lookup
               >>| AnnotatedAttribute.annotation
               >>| TypeInfo.Unit.annotation
               >>= function
@@ -2795,7 +2796,7 @@ module State (Context : Context) = struct
                   ~accessed_through_class
                   ~special_method:true
                   class_name
-                  instantiated
+                  type_for_lookup
                   "__contains__"
               with
               | Some resolved ->
@@ -2821,7 +2822,7 @@ module State (Context : Context) = struct
                     ~resolution
                     ~location
                     ~errors
-                    ~target:(Some instantiated)
+                    ~target:(Some type_for_lookup)
                     ~dynamic:true
                     ~callee
                     ~arguments:[{ Call.Argument.name = None; value = left }]
@@ -2831,7 +2832,7 @@ module State (Context : Context) = struct
                       ~accessed_through_class
                       ~special_method:true
                       class_name
-                      instantiated
+                      type_for_lookup
                       "__iter__"
                   with
                   | Some iter_callable ->
@@ -2878,7 +2879,7 @@ module State (Context : Context) = struct
                         ~resolution
                         ~location
                         ~errors
-                        ~target:(Some instantiated)
+                        ~target:(Some type_for_lookup)
                         ~callee:(create_callee iter_callable)
                         ~arguments:[]
                       |> forward_method ~method_name:"__next__" ~arguments:[]
@@ -3003,8 +3004,8 @@ module State (Context : Context) = struct
           in
           let { Resolved.resolution; resolved; errors; _ } = forward_expression ~resolution right in
           let resolution, errors, resolved =
-            (* We should really error here if class_data_for_attribute_lookup fails *)
-            Type.class_data_for_attribute_lookup resolved
+            (* We should really error here if class_attribute_lookups_for_type fails *)
+            Type.class_attribute_lookups_for_type resolved
             >>| List.fold ~f:resolve_in_call ~init:(resolution, errors, Type.Bottom)
             |> Option.value ~default:(resolution, errors, Type.Bottom)
           in
@@ -3667,13 +3668,13 @@ module State (Context : Context) = struct
         | Type.Top -> (
             (* Try to resolve meta-types given as expressions. *)
             match resolve_expression_type ~resolution annotation with
-            | annotation when Type.is_meta annotation -> Type.single_argument annotation
-            | Type.Tuple (Concrete elements) when List.for_all ~f:Type.is_meta elements ->
+            | annotation when Type.is_builtins_type annotation -> Type.single_argument annotation
+            | Type.Tuple (Concrete elements) when List.for_all ~f:Type.is_builtins_type elements ->
                 List.map ~f:Type.single_argument elements |> Type.union
             | Type.Tuple (Concatenation concatenation) ->
                 Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
                 >>= (fun element ->
-                      if Type.is_meta element then
+                      if Type.is_builtins_type element then
                         Some (Type.single_argument element)
                       else
                         None)
@@ -3738,7 +3739,7 @@ module State (Context : Context) = struct
               >>= GlobalResolution.attribute_from_class_name
                     global_resolution
                     ~name:attribute
-                    ~instantiated:parent
+                    ~type_for_lookup:parent
                     ~transitive:true
             in
             match
@@ -3769,16 +3770,16 @@ module State (Context : Context) = struct
               GlobalResolution.attribute_from_class_name
                 global_resolution
                 ~name:attribute
-                ~instantiated:parent
+                ~type_for_lookup:parent
                 ~transitive:true
             in
-            match Type.class_data_for_attribute_lookup parent with
+            match Type.class_attribute_lookups_for_type parent with
             | Some [{ Type.class_name; accessed_through_readonly; accessed_through_class; _ }] ->
                 get_attribute ~accessed_through_readonly ~accessed_through_class class_name
             | Some []
             | Some (_ :: _ :: _)
             (* TODO(T159930161): Refine attribute of union in ternary expression. In that case,
-               `class_data_for_attribute_lookup` will return multiple class_data items. *)
+               `class_attribute_lookups_for_type` will return multiple class_data items. *)
             | None ->
                 None
           in
@@ -4616,7 +4617,9 @@ module State (Context : Context) = struct
             | `Attribute ({ Name.Attribute.base; attribute; _ }, resolved) ->
                 let name = attribute in
                 let parent, accessed_through_class, accessed_through_readonly =
-                  match Type.PyreReadOnly.unpack_readonly resolved, Type.is_meta resolved with
+                  match
+                    Type.PyreReadOnly.unpack_readonly resolved, Type.is_builtins_type resolved
+                  with
                   | Some resolved, _ -> resolved, false, true
                   | None, true -> Type.single_argument resolved, true, false
                   | _ -> resolved, false, false
@@ -4636,7 +4639,7 @@ module State (Context : Context) = struct
                   >>= GlobalResolution.attribute_from_class_name
                         global_resolution
                         ~name:attribute
-                        ~instantiated:parent
+                        ~type_for_lookup:parent
                         ~transitive:true
                         ~accessed_through_class
                         ~accessed_through_readonly
@@ -4676,15 +4679,15 @@ module State (Context : Context) = struct
           in
           let find_getattr parent =
             let attribute =
-              match Type.class_data_for_attribute_lookup parent with
-              | Some [{ instantiated; class_name; _ }] ->
+              match Type.class_attribute_lookups_for_type parent with
+              | Some [{ Type.type_for_lookup; class_name; _ }] ->
                   GlobalResolution.attribute_from_class_name
                     global_resolution
                     class_name
                     ~accessed_through_class:false
                     ~transitive:true
                     ~name:"__getattr__"
-                    ~instantiated
+                    ~type_for_lookup
               | _ -> None
             in
             match attribute with
@@ -4797,7 +4800,8 @@ module State (Context : Context) = struct
                   attribute >>| fst >>| AnnotatedAttribute.name )
               with
               | `Attribute (_, parent), Some true, Some class_variable
-                when Option.is_none unwrapped_annotation_type && not (Type.is_meta parent) ->
+                when Option.is_none unwrapped_annotation_type && not (Type.is_builtins_type parent)
+                ->
                   emit_error
                     ~errors
                     ~location
@@ -4811,7 +4815,7 @@ module State (Context : Context) = struct
               | `Attribute (_, parent), Some (attribute, _)
                 when not (AnnotatedAttribute.defined attribute) ->
                   let is_meta_typed_dictionary =
-                    Type.is_meta parent
+                    Type.is_builtins_type parent
                     && GlobalResolution.is_typed_dictionary
                          global_resolution
                          (Type.single_argument parent)
@@ -5025,7 +5029,7 @@ module State (Context : Context) = struct
             in
             let parent_class =
               match resolved_base with
-              | `Attribute (_, base_type) -> Type.class_data_for_attribute_lookup base_type
+              | `Attribute (_, base_type) -> Type.class_attribute_lookups_for_type base_type
               | _ -> None
             in
             match name, parent_class with
@@ -5096,14 +5100,14 @@ module State (Context : Context) = struct
                 else
                   errors, true
             | ( Name.Attribute { attribute; _ },
-                Some ({ Type.instantiated; accessed_through_class; class_name; _ } :: _) ) -> (
+                Some ({ Type.type_for_lookup; accessed_through_class; class_name; _ } :: _) ) -> (
                 (* Instance *)
                 let reference = Reference.create attribute in
                 let attribute =
                   GlobalResolution.attribute_from_class_name
                     global_resolution
                     ~name:attribute
-                    ~instantiated
+                    ~type_for_lookup
                     ~accessed_through_class
                     ~transitive:true
                     class_name
@@ -5353,7 +5357,7 @@ module State (Context : Context) = struct
         | `Attribute (attribute, Type.Union types) ->
             (* Union[A,B].attr is valid iff A.attr and B.attr is valid
 
-               TODO(T130377746): Use `Type.class_data_for_attribute_lookup` here to avoid
+               TODO(T130377746): Use `Type.class_attribute_lookups_for_type` here to avoid
                duplicating the logic of how to figure out the attribute type for various types.
                Right now, we're duplicating some of the logic (for unions) but missing others. We're
                also hackily extracting `accessed_through_class` later on by checking if the
@@ -5420,7 +5424,7 @@ module State (Context : Context) = struct
           updated_resolution, base_and_callee_errors, [index_argument; value_argument]
         in
         let target, dynamic =
-          if Type.is_meta resolved_setitem_type then
+          if Type.is_builtins_type resolved_setitem_type then
             Some (Type.single_argument resolved_setitem_type), false
           else
             match resolved_setitem_base with
@@ -5867,7 +5871,7 @@ module State (Context : Context) = struct
         in
         let expected = Type.Primitive "BaseException" in
         let actual =
-          if Type.is_meta resolved then
+          if Type.is_builtins_type resolved then
             Type.single_argument resolved
           else
             resolved
@@ -6268,7 +6272,8 @@ module State (Context : Context) = struct
                   in
                   List.fold handler_types ~init:errors ~f:(fun errors exception_type ->
                       let exception_type =
-                        Type.extract_meta exception_type |> Option.value ~default:exception_type
+                        Type.extract_from_builtins_type exception_type
+                        |> Option.value ~default:exception_type
                       in
                       (* all handlers must extend BaseException *)
                       let errors =
@@ -6749,7 +6754,7 @@ module State (Context : Context) = struct
           | Define.Capture.Kind.Self parent ->
               resolution, errors, type_of_parent ~global_resolution parent
           | Define.Capture.Kind.ClassSelf parent ->
-              resolution, errors, type_of_parent ~global_resolution parent |> Type.meta
+              resolution, errors, type_of_parent ~global_resolution parent |> Type.builtins_type
         in
         let annotation =
           let is_readonly_entrypoint_function =
@@ -6881,7 +6886,7 @@ module State (Context : Context) = struct
                   in
                   if Define.is_class_method define || Define.is_class_property define then
                     (* First parameter of a method is a class object. *)
-                    Type.meta parent_annotation, true
+                    Type.builtins_type parent_annotation, true
                   else (* First parameter of a method is the callee object. *)
                     parent_annotation, false
                 in
@@ -7313,7 +7318,7 @@ module State (Context : Context) = struct
             ~transitive:false
             ~accessed_through_class:true
             ~name:"__init_subclass__"
-            ~instantiated:(Type.Primitive parent_class)
+            ~type_for_lookup:(Type.Primitive parent_class)
             parent_class
           >>= fun attribute ->
           Option.some_if
@@ -8004,7 +8009,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                     global_resolution
                     ~accessed_through_class:false
                     ~accessed_through_readonly:false
-                    ?instantiated:None
+                    ?type_for_lookup:None
                     attribute
                   |> AnnotatedAttribute.annotation
                   |> TypeInfo.Unit.annotation
@@ -8254,7 +8259,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                         global_resolution
                         ~accessed_through_class:true
                         ~accessed_through_readonly:false
-                        ?instantiated:None
+                        ?type_for_lookup:None
                         attribute
                       |> AnnotatedAttribute.annotation
                       |> TypeInfo.Unit.annotation
@@ -8635,7 +8640,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
           >>= GlobalResolution.attribute_from_class_name
                 global_resolution
                 ~name:(Reference.last name)
-                ~instantiated:Top
+                ~type_for_lookup:Top
         in
         match
           attribute

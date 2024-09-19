@@ -760,14 +760,14 @@ let partial_apply_self { Type.Callable.implementation; overloads; _ } ~order ~se
 
 
 let callable_call_special_cases
-    ~instantiated
+    ~type_for_lookup
     ~class_name
     ~attribute_name
     ~order
     ~accessed_through_class
   =
-  match instantiated, class_name, attribute_name, accessed_through_class with
-  | Some (Type.Callable _), "typing.Callable", "__call__", false -> instantiated
+  match type_for_lookup, class_name, attribute_name, accessed_through_class with
+  | Some (Type.Callable _), "typing.Callable", "__call__", false -> type_for_lookup
   | ( Some
         (Parametric
           { name = "BoundMethod"; arguments = [Single (Callable callable); Single self_type] }),
@@ -1589,7 +1589,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                   ~cycle_detections
                   ~accessed_through_class:false
                   ~accessed_through_readonly:false
-                  ?instantiated:None
+                  ?type_for_lookup:None
                   ?apply_descriptors:None
                   attribute
                 |> AnnotatedAttribute.annotation
@@ -1888,7 +1888,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               (self#create_uninstantiated_attribute ~cycle_detections)
               (self#instantiate_attribute
                  ~cycle_detections
-                 ?instantiated:None
+                 ?type_for_lookup:None
                  ~accessed_through_class:false
                  ~accessed_through_readonly:false
                    (* TODO(T65806273): Right now we're just ignoring `__set__`s on dataclass
@@ -2076,11 +2076,17 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             (* TODO(T39598018): error in this case somehow, something must be wrong *)
             |> Option.value ~default:TypeConstraints.Solution.empty
 
+    (* Given an `AnnotatedAttribute.uninstantiated` value `attribute`, compute an instantiated attribute.
+     *
+     * In many cases, this will be called with `type_for_lookup` set to an instantiated `Type.t`
+     * that allows us to substitute tyep variables in the attribute for the result of
+     * applying type arguments. If no `type_for_lookup` is provided, we assume we are in the body
+     * of the attribute's parent class, and use the type variables as given. *)
     method instantiate_attribute
         ~cycle_detections
         ~accessed_through_class
         ~accessed_through_readonly
-        ?instantiated
+        ?type_for_lookup
         ?(apply_descriptors = true)
         attribute =
       let Queries.
@@ -2153,13 +2159,13 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         if accessed_through_readonly then make_annotation_readonly annotation else annotation
       in
       let annotation =
-        match instantiated with
+        match type_for_lookup with
         | None -> annotation
-        | Some instantiated -> (
+        | Some type_for_lookup -> (
             let solution =
               self#constraints_for_instantiate
                 ~source_type_name:class_name
-                ~current_type:instantiated
+                ~current_type:type_for_lookup
                 ~cycle_detections
                 ()
             in
@@ -2183,13 +2189,13 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         self#full_order ~cycle_detections
       in
       let annotation, original =
-        let instantiated =
-          match instantiated with
-          | Some instantiated -> instantiated
+        let type_for_lookup =
+          match type_for_lookup with
+          | Some type_for_lookup -> type_for_lookup
           | None -> Type.Primitive class_name
         in
-        let instantiated =
-          if accessed_via_metaclass then Type.meta instantiated else instantiated
+        let type_for_lookup =
+          if accessed_via_metaclass then Type.builtins_type type_for_lookup else type_for_lookup
         in
         let special_case_methods callable =
           (* Certain callables' types can't be expressed directly and need to be special cased *)
@@ -2220,7 +2226,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             in
             Type.Callable { callable with overloads }
           in
-          match instantiated, attribute_name, class_name with
+          match type_for_lookup, attribute_name, class_name with
           | Type.Tuple (Concrete members), "__getitem__", _ -> tuple_getitem_overloads members
           | ( Parametric { name = "type"; arguments = [Single (Type.Primitive name)] },
               "__getitem__",
@@ -2243,17 +2249,21 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                 (* TODO:(T60535947) We can't do the Map[Ts, type] -> X[Ts] trick here because we
                    don't yet support Union[Ts] *)
                 | "typing.Union" ->
-                    { Type.Callable.annotation = Type.meta Type.Any; parameters = Undefined }, []
+                    ( {
+                        Type.Callable.annotation = Type.builtins_type Type.Any;
+                        parameters = Undefined;
+                      },
+                      [] )
                 | "typing.Callable" ->
                     ( {
                         Type.Callable.annotation =
-                          Type.meta (Type.Callable.create ~annotation:synthetic ());
+                          Type.builtins_type (Type.Callable.create ~annotation:synthetic ());
                         parameters =
                           Defined
                             [
                               self_parameter;
                               create_parameter
-                                (Type.Tuple (Concrete [Type.Any; Type.meta synthetic]));
+                                (Type.Tuple (Concrete [Type.Any; Type.builtins_type synthetic]));
                             ];
                       },
                       [] )
@@ -2263,18 +2273,19 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                       match name, generics with
                       | "typing.Optional", [Single generic] ->
                           {
-                            Type.Callable.annotation = Type.meta (Type.optional generic);
+                            Type.Callable.annotation = Type.builtins_type (Type.optional generic);
                             parameters = Defined [self_parameter; parameter];
                           }
                       | _ ->
                           {
-                            Type.Callable.annotation = Type.meta (Type.parametric name generics);
+                            Type.Callable.annotation =
+                              Type.builtins_type (Type.parametric name generics);
                             parameters = Defined [self_parameter; parameter];
                           }
                     in
                     match generics with
                     | [TypeVarVariable generic] ->
-                        overload (create_parameter (Type.meta (Variable generic))), []
+                        overload (create_parameter (Type.builtins_type (Variable generic))), []
                     | _ ->
                         (* To support the value `GenericFoo[int, str]`, we need `class
                            GenericFoo[T1, T2]` to have:
@@ -2283,7 +2294,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                            T2]`. *)
                         let meta_type_and_return_type = function
                           | Type.Variable.TypeVarVariable single ->
-                              ( Type.meta (Variable single),
+                              ( Type.builtins_type (Variable single),
                                 Type.Argument.Single (Type.Variable single) )
                           | ParamSpecVariable _ ->
                               (* TODO:(T60536033) We'd really like to take FiniteList[Ts], but
@@ -2297,7 +2308,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                         in
                         ( {
                             Type.Callable.annotation =
-                              Type.meta (Type.parametric name return_parameters);
+                              Type.builtins_type (Type.parametric name return_parameters);
                             parameters =
                               Defined [self_parameter; create_parameter (Type.tuple meta_types)];
                           },
@@ -2306,19 +2317,19 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               Type.Callable { callable with implementation; overloads }
           | Parametric { name = "type"; arguments = [Single meta_argument] }, "__call__", "type"
             when accessed_via_metaclass ->
-              let get_constructor { Type.instantiated; accessed_through_class; class_name; _ } =
+              let get_constructor { Type.type_for_lookup; accessed_through_class; class_name; _ } =
                 if accessed_through_class then (* Type[Type[X]] is invalid *)
                   None
                 else
-                  Some (self#constructor ~cycle_detections class_name ~instantiated)
+                  Some (self#constructor ~cycle_detections class_name ~type_for_lookup)
               in
-              Type.class_data_for_attribute_lookup meta_argument
+              Type.class_attribute_lookups_for_type meta_argument
               >>| List.map ~f:get_constructor
               >>= Option.all
               >>| Type.union
               |> Option.value ~default:(Type.Callable callable)
           | _, "__getitem__", _ -> (
-              match get_named_tuple_fields instantiated with
+              match get_named_tuple_fields type_for_lookup with
               | Some members -> tuple_getitem_overloads members
               | None -> Type.Callable callable)
           | _ -> Type.Callable callable
@@ -2340,7 +2351,8 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                     | Some annotation ->
                         TypeOrder.OrderedConstraintsSet.add_and_simplify
                           ConstraintsSet.empty
-                          ~new_constraint:(LessOrEqual { left = instantiated; right = annotation })
+                          ~new_constraint:
+                            (LessOrEqual { left = type_for_lookup; right = annotation })
                           ~order
                     | None -> ConstraintsSet.empty
                   in
@@ -2363,7 +2375,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
             let order () = order in
             let special =
               callable_call_special_cases
-                ~instantiated:(Some instantiated)
+                ~type_for_lookup:(Some type_for_lookup)
                 ~class_name
                 ~attribute_name
                 ~order
@@ -2387,12 +2399,13 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                           {
                             Argument.kind = Positional;
                             expression = None;
-                            resolved = (if accessed_through_class then Type.none else instantiated);
+                            resolved =
+                              (if accessed_through_class then Type.none else type_for_lookup);
                           };
                           {
                             Argument.kind = Positional;
                             expression = None;
-                            resolved = Type.meta instantiated;
+                            resolved = Type.builtins_type type_for_lookup;
                           };
                         ]
                       ~resolve_with_locals:(fun ~locals:_ _ -> Type.object_primitive)
@@ -2415,7 +2428,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                            [
                              PositionalOnly { index = 0; annotation = descriptor; default = false };
                              PositionalOnly
-                               { index = 1; annotation = instantiated; default = false };
+                               { index = 1; annotation = type_for_lookup; default = false };
                              PositionalOnly
                                { index = 2; annotation = Variable synthetic; default = false };
                            ])
@@ -2459,31 +2472,31 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                   else
                     let bound_self_type =
                       if accessed_through_readonly then
-                        Type.PyreReadOnly.create instantiated
+                        Type.PyreReadOnly.create type_for_lookup
                       else
-                        instantiated
+                        type_for_lookup
                     in
                     Type.parametric
                       "BoundMethod"
                       [Single (Callable callable); Single bound_self_type]
                 in
                 let get_descriptor_method
-                    { Type.instantiated; accessed_through_class; class_name; _ }
+                    { Type.type_for_lookup; accessed_through_class; class_name; _ }
                     ~kind
                   =
                   if accessed_through_class then
                     (* descriptor methods are statically looked up on the class (in this case
                        `type`), not on the instance. `type` is not a descriptor. *)
-                    `NotDescriptor (Type.meta instantiated)
+                    `NotDescriptor (Type.builtins_type type_for_lookup)
                   else
-                    match instantiated with
+                    match type_for_lookup with
                     | Callable callable -> (
                         match kind with
                         | `DunderGet ->
                             (* We unsoundly assume all callables are callables with the `function`
                                `__get__` *)
                             `HadDescriptor (function_dunder_get callable)
-                        | `DunderSet -> `NotDescriptor instantiated)
+                        | `DunderSet -> `NotDescriptor type_for_lookup)
                     | _ -> (
                         let attribute =
                           let attribute_name =
@@ -2500,7 +2513,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                             ~accessed_through_readonly:false
                             ~include_generated_attributes:true
                             ?special_method:None
-                            ?instantiated:(Some instantiated)
+                            ?type_for_lookup:(Some type_for_lookup)
                             ?apply_descriptors:(Some false)
                             ~attribute_name
                             class_name
@@ -2508,13 +2521,13 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                           >>| TypeInfo.Unit.annotation
                         in
                         match attribute with
-                        | None -> `NotDescriptor instantiated
+                        | None -> `NotDescriptor type_for_lookup
                         | Some (Type.Callable callable) ->
                             let extracted =
                               match kind with
-                              | `DunderGet -> call_dunder_get (instantiated, callable)
+                              | `DunderGet -> call_dunder_get (type_for_lookup, callable)
                               | `DunderSet ->
-                                  invert_dunder_set ~order:(order ()) (instantiated, callable)
+                                  invert_dunder_set ~order:(order ()) (type_for_lookup, callable)
                             in
                             extracted
                             >>| (fun extracted -> `HadDescriptor extracted)
@@ -2524,11 +2537,11 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                                Callables, but for now lets just ignore that *)
                             `DescriptorNotACallable)
                 in
-                match Type.class_data_for_attribute_lookup annotation with
+                match Type.class_attribute_lookups_for_type annotation with
                 | None ->
                     (* This means we have a type that can't be `Type.split`, (most of) which aren't
                        descriptors, so we should be usually safe to just ignore. In general we
-                       should fix class_data_for_attribute_lookup to always return something. *)
+                       should fix class_attribute_lookups_for_type to always return something. *)
                     annotation, annotation
                 | Some elements ->
                     let collect x =
@@ -2582,6 +2595,22 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         ~uninstantiated_annotation
         ~problem
 
+    (* Given the name of an attribute on a class `class_name`, fetch an
+     * `AnnotatedAttribute.instantiated`.
+     *
+     * There are many flags controlling behavior; the most important are:
+     * - `type_for_lookup`: this will control the instantiation of the attribute; if it
+     *   comes from a generic class and we are looking it up on an instantiated type,
+     *   we will substitute type variables accordingly.
+     * - `transitive`: if set to false, we will only search the uninstantiated attribute
+     *   table of `class_name`, we won't look upward in the MRO
+     *
+     * The implementation proceeds as follows:
+     * - special case some callable scenarios to handle `BoundMethod` and the fact
+     *   that many types are callable in various ways.
+     * - otherwise, create a lazy sequence of the uninstantiated tables for classes
+     *   in the MRO, take the first hit, and instantiate it with `instantiate_attribute`.
+     *)
     method attribute
         ~cycle_detections
         ~transitive
@@ -2589,14 +2618,14 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         ~accessed_through_readonly
         ~include_generated_attributes
         ?(special_method = false)
-        ?instantiated
+        ?type_for_lookup
         ?apply_descriptors
         ~attribute_name
         class_name =
       let order () = self#full_order ~cycle_detections in
       match
         callable_call_special_cases
-          ~instantiated
+          ~type_for_lookup
           ~class_name
           ~attribute_name
           ~accessed_through_class
@@ -2632,9 +2661,15 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                 ~cycle_detections
                 ~accessed_through_class
                 ~accessed_through_readonly
-                ?instantiated
+                ?type_for_lookup
                 ?apply_descriptors
 
+    (* Given a Type.t that might represent a typed dictionary, return a `Type.TypedDictionary.t`
+     * if it is. Return `None` if the type is not a typed dictionary.
+     * 
+     * The implementation relies on the synthesized constructor method to
+     * determine the typed dictionary fields.
+     *)
     method get_typed_dictionary ~cycle_detections annotation =
       let Queries.{ is_typed_dictionary; _ } = queries in
       match annotation with
@@ -2646,7 +2681,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               ~accessed_through_class:true
               ~accessed_through_readonly:false
               ~include_generated_attributes:true
-              ~instantiated:(Type.meta annotation)
+              ~type_for_lookup:(Type.builtins_type annotation)
               ~special_method:false
               ~attribute_name:"__init__"
               class_name
@@ -2659,6 +2694,15 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           fields >>| fun fields -> { Type.TypedDictionary.fields; name = class_name }
       | _ -> None
 
+    (* Construct a ConstraintsSet.order representing the lattice of types for a
+     * project. The order object is just a record of callbacks providing access to
+     * shared memory for all cases where type order and constraint solving operations
+     * require information about the codebase.
+     *
+     * Note that the assumption that we can create such an object without scope
+     * is the root cause for why Pyre has to put classes nested inside functions
+     * (which are not actually global) into the global symbol table.
+     *)
     method full_order ~cycle_detections =
       let Queries.
             {
@@ -2674,7 +2718,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         queries
       in
       let resolve class_type =
-        match Type.class_data_for_attribute_lookup class_type with
+        match Type.class_attribute_lookups_for_type class_type with
         | None -> None
         | Some [] -> None
         | Some [resolved] -> Some resolved
@@ -2687,7 +2731,12 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       in
       let attribute class_type ~cycle_detections ~name =
         resolve class_type
-        >>= fun { instantiated; accessed_through_class; class_name; accessed_through_readonly } ->
+        >>= fun {
+                  Type.type_for_lookup;
+                  accessed_through_class;
+                  class_name;
+                  accessed_through_readonly;
+                } ->
         self#attribute
           ~cycle_detections
           ~transitive:true
@@ -2696,12 +2745,17 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           ~include_generated_attributes:true
           ?special_method:None
           ~attribute_name:name
-          ~instantiated
+          ~type_for_lookup
           class_name
       in
       let instantiated_attributes class_type ~cycle_detections =
         resolve class_type
-        >>= fun { instantiated; accessed_through_class; class_name; accessed_through_readonly } ->
+        >>= fun {
+                  Type.type_for_lookup;
+                  accessed_through_class;
+                  class_name;
+                  accessed_through_readonly;
+                } ->
         self#uninstantiated_attributes
           ~cycle_detections
           ~transitive:true
@@ -2713,7 +2767,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               ~f:
                 (self#instantiate_attribute
                    ~cycle_detections
-                   ~instantiated
+                   ~type_for_lookup
                    ~accessed_through_class
                    ~accessed_through_readonly
                    ?apply_descriptors:None)
@@ -2756,8 +2810,21 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         metaclass;
       }
 
-    (* In general, python expressions can be self-referential. This resolution only checks literals
-       and annotations found in the resolution map, without resolving expressions. *)
+    (* Given an expression, produce a Type.t where literal type information - that is,
+     * type information we can infer directly from the expression structure, including
+     * constructor calls, is resolved.
+     *
+     * By "type information we can infer directly" I mean that in addition to
+     * constructor calls we handle things like constant values, container literals,
+     * comprehensions, await expressions, etc.
+     *
+     * This function is what determines scenarios where Pyre is able to automatically
+     * infer global variable and class attribute types (Pyre does less inference in
+     * these cases than normal type checking, because it does not track scope across
+     * control flow).
+     *
+     * Any situation Pyre cannot resolve as a literal results in a `Type.Any`.
+     *)
     method resolve_literal ~cycle_detections ~scoped_type_variables expression =
       let Queries.{ generic_parameters_as_variables; get_unannotated_global; _ } = queries in
       let open Ast.Expression in
@@ -2798,7 +2865,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               if Type.is_none annotation then
                 Type.none
               else
-                Type.meta annotation
+                Type.builtins_type annotation
           | None -> Type.Any
         else
           Type.Any
@@ -2824,7 +2891,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           match fully_specified_type expression with
           | Some annotation ->
               (* Literal generic type, e.g. global = List[int] *)
-              Type.meta annotation
+              Type.builtins_type annotation
           | None ->
               (* Constructor on concrete class or fully specified generic,
                * e.g. global = GenericClass[int](x, y) or global = ConcreteClass(x) *)
@@ -2915,6 +2982,22 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       | Expression.Yield _ -> Type.yield Type.Any
       | _ -> Type.Any
 
+    (* Given a Type.Callable.t representing the type of a bare function signature,
+     * apply decorators to get the decorated type.
+     *
+     * We return both the resulting type, which may be transformed by the decorators,
+     * and a list of "problems" that we encountered when trying to apply decorators
+     * which can occur for various reasons ranging from not being able to find the
+     * decorator at all to a signature selection error checking the decorator call.
+     *
+     * The type output is used in three main places:
+     * - as part of instantiating an attribute, to get decorated method types
+     * - in `global_annotation` to get the decorated type of global functions
+     * - within `typeCheck.ml` to get the decorated type of inner, nested defines
+     *
+     * The problems are converted into `AnalysisError` values in typeCheck.ml, if
+     * the module where this decorator is called is type checked.
+     *)
     method apply_decorators
         ~cycle_detections
         ~scoped_type_variables:outer_scope_type_variables
@@ -3056,7 +3139,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                   let resolve_attribute_access ?special_method base ~attribute_name =
                     let access
                         {
-                          Type.instantiated;
+                          Type.type_for_lookup;
                           accessed_through_class;
                           class_name;
                           accessed_through_readonly;
@@ -3070,7 +3153,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                         ~include_generated_attributes:true
                         ?special_method
                         ~attribute_name
-                        ~instantiated
+                        ~type_for_lookup
                         class_name
                     in
                     let join_all = function
@@ -3079,7 +3162,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                           List.fold tail ~init:head ~f:(TypeOrder.join order) |> Option.some
                       | [] -> None
                     in
-                    Type.class_data_for_attribute_lookup base
+                    Type.class_attribute_lookups_for_type base
                     >>| List.map ~f:access
                     >>= Option.all
                     >>| List.map ~f:AnnotatedAttribute.annotation
@@ -3326,7 +3409,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       |> TypeOrder.OrderedConstraintsSet.solve ~order
       |> Option.is_some
 
-    method constructor ~cycle_detections class_name ~instantiated =
+    method constructor ~cycle_detections class_name ~type_for_lookup =
       let Queries.{ generic_parameters_as_variables; successors; _ } = queries in
       let return_annotation =
         let generics =
@@ -3342,15 +3425,15 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
           | _ -> Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.Any)
         else
           let backup = Type.parametric class_name generics in
-          match instantiated, generics with
-          | _, [] -> instantiated
+          match type_for_lookup, generics with
+          | _, [] -> type_for_lookup
           | Type.Primitive instantiated_name, _ when String.equal instantiated_name class_name ->
               backup
           | Type.Parametric { arguments; name = instantiated_name }, generics
             when String.equal instantiated_name class_name
                  && List.length arguments <> List.length generics ->
               backup
-          | _ -> instantiated
+          | _ -> type_for_lookup
       in
       let definitions = class_name :: successors class_name in
       let definition_index parent =
@@ -3371,7 +3454,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
               ~accessed_through_readonly:false
               ~include_generated_attributes:true
               ?special_method:None
-              ?instantiated:(Some return_annotation)
+              ?type_for_lookup:(Some return_annotation)
               ~attribute_name:name
               class_name
           with
@@ -3389,7 +3472,9 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
         let new_signature, new_index, new_parent_name =
           signature_index_and_parent ~name:"__new__"
         in
-        ( Type.parametric "BoundMethod" [Single new_signature; Single (Type.meta instantiated)],
+        ( Type.parametric
+            "BoundMethod"
+            [Single new_signature; Single (Type.builtins_type type_for_lookup)],
           new_index,
           new_parent_name )
       in
@@ -3517,7 +3602,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
                  ~validation:ValidatePrimitives
                  ~cycle_detections
                  ~scoped_type_variables:None
-            |> Type.meta
+            |> Type.builtins_type
             |> TypeInfo.Unit.create_immutable
             |> fun type_info ->
             Some { Global.type_info; undecorated_signature = None; problem = None }
@@ -3568,7 +3653,7 @@ class base ~queries:(Queries.{ controls; _ } as queries) =
       let class_lookup = Reference.show name |> class_exists in
       if class_lookup then
         let primitive = Type.Primitive (Reference.show name) in
-        TypeInfo.Unit.create_immutable (Type.meta primitive)
+        TypeInfo.Unit.create_immutable (Type.builtins_type primitive)
         |> fun type_info -> Some { Global.type_info; undecorated_signature = None; problem = None }
       else
         get_unannotated_global name

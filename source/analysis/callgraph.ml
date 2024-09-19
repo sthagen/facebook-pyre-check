@@ -121,7 +121,7 @@ module DefaultBuilder : Builder = struct
         match callable_kind with
         | Type.Callable.Named direct_target when not (is_protocol ()) ->
             let class_name =
-              if Type.is_meta annotation then
+              if Type.is_builtins_type annotation then
                 Type.single_argument annotation
               else
                 annotation
@@ -194,18 +194,18 @@ module DefaultBuilder : Builder = struct
         Method { direct_target; class_name; dispatch = Dynamic; is_optional_class_attribute }
         :: !property_callables
     in
-    let register (attribute, instantiated) =
+    let register (attribute, type_for_lookup) =
       if AnnotatedAttribute.property attribute then
-        register_attribute_callable instantiated attribute
+        register_attribute_callable type_for_lookup attribute
       (* As the callgraph is an overapproximation, we also have to consider property calls from
          optional attributes.*)
       else
         match resolved_base with
         | Type.Union [Type.NoneType; base]
         | Type.Union [base; Type.NoneType] -> (
-            Type.class_data_for_attribute_lookup base
+            Type.class_attribute_lookups_for_type base
             |> function
-            | Some [{ instantiated; accessed_through_class; class_name; _ }] -> (
+            | Some [{ Type.type_for_lookup; accessed_through_class; class_name; _ }] -> (
                 let attribute =
                   GlobalResolution.attribute_from_class_name
                     global_resolution
@@ -214,14 +214,14 @@ module DefaultBuilder : Builder = struct
                     ~accessed_through_class
                     ~special_method:false
                     ~name
-                    ~instantiated
+                    ~type_for_lookup
                 in
                 match attribute with
                 | Some attribute ->
                     if AnnotatedAttribute.property attribute then
                       register_attribute_callable
                         ~is_optional_class_attribute:true
-                        instantiated
+                        type_for_lookup
                         attribute
                 | None -> ())
             | Some _
