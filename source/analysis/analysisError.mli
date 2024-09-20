@@ -170,6 +170,7 @@ and invalid_inheritance =
   | FinalEnum of Identifier.t
   | GenericProtocol
   | ProtocolBaseClass
+  | NamedTupleMultipleInheritance
   | NonMethodFunction of Identifier.t
   | UninheritableType of {
       annotation: Type.t;
@@ -552,6 +553,10 @@ and kind =
       expected: Type.t;
     }
   | TupleDelete
+  | OutOfBoundsTupleIndex of {
+      index: int;
+      members: int;
+    }
   (* Additional errors. *)
   | DeadStore of Identifier.t
   | Deobfuscation of Source.t

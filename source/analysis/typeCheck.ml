@@ -3455,8 +3455,45 @@ module State (Context : Context) = struct
           { resolved with resolved = Type.Top; resolved_annotation = None; base = None }
       | Slice slice -> forward_expression ~resolution (Slice.lowered ~location slice)
       | Subscript { Subscript.base; index } ->
+          let { Resolved.resolved = resolved_base; resolution = base_resolution; _ } =
+            forward_expression ~resolution base
+          in
+          (* If the tuple has a fixed length, extract the members *)
+          let concrete_tuple_members =
+            match resolved_base with
+            | Tuple (Concrete members) -> Some members
+            | Tuple _ -> None
+            | _ when NamedTuple.is_named_tuple ~global_resolution ~annotation:resolved_base ->
+                NamedTuple.field_annotations ~global_resolution resolved_base
+            | _ -> None
+          in
+          let extract_literal_integer expression =
+            let { Resolved.resolved; _ } = forward_expression ~resolution expression in
+            Type.literal_integer_value resolved
+          in
+          (* For simple tuple slices: non-negative literal indices, no step, stop >= start, this
+             helper infers a fixed length tuple type for the slice. *)
+          let concrete_tuple_slice_type start stop members =
+            let length = List.length members in
+            let start_literal =
+              match start with
+              | Some start -> extract_literal_integer start
+              | _ -> Some 0
+            in
+            let stop_literal =
+              match stop with
+              | Some stop -> extract_literal_integer stop
+              | _ -> Some length
+            in
+            match start_literal, stop_literal with
+            | Some start, Some stop
+              when start >= 0 && stop >= start && stop >= 0 && start < length && stop <= length ->
+                Some (Type.Tuple (Concrete (Core.List.sub members ~pos:start ~len:(stop - start))))
+            | _ -> None
+          in
           (* The python runtime will treat `base[index]` (when not inside an assignment target) as
-             `base.__getitem__(index)`. *)
+             `base.__getitem__(index)`. Besides the tuple special case above, we typecheck all other
+             subscripts like this. *)
           let synthetic_getitem_call =
             Expression.Call
               {
@@ -3469,7 +3506,34 @@ module State (Context : Context) = struct
                 arguments = [{ Call.Argument.value = index; name = None }];
               }
           in
-          forward_expression ~resolution { Node.value = synthetic_getitem_call; location }
+          let ({ Resolved.errors; _ } as resolved) =
+            match index, concrete_tuple_members with
+            | { Node.value = Expression.Slice { Slice.start; stop; step = None }; _ }, Some members
+              -> (
+                (* If we have a slice of a fixed length tuple, first try to infer a simple type for
+                   the slice. If not, fall back to __getitem__. *)
+                match concrete_tuple_slice_type start stop members with
+                | Some tuple_slice_type ->
+                    let resolved = forward_expression ~resolution:base_resolution index in
+                    { resolved with Resolved.resolved = tuple_slice_type }
+                | _ ->
+                    forward_expression ~resolution { Node.value = synthetic_getitem_call; location }
+                )
+            | _ -> forward_expression ~resolution { Node.value = synthetic_getitem_call; location }
+          in
+          (* For tuples with fixed length indexed by a literal, emit an error if the index is out of
+             bounds. *)
+          let tuple_subscript_errors =
+            let concrete_tuple_length = concrete_tuple_members >>| List.length in
+            match concrete_tuple_length, extract_literal_integer index with
+            | Some length, Some index when index < -length || index >= length ->
+                emit_error
+                  ~errors:[]
+                  ~location
+                  ~kind:(Error.OutOfBoundsTupleIndex { index; members = length })
+            | _ -> []
+          in
+          { resolved with errors = tuple_subscript_errors @ errors }
       | Ternary { Ternary.target; test; alternative } ->
           let test_errors =
             let { Resolved.errors; _ } = forward_expression ~resolution test in
@@ -5845,19 +5909,15 @@ module State (Context : Context) = struct
                 | _ -> resolution, errors)
             | Name (Attribute { Name.Attribute.base; _ }) ->
                 let { Resolved.resolved; _ } = forward_expression ~resolution base in
-                if
-                  NamedTuple.is_named_tuple ~global_resolution ~annotation:resolved
-                  && not (Type.is_any resolved)
-                then
+                if NamedTuple.is_named_tuple ~global_resolution ~annotation:resolved then
                   resolution, emit_error ~errors ~location ~kind:Error.TupleDelete
                 else
                   resolution, errors
             | Subscript { Subscript.base; _ } ->
                 let { Resolved.resolved; _ } = forward_expression ~resolution base in
                 if
-                  (Type.is_tuple resolved
-                  || NamedTuple.is_named_tuple ~global_resolution ~annotation:resolved)
-                  && not (Type.is_any resolved)
+                  Type.is_tuple resolved
+                  || NamedTuple.is_named_tuple ~global_resolution ~annotation:resolved
                 then
                   resolution, emit_error ~errors ~location ~kind:Error.TupleDelete
                 else
@@ -6207,10 +6267,34 @@ module State (Context : Context) = struct
           if has_protocol_base then
             List.fold ~init:errors base_types_with_location ~f:(fun errors (base, location) ->
                 match base with
-                | Type.Primitive "typing.Protocol" -> errors
-                | Type.Parametric { name = "typing.Generic"; _ } -> errors
+                | Type.Primitive "typing.Protocol"
+                | Type.Parametric { name = "typing.Generic"; _ } ->
+                    errors
                 | _ when GlobalResolution.is_protocol global_resolution base -> errors
                 | _ -> emit_error ~errors ~location ~kind:(InvalidInheritance ProtocolBaseClass))
+          else
+            errors
+        in
+        let check_named_tuple_inheritance base_types_with_location errors =
+          (* Classes that directly inherit from NamedTuple may only inherit Generic *)
+          let has_named_tuple_base =
+            List.find base_types_with_location ~f:(fun (base, _) ->
+                match base with
+                | Type.Primitive "typing.NamedTuple" -> true
+                | _ -> false)
+            |> Option.is_some
+          in
+          if has_named_tuple_base then
+            List.fold ~init:errors base_types_with_location ~f:(fun errors (base, location) ->
+                match base with
+                | Type.Primitive "typing.NamedTuple"
+                | Type.Parametric { name = "typing.Generic"; _ } ->
+                    errors
+                | _ ->
+                    emit_error
+                      ~errors
+                      ~location
+                      ~kind:(InvalidInheritance NamedTupleMultipleInheritance))
           else
             errors
         in
@@ -6237,6 +6321,7 @@ module State (Context : Context) = struct
           |> check_duplicate_type_parameters generic_and_protocol_bases_with_location
           |> check_generic_protocols generic_and_protocol_bases_with_location
           |> check_protocol_bases generic_and_protocol_bases_with_location base_types_with_location
+          |> check_named_tuple_inheritance base_types_with_location
         in
         let type_params_errors =
           match type_params with

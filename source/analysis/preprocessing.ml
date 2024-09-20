@@ -2514,6 +2514,7 @@ let expand_named_tuples
           in
           let attributes =
             match arguments with
+            (* Example form: namedtuple('T', 'a, b, c') *)
             | _
               :: {
                    Call.Argument.value =
@@ -2527,6 +2528,11 @@ let expand_named_tuples
                 Str.split (Str.regexp "[, ]") serialized
                 |> List.map ~f:(fun name -> name, any_annotation, None)
                 |> List.filter ~f:(fun (name, _, _) -> not (String.is_empty name))
+            (* Example forms:
+             * namedtuple('T', ["a", "b", "c"]
+             * namedtuple('T', [("a", int), ("b", int), ("c", int)])
+             * namedtuple('T', ("a", "b", "c")
+             * namedtuple('T', (("a", int), ("b", int), ("c", int))) *)
             | _ :: { Call.Argument.value = { Node.value = List arguments; _ }; _ } :: _
             | _ :: { Call.Argument.value = { Node.value = Tuple arguments; _ }; _ } :: _ ->
                 let get_name ({ Node.value; _ } as expression) =
@@ -2545,14 +2551,11 @@ let expand_named_tuples
                   | _ -> Expression.show expression, any_annotation, None
                 in
                 List.map arguments ~f:get_name
+            (* Example form: namedtuple(a=int, b=int, c=int) *)
             | _ :: arguments ->
                 List.filter_map arguments ~f:(fun argument ->
                     match argument with
-                    | {
-                     Call.Argument.name =
-                       Some { Node.value = "$parameter$rename" | "$parameter$defaults"; _ };
-                     _;
-                    } ->
+                    | { Call.Argument.name = Some { Node.value = "rename" | "defaults"; _ }; _ } ->
                         None
                     | { Call.Argument.name = Some { Node.value = name; _ }; value } ->
                         Some (name, value, None)
@@ -2774,6 +2777,8 @@ let expand_named_tuples
                 }
           | _ -> value)
       | Class ({ Class.name; base_arguments; parent; body; _ } as original) ->
+          (* TODO(yangdanny): move synthesizing _fields, __init__, __new__, etc out of
+             preprocessing *)
           let is_named_tuple_primitive = function
             | { Call.Argument.value = { Node.value = Name callee_name; _ }; _ } ->
                 is_named_tuple callee_name
