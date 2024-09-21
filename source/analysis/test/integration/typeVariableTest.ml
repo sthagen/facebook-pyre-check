@@ -26,19 +26,12 @@ let test_type_variable_scoping =
              "Mutually recursive type variables [36]: Solving type variables for call `f1` led to \
               infinite recursion.";
            ];
-      (* TODO T194670955 migeedz: I had to annotate the global variable "a" here to unblock myself.
-         We need to figure out why we're not picking up the global annotation. I checked
-         global_annotation in attributeResolution. It's picking up the annotation. However, the
-         error message we get if we don't annotate, comes from TypeInfo.ml (from reveal_type) which
-         comes from the typechecker.
-
-         Also, we will add unittests by moving the definitions to a different files. But I would
-         like to do this once I'm done with everything, as I'm finding it confusing to keep looking
-         at the sources and then back to the unittests to get the whole picture. *)
       labeled_test_case __FUNCTION__ __LINE__
+      (* TODO migeedz: look into why we get an Annotation `T` is not defined as a type error after
+         adding bound support. Without bounds, we don't get this problem. *)
       @@ assert_type_errors
            {|
-            class A[T]:
+            class A[T:int]:
                 def func(self, x: T) -> T:
                     ...
 
@@ -47,14 +40,16 @@ let test_type_variable_scoping =
 
             a = A[int]()
             reveal_type(a)
-            reveal_type(a.func(42))
+            reveal_type(a.func(42.0))
             reveal_type(a.func2("42"))
             |}
            [
              "Parsing failure [404]: PEP 695 type params are unsupported";
              "Parsing failure [404]: PEP 695 type params are unsupported";
              "Revealed type [-1]: Revealed type for `a` is `A[int]`.";
-             "Revealed type [-1]: Revealed type for `a.func(42)` is `int`.";
+             "Revealed type [-1]: Revealed type for `a.func(42.000000)` is `int`.";
+             "Incompatible parameter type [6]: In call `A.func`, for 1st positional argument, \
+              expected `int` but got `float`.";
              "Revealed type [-1]: Revealed type for `a.func2(\"42\")` is \
               `typing_extensions.Literal['42']`.";
            ];
@@ -78,6 +73,55 @@ let test_type_variable_scoping =
              "Revealed type [-1]: Revealed type for `a.func2` is \
               `BoundMethod[typing.Callable(A.func2)[[Named(self, A[int]), Named(x, int), Named(y, \
               Variable[U])], typing.Union[int, Variable[U]]], A[int]]`.";
+           ];
+      (* TODO migeedz: Investigate why we're not recognizing paramSpec but recognizing TypeVar and
+         TypeVarTuple *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from typing import ParamSpec, Generic, assert_type, TypeVar, TypeVarTuple
+
+            class ChildClass[T, *Ts, **P]:
+                assert_type(T, TypeVar)
+                assert_type(Ts, TypeVarTuple)
+                assert_type(P, ParamSpec)
+
+            |}
+           [
+             "Parsing failure [404]: PEP 695 type params are unsupported";
+             "Assert type [70]: Expected `ParamSpec` but got `unknown`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from typing import ParamSpec, Generic, assert_type
+
+            V = ParamSpec("V")
+
+            class D(Generic[V]):
+                assert_type(V, ParamSpec)
+
+            |}
+           [];
+      (* TODO: migeedz do not mix legacy and PEP695 syntax *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from typing import TypeVar
+
+            K = TypeVar("K")
+
+            class ClassC[V]:
+                def method1(self, a: V, b: K) -> V | K:  # OK
+                    ...
+
+                def method2[M](self, a: M, b: K) -> M | K:  # E
+                    ...
+
+            |}
+           [
+             "Parsing failure [404]: PEP 695 type params are unsupported";
+             "Parsing failure [404]: PEP 695 type params are unsupported";
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
@@ -323,6 +367,64 @@ let test_check_bounded_variables =
               T = TypeVar("T", bound=Any)
               |}
            ["Prohibited any [33]: Type variable `T` cannot have `Any` as a bound."];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            def func[T:int](a: T) -> T:
+                return a
+
+            func(3.0)
+              |}
+           [
+             "Parsing failure [404]: PEP 695 type params are unsupported";
+             "Incompatible parameter type [6]: In call `func`, for 1st positional argument, \
+              expected `Variable[T (bound to int)]` but got `float`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from typing import TypeVar
+
+            T = TypeVar("T", bound=int)
+
+            def func(a: T) -> T:
+                return a
+
+            func(3.0)
+              |}
+           [
+             "Incompatible parameter type [6]: In call `func`, for 1st positional argument, \
+              expected `Variable[T (bound to int)]` but got `float`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from typing import TypeVar
+
+            T = TypeVar('T', int, str)
+
+            def func(a: T) -> T:
+                return a
+
+            func(3.0)
+              |}
+           [
+             "Incompatible parameter type [6]: In call `func`, for 1st positional argument, \
+              expected `Variable[T <: [int, str]]` but got `float`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            def func[T:(int, str)](a: T) -> T:
+                return a
+
+            func(3.0)
+              |}
+           [
+             "Parsing failure [404]: PEP 695 type params are unsupported";
+             "Incompatible parameter type [6]: In call `func`, for 1st positional argument, \
+              expected `Variable[T <: [int, str]]` but got `float`.";
+           ];
     ]
 
 
@@ -2265,6 +2367,17 @@ let test_generic_aliases =
              "Parsing failure [404]: PEP 695 type params are unsupported";
              "Revealed type [-1]: Revealed type for `test.func(x)` is \
               `typing.Union[typing.List[int], typing.Set[int]]`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            type IntList[T:int] = list[T]
+            x: IntList[int] = [3.0]
+            |}
+           [
+             "Parsing failure [404]: PEP 695 type params are unsupported";
+             "Incompatible variable type [9]: x is declared to have type `List[int]` but is used \
+              as type `List[float]`.";
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors

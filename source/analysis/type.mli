@@ -845,6 +845,16 @@ module Variable : sig
 
   val of_declaration : Declaration.t -> create_type:(Expression.t -> type_t) -> t
 
+  val of_ast_type_param
+    :  Ast.Expression.TypeParam.type_param Ast.Node.t ->
+    create_type:(Ast.Expression.Expression.t -> 'a) ->
+    'a record
+
+  val constraints_of_bound
+    :  Ast.Expression.Expression.expression Ast.Node.t option ->
+    create_type:(Ast.Expression.Expression.t -> 'a) ->
+    'a Record.TypeVarConstraints.t
+
   val pp_concise : Format.formatter -> t -> unit
 
   val dequalify : Reference.t Reference.Map.t -> t -> t
