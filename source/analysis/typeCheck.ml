@@ -458,16 +458,59 @@ module State (Context : Context) = struct
     List.fold mismatches ~f:emit_error ~init:errors
 
 
-  let get_type_params_as_variables type_params =
-    List.map type_params ~f:(fun { Node.value; _ } ->
-        match value with
-        | Ast.Expression.TypeParam.TypeVar { name; _ } ->
-            Type.Variable.TypeVarVariable
-              (Type.Variable.TypeVar.create ~constraints:Unconstrained name)
-        | Ast.Expression.TypeParam.TypeVarTuple name ->
-            Type.Variable.TypeVarTupleVariable (Type.Variable.TypeVarTuple.create name)
-        | Ast.Expression.TypeParam.ParamSpec name ->
-            Type.Variable.ParamSpecVariable (Type.Variable.ParamSpec.create name))
+  let get_type_params_as_variables type_params global_resolution =
+    let create_type = GlobalResolution.parse_annotation global_resolution in
+    (* TODO migeedz: why does parse_annotation return Top for types of the form A[int]? . *)
+    let validate_bound bound =
+      match bound.Node.value with
+      | Expression.Tuple elements ->
+          List.length elements >= 2
+          && List.for_all
+               ~f:(fun e ->
+                 match create_type e with
+                 | Type.Top -> (
+                     match e.Node.value with
+                     | Expression.Constant _ -> true
+                     | _ -> false)
+                 | _ -> true)
+               elements
+      | Expression.Constant _ -> true
+      | _ -> not (Type.equal (create_type bound) Type.Top)
+    in
+    let transformed_type_params =
+      List.map type_params ~f:(fun { Node.value; _ } ->
+          match value with
+          | Ast.Expression.TypeParam.TypeVar { name; bound } ->
+              Type.Variable.TypeVarVariable
+                (Type.Variable.TypeVar.create
+                   ~constraints:(Type.Variable.constraints_of_bound bound ~create_type)
+                   name)
+          | Ast.Expression.TypeParam.TypeVarTuple name ->
+              Type.Variable.TypeVarTupleVariable (Type.Variable.TypeVarTuple.create name)
+          | Ast.Expression.TypeParam.ParamSpec name ->
+              Type.Variable.ParamSpecVariable (Type.Variable.ParamSpec.create name))
+    in
+    let error_list =
+      List.fold
+        ~f:(fun errors { Node.value; _ } ->
+          match value with
+          | Ast.Expression.TypeParam.TypeVar { bound; _ } -> begin
+              match bound with
+              | Some bound -> (
+                  match validate_bound bound with
+                  | true -> errors
+                  | false ->
+                      emit_error
+                        ~errors
+                        ~location:bound.location
+                        ~kind:(Error.InvalidTypeVariableConstraint bound))
+              | None -> errors
+            end
+          | _ -> errors)
+        type_params
+        ~init:[]
+    in
+    transformed_type_params, error_list
 
 
   let add_invalid_type_parameters_errors ~resolution ~location ~errors annotation =
@@ -3895,6 +3938,44 @@ module State (Context : Context) = struct
       | false, Some name -> Value (resolve_non_instance ~boundary name)
       | _, None -> Value resolution
     in
+    let refine_iterable_member refinement_target iterable =
+      match maybe_simple_name_of refinement_target with
+      | None -> Value resolution
+      | Some name -> (
+          let reference = name_to_reference_exn name in
+          let { Resolved.resolved; _ } = forward_expression ~resolution iterable in
+          match GlobalResolution.type_of_iteration_value global_resolution resolved with
+          | Some element_type -> (
+              let { name = partitioned_name; attribute_path; _ } =
+                partition_name ~resolution name
+              in
+              let annotation =
+                Resolution.get_local_with_attributes
+                  ~global_fallback:false
+                  ~name:partitioned_name
+                  ~attribute_path
+                  resolution
+              in
+              match annotation with
+              | Some previous ->
+                  let refined =
+                    if TypeInfo.Unit.is_immutable previous then
+                      TypeInfo.Unit.create_immutable
+                        ~original:(Some (TypeInfo.Unit.original previous))
+                        element_type
+                    else
+                      TypeInfo.Unit.create_mutable element_type
+                  in
+                  if annotation_less_or_equal ~left:refined ~right:previous then
+                    Value (refine_local ~name refined)
+                  else (* Keeping previous state, since it is more refined. *)
+                    Value resolution
+              | None when not (Resolution.is_global resolution ~reference) ->
+                  let resolution = refine_local ~name (TypeInfo.Unit.create_mutable element_type) in
+                  Value resolution
+              | _ -> Value resolution)
+          | _ -> Value resolution)
+    in
     match Node.value test with
     (* Explicit asserting falsy values. *)
     | Expression.Constant Constant.(False | NoneLiteral)
@@ -4193,6 +4274,49 @@ module State (Context : Context) = struct
                 | _ -> Value resolution)
             | _ -> Value resolution)
       end
+    (* Membership in a literal list/tuple/set of literals *)
+    | ComparisonOperator
+        {
+          ComparisonOperator.left = refinement_target;
+          operator = ComparisonOperator.In;
+          right = { Node.value = List elements | Tuple elements | Set elements; _ } as iterable;
+        } -> (
+        match maybe_simple_name_of refinement_target with
+        | None -> Value resolution
+        | Some name -> (
+            match existing_annotation name with
+            | None -> Value resolution
+            | Some previous -> (
+                (* Only refine the type if all the elements are literals and narrower than the
+                   previous type *)
+                let refine_union_types, should_not_refine_types =
+                  List.partition_map
+                    ~f:(fun element ->
+                      let { Resolved.resolved = refined; _ } =
+                        forward_expression ~resolution element
+                      in
+                      let refined =
+                        if TypeInfo.Unit.is_immutable previous then
+                          TypeInfo.Unit.create_immutable
+                            ~original:(Some (TypeInfo.Unit.original previous))
+                            refined
+                        else
+                          TypeInfo.Unit.create_mutable refined
+                      in
+                      match refined with
+                      | { TypeInfo.Unit.annotation = Type.Literal _; _ }
+                        when annotation_less_or_equal ~left:refined ~right:previous ->
+                          Either.first (TypeInfo.Unit.annotation refined)
+                      | _ -> Either.second (TypeInfo.Unit.annotation refined))
+                    elements
+                in
+                match should_not_refine_types with
+                | [] ->
+                    Value
+                      (refine_local
+                         ~name
+                         { previous with annotation = Type.union refine_union_types })
+                | _ -> refine_iterable_member refinement_target iterable)))
     (* `is` and `in` refinement *)
     | ComparisonOperator
         { ComparisonOperator.left = refinement_target; operator = ComparisonOperator.Is; right } ->
@@ -4212,46 +4336,7 @@ module State (Context : Context) = struct
       end
     | ComparisonOperator
         { ComparisonOperator.left = refinement_target; operator = ComparisonOperator.In; right } ->
-    begin
-        match maybe_simple_name_of refinement_target with
-        | None -> Value resolution
-        | Some name -> (
-            let reference = name_to_reference_exn name in
-            let { Resolved.resolved; _ } = forward_expression ~resolution right in
-            match GlobalResolution.type_of_iteration_value global_resolution resolved with
-            | Some element_type -> (
-                let { name = partitioned_name; attribute_path; _ } =
-                  partition_name ~resolution name
-                in
-                let annotation =
-                  Resolution.get_local_with_attributes
-                    ~global_fallback:false
-                    ~name:partitioned_name
-                    ~attribute_path
-                    resolution
-                in
-                match annotation with
-                | Some previous ->
-                    let refined =
-                      if TypeInfo.Unit.is_immutable previous then
-                        TypeInfo.Unit.create_immutable
-                          ~original:(Some (TypeInfo.Unit.original previous))
-                          element_type
-                      else
-                        TypeInfo.Unit.create_mutable element_type
-                    in
-                    if annotation_less_or_equal ~left:refined ~right:previous then
-                      Value (refine_local ~name refined)
-                    else (* Keeping previous state, since it is more refined. *)
-                      Value resolution
-                | None when not (Resolution.is_global resolution ~reference) ->
-                    let resolution =
-                      refine_local ~name (TypeInfo.Unit.create_mutable element_type)
-                    in
-                    Value resolution
-                | _ -> Value resolution)
-            | _ -> Value resolution)
-      end
+        refine_iterable_member refinement_target right
     (* Not-none checks (including ones that work over containers) *)
     | ComparisonOperator
         {
@@ -4291,6 +4376,17 @@ module State (Context : Context) = struct
                 else (* Keeping previous state, since it is more refined. *)
                   Value resolution
             | _, _ -> Value resolution))
+    | ComparisonOperator
+        {
+          ComparisonOperator.left = refinement_target;
+          operator = ComparisonOperator.NotEquals | ComparisonOperator.IsNot;
+          right = value;
+        } -> (
+        let { Resolved.resolved; _ } = forward_expression ~resolution value in
+        let type_not_matched = TypeInfo.Unit.create_mutable resolved |> TypeInfo.Unit.annotation in
+        match type_not_matched with
+        | Type.Literal _ -> handle_negative_exact_type_match type_not_matched refinement_target
+        | _ -> Value resolution)
     | Name name when is_simple_name name -> (
         match existing_annotation name with
         | Some { TypeInfo.Unit.annotation = Type.NoneType; _ } -> Unreachable
@@ -5818,22 +5914,14 @@ module State (Context : Context) = struct
         (* lower augmented assignment to regular assignment *)
         let call = AugmentedAssign.lower ~location augmented_assignment in
         forward_assignment ~resolution ~location ~target ~annotation:None ~value:(Some call)
-    (* TODO(T196994965): handle type alias *)
     | TypeAlias { TypeAlias.name; type_params; value } ->
+        let type_params_as_variables, type_params_errors =
+          get_type_params_as_variables type_params global_resolution
+        in
         let resolution =
-          get_type_params_as_variables type_params
+          type_params_as_variables
           |> List.fold ~init:resolution ~f:(fun resolution variable ->
                  Resolution.add_type_variable resolution ~variable)
-        in
-        (* TODO: remove after PEP 695 is supported *)
-        let type_params_errors =
-          match type_params with
-          | { Node.location; _ } :: _ ->
-              emit_error
-                ~errors:[]
-                ~location
-                ~kind:(Error.ParserFailure "PEP 695 type params are unsupported")
-          | _ -> []
         in
         forward_type_alias_definition
           ~resolution
@@ -5983,16 +6071,7 @@ module State (Context : Context) = struct
               Resolution.new_local resolution ~reference:name ~type_info:annotation
           | _ -> resolution
         in
-        (* TODO: remove after PEP 695 is supported *)
-        let type_params_errors =
-          match type_params with
-          | { Node.location; _ } :: _ ->
-              emit_error
-                ~errors:[]
-                ~location
-                ~kind:(Error.ParserFailure "PEP 695 type params are unsupported")
-          | _ -> []
-        in
+        let _, type_params_errors = get_type_params_as_variables type_params global_resolution in
         Value resolution, type_params_errors
     | Import { Import.from; imports } ->
         let get_export_kind = function
@@ -6044,6 +6123,15 @@ module State (Context : Context) = struct
           List.fold undefined_imports ~init:[] ~f:(fun errors undefined_import ->
               emit_error ~errors ~location ~kind:(Error.UndefinedImport undefined_import)) )
     | Class ({ Class.type_params; _ } as class_statement) ->
+        let type_params, type_params_errors =
+          get_type_params_as_variables type_params global_resolution
+        in
+        let resolution =
+          type_params
+          |> List.fold ~init:resolution ~f:(fun resolution variable ->
+                 Resolution.add_type_variable resolution ~variable)
+        in
+        let global_resolution = Resolution.global_resolution resolution in
         let this_class_name = Reference.show class_statement.name in
         let check_dataclass_inheritance base_types_with_location errors =
           let dataclass_options_from_decorator class_name =
@@ -6309,15 +6397,6 @@ module State (Context : Context) = struct
           |> check_protocol_bases generic_and_protocol_bases_with_location base_types_with_location
           |> check_named_tuple_inheritance base_types_with_location
         in
-        let type_params_errors =
-          match type_params with
-          | { Node.location; _ } :: _ ->
-              emit_error
-                ~errors:[]
-                ~location
-                ~kind:(Error.ParserFailure "PEP 695 type params are unsupported")
-          | _ -> []
-        in
         Value resolution, errors @ type_params_errors
     | Try { Try.handlers; handles_exception_group; _ } ->
         (* We only need to check the type annotations of the exception handlers here, since try
@@ -6439,8 +6518,9 @@ module State (Context : Context) = struct
       =
       Context.define
     in
+    let global_resolution = Resolution.global_resolution resolution in
     (* collect type parameters for functions *)
-    let type_params = get_type_params_as_variables type_params in
+    let type_params, _ = get_type_params_as_variables type_params global_resolution in
     (* Add them to the resolution *)
     let resolution =
       type_params
@@ -8213,6 +8293,51 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
       else
         errors
     in
+    let check_named_tuple_defaults definition errors =
+      if ClassSummary.directly_extends_named_tuple definition then
+        let class_name = Reference.show (ClassSummary.name definition) in
+        let field_names = NamedTuple.field_names_from_class_name ~global_resolution class_name in
+        match field_names with
+        | Some field_names ->
+            List.fold
+              ~f:(fun (errors, require_default) name ->
+                let attribute =
+                  let class_attributes = ClassSummary.attributes definition in
+                  Identifier.SerializableMap.find_opt name class_attributes
+                in
+                match attribute with
+                | Some { Node.location; value } ->
+                    let has_default =
+                      match value with
+                      | {
+                       ClassSummary.Attribute.kind =
+                         Simple { values = { ClassSummary.Attribute.origin = Explicit; _ } :: _; _ };
+                       _;
+                      } ->
+                          true
+                      | _ -> false
+                    in
+                    if require_default && not has_default then
+                      let error =
+                        Error.create
+                          ~location:
+                            (Location.with_module ~module_reference:Context.qualifier location)
+                          ~kind:NamedTupleMissingDefault
+                          ~define:Context.define
+                      in
+                      error :: errors, true
+                    else if has_default then
+                      errors, true
+                    else
+                      errors, require_default
+                | _ -> errors, require_default)
+              ~init:(errors, false)
+              field_names
+            |> fst
+        | None -> errors
+      else
+        errors
+    in
     if Define.is_class_toplevel define then
       let check_final_inheritance errors =
         let is_final errors expression_value =
@@ -8436,7 +8561,8 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
               check_final_inheritance errors
               |> check_protocol_properties definition
               |> check_attribute_initialization definition
-              |> check_overrides definition)
+              |> check_overrides definition
+              |> check_named_tuple_defaults definition)
     else
       errors
   in

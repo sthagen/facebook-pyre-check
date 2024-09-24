@@ -861,6 +861,7 @@ and kind =
     }
   | UndefinedImport of undefined_import
   | UndefinedType of Type.t
+  | InvalidTypeVariableConstraint of Expression.t
   | UnexpectedKeyword of {
       name: Identifier.t;
       callee: Reference.t option;
@@ -903,6 +904,7 @@ and kind =
       index: int;
       members: int;
     }
+  | NamedTupleMissingDefault
   (* Additional errors. *)
   (* TODO(T38384376): split this into a separate module. *)
   | DeadStore of Identifier.t
@@ -991,6 +993,8 @@ let code_of_kind = function
   | TypedDictionaryIsInstance -> 71
   | TupleDelete -> 72
   | OutOfBoundsTupleIndex _ -> 73
+  | NamedTupleMissingDefault -> 74
+  | InvalidTypeVariableConstraint _ -> 74
   | ParserFailure _ -> 404
   (* Additional errors. *)
   | UnawaitedAwaitable _ -> 1001
@@ -1070,6 +1074,7 @@ let name_of_kind = function
   | UndefinedAttribute _ -> "Undefined attribute"
   | UndefinedImport _ -> "Undefined import"
   | UndefinedType _ -> "Undefined or invalid type"
+  | InvalidTypeVariableConstraint _ -> "Invalid bound"
   | UnexpectedKeyword _ -> "Unexpected keyword"
   | UninitializedAttribute _ -> "Uninitialized attribute"
   | UninitializedLocal _ -> "Uninitialized local"
@@ -1081,6 +1086,7 @@ let name_of_kind = function
   | TupleConcatenationError _ -> "Unable to concatenate tuple"
   | TupleDelete -> "Unable to delete tuple member"
   | OutOfBoundsTupleIndex _ -> "Invalid tuple index"
+  | NamedTupleMissingDefault -> "Missing named tuple default"
   | AssertType _ -> "Assert type"
 
 
@@ -2795,6 +2801,12 @@ let rec messages ~concise ~signature location kind =
       [
         Format.asprintf "Index %d is out of bounds for concrete tuple with %d members." index members;
       ]
+  | NamedTupleMissingDefault ->
+      [
+        Format.asprintf
+          "Named tuple field without default value may not be preceded by a field with default \
+           value.";
+      ]
   | TypedDictionaryAccessWithNonLiteral acceptable_keys ->
       let explanation =
         let acceptable_keys =
@@ -3083,6 +3095,8 @@ let rec messages ~concise ~signature location kind =
       ]
   | UndefinedType annotation ->
       [Format.asprintf "Annotation `%a` is not defined as a type." pp_type annotation]
+  | InvalidTypeVariableConstraint expression ->
+      [Format.asprintf "`%s` is not valid bound." (Expression.show expression)]
   | UnexpectedKeyword { name; _ } when concise ->
       [Format.asprintf "Unexpected keyword argument `%s`." (Identifier.sanitized name)]
   | UnexpectedKeyword { name; callee } ->
@@ -3324,6 +3338,7 @@ let due_to_analysis_limitations { kind; _ } =
   (* TODO(yangdanny): investigate unexpected cases of 0-1 member tuples being inferred *)
   | OutOfBoundsTupleIndex { members = 0 | 1; _ } -> true
   | AnalysisFailure _
+  | InvalidTypeVariableConstraint _
   | AssertType _
   | BroadcastError _
   | ParserFailure _
@@ -3369,6 +3384,7 @@ let due_to_analysis_limitations { kind; _ } =
   | TupleConcatenationError _
   | TupleDelete
   | OutOfBoundsTupleIndex _
+  | NamedTupleMissingDefault
   | TypedDictionaryAccessWithNonLiteral _
   | TypedDictionaryIsInstance
   | TypedDictionaryKeyNotFound _
@@ -3754,6 +3770,9 @@ let join ~resolution left right =
       ->
         UndefinedAttribute { origin = Module (ExplicitModule left); attribute = left_attribute }
     | UndefinedType left, UndefinedType right when Type.equal left right -> UndefinedType left
+    | InvalidTypeVariableConstraint left, InvalidTypeVariableConstraint right
+      when Expression.equal left right ->
+        InvalidTypeVariableConstraint left
     | UnexpectedKeyword left, UnexpectedKeyword right
       when Option.equal Reference.equal_sanitized left.callee right.callee
            && Identifier.equal left.name right.name ->
@@ -3914,6 +3933,7 @@ let join ~resolution left right =
     | TupleConcatenationError _, _
     | TupleDelete, _
     | OutOfBoundsTupleIndex _, _
+    | NamedTupleMissingDefault, _
     | AssertType _, _
     | TypedDictionaryAccessWithNonLiteral _, _
     | TypedDictionaryIsInstance, _
@@ -3928,6 +3948,7 @@ let join ~resolution left right =
     | UndefinedAttribute _, _
     | UndefinedImport _, _
     | UndefinedType _, _
+    | InvalidTypeVariableConstraint _, _
     | UnexpectedKeyword _, _
     | UninitializedAttribute _, _
     | Unpack _, _
@@ -4532,6 +4553,7 @@ let dequalify
     | TupleConcatenationError expressions -> TupleConcatenationError expressions
     | TupleDelete -> TupleDelete
     | OutOfBoundsTupleIndex details -> OutOfBoundsTupleIndex details
+    | NamedTupleMissingDefault -> NamedTupleMissingDefault
     | ReadOnlynessMismatch mismatch ->
         ReadOnlynessMismatch (ReadOnly.dequalify ~dequalify_type:dequalify mismatch)
     | SuppressionCommentWithoutErrorCode error_codes ->
@@ -4617,6 +4639,7 @@ let dequalify
         in
         UndefinedAttribute { attribute; origin }
     | UndefinedType annotation -> UndefinedType (dequalify annotation)
+    | InvalidTypeVariableConstraint expression -> InvalidTypeVariableConstraint expression
     | UndefinedImport reference -> UndefinedImport reference
     | UnexpectedKeyword { name; callee } ->
         UnexpectedKeyword { name; callee = Option.map callee ~f:dequalify_reference }
