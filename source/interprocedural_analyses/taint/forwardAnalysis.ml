@@ -41,7 +41,8 @@ open Pyre
 open Domains
 module CallGraph = Interprocedural.CallGraph
 module CallResolution = Interprocedural.CallResolution
-module PyrePysaApi = Analysis.PyrePysaApi
+module PyrePysaEnvironment = Analysis.PyrePysaEnvironment
+module PyrePysaLogic = Analysis.PyrePysaLogic
 
 module type FUNCTION_CONTEXT = sig
   val qualifier : Reference.t
@@ -56,7 +57,7 @@ module type FUNCTION_CONTEXT = sig
 
   val profiler : TaintProfiler.t
 
-  val pyre_api : PyrePysaApi.ReadOnly.t
+  val pyre_api : PyrePysaEnvironment.ReadOnly.t
 
   val taint_configuration : TaintConfiguration.Heap.t
 
@@ -364,7 +365,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   let apply_call_target
       ?(apply_tito = true)
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_result_used
       ~implicit_returns_self
       ~triggered_sinks_for_call
@@ -729,7 +730,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         | AccessPath.Root.CapturedVariable { name = variable } ->
             let nonlocal_reference = Reference.delocalize (Reference.create variable) in
             let define_reference =
-              Analysis.FunctionDefinition.qualified_name_of_define
+              PyrePysaLogic.qualified_name_of_define
                 ~module_name:FunctionContext.qualifier
                 FunctionContext.definition.value
             in
@@ -809,7 +810,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   let apply_constructor_targets
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_result_used
       ~triggered_sinks_for_call
       ~call_location
@@ -893,7 +894,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   let apply_callees_with_arguments_taint
       ?(apply_tito = true)
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_result_used
       ~callee
       ~call_location
@@ -1033,7 +1034,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
   }
 
   let rec analyze_callee
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_property_call
       ~state
       ~callee
@@ -1064,7 +1065,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   (* Lazy version of `analyze_callee` which only analyze what we need for a call site. *)
   and analyze_callee_for_callees
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_property_call
       ~state
       ~callee
@@ -1108,7 +1109,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         { self_taint = None; callee_taint = None; state }
 
 
-  and analyze_arguments ~(pyre_in_context : PyrePysaApi.InContext.t) ~state ~arguments =
+  and analyze_arguments ~(pyre_in_context : PyrePysaEnvironment.InContext.t) ~state ~arguments =
     let compute_argument_taint (arguments_taint, state) argument =
       let taint, state =
         analyze_unstarred_expression
@@ -1125,7 +1126,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_dictionary_entry
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_result_used
       (taint, state)
       entry
@@ -1150,7 +1151,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_list_element
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_result_used
       position
       (taint, state)
@@ -1163,7 +1164,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_set_element
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_result_used
       (taint, state)
       expression
@@ -1176,7 +1177,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_comprehension_generators
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~state
       generators
     =
@@ -1203,14 +1204,16 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         analyze_expression ~pyre_in_context ~state ~is_result_used:false ~expression:condiiton
         |> snd
       in
-      let pyre_in_context = PyrePysaApi.InContext.resolve_assignment pyre_in_context assignment in
+      let pyre_in_context =
+        PyrePysaEnvironment.InContext.resolve_assignment pyre_in_context assignment
+      in
       List.fold conditions ~init:state ~f:analyze_condition, pyre_in_context
     in
     List.fold ~f:add_binding generators ~init:(state, pyre_in_context)
 
 
   and analyze_comprehension
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~state
       ~is_result_used
       { Comprehension.element; generators; _ }
@@ -1223,7 +1226,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_dictionary_comprehension
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~state
       ~is_result_used
       { Comprehension.element = Dictionary.Entry.KeyValue.{ key; value }; generators; _ }
@@ -1244,7 +1247,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   (* Skip through * and **. Used at call sites where * and ** are handled explicitly *)
   and analyze_unstarred_expression
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_result_used
       expression
       state
@@ -1257,7 +1260,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_arguments_with_higher_order_parameters
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~arguments
       ~state
       ~higher_order_parameters
@@ -1408,7 +1411,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   and apply_callees
       ?(apply_tito = true)
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_result_used
       ~is_property
       ~callee
@@ -1452,7 +1455,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_getitem_call_target
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_result_used
       ~index
       ~index_number
@@ -1464,7 +1467,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     =
     let analyze_getitem receiver_class =
       let named_tuple_attributes =
-        PyrePysaApi.ReadOnly.named_tuple_attributes pyre_api receiver_class
+        PyrePysaEnvironment.ReadOnly.named_tuple_attributes pyre_api receiver_class
       in
       match named_tuple_attributes, index_number with
       | Some named_tuple_attributes, Some index_number ->
@@ -1516,7 +1519,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_call
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~location
       ~state
       ~is_result_used
@@ -2204,7 +2207,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_attribute_access
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~state
       ~is_attribute_used
       ~location
@@ -2311,7 +2314,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
      a call to `call_target` whose arguments are `string_literal` followed by
      `nested_expressions`. *)
   and analyze_joined_string
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~state
       ~breadcrumbs
       {
@@ -2451,7 +2454,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_expression
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~state
       ~is_result_used
       ~expression:{ Node.value; location }
@@ -2673,7 +2676,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_assignment
-      ~(pyre_in_context : PyrePysaApi.InContext.t)
+      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ?(weak = false)
       ?(fields = [])
       ({ Node.location; value } as target)
@@ -2761,7 +2764,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         store_taint_option ~weak access_path taint state
 
 
-  and analyze_condition ~(pyre_in_context : PyrePysaApi.InContext.t) expression state =
+  and analyze_condition ~(pyre_in_context : PyrePysaEnvironment.InContext.t) expression state =
     let { Node.location; _ } = expression in
     let call_site = CallSite.create location in
     let location = Location.with_module ~module_reference:FunctionContext.qualifier location in
@@ -2939,7 +2942,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
   let create ~existing_model parameters define_location =
     (* Use primed sources to populate initial state of parameters *)
     let parameter_sources = existing_model.Model.parameter_sources.parameter_sources in
-    let pyre_in_context = PyrePysaApi.InContext.create_at_global_scope pyre_api in
+    let pyre_in_context = PyrePysaEnvironment.InContext.create_at_global_scope pyre_api in
     let apply_call ~location ~root =
       ForwardState.read ~root ~path:[] parameter_sources
       |> ForwardState.Tree.apply_call
@@ -3021,7 +3024,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           pp
           state;
         let pyre_in_context =
-          PyrePysaApi.InContext.create_at_statement_key
+          PyrePysaEnvironment.InContext.create_at_statement_key
             pyre_api
             ~define_name:FunctionContext.define_name
             ~define:(Ast.Node.value FunctionContext.definition)
@@ -3078,7 +3081,7 @@ let extract_source_model
     in
     let type_breadcrumbs =
       annotation
-      >>| PyrePysaApi.ReadOnly.parse_annotation pyre_api
+      >>| PyrePysaEnvironment.ReadOnly.parse_annotation pyre_api
       |> Features.type_breadcrumbs_from_annotation ~pyre_api
     in
     let taint =
@@ -3150,7 +3153,7 @@ let run
     define
   in
   let define_name =
-    Analysis.FunctionDefinition.qualified_name_of_define ~module_name:qualifier (Node.value define)
+    PyrePysaLogic.qualified_name_of_define ~module_name:qualifier (Node.value define)
   in
   let module FunctionContext = struct
     let qualifier = qualifier
@@ -3192,7 +3195,7 @@ let run
   end
   in
   let module State = State (FunctionContext) in
-  let module Fixpoint = Analysis.Fixpoint.Make (State) in
+  let module Fixpoint = PyrePysaLogic.Fixpoint.Make (State) in
   if FunctionContext.debug || Statement.Define.dump_call_graph define.value then
     Log.dump
       "Call graph of `%a`:@,%a"
@@ -3207,7 +3210,7 @@ let run
         let normalized_parameters = AccessPath.normalize_parameters parameters in
         State.create ~existing_model normalized_parameters define_location)
   in
-  let () = State.log "Processing CFG:@.%a" Analysis.Cfg.pp cfg in
+  let () = State.log "Processing CFG:@.%a" PyrePysaLogic.Cfg.pp cfg in
   let exit_state =
     TaintProfiler.track_duration ~profiler ~name:"Forward analysis - fixpoint" ~f:(fun () ->
         Alarm.with_alarm

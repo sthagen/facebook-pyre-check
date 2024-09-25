@@ -24,7 +24,7 @@ let test_readonly =
            blur: Band = {"name": "blur", "members": []}
            blur["members"] = ["Damon Albarn"]  # Type check error: "members" is read-only
             |}
-           [];
+           ["Invalid TypedDict operation [54]: Cannot write to `Band` read-only field `members`."];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
            {|
