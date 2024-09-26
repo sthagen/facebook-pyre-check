@@ -19,5 +19,7 @@
 
 module Cfg = Cfg
 module Fixpoint = Fixpoint
+module DecoratorPreprocessing = DecoratorPreprocessing
+module ClassSummary = ClassSummary
 
 let qualified_name_of_define = FunctionDefinition.qualified_name_of_define
