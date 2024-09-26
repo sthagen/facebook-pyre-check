@@ -179,8 +179,6 @@ let test_type_variable_scoping =
 let test_check_bounded_variables =
   test_list
     [
-      (* TODO migeedz: ForwardReference[int], "ForwardReference[str]", bytes) is valid as a bound as
-         well *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
            {|
@@ -2018,6 +2016,7 @@ let test_callable_parameter_variadics =
              "Incompatible parameter type [6]: In call `H.f`, for 2nd positional argument, \
               expected `str` but got `int`.";
            ];
+      (* TODO migeedz: implement error checking for paramSpec *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
            {|
@@ -2026,7 +2025,6 @@ let test_callable_parameter_variadics =
                     return 5
 
             def foo(x: H[int, str]) -> None:
-
                 # incorrect
                 x.f()
                 x.f("A", 1)
@@ -2035,9 +2033,31 @@ let test_callable_parameter_variadics =
                 x.f(1, "A")
 
             |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           ~other_sources:
+             [
+               {
+                 Test.handle = "foo.pyi";
+                 source =
+                   {|
+                  class H[**P]:
+                      def f(self, /, *args: P.args, **kwargs: P.kwargs) -> int:
+                          return 5
+
+                  def foo(x: H[int, str]) -> int:
+                      return x.f(1, "A")
+                   |};
+               };
+             ]
+           {|
+             from foo import *
+             reveal_type(foo)
+           |}
            [
-             "Undefined or invalid type [11]: Annotation `P.args` is not defined as a type.";
-             "Undefined or invalid type [11]: Annotation `P.kwargs` is not defined as a type.";
+             "Revealed type [-1]: Revealed type for `foo.foo` is \
+              `typing.Callable(foo.foo)[[Named(x, foo.H[[int, str]])], int]`.";
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
