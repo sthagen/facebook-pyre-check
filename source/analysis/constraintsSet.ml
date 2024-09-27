@@ -60,6 +60,10 @@ type order = {
   get_named_tuple_fields: Type.t -> Type.t list option;
   metaclass: Type.Primitive.t -> cycle_detections:CycleDetection.t -> Type.t option;
   cycle_detections: CycleDetection.t;
+  variance_map:
+    class_name:string ->
+    parameters:Type.GenericParameter.t list ->
+    Type.Record.Variance.t Ast.Identifier.Map.t;
 }
 
 type t = TypeConstraints.t list [@@deriving show]
@@ -564,6 +568,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
          get_typed_dictionary;
          get_named_tuple_fields;
          metaclass;
+         variance_map;
          _;
        } as order)
       ~constraints
@@ -790,9 +795,13 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         in
         List.append through_protocol_hierarchy through_meta_hierarchy
     | _, Type.Parametric { name = right_name; arguments = right_arguments } ->
-        let solve_respecting_variance constraints = function
-          | Type.GenericParameter.ZipTwoArgumentsLists.TypeVarZipResult { variance; left; right; _ }
+        let solve_respecting_variance ~class_name ~parameters constraints = function
+          | Type.GenericParameter.ZipTwoArgumentsLists.TypeVarZipResult { name; left; right; _ }
             -> (
+              let variance =
+                Map.find (variance_map ~parameters ~class_name) name
+                |> Option.value ~default:Type.Record.Variance.Invariant
+              in
               match left, right, variance with
               (* TODO kill these special cases *)
               | Type.Bottom, _, _ ->
@@ -834,9 +843,15 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               impossible
         in
         let solve_arguments left_arguments right_arguments =
-          generic_parameters right_name
+          let parameters = generic_parameters right_name in
+          parameters
           >>| Type.GenericParameter.ZipTwoArgumentsLists.zip ~left_arguments ~right_arguments
-          >>| List.fold ~f:solve_respecting_variance ~init:[constraints]
+          >>| List.fold
+                ~f:
+                  (solve_respecting_variance
+                     ~class_name:right_name
+                     ~parameters:(parameters |> Option.value ~default:[]))
+                ~init:[constraints]
         in
         let left_arguments =
           let left_arguments = instantiate_successors_parameters ~source:left ~target:right_name in
@@ -853,13 +868,45 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         let right_typed_dictionary = get_typed_dictionary right in
         match left_typed_dictionary, right_typed_dictionary with
         | Some { fields = left_fields; _ }, Some { fields = right_fields; _ } ->
-            let field_not_found field =
-              not
-                (List.exists
-                   left_fields
-                   ~f:([%equal: Type.TypedDictionary.typed_dictionary_field] field))
+            (* Implements assignability rules from
+               https://typing.readthedocs.io/en/latest/spec/typeddict.html#id4 *)
+            let fields_needed_from_left =
+              let field_needed { annotation; required; readonly; _ } =
+                not (readonly && (not required) && Type.is_object annotation)
+              in
+              List.filter ~f:field_needed right_fields
             in
-            if not (List.exists right_fields ~f:field_not_found) then
+            let left_fields_map =
+              left_fields
+              |> List.map ~f:(fun (field : Type.TypedDictionary.typed_dictionary_field) ->
+                     field.name, field)
+              |> Map.of_alist_exn (module String)
+            in
+            let solve_for (right_field : Type.TypedDictionary.typed_dictionary_field) =
+              match Map.find left_fields_map right_field.name with
+              | None -> impossible
+              | Some left_field ->
+                  if right_field.required && not left_field.required then
+                    impossible
+                  else if (not right_field.readonly) && left_field.readonly then
+                    impossible
+                  else if
+                    (not right_field.required) && (not right_field.readonly) && left_field.required
+                  then
+                    impossible
+                  else if right_field.readonly then
+                    solve_less_or_equal
+                      order
+                      ~left:left_field.annotation
+                      ~right:right_field.annotation
+                      ~constraints
+                  else if Type.equal left_field.annotation right_field.annotation then
+                    [constraints]
+                  else
+                    impossible
+            in
+            let partial_solutions = List.map ~f:solve_for fields_needed_from_left in
+            if List.for_all ~f:potentially_satisfiable partial_solutions then
               [constraints]
             else
               impossible

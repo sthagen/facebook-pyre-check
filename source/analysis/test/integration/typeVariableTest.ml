@@ -57,6 +57,22 @@ let test_type_variable_scoping =
 
             |}
            [];
+      (* TODO migeedz: Consider what we want to do about this. The conformance test says that we
+         should not return any errors, but Pyre does not accept such programs in legacy syntax
+         currently. *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from typing import Callable
+
+            def decorator2[**P, R](x: int) -> Callable[[Callable[P, R]], Callable[P, R]]:
+                ...
+
+            |}
+           [
+             "Invalid type [31]: Expression `typing.Callable[([typing.Callable[(P, R)]], \
+              typing.Callable[(P, R)])]` is not a valid type.";
+           ];
       (* PEP695 generic methods from non-generic classes *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
@@ -551,8 +567,6 @@ let test_check_unbounded_variables =
              "Revealed type [-1]: Revealed type for `test.Foo[float]` is `typing.Type[Foo[float]]`.";
              "Revealed type [-1]: Revealed type for `test.Foo[float]()` is `Foo[float]`.";
              "Revealed type [-1]: Revealed type for `test.Foo[str]()` is `Foo[str]`.";
-             "Incompatible parameter type [6]: In call `typing.GenericMeta.__getitem__`, for 1st \
-              positional argument, expected `Type[Variable[X]]` but got `str`.";
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
@@ -1006,7 +1020,7 @@ let test_check_variable_bindings =
              ^ "`typing.Type[Foo[Animal]]`.";
              "Revealed type [-1]: Revealed type for `test.Foo[test.Animal]()` is `Foo[Animal]`.";
              "Revealed type [-1]: Revealed type for `test.Foo[test.Mineral]()` is `Foo[Mineral]`.";
-             "Revealed type [-1]: Revealed type for `test.Foo[test.Fish]()` is `Foo[Animal]`.";
+             "Revealed type [-1]: Revealed type for `test.Foo[test.Fish]()` is `Foo[Fish]`.";
              "Incompatible parameter type [6]: In call `typing.GenericMeta.__getitem__`, for 1st \
               positional argument, expected `Type[Variable[X <: [Mineral, Animal]]]` but got \
               `Type[int]`.";

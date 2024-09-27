@@ -164,6 +164,11 @@ module AttributeReadOnly : sig
   end
 end
 
+val variance_map
+  :  class_name:'a ->
+  parameters:Type.GenericParameter.t list ->
+  Type.Record.Variance.t Identifier.Map.t
+
 include
   Environment.S
     with module ReadOnly = AttributeReadOnly

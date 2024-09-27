@@ -534,7 +534,8 @@ let matches_annotation_constraint
             None
         | "typing.Optional" -> extract_class_name (extract_optional t)
         | "typing._PyreReadOnly_"
-        | "pyre_extensions.ReadOnly" ->
+        | "pyre_extensions.ReadOnly"
+        | "pyre_extensions.PyreReadOnly" ->
             extract_class_name (extract_readonly t)
         | extracted_class_name -> Some extracted_class_name
       in
@@ -631,14 +632,9 @@ let class_matches_decorator_constraint ~name_captures ~pyre_api ~decorator_const
 let find_parents ~pyre_api ~is_transitive ~includes_self class_name =
   let parents =
     if is_transitive then
-      match PyrePysaEnvironment.ReadOnly.get_class_metadata pyre_api class_name with
-      | Some { Analysis.ClassSuccessorMetadataEnvironment.successors = Some successors; _ } ->
-          successors
-      | _ -> []
+      PyrePysaEnvironment.ReadOnly.successors pyre_api class_name
     else
-      Analysis.ClassHierarchy.immediate_parents
-        (PyrePysaEnvironment.ReadOnly.class_hierarchy pyre_api)
-        class_name
+      PyrePysaEnvironment.ReadOnly.immediate_parents pyre_api class_name
   in
   let parents =
     if includes_self then

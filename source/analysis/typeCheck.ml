@@ -133,7 +133,8 @@ let incompatible_annotation_with_attribute_error
 
 (* Return true if the mismatch between `actual` and `expected` is due to readonlyness.
 
-   We check this by stripping any `ReadOnly` types in both and checking if they are compatible. *)
+   We check this by stripping any `PyreReadOnly` types in both and checking if they are
+   compatible. *)
 let is_readonlyness_mismatch ~global_resolution ~actual ~expected =
   (Type.PyreReadOnly.contains_readonly actual || Type.PyreReadOnly.contains_readonly expected)
   && GlobalResolution.less_or_equal
@@ -3545,6 +3546,23 @@ module State (Context : Context) = struct
                 | _ ->
                     forward_expression ~resolution { Node.value = synthetic_getitem_call; location }
                 )
+            | _ when Option.is_some (Type.extract_from_builtins_type resolved_base) -> (
+                (* If base of subscript is a type, try to parse the whole expression as a type *)
+                let errors, annotation = parse_and_check_annotation ~resolution expression in
+                match annotation with
+                | Type.Top ->
+                    forward_expression ~resolution { Node.value = synthetic_getitem_call; location }
+                | _ when List.is_empty errors ->
+                    {
+                      resolution;
+                      errors;
+                      resolved = Type.builtins_type annotation;
+                      resolved_annotation = None;
+                      base = None;
+                    }
+                | _ ->
+                    forward_expression ~resolution { Node.value = synthetic_getitem_call; location }
+                )
             | _ -> forward_expression ~resolution { Node.value = synthetic_getitem_call; location }
           in
           (* For tuples with fixed length indexed by a literal, emit an error if the index is out of
@@ -6217,24 +6235,33 @@ module State (Context : Context) = struct
             (* Given an argument to a base class, check whether it is a TypeVar and if so get the
                matching GenericParameter.t for this class so we can check variance. *)
             let maybe_this_class_parameter_name_and_variance =
-              let look_up_this_class_variance =
+              let generic_parameters =
                 GlobalResolution.generic_parameters global_resolution this_class_name
                 |> Option.value ~default:[]
-                |> Type.GenericParameter.look_up_variance
+              in
+              let look_up_this_class_variance =
+                AttributeResolution.variance_map
+                  ~parameters:generic_parameters
+                  ~class_name:this_class_name
               in
               fun base_class_argument ->
                 match base_class_argument with
                 | Type.Argument.Single (Type.Variable { Type.Record.Variable.TypeVar.name; _ }) ->
-                    look_up_this_class_variance name >>| fun variance -> name, variance
+                    Map.find look_up_this_class_variance name >>| fun variance -> name, variance
                 | _ -> None
             in
-            let check_pair errors base_argument base_parameter =
+            let check_pair ~base_class_name ~parameters errors base_argument base_parameter =
               (* If the argument to a base class is a type variable, find the corresponding type
                  parameter for this class *)
               match maybe_this_class_parameter_name_and_variance base_argument, base_parameter with
               | ( Some (this_name, this_variance),
-                  Type.GenericParameter.GpTypeVar { name = base_name; variance = base_variance; _ }
-                ) -> (
+                  Type.GenericParameter.GpTypeVar { name = base_name; _ } ) -> (
+                  let base_variance =
+                    Map.find
+                      (AttributeResolution.variance_map ~parameters ~class_name:base_class_name)
+                      base_name
+                    |> Option.value ~default:Type.Record.Variance.Invariant
+                  in
                   match this_variance, base_variance with
                   | Type.Record.Variance.Covariant, Type.Record.Variance.Invariant
                   | Type.Record.Variance.Contravariant, Type.Record.Variance.Invariant
@@ -6260,7 +6287,13 @@ module State (Context : Context) = struct
                   GlobalResolution.generic_parameters global_resolution name
                   |> Option.value ~default:[]
                 in
-                match List.fold2 arguments parameters ~init:errors ~f:check_pair with
+                match
+                  List.fold2
+                    arguments
+                    parameters
+                    ~init:errors
+                    ~f:(check_pair ~base_class_name:name ~parameters)
+                with
                 | Ok errors -> errors
                 | Unequal_lengths -> errors
               end
@@ -6529,10 +6562,14 @@ module State (Context : Context) = struct
     let look_up_current_class_variance =
       match maybe_current_class_name with
       | Some current_class_name ->
-          GlobalResolution.generic_parameters global_resolution current_class_name
-          |> Option.value ~default:[]
-          |> Type.GenericParameter.look_up_variance
-      | None -> fun _ -> None
+          let generic_parameters =
+            GlobalResolution.generic_parameters global_resolution current_class_name
+            |> Option.value ~default:[]
+          in
+          AttributeResolution.variance_map
+            ~parameters:generic_parameters
+            ~class_name:current_class_name
+      | None -> Identifier.Map.empty
     in
     let parameter_types =
       let create_parameter { Node.value = { Parameter.name; value; annotation }; _ } =
@@ -6770,7 +6807,7 @@ module State (Context : Context) = struct
       let add_variance_error return_type errors =
         match return_type with
         | Type.Variable { Type.Variable.TypeVar.name = type_var_name; _ } -> (
-            match look_up_current_class_variance type_var_name with
+            match Map.find look_up_current_class_variance type_var_name with
             | Some (Type.Record.Variance.Contravariant as variance) ->
                 emit_error
                   ~errors
@@ -7011,7 +7048,7 @@ module State (Context : Context) = struct
           match annotation with
           | Type.Variable { Type.Variable.TypeVar.name = type_var_name; _ }
             when not (Define.is_constructor define) -> (
-              match look_up_current_class_variance type_var_name with
+              match Map.find look_up_current_class_variance type_var_name with
               | Some (Type.Record.Variance.Covariant as variance) ->
                   emit_error
                     ~errors
@@ -8435,11 +8472,32 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
             let matching_successors =
               Map.find_multi field_name_to_successor_fields_map field.name
             in
-            let is_inherited_field =
+            let matching_successor_field_exists =
+              let matches (successor_field : Type.TypedDictionary.typed_dictionary_field) =
+                (* Assignability rules:
+                   https://typing.readthedocs.io/en/latest/spec/typeddict.html#id4 *)
+                let annotation_matches () =
+                  if successor_field.readonly then
+                    GlobalResolution.less_or_equal
+                      global_resolution
+                      ~left:field.annotation
+                      ~right:successor_field.annotation
+                  else
+                    Type.equal successor_field.annotation field.annotation
+                in
+                let requiredness_matches () =
+                  if successor_field.required then
+                    field.required
+                  else
+                    successor_field.readonly || not field.required
+                in
+                let readonlyness_matches () = successor_field.readonly || not field.readonly in
+                requiredness_matches () && readonlyness_matches () && annotation_matches ()
+              in
               List.exists matching_successors ~f:(fun (_, successor_field) ->
-                  [%equal: Type.TypedDictionary.typed_dictionary_field] field successor_field)
+                  matches successor_field)
             in
-            if is_inherited_field then
+            if matching_successor_field_exists then
               []
             else
               List.map matching_successors ~f:(fun (successor_name, successor_field) ->

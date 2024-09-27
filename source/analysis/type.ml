@@ -50,6 +50,7 @@ module Record = struct
      for PEP695, our algorithm is still resolving variance. Bivariant is different as it means we
      already ran our algorithm and did not conclude variance. Bivariance is not applicable to legacy
      syntax as the user cannot not specify it. *)
+
   module Variance = struct
     type t =
       | Covariant
@@ -61,6 +62,21 @@ module Record = struct
       | Covariant -> "covariant"
       | Contravariant -> "contravariant"
       | Invariant -> "invariant"
+  end
+
+  module PreInferenceVariance = struct
+    type t =
+      | P_Covariant
+      | P_Contravariant
+      | P_Invariant
+      | P_Undefined
+    [@@deriving compare, eq, sexp, show, hash]
+
+    let show_lowercase = function
+      | P_Covariant -> "P_covariant"
+      | P_Contravariant -> "P_contravariant"
+      | P_Invariant -> "P_invariant"
+      | P_Undefined -> "P_Undefined"
   end
 
   module TypeVarConstraints = struct
@@ -3081,7 +3097,7 @@ module Variable = struct
       | DTypeVar of {
           name: Identifier.t;
           constraints: Expression.t Record.TypeVarConstraints.t;
-          variance: Record.Variance.t;
+          variance: Record.PreInferenceVariance.t;
         }
       | DTypeVarTuple of { name: Identifier.t }
       | DParamSpec of { name: Identifier.t }
@@ -3122,17 +3138,17 @@ module Variable = struct
                   value = { Node.value = Constant Constant.True; _ };
                 }
                 when String.equal (Identifier.sanitized name) "covariant" ->
-                  Some Record.Variance.Covariant
+                  Some Record.PreInferenceVariance.P_Covariant
               | {
                   Call.Argument.name = Some { Node.value = name; _ };
                   value = { Node.value = Constant Constant.True; _ };
                 }
                 when String.equal (Identifier.sanitized name) "contravariant" ->
-                  Some Record.Variance.Contravariant
+                  Some Record.PreInferenceVariance.P_Contravariant
               | _ -> None
             in
             List.find_map arguments ~f:variance_definition
-            |> Option.value ~default:Record.Variance.Invariant
+            |> Option.value ~default:Record.PreInferenceVariance.P_Invariant
           in
 
           Some (DTypeVar { name = Reference.show target; constraints; variance })
@@ -3152,7 +3168,7 @@ module Variable = struct
                {
                  name = Reference.show target;
                  constraints = LiteralIntegers;
-                 variance = Record.Variance.Invariant;
+                 variance = Record.PreInferenceVariance.P_Invariant;
                })
       | {
           Node.value =
@@ -3553,7 +3569,7 @@ module GenericParameter = struct
   type t =
     | GpTypeVar of {
         name: Identifier.t;
-        variance: Record.Variance.t;
+        variance: Record.PreInferenceVariance.t;
         constraints: T.t Record.TypeVarConstraints.t;
       }
     | GpTypeVarTuple of { name: Identifier.t }
@@ -3591,17 +3607,6 @@ module GenericParameter = struct
     | Variable.Declaration.DParamSpec { name } -> GpParamSpec { name }
 
 
-  let look_up_variance parameters =
-    let variance_by_name =
-      let add_to_lookup so_far = function
-        | GpTypeVar { name; variance; _ } -> Map.set so_far ~key:name ~data:variance
-        | _ -> so_far
-      in
-      List.fold parameters ~f:add_to_lookup ~init:Identifier.Map.empty
-    in
-    fun variable_name -> Map.find variance_by_name variable_name
-
-
   (* A zip function + result type used when we need to use type paramter information of a type
    * constructor to compare two specializations of that type constructor: we want to zip the
    * two argument lists * up with the parameters.
@@ -3619,7 +3624,6 @@ module GenericParameter = struct
     type result =
       | TypeVarZipResult of {
           name: Identifier.t;
-          variance: Record.Variance.t;
           left: T.t;
           right: T.t;
         }
@@ -3723,12 +3727,8 @@ module GenericParameter = struct
             right_argument :: right_remaining ) ->
             let so_far, left_remaining, right_remaining =
               match parameter, left_argument, right_argument with
-              | ( GpTypeVar { name; variance; _ },
-                  Record.Argument.Single left,
-                  Record.Argument.Single right ) ->
-                  ( TypeVarZipResult { name; variance; left; right } :: so_far,
-                    left_remaining,
-                    right_remaining )
+              | GpTypeVar { name; _ }, Record.Argument.Single left, Record.Argument.Single right ->
+                  TypeVarZipResult { name; left; right } :: so_far, left_remaining, right_remaining
               | (GpTypeVarTuple _ as parameter), _, _ ->
                   let zip_item, left_after_unpack, right_after_unpack =
                     zip_type_var_tuple_parameter
@@ -3923,7 +3923,7 @@ module ToExpression = struct
         Expression.Name
           (Attribute { base = expression (Primitive variable_name); attribute; special = false })
     | Primitive name -> create_name name
-    | PyreReadOnly type_ -> subscript "pyre_extensions.ReadOnly" [expression type_]
+    | PyreReadOnly type_ -> subscript "pyre_extensions.PyreReadOnly" [expression type_]
     | RecursiveType { name; _ } -> create_name name
     | Top -> create_name "$unknown"
     | Tuple (Concrete []) -> subscript "typing.Tuple" [Node.create ~location (Expression.Tuple [])]
@@ -4902,7 +4902,8 @@ let rec create_logic ~resolve_aliases ~variables { Node.value = expression; _ } 
            patch the standard library with read-only methods without worrying about whether
            `pyre_extensions` is part of a project. *)
         | "typing._PyreReadOnly_", Some [head]
-        | "pyre_extensions.ReadOnly", Some [head] ->
+        | "pyre_extensions.ReadOnly", Some [head]
+        | "pyre_extensions.PyreReadOnly", Some [head] ->
             Constructors.pyre_read_only head
         | _ -> result
       in
