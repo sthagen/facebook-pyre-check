@@ -58,7 +58,7 @@ module ReadOnly : sig
 
   val parse_annotation
     :  t ->
-    ?validation:SharedMemoryKeys.ParseAnnotationKey.type_validation_policy ->
+    ?validation:AttributeResolution.type_validation_policy ->
     Ast.Expression.t ->
     Type.t
 
@@ -102,7 +102,7 @@ module ReadOnly : sig
 
   val annotation_parser : t -> AnnotatedCallable.annotation_parser
 
-  val get_typed_dictionary : t -> Type.t -> Type.TypedDictionary.t option
+  val typed_dictionary_field_names : t -> Type.t -> string list
 
   val less_or_equal : t -> left:Type.t -> right:Type.t -> bool
 
@@ -192,4 +192,29 @@ module InContext : sig
   val redirect_special_calls : t -> Ast.Expression.Call.t -> Ast.Expression.Call.t
 
   val resolve_generators : t -> Ast.Expression.Comprehension.Generator.t list -> t
+end
+
+module ModelQueries : sig
+  module Global : sig
+    type t =
+      | Class
+      | Module
+      | Attribute of Type.t
+    [@@deriving show]
+  end
+
+  val resolve_qualified_name_to_global : ReadOnly.t -> Ast.Reference.t -> Global.t option
+
+  val class_summaries
+    :  ReadOnly.t ->
+    Ast.Reference.t ->
+    Ast.Statement.Class.t Ast.Node.t list option
+
+  val find_method_definitions
+    :  ReadOnly.t ->
+    ?predicate:(Ast.Statement.Define.t -> bool) ->
+    Ast.Reference.t ->
+    Type.type_t Type.Callable.overload list
+
+  val invalidate_cache : unit -> unit
 end
