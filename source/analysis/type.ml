@@ -4138,7 +4138,7 @@ module TypedDictionary = struct
       in
       List.map ~f:overload
     in
-    let get_overloads =
+    let get_overloads fields =
       let overloads { name; annotation; _ } =
         [
           {
@@ -4162,7 +4162,37 @@ module TypedDictionary = struct
           };
         ]
       in
-      List.concat_map ~f:overloads
+      List.concat_map ~f:overloads fields
+      @ [
+          {
+            Record.Callable.annotation = Constructors.union [Constructors.object_primitive; NoneType];
+            parameters =
+              Defined
+                [
+                  self_parameter class_name;
+                  CallableParamType.Named
+                    { name = "k"; annotation = Constructors.string; default = false };
+                ];
+          };
+          {
+            Record.Callable.annotation =
+              Constructors.union
+                [Constructors.object_primitive; Variable (Variable.TypeVar.create "_T")];
+            parameters =
+              Defined
+                [
+                  self_parameter class_name;
+                  CallableParamType.Named
+                    { name = "k"; annotation = Constructors.string; default = false };
+                  Named
+                    {
+                      name = "default";
+                      annotation = Variable (Variable.TypeVar.create "_T");
+                      default = false;
+                    };
+                ];
+          };
+        ]
     in
     let setdefault_overloads =
       let overload { name; annotation; _ } =
@@ -4180,11 +4210,20 @@ module TypedDictionary = struct
       List.map ~f:overload
     in
     let update_overloads fields =
+      let never_match_readonly field =
+        if field.readonly then { field with annotation = Primitive "typing.Never" } else field
+      in
+      let fields_no_readonly = List.map ~f:never_match_readonly fields in
       [
+        (* Type parameters corresponding to read-only fields as Never so that we error on any
+           attempt to write to read-only fields via `update. *)
         {
           Record.Callable.annotation = Constructors.none;
-          parameters = field_named_parameters ~all_default:true ~class_name fields;
+          parameters = field_named_parameters ~all_default:true ~class_name fields_no_readonly;
         };
+        (* We also need to error on updating read-only fields passed in via a TypedDict, but this
+           case is difficult to express via type signature, so it is special-cased in
+           signatureSelection:check_arguments_against_parameters. *)
         {
           annotation = Constructors.none;
           parameters =

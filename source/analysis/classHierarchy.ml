@@ -198,7 +198,7 @@ let raise_if_untracked (module Handler : Handler) annotation =
     raise (Untracked annotation)
 
 
-let method_resolution_order_linearize_exn ~get_successors class_name =
+let method_resolution_order_linearize_exn ~get_parents class_name =
   (* The `merge` function takes a list of "constraints" as input and return a list `L` representing
      the computed MRO that satisfy those constraints. Each "constraint" is by itself another list of
      class names indicating what orderings must be perserved in `L`.
@@ -220,15 +220,15 @@ let method_resolution_order_linearize_exn ~get_successors class_name =
     | [] -> []
     | [single_linearized_parent] -> single_linearized_parent
     | linearized_successors ->
-        let find_valid_head linearizations =
+        let head =
           let is_valid_head head =
             let not_in_tail target = function
               | [] -> true
               | _ :: tail -> not (List.exists ~f:(Identifier.equal target) tail)
             in
-            List.for_all ~f:(not_in_tail head) linearizations
+            List.for_all ~f:(not_in_tail head) linearized_successors
           in
-          linearizations
+          linearized_successors
           |> List.filter_map ~f:List.hd
           |> List.find ~f:is_valid_head
           |> function
@@ -241,9 +241,10 @@ let method_resolution_order_linearize_exn ~get_successors class_name =
           | successor_head :: tail when Identifier.equal successor_head head -> Some tail
           | successor -> Some successor
         in
-        let head = find_valid_head linearized_successors in
-        let linearized_successors = List.filter_map ~f:(strip_head head) linearized_successors in
-        head :: merge linearized_successors
+        let linearized_successors_without_head =
+          List.filter_map ~f:(strip_head head) linearized_successors
+        in
+        head :: merge linearized_successors_without_head
   in
   (* `linearize C` computes the MRO for class `C`. The additional `visited` parameter is used to
      detect when MRO computation would run into cycles (e.g. class A inherits from class B, which in
@@ -260,18 +261,18 @@ let method_resolution_order_linearize_exn ~get_successors class_name =
       Log.error "Order is cyclic:\nTrace: {%s}" (Set.to_list visited |> String.concat ~sep:", ");
       raise (Cyclic class_name));
     let visited = Set.add visited class_name in
-    let successors =
+    let immediate_parents =
       let get_class_name { Target.target; _ } = target in
-      class_name |> get_successors |> Option.value ~default:[] |> List.map ~f:get_class_name
+      class_name |> get_parents |> Option.value ~default:[] |> List.map ~f:get_class_name
     in
-    let linearized_successors = List.map successors ~f:(linearize ~visited) in
-    class_name :: merge (List.append linearized_successors [successors])
+    let linearized_successors = List.map immediate_parents ~f:(linearize ~visited) in
+    class_name :: merge (List.append linearized_successors [immediate_parents])
   in
   linearize ~visited:String.Set.empty class_name
 
 
-let method_resolution_order_linearize ~get_successors class_name =
-  match method_resolution_order_linearize_exn ~get_successors class_name with
+let method_resolution_order_linearize ~get_parents class_name =
+  match method_resolution_order_linearize_exn ~get_parents class_name with
   | result -> Result.Ok result
   | exception Cyclic name -> Result.Error (MethodResolutionOrderError.Cyclic name)
   | exception InconsistentMethodResolutionOrder name ->
