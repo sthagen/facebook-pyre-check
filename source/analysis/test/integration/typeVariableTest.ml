@@ -57,22 +57,17 @@ let test_type_variable_scoping =
 
             |}
            [];
-      (* TODO migeedz: Consider what we want to do about this. The conformance test says that we
-         should not return any errors, but Pyre does not accept such programs in legacy syntax
-         currently. *)
+      (* TODO migeedz: Why do we need to express the domain of Callable as a list for this to
+         typecheck? *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
            {|
-            from typing import Callable
+            from typing import Callable, ParamSpec
 
-            def decorator2[**P, R](x: int) -> Callable[[Callable[P, R]], Callable[P, R]]:
+            def decorator3[**L, M](x: Callable[L, M]) -> int:
                 ...
-
             |}
-           [
-             "Invalid type [31]: Expression `typing.Callable[([typing.Callable[(P, R)]], \
-              typing.Callable[(P, R)])]` is not a valid type.";
-           ];
+           [];
       (* PEP695 generic methods from non-generic classes *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
@@ -2060,7 +2055,7 @@ let test_callable_parameter_variadics =
                 def f(self, /, *args: P.args, **kwargs: P.kwargs) -> int:
                     return 5
 
-            def foo(x: H[int, str]) -> None:
+            def foo(x: H[[int, str]]) -> None:
                 # incorrect
                 x.f()
                 x.f("A", 1)
@@ -3507,6 +3502,26 @@ let test_variadic_tuples =
               def foo(x: Tuple[int, Unpack[Ts]]) -> Tuple[bool, Unpack[Ts]]: ...
 
               def bar() -> None:
+                x: Tuple[int, str, bool]
+                y = foo(x)
+                reveal_type(y)
+
+                x2: Tuple[int]
+                y2 = foo(x2)
+                reveal_type(y2)
+            |}
+           [
+             "Revealed type [-1]: Revealed type for `y` is `Tuple[bool, str, bool]`.";
+             "Revealed type [-1]: Revealed type for `y2` is `Tuple[bool]`.";
+           ];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+            from typing import Tuple, Unpack
+
+            def foo[*Ts](x: Tuple[int, Unpack[Ts]]) -> Tuple[bool, Unpack[Ts]]: ...
+
+            def bar() -> None:
                 x: Tuple[int, str, bool]
                 y = foo(x)
                 reveal_type(y)
