@@ -100,8 +100,8 @@ FormattingAvailability = _Availability
 PerTargetTypeErrorsAvailability = CustomAvailability
 PythonAutoTargetsAvailability = CustomAvailability
 SystemPyAutoTargetsAvailability = CustomAvailability
-# TODO:T200368421 remove this once we have completed A/A testing
-AATest_AutoTargetsAvailability = CustomAvailability
+# TODO: T204372341 remove this once we have rolled out addition and removal features
+PythonAutoTargetsRemovalAvailability = CustomAvailability
 
 # Telemetry: is the editor able to forward events somewhere?
 TelemetryAvailability = _Availability
@@ -133,9 +133,9 @@ class LanguageServerFeatures:
     use_system_pyautotargets: SystemPyAutoTargetsAvailability = (
         SystemPyAutoTargetsAvailability.from_enabled(False)
     )
-    # TODO:T200368421 remove this once we have completed A/A testing
-    aa_test_python_auto_targets: AATest_AutoTargetsAvailability = (
-        AATest_AutoTargetsAvailability.from_enabled(False)
+    # TODO: T204372341 remove this once we have rolled out addition and removal features
+    python_auto_targets_removal: PythonAutoTargetsRemovalAvailability = (
+        PythonAutoTargetsRemovalAvailability.from_enabled(False)
     )
 
     def capabilities(self) -> Dict[str, bool]:
