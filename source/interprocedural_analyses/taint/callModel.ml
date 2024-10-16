@@ -224,10 +224,13 @@ module TaintInTaintOutMap = struct
 end
 
 let treat_tito_return_as_self_update target =
-  match Target.override_to_method target with
-  | Target.Method { method_name = "__init__"; _ }
-  | Target.Method { method_name = "__setitem__"; _ }
-  | Target.Method { kind = PropertySetter; _ } ->
+  match Target.get_regular target with
+  | Target.Regular.Method { method_name = "__init__"; _ }
+  | Target.Regular.Override { method_name = "__init__"; _ }
+  | Target.Regular.Method { method_name = "__setitem__"; _ }
+  | Target.Regular.Override { method_name = "__setitem__"; _ }
+  | Target.Regular.Method { kind = PropertySetter; _ }
+  | Target.Regular.Override { kind = PropertySetter; _ } ->
       true
   | _ -> false
 

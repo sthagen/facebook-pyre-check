@@ -93,7 +93,9 @@ module Heap = struct
                 Target.Normal
             in
             Some
-              ( Target.Method { class_name = Reference.show ancestor_parent; method_name; kind },
+              ( Target.Regular.Method
+                  { class_name = Reference.show ancestor_parent; method_name; kind }
+                |> Target.from_regular,
                 class_name )
         in
         let extract_define = function
@@ -130,10 +132,13 @@ module Heap = struct
   let skip_overrides ~to_skip overrides =
     Target.Map.Tree.filter_keys
       ~f:(fun override ->
-        not
-          (Reference.SerializableSet.mem
-             (Target.define_name (Target.override_to_method override))
-             to_skip))
+        to_skip
+        |> Reference.SerializableSet.mem
+             (override
+             |> Target.get_regular
+             |> Target.Regular.override_to_method
+             |> Target.Regular.define_name_exn)
+        |> Core.not)
       overrides
 
 
@@ -226,16 +231,32 @@ module SharedMemory = struct
     let overrides_exist handle member = T.ReadOnly.mem handle member
 
     let expand_override_targets handle callees =
-      let rec expand_and_gather expanded = function
-        | (Target.Function _ | Target.Method _ | Target.Object _) as real -> real :: expanded
-        | Target.Override _ as override ->
-            let make_override at_type = Target.create_derived_override override ~at_type in
-            let overrides =
-              let member = Target.get_corresponding_method override in
-              T.ReadOnly.get handle member |> Option.value ~default:[] |> List.map ~f:make_override
-            in
-            Target.get_corresponding_method override
-            :: List.fold overrides ~f:expand_and_gather ~init:expanded
+      let rec expand_and_gather expanded target =
+        if not (Target.is_override target) then
+          target :: expanded
+        else
+          let make_override at_type =
+            target
+            |> Target.as_regular_exn
+               (* TODO(T204630385): Handle `Target.Parameterized` with `Override`. *)
+            |> Target.Regular.create_derived_override_exn ~at_type
+            |> Target.from_regular
+          in
+          let corresponding_method =
+            (* In the override graph, keys can only be `Target.Regular.Method` and hence not
+               `Target.Parameterized`. *)
+            target
+            |> Target.get_regular
+            |> Target.Regular.get_corresponding_method_exn
+            |> Target.from_regular
+          in
+          let overrides =
+            handle
+            |> get_overriding_types ~member:corresponding_method
+            |> Option.value ~default:[]
+            |> List.map ~f:make_override
+          in
+          corresponding_method :: List.fold overrides ~f:expand_and_gather ~init:expanded
       in
       List.fold callees ~init:[] ~f:expand_and_gather |> List.dedup_and_sort ~compare:Target.compare
   end

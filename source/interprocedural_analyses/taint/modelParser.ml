@@ -3063,7 +3063,7 @@ type model_or_query =
 
 let resolve_global_callable ~path ~location ~verify_decorators ~pyre_api ~decorators callable =
   (* Since properties and setters share the same undecorated name, we need to special-case them. *)
-  let define_name = Target.define_name callable in
+  let define_name = Target.define_name_exn callable in
   let signature = create_dummy_signature ~decorators define_name in
   if signature_is_property signature then
     PyrePysaEnvironment.ModelQueries.find_method_definitions
@@ -3309,7 +3309,7 @@ let create_model_from_signature
   let open ModelVerifier in
   (* Make sure we know about what we model. *)
   let model_verification_error kind = Error { ModelVerificationError.kind; path; location } in
-  let callable_name = Target.define_name call_target in
+  let callable_name = Target.define_name_exn call_target in
   let callable_annotation =
     resolve_global_callable
       ~path
@@ -4372,9 +4372,9 @@ let decorator_actions_from_modes model_modes =
     let has_ignore = Model.ModeSet.contains Model.Mode.IgnoreDecorator modes in
     let has_skip_decorator = Model.ModeSet.contains Model.Mode.SkipDecoratorWhenInlining modes in
     if has_ignore && not has_skip_decorator then
-      Some Analysis.DecoratorPreprocessing.Action.Discard
+      Some PyrePysaLogic.DecoratorPreprocessing.Action.Discard
     else if has_skip_decorator && not has_ignore then
-      Some Analysis.DecoratorPreprocessing.Action.DoNotInline
+      Some PyrePysaLogic.DecoratorPreprocessing.Action.DoNotInline
     else if has_skip_decorator && has_ignore then
       let () =
         Log.warning

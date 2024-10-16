@@ -52,13 +52,7 @@ module Reversed = struct
   (** Create a reverse dependency graph from a call graph. *)
   let from_call_graph callgraph =
     let add ~target ~callees result =
-      let callees =
-        List.filter
-          ~f:(function
-            | Target.Object _ -> false
-            | _ -> true)
-          callees
-      in
+      let callees = List.filter ~f:(fun target -> target |> Target.is_object |> Core.not) callees in
       Target.Map.Tree.set result ~key:target ~data:callees
     in
     CallGraph.WholeProgramCallGraph.fold callgraph ~f:add ~init:Target.Map.Tree.empty
@@ -68,9 +62,20 @@ module Reversed = struct
   let from_overrides overrides =
     let override_map, all_overrides =
       let add ~member:method_name ~subtypes (override_map, all_overrides) =
-        let key = Target.get_corresponding_override method_name in
+        let key =
+          method_name
+          |> Target.as_regular_exn
+          (* TODO(T204630385): Handle `Target.Parameterized` with `Override`. *)
+          |> Target.Regular.get_corresponding_override_exn
+          |> Target.from_regular
+        in
         let data =
-          List.map subtypes ~f:(fun at_type -> Target.create_derived_override key ~at_type)
+          List.map subtypes ~f:(fun at_type ->
+              key
+              |> Target.as_regular_exn
+              (* TODO(T204630385): Handle `Target.Parameterized` with `Override`. *)
+              |> Target.Regular.create_derived_override_exn ~at_type
+              |> Target.from_regular)
         in
         ( Target.Map.Tree.set override_map ~key ~data,
           Target.Set.union all_overrides (Target.Set.of_list data) )
@@ -90,11 +95,17 @@ module Reversed = struct
     in
     let overrides_to_methods =
       let override_to_method_edge override =
-        match override with
-        | Target.Override _ as override ->
-            let corresponding_method = Target.get_corresponding_method override in
-            Some (override, [corresponding_method])
-        | _ -> None
+        if Target.is_override override then
+          let corresponding_method =
+            override
+            |> Target.as_regular_exn
+               (* TODO(T204630385): Handle `Target.Parameterized` with `Override`. *)
+            |> Target.Regular.get_corresponding_method_exn
+            |> Target.from_regular
+          in
+          Some (override, [corresponding_method])
+        else
+          None
       in
       Target.Map.Tree.keys override_map
       |> List.filter_map ~f:override_to_method_edge
@@ -191,9 +202,8 @@ let build_whole_program_dependency_graph
     in
     let callables_to_analyze =
       callables_kept
-      |> List.filter ~f:(function
-             | Target.Override _ -> true
-             | callable -> Hash_set.mem initial_callable_set callable)
+      |> List.filter ~f:(fun callable ->
+             Target.is_override callable || Hash_set.mem initial_callable_set callable)
       |> List.rev
     in
     { dependency_graph; override_targets; callables_kept; callables_to_analyze }
