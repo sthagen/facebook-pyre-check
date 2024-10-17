@@ -96,21 +96,36 @@ def validate_test_functions_and_class_names(current_directory: Path) -> None:
             elif isinstance(node, ast.ClassDef):
                 classes.append(node)
 
+        # Note: this only iterates on top level functions, excluding methods
+        # and nested functions.
         for function in functions:
             function_name = function.name
             LOG.debug(f"Validating function: {function_name}")
 
-            if not (
-                test_function_pattern.match(function_name)
-                or helper_function_pattern.match(function_name)
-            ):
-                raise TestConfigurationException(
-                    f"Expected test function {function_name} to have the "
-                    + "format test_####_flag_XXXX or test_####_no_flag_XXXX, "
-                    + "to indicate that issue #### is being tested, or "
-                    + "helperXXX to indicate it is an unrelated helper "
-                    + "function."
-                )
+            if helper_function_pattern.match(function_name):
+                continue
+
+            if test_function_pattern.match(function_name):
+                # Sanity check that there is at least one test annotation.
+                if not any(
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Name)
+                    and decorator.func.id in ("ExpectIssue", "ExpectNoIssue")
+                    for decorator in function.decorator_list
+                ):
+                    raise TestConfigurationException(
+                        f"Test function {function_name} does NOT have any test annotation (`ExpectIssue`, `ExpectNoIssue`)"
+                    )
+
+                continue
+
+            raise TestConfigurationException(
+                f"Expected test function {function_name} to have the "
+                + "format test_####_flag_XXXX or test_####_no_flag_XXXX, "
+                + "to indicate that issue #### is being tested, or "
+                + "helperXXX to indicate it is an unrelated helper "
+                + "function."
+            )
 
         for klass in classes:
             class_name = klass.name
@@ -406,6 +421,12 @@ class DirectoryTestAnnotations:
                 )
             self.function_annotations[name] = annotations
 
+    def number_annotations(self) -> int:
+        return sum(
+            len(function_annotations.annotations)
+            for function_annotations in self.function_annotations.values()
+        )
+
     def dump(self, output: IO[str]) -> None:
         output.write(
             json.dumps(
@@ -603,6 +624,13 @@ def parse_test_annotations_from_directory(
         ).items():
             result.set(f"{base_module}.{function_name}", annotations)
 
+    LOG.info(f"Found {result.number_annotations()} test annotations")
+
+    if result.number_annotations() == 0:
+        raise TestConfigurationException(
+            f"Could NOT find test annotations in {directory}"
+        )
+
     return result
 
 
@@ -628,7 +656,7 @@ def compare_issues_to_test_annotations(
     remaining_issues = sorted(
         issues, key=lambda issue: (issue["line"], issue["column"])
     )
-    annotations.sort(key=lambda annotation: annotation.line)
+    annotations.sort(key=lambda annotation: annotation.line or 99999)
 
     test_failures: List[str] = []
     number_expected_issues = 0
