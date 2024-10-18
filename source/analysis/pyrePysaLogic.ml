@@ -17,13 +17,45 @@
  * understand what else would be needed if we exposed a high-quality typed AST.
  *)
 
+open Core
 module Cfg = Cfg
 module Fixpoint = Fixpoint
 module DecoratorPreprocessing = DecoratorPreprocessing
 module ClassSummary = ClassSummary
+module AnnotatedAttribute = AnnotatedAttribute
+module ResolvedReference = ResolvedReference
+module ModuleExport = Module.Export
+module SharedMemoryKeys = SharedMemoryKeys
+
+exception UntrackedClass = ClassHierarchy.Untracked
 
 let qualified_name_of_define = FunctionDefinition.qualified_name_of_define
 
+let qualifier_and_bodies_of_function_definition ({ FunctionDefinition.qualifier; _ } as definition) =
+  ( qualifier,
+    FunctionDefinition.all_bodies definition
+    |> List.filter ~f:(fun { Ast.Node.value; _ } ->
+           not (Ast.Statement.Define.is_overloaded_function value)) )
+
+
+let artifact_path_of_module_path = ArtifactPaths.artifact_path_of_module_path
+
+let type_of_attribute instantiated_attribute =
+  AnnotatedAttribute.annotation instantiated_attribute |> TypeInfo.Unit.annotation
+
+
+let name_of_method method_as_instantiated_attribute =
+  type_of_attribute method_as_instantiated_attribute |> Type.callable_name
+
+
+let undecorated_signature_of_global { AttributeResolution.Global.undecorated_signature; _ } =
+  undecorated_signature
+
+
 module Testing = struct
   module AnalysisError = AnalysisError
+  module ModuleTracker = ModuleTracker
+  module ArtifactPath = ArtifactPath
+  module EnvironmentControls = EnvironmentControls
+  module SourceCodeApi = SourceCodeApi
 end

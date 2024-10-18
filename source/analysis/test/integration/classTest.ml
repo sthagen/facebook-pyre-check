@@ -84,4 +84,33 @@ let test_inconsistent_mro =
     ]
 
 
-let () = "class" >::: [test_inconsistent_mro] |> Test.run
+let test_dynamic_class_body =
+  test_list
+    [
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+           class C:
+               for x in range(5):
+                   print(x)
+           |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+           class C:
+               with open("file") as x:
+                   print(x)
+           |}
+           [];
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+           class C:
+               attr: int = (x := 5)
+           |}
+           [];
+    ]
+
+
+let () = "class" >::: [test_inconsistent_mro; test_dynamic_class_body] |> Test.run
