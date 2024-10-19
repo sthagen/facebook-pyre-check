@@ -4,6 +4,7 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
+
 (* TODO(T170743593) new warning with ppx_conv_sexp.v0.16.X *)
 [@@@warning "-name-out-of-scope"]
 
@@ -75,25 +76,6 @@ let create serialized =
       | _ -> Submodule { root = PyrePath.create_absolute root; submodule = path })
   | _ -> failwith (Format.asprintf "Unable to create search path from %s" serialized)
 
-
-let normalize = function
-  | Root root ->
-      Root (PyrePath.create_absolute ~follow_symbolic_links:true (PyrePath.absolute root))
-  | Subdirectory { root; subdirectory } ->
-      Subdirectory
-        {
-          root = PyrePath.create_absolute ~follow_symbolic_links:true (PyrePath.absolute root);
-          subdirectory;
-        }
-  | Submodule { root; submodule } ->
-      Submodule
-        {
-          root = PyrePath.create_absolute ~follow_symbolic_links:true (PyrePath.absolute root);
-          submodule;
-        }
-
-
-let create_normalized serialized = create serialized |> normalize
 
 let search_for_path ~search_paths analysis_path =
   let raw_path = ArtifactPath.raw analysis_path in
