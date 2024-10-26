@@ -310,6 +310,8 @@ module Record = struct
     [@@deriving compare, eq, sexp, show, hash]
 
     let name { name; _ } = name
+
+    let body { body; _ } = body
   end
 
   module TypeOperation = struct
@@ -3147,6 +3149,12 @@ module Variable = struct
                 }
                 when String.equal (Identifier.sanitized name) "contravariant" ->
                   Some Record.PreInferenceVariance.P_Contravariant
+              | {
+                  Call.Argument.name = Some { Node.value = name; _ };
+                  value = { Node.value = Constant Constant.True; _ };
+                }
+                when String.equal (Identifier.sanitized name) "infer_variance" ->
+                  Some Record.PreInferenceVariance.P_Undefined
               | _ -> None
             in
             List.find_map arguments ~f:variance_definition
@@ -3965,6 +3973,7 @@ module TypedDictionary = struct
 
   open T
 
+  (* Precondition: `fields` cannot have duplicate entries *)
   let anonymous fields = { name = "$anonymous"; fields }
 
   let create_field ~annotation ~has_non_total_typed_dictionary_base_class name =
