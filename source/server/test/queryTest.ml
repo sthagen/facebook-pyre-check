@@ -84,7 +84,7 @@ let test_parse_query context =
   assert_fails_to_parse "types(a.py:1:2)";
   assert_fails_to_parse "types(a.py)";
   assert_fails_to_parse "types('a.py', 1, 2)";
-  assert_parses "attributes(C)" (Attributes !&"C");
+  assert_parses "attributes(int)" (Attributes !&"int");
   assert_fails_to_parse "attributes(C, D)";
   assert_parses "save_server_state('state')" (SaveServerState (PyrePath.create_absolute "state"));
   assert_fails_to_parse "save_server_state(state)";
@@ -459,6 +459,29 @@ let test_handle_query_basic context =
     (Single
        (Base.FoundAttributes
           [{ Base.name = "foo"; annotation = Type.integer; kind = Base.Property; final = false }]))
+  >>= fun () ->
+  assert_type_query_response
+    ~source:
+      {|
+      class C[T]:
+        x: T
+
+        @property
+        def foo(self) -> T:
+          return T
+    |}
+    ~query:"attributes(test.C)"
+    (Single
+       (Base.FoundAttributes
+          [
+            {
+              Base.name = "foo";
+              annotation = Type.variable "T";
+              kind = Base.Property;
+              final = false;
+            };
+            { Base.name = "x"; annotation = Type.variable "T"; kind = Base.Regular; final = false };
+          ]))
   >>= fun () ->
   assert_type_query_response
     ~source:{|
@@ -1990,6 +2013,98 @@ let test_handle_references_used_by_file_query context =
                ]
                |> QueryTestTypes.create_types_at_locations;
            }))
+  >>= fun () ->
+  assert_query_and_response_json
+    ~context
+    ~sources:
+      [
+        ( "test.py",
+          {|
+        from typing import Optional
+        from other_module import GenericType
+
+        def return_generic_type() -> Optional[GenericType[int]]:
+            return GenericType[int]()
+        
+        def foo() -> None:
+            x: Optional[GenericType[int]] = return_generic_type()
+    |}
+        );
+      ]
+    ~no_validation_on_class_lookup_failure:true
+    [
+      ( "references_used_by_file(path='test.py')",
+        fun _ ->
+          {|
+            [
+              "Query",
+              {
+                "response": {
+                  "path": "test.py",
+                  "types": [
+                    {
+                      "location": {
+                        "start": { "line": 2, "column": 19 },
+                        "stop": { "line": 2, "column": 27 }
+                      },
+                      "annotation": "typing.Type[typing.Optional]"
+                    },
+                    {
+                      "location": {
+                        "start": { "line": 5, "column": 4 },
+                        "stop": { "line": 5, "column": 23 }
+                      },
+                      "annotation": "typing.Callable(test.return_generic_type)[[], typing.Optional[other_module.GenericType[int]]]"
+                    },
+                    {
+                      "location": {
+                        "start": { "line": 5, "column": 29 },
+                        "stop": { "line": 5, "column": 55 }
+                      },
+                      "annotation": "typing.Type[typing.Optional[other_module.GenericType[int]]]"
+                    },
+                    {
+                      "location": {
+                        "start": { "line": 6, "column": 11 },
+                        "stop": { "line": 6, "column": 27 }
+                      },
+                      "annotation": "typing.Any"
+                    },
+                    {
+                      "location": {
+                        "start": { "line": 6, "column": 11 },
+                        "stop": { "line": 6, "column": 29 }
+                      },
+                      "annotation": "typing.Any"
+                    },
+                    {
+                      "location": {
+                        "start": { "line": 6, "column": 23 },
+                        "stop": { "line": 6, "column": 26 }
+                      },
+                      "annotation": "typing.Type[int]"
+                    },
+                    {
+                      "location": {
+                        "start": { "line": 8, "column": 4 },
+                        "stop": { "line": 8, "column": 7 }
+                      },
+                      "annotation": "typing.Callable(test.foo)[[], None]"
+                    },
+                    {
+                      "location": {
+                        "start": { "line": 8, "column": 13 },
+                        "stop": { "line": 8, "column": 17 }
+                      },
+                      "annotation": "typing.Type[None]"
+                    }
+                  ]
+                }
+              }
+            ]
+          |}
+      );
+    ]
 
 
 let test_handle_query_with_build_system context =
