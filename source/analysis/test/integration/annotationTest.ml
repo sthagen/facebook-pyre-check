@@ -540,7 +540,7 @@ let test_check_invalid_type =
            {|
               import typing
               def takes_exception(x: BaseException) -> None: ...
-              def f(exception_group_type: typing.Type[ExceptionGroup]) -> None:
+              def f(exception_group_type: typing.Type[ExceptionGroup[Exception]]) -> None:
                try:
                  pass
                except exception_group_type as myexception:
@@ -552,7 +552,7 @@ let test_check_invalid_type =
            {|
               import typing
               def takes_exception(x: BaseException) -> None: ...
-              def f(exception_group_type: typing.Type[ExceptionGroup]) -> None:
+              def f(exception_group_type: typing.Type[ExceptionGroup[Exception]]) -> None:
                try:
                  pass
                except* exception_group_type as myexception:
@@ -560,7 +560,10 @@ let test_check_invalid_type =
             |}
            [
              "Invalid except* clause [67]: Exception group handler type annotation \
-              `ExceptionGroup` may not extend BaseExceptionGroup.";
+              `ExceptionGroup[Exception]` may not extend BaseExceptionGroup.";
+             "Undefined attribute [16]: `ExceptionGroup` has no attribute `__getitem__`.";
+             "Incompatible parameter type [6]: In call `takes_exception`, for 1st positional \
+              argument, expected `BaseException` but got `unknown`.";
            ];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors

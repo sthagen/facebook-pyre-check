@@ -826,17 +826,22 @@ module State (Context : Context) = struct
       expression: Expression.t;
       resolved_base: Type.t;
     }
+    [@@deriving show]
 
     type attribute = {
       name: Identifier.t;
       resolved: Type.t;
     }
+    [@@deriving show]
 
     type callee_attribute = {
       base: base;
       attribute: attribute;
       expression: Expression.t;
     }
+    [@@deriving show]
+
+    [@@@warning "-unused-value-declaration"]
 
     type t =
       | Attribute of callee_attribute
@@ -844,6 +849,7 @@ module State (Context : Context) = struct
           expression: Expression.t;
           resolved: Type.t;
         }
+    [@@deriving show]
 
     let resolved = function
       | Attribute { attribute = { resolved; _ }; _ }
@@ -869,6 +875,9 @@ module State (Context : Context) = struct
       is_inverted_operator: bool;
       selected_return_annotation: 'return_annotation;
     }
+    [@@deriving show]
+
+    [@@@warning "-unused-value-declaration"]
 
     type ('return_annotation, 'arguments) t =
       | KnownCallable of ('return_annotation, 'arguments) callable_data
@@ -876,6 +885,7 @@ module State (Context : Context) = struct
           callable_attribute: Callee.callee_attribute;
           arguments: 'arguments;
         }
+    [@@deriving show]
 
     let unknown_callable_attribute_before_application callable_attribute =
       UnknownCallableAttribute { callable_attribute; arguments = () }
@@ -6528,6 +6538,9 @@ module State (Context : Context) = struct
                             |> Option.value ~default:type_;
                           ]
                       | Union types -> List.map types ~f:extract_handler_types |> List.concat
+                      | Parametric { name = "ExceptionGroup"; arguments = [Single type_] }
+                        when handles_exception_group ->
+                          [type_]
                       | _ -> [type_]
                     in
                     let parsed_annotation =
@@ -6552,10 +6565,11 @@ module State (Context : Context) = struct
                       (* all handlers must extend BaseException *)
                       let errors =
                         if
-                          GlobalResolution.less_or_equal
-                            ~left:exception_type
-                            ~right:base_exception_type
-                            global_resolution
+                          Type.is_any exception_type
+                          || GlobalResolution.less_or_equal
+                               ~left:exception_type
+                               ~right:base_exception_type
+                               global_resolution
                         then
                           errors
                         else
@@ -6567,6 +6581,7 @@ module State (Context : Context) = struct
                       (* except* may not extend BaseExceptionGroup *)
                       if
                         handles_exception_group
+                        && (not (Type.is_any exception_type))
                         && GlobalResolution.less_or_equal
                              ~left:exception_type
                              ~right:base_exception_group_type
