@@ -8,19 +8,19 @@
 open Ast
 module Callable = Type.Callable
 
-module AssumedProtocolInstantiations : sig
-  type t
+module AssumedRecursiveInstantiations : sig
+  type t [@@deriving show]
 
-  val find_assumed_protocol_parameters
+  val find_assumed_recursive_type_parameters
     :  candidate:Type.t ->
-    protocol:Identifier.t ->
+    target:Identifier.t ->
     t ->
     Type.Argument.t list option
 
   val add
     :  candidate:Type.t ->
-    protocol:Identifier.t ->
-    protocol_parameters:Type.Argument.t list ->
+    target:Identifier.t ->
+    target_parameters:Type.Argument.t list ->
     t ->
     t
 
@@ -30,7 +30,7 @@ end
 module AssumedCallableTypes : sig
   (* This should be removed when classes can be generic over TParams, and Callable can be treated
      like any other generic protocol. *)
-  type t
+  type t [@@deriving show]
 
   val find_assumed_callable_type : candidate:Type.t -> t -> Type.t option
 
@@ -40,7 +40,7 @@ module AssumedCallableTypes : sig
 end
 
 module DecoratorsBeingResolved : sig
-  type t
+  type t [@@deriving show]
 
   val add : t -> assume_is_not_a_decorator:Reference.t -> t
 
@@ -50,7 +50,7 @@ module DecoratorsBeingResolved : sig
 end
 
 type t = {
-  assumed_protocol_instantiations: AssumedProtocolInstantiations.t;
+  assumed_recursive_instantiations: AssumedRecursiveInstantiations.t;
   assumed_callable_types: AssumedCallableTypes.t;
   decorators_being_resolved: DecoratorsBeingResolved.t;
 }
