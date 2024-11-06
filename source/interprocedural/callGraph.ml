@@ -1050,15 +1050,35 @@ end
 
     Note that multiple expressions might have the same location. *)
 module LocationCallees = struct
+  module Map = struct
+    include SerializableStringMap
+
+    type t = ExpressionCallees.t SerializableStringMap.t
+
+    let custom_equal = equal
+
+    let equal = equal ExpressionCallees.equal
+
+    let singleton ~expression_identifier ~callees = singleton expression_identifier callees
+
+    let add map ~expression_identifier ~callees =
+      update
+        expression_identifier
+        (function
+          | Some existing_callees -> Some (ExpressionCallees.join existing_callees callees)
+          | None -> Some callees)
+        map
+  end
+
   type t =
     | Singleton of ExpressionCallees.t
-    | Compound of ExpressionCallees.t SerializableStringMap.t
+    | Compound of Map.t
   [@@deriving eq]
 
   let pp formatter = function
     | Singleton callees -> Format.fprintf formatter "%a" ExpressionCallees.pp callees
     | Compound map ->
-        SerializableStringMap.to_alist map
+        Map.to_alist map
         |> List.map ~f:(fun (key, value) -> Format.asprintf "%s: %a" key ExpressionCallees.pp value)
         |> String.concat ~sep:", "
         |> Format.fprintf formatter "%s"
@@ -1069,8 +1089,7 @@ module LocationCallees = struct
   let all_targets ~exclude_reference_only = function
     | Singleton raw_callees -> ExpressionCallees.all_targets ~exclude_reference_only raw_callees
     | Compound map ->
-        SerializableStringMap.data map
-        |> List.concat_map ~f:(ExpressionCallees.all_targets ~exclude_reference_only)
+        Map.data map |> List.concat_map ~f:(ExpressionCallees.all_targets ~exclude_reference_only)
 
 
   let equal_ignoring_types location_callees_left location_callees_right =
@@ -1078,7 +1097,7 @@ module LocationCallees = struct
     | Singleton callees_left, Singleton callees_right ->
         ExpressionCallees.equal_ignoring_types callees_left callees_right
     | Compound map_left, Compound map_right ->
-        SerializableStringMap.equal ExpressionCallees.equal_ignoring_types map_left map_right
+        Map.custom_equal ExpressionCallees.equal_ignoring_types map_left map_right
     | _ -> false
 
 
@@ -1086,54 +1105,9 @@ module LocationCallees = struct
     | Singleton callees -> `Assoc ["singleton", ExpressionCallees.to_json callees]
     | Compound map ->
         let bindings =
-          SerializableStringMap.fold
-            (fun key value sofar -> (key, ExpressionCallees.to_json value) :: sofar)
-            map
-            []
+          Map.fold (fun key value sofar -> (key, ExpressionCallees.to_json value) :: sofar) map []
         in
         `Assoc ["compound", `Assoc bindings]
-end
-
-module UnprocessedLocationCallees = struct
-  type t = ExpressionCallees.t SerializableStringMap.t
-
-  let singleton ~expression_identifier ~callees =
-    SerializableStringMap.singleton expression_identifier callees
-
-
-  let add map ~expression_identifier ~callees =
-    SerializableStringMap.update
-      expression_identifier
-      (function
-        | Some existing_callees -> Some (ExpressionCallees.join existing_callees callees)
-        | None -> Some callees)
-      map
-end
-
-module UnprocessedCalleesMap = struct
-  type t = UnprocessedLocationCallees.t Location.Table.t
-
-  let create = Location.Table.create
-
-  let add_callees ~expression_identifier ~location ~callees callees_at_location =
-    Hashtbl.update callees_at_location location ~f:(function
-        | None -> UnprocessedLocationCallees.singleton ~expression_identifier ~callees
-        | Some existing_callees ->
-            UnprocessedLocationCallees.add existing_callees ~expression_identifier ~callees)
-
-
-  let to_location_callees callees_at_location =
-    callees_at_location
-    |> Hashtbl.to_alist
-    |> List.map ~f:(fun (location, unprocessed_callees) ->
-           match SerializableStringMap.to_alist unprocessed_callees with
-           | [] -> failwith "unreachable"
-           | [(_, callees)] ->
-               location, LocationCallees.Singleton (ExpressionCallees.deduplicate callees)
-           | _ ->
-               ( location,
-                 LocationCallees.Compound
-                   (SerializableStringMap.map ExpressionCallees.deduplicate unprocessed_callees) ))
 end
 
 let call_identifier { Call.callee; _ } =
@@ -1151,9 +1125,104 @@ let expression_identifier = function
   | _ -> (* not a valid call site. *) None
 
 
-(** The call graph of a function or method definition. *)
+module type ResolveCallGraphType = sig
+  type t [@@deriving eq]
+
+  val resolve_expression
+    :  t ->
+    location:Location.t ->
+    expression_identifier:string ->
+    ExpressionCallees.t option
+end
+
+module MakeResolveCallGraph (ResolveCallGraph : ResolveCallGraphType) = struct
+  include ResolveCallGraph
+
+  let resolve_call call_graph ~location ~call =
+    expression_identifier (Expression.Call call)
+    >>= fun expression_identifier ->
+    ResolveCallGraph.resolve_expression call_graph ~location ~expression_identifier
+    >>= fun { call; _ } -> call
+
+
+  let resolve_attribute_access call_graph ~location ~attribute =
+    ResolveCallGraph.resolve_expression call_graph ~location ~expression_identifier:attribute
+    >>= fun { attribute_access; _ } -> attribute_access
+
+
+  let resolve_identifier call_graph ~location ~identifier =
+    ResolveCallGraph.resolve_expression call_graph ~location ~expression_identifier:identifier
+    >>= fun { identifier; _ } -> identifier
+
+
+  let string_format_expression_identifier = "$__str__$"
+
+  let resolve_string_format call_graph ~location =
+    ResolveCallGraph.resolve_expression
+      call_graph
+      ~location
+      ~expression_identifier:string_format_expression_identifier
+    >>= fun { string_format; _ } -> string_format
+end
+
+module MutableDefineCallGraph = struct
+  module ResolveCallGraph = struct
+    type t = LocationCallees.Map.t Location.Table.t [@@deriving eq]
+
+    let resolve_expression call_graph ~location ~expression_identifier =
+      match Hashtbl.find call_graph location with
+      | Some callees -> SerializableStringMap.find_opt expression_identifier callees
+      | None -> None
+  end
+
+  include MakeResolveCallGraph (ResolveCallGraph)
+
+  let create = Location.Table.create
+
+  let add_callees ~expression_identifier ~location ~callees map =
+    Hashtbl.update map location ~f:(function
+        | None -> LocationCallees.Map.singleton ~expression_identifier ~callees
+        | Some existing_callees ->
+            LocationCallees.Map.add existing_callees ~expression_identifier ~callees)
+
+
+  let filter_empty_attribute_access =
+    Hashtbl.filter
+      ~f:
+        (SerializableStringMap.exists (fun _ callees ->
+             not (ExpressionCallees.is_empty_attribute_access_callees callees)))
+end
+
+(** The call graph of a function or method definition. Unlike `MutableDefineCallGraph`, this is
+    immutable. *)
 module DefineCallGraph = struct
-  type t = LocationCallees.t Location.Map.Tree.t [@@deriving eq]
+  module ResolveCallGraph = struct
+    type t = LocationCallees.t Location.Map.Tree.t [@@deriving eq]
+
+    let resolve_expression call_graph ~location ~expression_identifier =
+      match Location.Map.Tree.find call_graph location with
+      | Some (LocationCallees.Singleton callees) -> Some callees
+      | Some (LocationCallees.Compound name_to_callees) ->
+          SerializableStringMap.find_opt expression_identifier name_to_callees
+      | None -> None
+  end
+
+  include MakeResolveCallGraph (ResolveCallGraph)
+
+  let from_mutable_define_call_graph map =
+    map
+    |> Hashtbl.to_alist
+    |> List.map ~f:(fun (location, callees) ->
+           match SerializableStringMap.to_alist callees with
+           | [] -> failwith "unreachable"
+           | [(_, callees)] ->
+               location, LocationCallees.Singleton (ExpressionCallees.deduplicate callees)
+           | _ ->
+               ( location,
+                 LocationCallees.Compound
+                   (SerializableStringMap.map ExpressionCallees.deduplicate callees) ))
+    |> Location.Map.Tree.of_alist_exn
+
 
   let pp formatter call_graph =
     let pp_pair formatter (key, value) =
@@ -1171,40 +1240,6 @@ module DefineCallGraph = struct
 
   let add call_graph ~location ~callees =
     Location.Map.Tree.set call_graph ~key:location ~data:callees
-
-
-  let resolve_expression call_graph ~location ~expression_identifier =
-    match Location.Map.Tree.find call_graph location with
-    | Some (LocationCallees.Singleton callees) -> Some callees
-    | Some (LocationCallees.Compound name_to_callees) ->
-        SerializableStringMap.find_opt expression_identifier name_to_callees
-    | None -> None
-
-
-  let resolve_call call_graph ~location ~call =
-    expression_identifier (Expression.Call call)
-    >>= fun expression_identifier ->
-    resolve_expression call_graph ~location ~expression_identifier >>= fun { call; _ } -> call
-
-
-  let resolve_attribute_access call_graph ~location ~attribute =
-    resolve_expression call_graph ~location ~expression_identifier:attribute
-    >>= fun { attribute_access; _ } -> attribute_access
-
-
-  let resolve_identifier call_graph ~location ~identifier =
-    resolve_expression call_graph ~location ~expression_identifier:identifier
-    >>= fun { identifier; _ } -> identifier
-
-
-  let string_format_expression_identifier = "$__str__$"
-
-  let resolve_string_format call_graph ~location =
-    resolve_expression
-      call_graph
-      ~location
-      ~expression_identifier:string_format_expression_identifier
-    >>= fun { string_format; _ } -> string_format
 
 
   let equal_ignoring_types call_graph_left call_graph_right =
@@ -1382,7 +1417,7 @@ module CalleeKind = struct
               >>= PyrePysaEnvironment.ReadOnly.get_class_summary pyre_api
               |> Option.is_some
             in
-            if Type.is_builtins_type parent_type then
+            if Type.is_class_type parent_type then
               Method { is_direct_call = true; is_static_method; is_class_method }
             else if is_class () then
               Method { is_direct_call = false; is_static_method; is_class_method }
@@ -1408,7 +1443,7 @@ end
 let strip_optional annotation = Type.optional_value annotation |> Option.value ~default:annotation
 
 let strip_meta annotation =
-  if Type.is_builtins_type annotation then
+  if Type.is_class_type annotation then
     Type.single_argument annotation
   else
     annotation
@@ -1712,7 +1747,7 @@ and resolve_callees_from_type_external
 
 
 and resolve_constructor_callee ~debug ~pyre_in_context ~override_graph ~call_indexer class_type =
-  let meta_type = Type.builtins_type class_type in
+  let meta_type = Type.class_type class_type in
   match
     ( CallResolution.resolve_attribute_access_ignoring_untracked
         ~pyre_in_context
@@ -1808,7 +1843,7 @@ let resolve_callee_from_defining_expression
         (Type.Callable undecorated_signature)
   | _ -> (
       let implementing_class_name =
-        if Type.is_builtins_type implementing_class then
+        if Type.is_class_type implementing_class then
           Type.arguments implementing_class
           >>= fun parameters ->
           List.nth parameters 0
@@ -2323,7 +2358,7 @@ let resolve_attribute_access_properties
     let parent = PyrePysaLogic.AnnotatedAttribute.parent property |> Reference.create in
     let property_targets =
       let kind = if setter then Target.PropertySetter else Target.Normal in
-      if Type.is_builtins_type base_type_info then
+      if Type.is_class_type base_type_info then
         [Target.create_method ~kind (Reference.create ~prefix:parent attribute)]
       else
         let callee = Target.create_method ~kind (Reference.create ~prefix:parent attribute) in
@@ -2615,7 +2650,7 @@ module DefineCallGraphFixpoint (Context : sig
 
   val debug : bool
 
-  val callees_at_location : UnprocessedCalleesMap.t
+  val callees_at_location : MutableDefineCallGraph.t
 
   val override_graph : OverrideGraph.SharedMemory.ReadOnly.t option
 
@@ -2810,7 +2845,7 @@ struct
           expression
           ExpressionCallees.pp
           callees;
-        UnprocessedCalleesMap.add_callees
+        MutableDefineCallGraph.add_callees
           ~expression_identifier
           ~location
           ~callees
@@ -3240,14 +3275,14 @@ module HigherOrderCallGraph = struct
 
   module MakeFixpoint (Context : sig
     (* Inputs. *)
-    val define_call_graph : DefineCallGraph.t
+    val mutable_define_call_graph : MutableDefineCallGraph.t
 
     val qualifier : Reference.t
 
     val pyre_api : PyrePysaEnvironment.ReadOnly.t
 
     (* Outputs. *)
-    val callees_at_location : UnprocessedCalleesMap.t
+    val callees_at_location : MutableDefineCallGraph.t
   end) =
   struct
     let get_result = State.get TaintAccessPath.Root.LocalResult
@@ -3272,7 +3307,7 @@ module HigherOrderCallGraph = struct
 
       let register_targets ~expression_identifier ~location ~callees =
         if not (CallTarget.Set.is_bottom callees) then
-          UnprocessedCalleesMap.add_callees
+          MutableDefineCallGraph.add_callees
             ~expression_identifier
             ~location
             ~callees:
@@ -3316,8 +3351,8 @@ module HigherOrderCallGraph = struct
             |> CallTarget.Set.join callees )
         in
         let { CallCallees.call_targets; higher_order_parameters; _ } =
-          Context.define_call_graph
-          |> DefineCallGraph.resolve_call ~location ~call
+          Context.mutable_define_call_graph
+          |> MutableDefineCallGraph.resolve_call ~location ~call
           |> Option.value_exn
                ~message:
                  (Format.asprintf
@@ -3416,8 +3451,8 @@ module HigherOrderCallGraph = struct
         | ListComprehension _ -> CallTarget.Set.bottom, state
         | Name (Name.Identifier identifier) ->
             let global_callables =
-              Context.define_call_graph
-              |> DefineCallGraph.resolve_identifier ~location ~identifier
+              Context.mutable_define_call_graph
+              |> MutableDefineCallGraph.resolve_identifier ~location ~identifier
               |> Option.map ~f:(fun { IdentifierCallees.callable_targets; _ } ->
                      CallTarget.Set.of_list callable_targets)
               |> Option.value ~default:CallTarget.Set.bottom
@@ -3428,8 +3463,8 @@ module HigherOrderCallGraph = struct
             CallTarget.Set.join global_callables callables_from_variable, state
         | Name (Name.Attribute { base = _; attribute; special = _ }) ->
             let callables =
-              Context.define_call_graph
-              |> DefineCallGraph.resolve_attribute_access ~location ~attribute
+              Context.mutable_define_call_graph
+              |> MutableDefineCallGraph.resolve_attribute_access ~location ~attribute
               |> Option.map ~f:(fun { AttributeAccessCallees.callable_targets; _ } ->
                      CallTarget.Set.of_list callable_targets)
               |> Option.value ~default:CallTarget.Set.bottom
@@ -3497,9 +3532,9 @@ end
 
 let higher_order_call_graph_of_define ~define_call_graph ~pyre_api ~qualifier ~define ~initial_state
   =
-  let callees_at_location = UnprocessedCalleesMap.create () in
+  let callees_at_location = MutableDefineCallGraph.create () in
   let module Fixpoint = HigherOrderCallGraph.MakeFixpoint (struct
-    let define_call_graph = define_call_graph
+    let mutable_define_call_graph = define_call_graph
 
     let qualifier = qualifier
 
@@ -3516,10 +3551,7 @@ let higher_order_call_graph_of_define ~define_call_graph ~pyre_api ~qualifier ~d
   in
   {
     HigherOrderCallGraph.returned_callables;
-    call_graph =
-      callees_at_location
-      |> UnprocessedCalleesMap.to_location_callees
-      |> Location.Map.Tree.of_alist_exn;
+    call_graph = DefineCallGraph.from_mutable_define_call_graph callees_at_location;
   }
 
 
@@ -3592,19 +3624,8 @@ let call_graph_of_define
   in
 
   DefineFixpoint.forward ~cfg:(PyrePysaLogic.Cfg.create define) ~initial:() |> ignore;
-  let call_graph =
-    Context.callees_at_location
-    |> UnprocessedCalleesMap.to_location_callees
-    |> List.filter ~f:(fun (_, callees) ->
-           match callees with
-           | LocationCallees.Singleton singleton ->
-               not (ExpressionCallees.is_empty_attribute_access_callees singleton)
-           | LocationCallees.Compound compound ->
-               SerializableStringMap.exists
-                 (fun _ callees ->
-                   not (ExpressionCallees.is_empty_attribute_access_callees callees))
-                 compound)
-    |> Location.Map.Tree.of_alist_exn
+  let mutable_call_graph =
+    MutableDefineCallGraph.filter_empty_attribute_access Context.callees_at_location
   in
   Statistics.performance
     ~randomly_log_every:1000
@@ -3614,7 +3635,7 @@ let call_graph_of_define
     ~normals:["callable", Reference.show Context.define_name]
     ~timer
     ();
-  call_graph
+  mutable_call_graph
 
 
 let call_graph_of_callable
@@ -3756,6 +3777,7 @@ let build_whole_program_call_graph
                 ~attribute_targets
                 ~callable)
             ()
+          |> DefineCallGraph.from_mutable_define_call_graph
         in
         let define_call_graphs =
           if store_shared_memory then
