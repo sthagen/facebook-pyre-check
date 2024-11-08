@@ -100,6 +100,18 @@ let assert_call_graph_of_define
   assert_equal ~cmp ~printer:DefineCallGraph.show expected actual
 
 
+module ImmutableHigherOrderCallGraph = struct
+  type t = {
+    returned_callables: CallTarget.Set.t;
+    call_graph: DefineCallGraph.t;
+  }
+  [@@deriving eq, show]
+
+  let from_higher_order_call_graph { CallGraph.HigherOrderCallGraph.returned_callables; call_graph }
+    =
+    { returned_callables; call_graph = DefineCallGraph.from_mutable_define_call_graph call_graph }
+end
+
 let assert_higher_order_call_graph_of_define
     ?(object_targets = [])
     ?(initial_state = CallGraph.HigherOrderCallGraph.State.empty)
@@ -107,13 +119,13 @@ let assert_higher_order_call_graph_of_define
     ~define_name
     ~expected_call_graph
     ~expected_returned_callables
-    ?(cmp = HigherOrderCallGraph.equal)
+    ?(cmp = ImmutableHigherOrderCallGraph.equal)
     ()
     context
   =
   let expected =
     {
-      CallGraph.HigherOrderCallGraph.call_graph = parse_define_call_graph expected_call_graph;
+      ImmutableHigherOrderCallGraph.call_graph = parse_define_call_graph expected_call_graph;
       returned_callables = CallTarget.Set.of_list expected_returned_callables;
     }
   in
@@ -129,8 +141,9 @@ let assert_higher_order_call_graph_of_define
       ~qualifier:test_qualifier
       ~define
       ~initial_state
+    |> ImmutableHigherOrderCallGraph.from_higher_order_call_graph
   in
-  assert_equal ~cmp ~printer:HigherOrderCallGraph.show expected actual
+  assert_equal ~cmp ~printer:ImmutableHigherOrderCallGraph.show expected actual
 
 
 let create_parameterized_target ~regular ~parameters =
@@ -6395,8 +6408,6 @@ let test_higher_order_call_graph_of_define =
                       (CallCallees.create
                          ~call_targets:
                            [
-                             CallTarget.create_regular (* TODO: Remove *)
-                               (Target.Regular.Function { name = "test.bar"; kind = Normal });
                              CallTarget.create
                                (create_parameterized_target
                                   ~regular:
@@ -6411,31 +6422,6 @@ let test_higher_order_call_graph_of_define =
                                         |> Target.from_regular );
                                     ]);
                            ]
-                         ~higher_order_parameters:
-                           (* TODO: Remove *)
-                           (HigherOrderParameterMap.from_list
-                              [
-                                {
-                                  index = 0;
-                                  call_targets =
-                                    [
-                                      CallTarget.create_regular
-                                        (Target.Regular.Function
-                                           { name = "test.foo"; kind = Normal });
-                                    ];
-                                  unresolved = false;
-                                };
-                                {
-                                  index = 1;
-                                  call_targets =
-                                    [
-                                      CallTarget.create_regular
-                                        (Target.Regular.Function
-                                           { name = "test.baz"; kind = Normal });
-                                    ];
-                                  unresolved = false;
-                                };
-                              ])
                          ())) );
                ( "3:6-3:9",
                  LocationCallees.Singleton
@@ -6479,8 +6465,6 @@ let test_higher_order_call_graph_of_define =
                       (CallCallees.create
                          ~call_targets:
                            [
-                             CallTarget.create_regular (* TODO: Remove *)
-                               (Target.Regular.Function { name = "test.bar"; kind = Normal });
                              CallTarget.create
                                (create_parameterized_target
                                   ~regular:
@@ -6492,21 +6476,6 @@ let test_higher_order_call_graph_of_define =
                                         |> Target.from_regular );
                                     ]);
                            ]
-                         ~higher_order_parameters:
-                           (* TODO: Remove *)
-                           (HigherOrderParameterMap.from_list
-                              [
-                                {
-                                  index = 0;
-                                  call_targets =
-                                    [
-                                      CallTarget.create_regular
-                                        (Target.Regular.Function
-                                           { name = "test.bar"; kind = Normal });
-                                    ];
-                                  unresolved = false;
-                                };
-                              ])
                          ())) );
                ( "3:6-3:9",
                  LocationCallees.Singleton
@@ -6536,34 +6505,26 @@ let test_higher_order_call_graph_of_define =
       @@ assert_higher_order_call_graph_of_define
            ~source:
              {|
+     from builtins import _test_sink
      def foo(x):
        ... # stub
      def bar():
        pass
      def baz():
        foo(bar)
+       _test_sink(bar)
   |}
            ~define_name:"test.baz"
            ~expected_call_graph:
              [
-               ( "7:2-7:10",
+               ( "8:2-8:10",
                  LocationCallees.Singleton
                    (ExpressionCallees.from_call
                       (CallCallees.create
                          ~call_targets:
                            [
-                             CallTarget.create_regular (* TODO: Remove *)
+                             CallTarget.create_regular
                                (Target.Regular.Function { name = "test.foo"; kind = Normal });
-                             CallTarget.create
-                               (create_parameterized_target
-                                  ~regular:
-                                    (Target.Regular.Function { name = "test.foo"; kind = Normal })
-                                  ~parameters:
-                                    [
-                                      ( create_positional_parameter 0 "x",
-                                        Target.Regular.Function { name = "test.bar"; kind = Normal }
-                                        |> Target.from_regular );
-                                    ]);
                            ]
                          ~higher_order_parameters:
                            (HigherOrderParameterMap.from_list
@@ -6580,7 +6541,42 @@ let test_higher_order_call_graph_of_define =
                                 };
                               ])
                          ())) );
-               ( "7:6-7:9",
+               ( "8:6-8:9",
+                 LocationCallees.Singleton
+                   (ExpressionCallees.from_attribute_access
+                      (AttributeAccessCallees.create
+                         ~callable_targets:
+                           [
+                             CallTarget.create_regular
+                               (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                           ]
+                         ())) );
+               ( "9:2-9:17",
+                 LocationCallees.Singleton
+                   (ExpressionCallees.from_call
+                      (CallCallees.create
+                         ~call_targets:
+                           [
+                             CallTarget.create_regular
+                               (Target.Regular.Function { name = "_test_sink"; kind = Normal });
+                           ]
+                         ~higher_order_parameters:
+                           (HigherOrderParameterMap.from_list
+                              [
+                                {
+                                  index = 0;
+                                  call_targets =
+                                    [
+                                      CallTarget.create_regular
+                                        ~index:1
+                                        (Target.Regular.Function
+                                           { name = "test.bar"; kind = Normal });
+                                    ];
+                                  unresolved = false;
+                                };
+                              ])
+                         ())) );
+               ( "9:13-9:16",
                  LocationCallees.Singleton
                    (ExpressionCallees.from_attribute_access
                       (AttributeAccessCallees.create
@@ -6621,8 +6617,6 @@ let test_higher_order_call_graph_of_define =
                              (* TODO(T206271514): It is incorrect to create targets for the
                                 undecorated version of the functions that have decorators. Instead,
                                 we should create targets for the decorated version. *)
-                             CallTarget.create_regular
-                               (Target.Regular.Function { name = "test.foo"; kind = Normal });
                              CallTarget.create
                                (create_parameterized_target
                                   ~regular:
@@ -6634,20 +6628,6 @@ let test_higher_order_call_graph_of_define =
                                         |> Target.from_regular );
                                     ]);
                            ]
-                         ~higher_order_parameters:
-                           (HigherOrderParameterMap.from_list
-                              [
-                                {
-                                  index = 0;
-                                  call_targets =
-                                    [
-                                      CallTarget.create_regular
-                                        (Target.Regular.Function
-                                           { name = "test.baz"; kind = Normal });
-                                    ];
-                                  unresolved = false;
-                                };
-                              ])
                          ())) );
                ( "12:7-12:10",
                  LocationCallees.Singleton
@@ -6679,8 +6659,6 @@ let test_higher_order_call_graph_of_define =
                       (CallCallees.create
                          ~call_targets:
                            [
-                             CallTarget.create_regular (* TODO: Remove *)
-                               (Target.Regular.Function { name = "test.bar"; kind = Normal });
                              CallTarget.create
                                (create_parameterized_target
                                   ~regular:
@@ -6692,21 +6670,6 @@ let test_higher_order_call_graph_of_define =
                                         |> Target.from_regular );
                                     ]);
                            ]
-                         ~higher_order_parameters:
-                           (* TODO: Remove *)
-                           (HigherOrderParameterMap.from_list
-                              [
-                                {
-                                  index = 0;
-                                  call_targets =
-                                    [
-                                      CallTarget.create_regular
-                                        (Target.Regular.Function
-                                           { name = "test.bar"; kind = Normal });
-                                    ];
-                                  unresolved = false;
-                                };
-                              ])
                          ())) );
                ( "5:8-5:11",
                  LocationCallees.Singleton
@@ -6775,8 +6738,6 @@ let test_higher_order_call_graph_of_define =
                       (CallCallees.create
                          ~call_targets:
                            [
-                             CallTarget.create_regular (* TODO: Remove *)
-                               (Target.Regular.Function { name = "test.bar"; kind = Normal });
                              CallTarget.create
                                (create_parameterized_target
                                   ~regular:
@@ -6788,21 +6749,6 @@ let test_higher_order_call_graph_of_define =
                                         |> Target.from_regular );
                                     ]);
                            ]
-                         ~higher_order_parameters:
-                           (* TODO: Remove *)
-                           (HigherOrderParameterMap.from_list
-                              [
-                                {
-                                  index = 0;
-                                  call_targets =
-                                    [
-                                      CallTarget.create_regular
-                                        (Target.Regular.Function
-                                           { name = "test.bar"; kind = Normal });
-                                    ];
-                                  unresolved = false;
-                                };
-                              ])
                          ())) );
                ( "5:13-5:16",
                  LocationCallees.Singleton

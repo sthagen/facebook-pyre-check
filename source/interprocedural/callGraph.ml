@@ -1177,11 +1177,42 @@ module MutableDefineCallGraph = struct
 
   include MakeResolveCallGraph (ResolveCallGraph)
 
+  let copy = Hashtbl.copy
+
+  let pp formatter call_graph =
+    let pp_pair formatter (key, value) =
+      Format.fprintf
+        formatter
+        "@,%a -> %a"
+        Location.pp
+        key
+        (LocationCallees.Map.pp ExpressionCallees.pp)
+        value
+    in
+    let pp_pairs formatter = List.iter ~f:(pp_pair formatter) in
+    call_graph |> Hashtbl.to_alist |> Format.fprintf formatter "{@[<v 2>%a@]@,}" pp_pairs
+
+
   let add_callees ~expression_identifier ~location ~callees map =
     Hashtbl.update map location ~f:(function
         | None -> LocationCallees.Map.singleton ~expression_identifier ~callees
         | Some existing_callees ->
             LocationCallees.Map.add existing_callees ~expression_identifier ~callees)
+
+
+  let set_call_callees ~expression_identifier ~location ~call_callees map =
+    Hashtbl.update map location ~f:(function
+        | None ->
+            LocationCallees.Map.singleton
+              ~expression_identifier
+              ~callees:(ExpressionCallees.from_call call_callees)
+        | Some callees ->
+            LocationCallees.Map.update
+              expression_identifier
+              (function
+                | Some callees -> Some { callees with ExpressionCallees.call = Some call_callees }
+                | None -> Some (ExpressionCallees.from_call call_callees))
+              callees)
 
 
   let filter_empty_attribute_access =
@@ -3224,7 +3255,7 @@ end
 module HigherOrderCallGraph = struct
   type t = {
     returned_callables: CallTarget.Set.t;
-    call_graph: DefineCallGraph.t;
+    call_graph: MutableDefineCallGraph.t;
         (* Higher order function callees (i.e., parameterized targets) and potentially regular
            callees. *)
   }
@@ -3301,27 +3332,18 @@ module HigherOrderCallGraph = struct
                 if weak then CallTarget.Set.join existing_callees callees else callees)
 
 
-      let register_targets ~expression_identifier ~location ~callees =
-        if not (CallTarget.Set.is_bottom callees) then
-          MutableDefineCallGraph.add_callees
-            ~expression_identifier
-            ~location
-            ~callees:
-              (CallCallees.create ~call_targets:(CallTarget.Set.to_sorted_list callees) ()
-              |> ExpressionCallees.from_call)
-            Context.mutable_define_call_graph
-
-
       let rec analyze_call ~location ~call ~arguments ~state =
-        let formal_arguments target =
+        let formal_arguments_if_non_stub target =
           match Target.get_module_and_definition ~pyre_api:Context.pyre_api target with
-          | None -> []
+          | Some (_, { Node.value = define; _ }) when Define.is_stub define -> None
+          | None -> None
           | Some
               (_, { Node.value = { Define.signature = { Define.Signature.parameters; _ }; _ }; _ })
             ->
-              parameters
-              |> TaintAccessPath.normalize_parameters
-              |> List.map ~f:(fun { TaintAccessPath.NormalizedParameter.root; _ } -> root)
+              Some
+                (parameters
+                |> TaintAccessPath.normalize_parameters
+                |> List.map ~f:(fun { TaintAccessPath.NormalizedParameter.root; _ } -> root))
         in
         let create_parameter_target (parameter_target, (_, argument_matches)) =
           match argument_matches, parameter_target with
@@ -3346,7 +3368,23 @@ module HigherOrderCallGraph = struct
             |> CallTarget.Set.of_list
             |> CallTarget.Set.join callees )
         in
-        let { CallCallees.call_targets; higher_order_parameters; _ } =
+        let non_parameterized_targets ~parameterized_call_targets call_targets =
+          let regular_targets_from_parameterized =
+            parameterized_call_targets
+            |> CallTarget.Set.elements
+            |> List.filter_map ~f:(function
+                   | { CallTarget.target = Target.Parameterized { regular; _ }; _ } -> Some regular
+                   | { CallTarget.target = Target.Regular _; _ } -> None)
+          in
+          let is_parameterized { CallTarget.target; _ } =
+            let regular = Target.as_regular_exn target in
+            List.exists regular_targets_from_parameterized ~f:(Target.Regular.equal regular)
+          in
+          List.filter call_targets ~f:(fun call_target -> call_target |> is_parameterized |> not)
+        in
+        let ({ CallCallees.call_targets = existing_call_targets; higher_order_parameters; _ } as
+            existing_call_callees)
+          =
           Context.mutable_define_call_graph
           |> MutableDefineCallGraph.resolve_call ~location ~call
           |> Option.value_exn
@@ -3363,8 +3401,8 @@ module HigherOrderCallGraph = struct
                     location)
         in
         let callee_return_values, state = analyze_expression ~state ~expression:call.Call.callee in
-        let call_targets =
-          call_targets
+        let call_targets_from_callee =
+          existing_call_targets
           |> CallTarget.Set.of_list
           |> CallTarget.Set.join callee_return_values
           |> CallTarget.Set.elements
@@ -3376,13 +3414,17 @@ module HigherOrderCallGraph = struct
           | Some callee_target :: parameter_targets ->
               let parameters =
                 callee_target.CallTarget.target
-                |> formal_arguments
-                |> TaintAccessPath.match_actuals_to_formals arguments
-                |> List.zip_exn parameter_targets
-                |> List.filter_map ~f:create_parameter_target
-                |> Target.ParameterMap.of_alist_exn
+                |> formal_arguments_if_non_stub
+                >>| TaintAccessPath.match_actuals_to_formals arguments
+                >>| List.zip_exn parameter_targets
+                >>| List.filter_map ~f:create_parameter_target
+                >>| Target.ParameterMap.of_alist_exn
+                |> Option.value ~default:Target.ParameterMap.empty
               in
               if Target.ParameterMap.is_empty parameters then
+                (* Treat as regular target when (1) no parameter targets exist or (2) we cannot find
+                   function bodies, so that the taint analysis can still use
+                   `higher_order_parameters`. *)
                 Some
                   {
                     callee_target with
@@ -3409,17 +3451,41 @@ module HigherOrderCallGraph = struct
           | [] -> [None]
           | list -> List.map ~f:(fun target -> Some target) list
         in
-        let call_targets =
+        let parameterized_call_targets =
           argument_callees
           |> List.map ~f:(fun call_targets ->
                  call_targets |> CallTarget.Set.elements |> to_option_list)
-          |> List.cons (to_option_list call_targets)
+          |> List.cons (to_option_list call_targets_from_callee)
           |> Algorithms.cartesian_product
           |> List.filter_map ~f:create_call_target
           |> CallTarget.Set.of_list
         in
+        let non_parameterized_targets =
+          non_parameterized_targets ~parameterized_call_targets existing_call_targets
+        in
+        MutableDefineCallGraph.set_call_callees
+          ~location
+          ~expression_identifier:(call_identifier call)
+          ~call_callees:
+            {
+              existing_call_callees with
+              (* Remove any existing call target that is now parameterized, because the taint
+                 analysis is more precise for the parameterized targets. *)
+              call_targets =
+                parameterized_call_targets
+                |> CallTarget.Set.to_sorted_list
+                |> List.rev_append non_parameterized_targets;
+              (* Do not keep keep higher order parameters if each existing call target is
+                 parameterized. *)
+              higher_order_parameters =
+                (if List.is_empty non_parameterized_targets then
+                   HigherOrderParameterMap.empty
+                else
+                  higher_order_parameters);
+            }
+          Context.mutable_define_call_graph;
         (* TODO: Return the summaries of calling `call_targets`. *)
-        CallTarget.Set.bottom, state, call_targets
+        CallTarget.Set.bottom, state
 
 
       (* Return possible callees and the new state. *)
@@ -3429,15 +3495,7 @@ module HigherOrderCallGraph = struct
         | BinaryOperator _ -> CallTarget.Set.bottom, state
         | BooleanOperator _ -> CallTarget.Set.bottom, state
         | ComparisonOperator _ -> CallTarget.Set.bottom, state
-        | Call ({ callee = _; arguments } as call) ->
-            let call_results, state, call_targets =
-              analyze_call ~location ~call ~arguments ~state
-            in
-            register_targets
-              ~expression_identifier:(call_identifier call)
-              ~location
-              ~callees:call_targets;
-            call_results, state
+        | Call ({ callee = _; arguments } as call) -> analyze_call ~location ~call ~arguments ~state
         | Constant _ -> CallTarget.Set.bottom, state
         | Dictionary _ -> CallTarget.Set.bottom, state
         | DictionaryComprehension _ -> CallTarget.Set.bottom, state
@@ -3528,8 +3586,9 @@ end
 
 let higher_order_call_graph_of_define ~define_call_graph ~pyre_api ~qualifier ~define ~initial_state
   =
+  let mutable_define_call_graph = MutableDefineCallGraph.copy define_call_graph in
   let module Fixpoint = HigherOrderCallGraph.MakeFixpoint (struct
-    let mutable_define_call_graph = define_call_graph
+    let mutable_define_call_graph = mutable_define_call_graph
 
     let qualifier = qualifier
 
@@ -3542,10 +3601,7 @@ let higher_order_call_graph_of_define ~define_call_graph ~pyre_api ~qualifier ~d
     >>| Fixpoint.get_result
     |> Option.value ~default:CallTarget.Set.bottom
   in
-  {
-    HigherOrderCallGraph.returned_callables;
-    call_graph = DefineCallGraph.from_mutable_define_call_graph define_call_graph;
-  }
+  { HigherOrderCallGraph.returned_callables; call_graph = mutable_define_call_graph }
 
 
 let higher_order_call_graph_of_callable ~pyre_api ~define_call_graph ~callable =
