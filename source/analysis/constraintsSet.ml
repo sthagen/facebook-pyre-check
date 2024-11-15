@@ -196,13 +196,18 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       order
       ~callable:({ Type.Callable.implementation; overloads; _ } as _callable)
       ~called_as
-      ~constraints
+      ~constraints:initial_constraints
       ~get_typed_dictionary
     =
-    let solve_less_or_equal = solve_less_or_equal ~cache order in
-    let solve_ordered_types_less_or_equal = solve_ordered_types_less_or_equal ~cache order in
+    let solve_less_or_equal_with_constraints = solve_less_or_equal ~cache order in
+    let solve_ordered_types_less_or_equal_with_constraints =
+      solve_ordered_types_less_or_equal ~cache order
+    in
+    let solve_ordered_types_less_or_equal =
+      solve_ordered_types_less_or_equal_with_constraints ~constraints:initial_constraints
+    in
     let open Callable in
-    let solve implementation ~initial_constraints =
+    let solve implementation =
       let get_kwargs_type parameters =
         let has_kwargs =
           List.exists ~f:(fun parameter ->
@@ -239,14 +244,14 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
             in
             List.split_while concretes ~f:is_not_keyword_only
           in
-          let solve_remaining_parameters constraints =
+          let solve_remaining_parameters_with_constraints constraints =
             if is_lower_bound then
-              solve_parameters
+              solve_parameters_with_constraints
                 ~left_parameters:after_first_keyword_inclusive
                 ~right_parameters:remaining_parameters
                 constraints
             else
-              solve_parameters
+              solve_parameters_with_constraints
                 ~left_parameters:remaining_parameters
                 ~right_parameters:after_first_keyword_inclusive
                 constraints
@@ -258,7 +263,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               else
                 ordered_type, concretes
             in
-            solve_ordered_types_less_or_equal ~left ~right ~constraints
+            solve_ordered_types_less_or_equal ~left ~right
           in
           let ordered_type_from_non_keyword_parameters =
             let extract_component = function
@@ -281,9 +286,9 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           in
           ordered_type_from_non_keyword_parameters
           >>| add_bound
-          >>| List.concat_map ~f:solve_remaining_parameters
+          >>| List.concat_map ~f:solve_remaining_parameters_with_constraints
           |> Option.value ~default:impossible
-        and solve_parameters ~left_parameters ~right_parameters constraints =
+        and solve_parameters_with_constraints ~left_parameters ~right_parameters constraints =
           let expand_typed_dictionary_parameters =
             List.map ~f:(fun { Type.TypedDictionary.name; annotation; required; _ } ->
                 CallableParamType.KeywordOnly { name; annotation; default = not required })
@@ -298,19 +303,27 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           | ( CallableParamType.Named { annotation = left_annotation; _ } :: left_parameters,
               CallableParamType.PositionalOnly { annotation = right_annotation; _ }
               :: right_parameters ) ->
-              solve_less_or_equal ~constraints ~left:right_annotation ~right:left_annotation
-              |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+              solve_less_or_equal_with_constraints
+                ~constraints
+                ~left:right_annotation
+                ~right:left_annotation
+              |> List.concat_map
+                   ~f:(solve_parameters_with_constraints ~left_parameters ~right_parameters)
           | ( CallableParamType.Keywords left_annotation :: left_parameters,
               CallableParamType.Keywords right_annotation :: right_parameters ) -> (
               match Type.unpack_value left_annotation, Type.unpack_value right_annotation with
               | Some left_annotation, Some right_annotation ->
-                  solve_less_or_equal ~constraints ~left:right_annotation ~right:left_annotation
-                  |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+                  solve_less_or_equal_with_constraints
+                    ~constraints
+                    ~left:right_annotation
+                    ~right:left_annotation
+                  |> List.concat_map
+                       ~f:(solve_parameters_with_constraints ~left_parameters ~right_parameters)
               | _, Some right_annotation -> (
                   match get_typed_dictionary right_annotation with
                   | None -> impossible
                   | Some { Type.TypedDictionary.fields; _ } ->
-                      solve_parameters
+                      solve_parameters_with_constraints
                         ~left_parameters:all_left_parameters
                         ~right_parameters:
                           (expand_typed_dictionary_parameters fields @ right_parameters)
@@ -319,20 +332,24 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                   match get_typed_dictionary left_annotation with
                   | None -> impossible
                   | Some { Type.TypedDictionary.fields; _ } ->
-                      solve_parameters
+                      solve_parameters_with_constraints
                         ~left_parameters:
                           (expand_typed_dictionary_parameters fields @ left_parameters)
                         ~right_parameters:all_right_parameters
                         constraints)
               | None, None ->
-                  solve_less_or_equal ~constraints ~left:right_annotation ~right:left_annotation
-                  |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters))
+                  solve_less_or_equal_with_constraints
+                    ~constraints
+                    ~left:right_annotation
+                    ~right:left_annotation
+                  |> List.concat_map
+                       ~f:(solve_parameters_with_constraints ~left_parameters ~right_parameters))
           | _, CallableParamType.Keywords right_annotation :: right_parameters
             when Type.is_unpack right_annotation -> (
               match Type.unpack_value right_annotation >>= get_typed_dictionary with
               | None -> impossible
               | Some { Type.TypedDictionary.fields; _ } ->
-                  solve_parameters
+                  solve_parameters_with_constraints
                     ~left_parameters
                     ~right_parameters:(expand_typed_dictionary_parameters fields @ right_parameters)
                     constraints)
@@ -341,20 +358,28 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               match Type.unpack_value left_annotation >>= get_typed_dictionary with
               | None -> impossible
               | Some { Type.TypedDictionary.fields; _ } ->
-                  solve_parameters
+                  solve_parameters_with_constraints
                     ~left_parameters:(expand_typed_dictionary_parameters fields @ left_parameters)
                     ~right_parameters
                     constraints)
           | ( CallableParamType.Variable (Concrete left_annotation) :: left_parameters,
               CallableParamType.Variable (Concrete right_annotation) :: right_parameters ) ->
-              solve_less_or_equal ~constraints ~left:right_annotation ~right:left_annotation
-              |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+              solve_less_or_equal_with_constraints
+                ~constraints
+                ~left:right_annotation
+                ~right:left_annotation
+              |> List.concat_map
+                   ~f:(solve_parameters_with_constraints ~left_parameters ~right_parameters)
           | ( CallableParamType.Keywords left_annotation :: _,
               ( CallableParamType.KeywordOnly { annotation = right_annotation; _ }
               | CallableParamType.Named { annotation = right_annotation; _ } )
               :: right_parameters ) ->
-              solve_less_or_equal ~constraints ~left:right_annotation ~right:left_annotation
-              |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+              solve_less_or_equal_with_constraints
+                ~constraints
+                ~left:right_annotation
+                ~right:left_annotation
+              |> List.concat_map
+                   ~f:(solve_parameters_with_constraints ~left_parameters ~right_parameters)
           | ( CallableParamType.KeywordOnly ({ annotation = left_annotation; _ } as left)
               :: left_parameters,
               CallableParamType.KeywordOnly ({ annotation = right_annotation; _ } as right)
@@ -382,22 +407,31 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                 if right.default && not left.default then
                   impossible
                 else
-                  solve_less_or_equal ~constraints ~left:right_annotation ~right:left_annotation
-                  |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+                  solve_less_or_equal_with_constraints
+                    ~constraints
+                    ~left:right_annotation
+                    ~right:left_annotation
+                  |> List.concat_map
+                       ~f:(solve_parameters_with_constraints ~left_parameters ~right_parameters)
               else
                 impossible
           | ( CallableParamType.Variable (Concrete left_annotation) :: _,
               CallableParamType.PositionalOnly { annotation = right_annotation; _ }
               :: right_parameters ) ->
-              solve_less_or_equal ~constraints ~left:right_annotation ~right:left_annotation
-              |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+              solve_less_or_equal_with_constraints
+                ~constraints
+                ~left:right_annotation
+                ~right:left_annotation
+              |> List.concat_map
+                   ~f:(solve_parameters_with_constraints ~left_parameters ~right_parameters)
           | ( CallableParamType.Variable (Concatenation left) :: left_parameters,
               CallableParamType.Variable (Concatenation right) :: right_parameters ) ->
-              solve_ordered_types_less_or_equal
+              solve_ordered_types_less_or_equal_with_constraints
                 ~left:(Type.OrderedTypes.Concatenation left)
                 ~right:(Type.OrderedTypes.Concatenation right)
                 ~constraints
-              |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+              |> List.concat_map
+                   ~f:(solve_parameters_with_constraints ~left_parameters ~right_parameters)
           | left, CallableParamType.Variable (Concatenation concatenation) :: remaining_parameters
             ->
               solve_parameters_against_tuple_variadic
@@ -417,16 +451,20 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               :: _,
               CallableParamType.Named { annotation = named_annotation; _ } :: right_parameters ) ->
               if Type.equal variable_annotation keywords_annotation then
-                solve_less_or_equal ~constraints ~left:named_annotation ~right:keywords_annotation
-                |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+                solve_less_or_equal_with_constraints
+                  ~constraints
+                  ~left:named_annotation
+                  ~right:keywords_annotation
+                |> List.concat_map
+                     ~f:(solve_parameters_with_constraints ~left_parameters ~right_parameters)
               else
                 impossible
           | CallableParamType.Variable _ :: left_parameters, right_parameters
           | CallableParamType.Keywords _ :: left_parameters, right_parameters ->
-              solve_parameters ~left_parameters ~right_parameters constraints
+              solve_parameters_with_constraints ~left_parameters ~right_parameters constraints
           | left :: left_parameters, [] ->
               if CallableParamType.default left then
-                solve_parameters ~left_parameters ~right_parameters:[] constraints
+                solve_parameters_with_constraints ~left_parameters ~right_parameters:[] constraints
               else
                 impossible
           | [], [] -> [constraints]
@@ -445,7 +483,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
             (* In other cases, it should be safe to expand unpacked typed dictionary fields and
                check them against each other or regular parameters. *)
             | _ ->
-                solve_parameters
+                solve_parameters_with_constraints
                   ~left_parameters:implementation
                   ~right_parameters:called_as
                   initial_constraints)
@@ -477,7 +515,6 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
             solve_ordered_types_less_or_equal
               ~left:(Type.OrderedTypes.Concrete right_head)
               ~right:(Type.OrderedTypes.Concrete left_head)
-              ~constraints:initial_constraints
             |> List.concat_map ~f:add_parameter_specification_bounds
         | bound, FromParamSpec { head = []; variable } when Type.Variable.ParamSpec.is_free variable
           ->
@@ -491,12 +528,11 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                   let paired, remainder = List.split_n left_head (List.length head) in
                   ( solve_ordered_types_less_or_equal
                       ~left:(Type.OrderedTypes.Concrete paired)
-                      ~right:(Type.OrderedTypes.Concrete head)
-                      ~constraints:initial_constraints,
+                      ~right:(Type.OrderedTypes.Concrete head),
                     FromParamSpec { head = remainder; variable = left_variable } )
               | Defined defined ->
                   let paired, remainder = List.split_n defined (List.length head) in
-                  ( solve_parameters
+                  ( solve_parameters_with_constraints
                       ~left_parameters:paired
                       ~right_parameters:(Type.Callable.prepend_anonymous_parameters ~head ~tail:[])
                       initial_constraints,
@@ -531,7 +567,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         in
         instantiated_return, external_constraints
       in
-      solve overload ~initial_constraints:constraints
+      solve overload
       |> List.map
            ~f:(OrderedConstraints.extract_partial_solution ~order ~variables:namespaced_variables)
       |> List.concat_map ~f:Option.to_list
@@ -595,44 +631,56 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
          variance_map;
          _;
        } as order)
-      ~constraints
+      ~constraints:initial_constraints
       ~left
       ~right
     =
-    let solve_less_or_equal = solve_less_or_equal ~cache order in
-    let solve_ordered_types_less_or_equal = solve_ordered_types_less_or_equal ~cache order in
+    let solve_less_or_equal_with_constraints = solve_less_or_equal ~cache order in
+    let solve_less_or_equal = solve_less_or_equal ~constraints:initial_constraints ~cache order in
+    let solve_ordered_types_less_or_equal_with_constraints =
+      solve_ordered_types_less_or_equal ~cache order
+    in
+    let solve_ordered_types_less_or_equal =
+      solve_ordered_types_less_or_equal_with_constraints ~constraints:initial_constraints
+    in
     let instantiate_protocol_parameters = instantiate_protocol_parameters ~cache order in
     let instantiate_recursive_type_parameters =
       instantiate_recursive_type_parameters ~cache order
     in
     let simulate_signature_select = simulate_signature_select ~cache order in
+    let add_lower_bound_to_initial_constraints =
+      OrderedConstraints.add_lower_bound initial_constraints
+    in
+    let add_upper_bound_to_initial_constraints =
+      OrderedConstraints.add_upper_bound initial_constraints
+    in
     let open Type.TypedDictionary in
     let add_fallbacks other =
       Type.Variable.all_free_variables other
-      |> List.fold ~init:constraints ~f:OrderedConstraints.add_fallback_to_any
+      |> List.fold ~init:initial_constraints ~f:OrderedConstraints.add_fallback_to_any
     in
     let solve_less_or_equal_primitives ~source ~target =
       if has_transitive_successor ~successor:target source then
-        [constraints]
+        [initial_constraints]
       else if
         is_protocol right
         && [%compare.equal: Type.Argument.t list option]
              (instantiate_protocol_parameters ~protocol:target left)
              (Some [])
       then
-        [constraints]
+        [initial_constraints]
       else
         impossible
     in
     match left, right with
-    | _, _ when Type.equal left right -> [constraints]
+    | _, _ when Type.equal left right -> [initial_constraints]
     | Type.PyreReadOnly _, Type.Primitive "object" -> impossible
     | Type.Union items, Type.Primitive "object"
       when List.exists items ~f:Type.PyreReadOnly.is_readonly ->
         impossible
-    | _, Type.Primitive "object" -> [constraints]
+    | _, Type.Primitive "object" -> [initial_constraints]
     | other, Type.Any -> [add_fallbacks other]
-    | _, Type.Top -> [constraints]
+    | _, Type.Top -> [initial_constraints]
     | Type.ParamSpecComponent component, _ ->
         let left =
           match Type.Variable.ParamSpec.Components.component component with
@@ -643,7 +691,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           | PositionalArguments ->
               Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.object_primitive)
         in
-        solve_less_or_equal ~constraints ~left ~right
+        solve_less_or_equal ~left ~right
     | _, Type.ParamSpecComponent _ -> impossible
     | Type.Any, other -> [add_fallbacks other]
     | Type.Variable left_variable, Type.Variable right_variable
@@ -653,13 +701,11 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
            than or equal to V1. Therefore either constraint is sufficient, and we should consider
            both. This approach simplifies things downstream for the constraint solver *)
         let right_greater_than_left, left_less_than_right =
-          ( OrderedConstraints.add_lower_bound
-              constraints
+          ( add_lower_bound_to_initial_constraints
               ~order
               ~pair:(Type.Variable.TypeVarPair (right_variable, left))
             |> Option.to_list,
-            OrderedConstraints.add_upper_bound
-              constraints
+            add_upper_bound_to_initial_constraints
               ~order
               ~pair:(Type.Variable.TypeVarPair (left_variable, right))
             |> Option.to_list )
@@ -667,14 +713,13 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         right_greater_than_left @ left_less_than_right
     | Type.Variable variable, bound when Type.Variable.TypeVar.is_free variable ->
         let pair = Type.Variable.TypeVarPair (variable, bound) in
-        OrderedConstraints.add_upper_bound constraints ~order ~pair |> Option.to_list
+        add_upper_bound_to_initial_constraints ~order ~pair |> Option.to_list
     | bound, Type.Variable variable when Type.Variable.TypeVar.is_free variable ->
         let pair = Type.Variable.TypeVarPair (variable, bound) in
-        OrderedConstraints.add_lower_bound constraints ~order ~pair |> Option.to_list
-    | Type.PyreReadOnly left, Type.PyreReadOnly right ->
-        solve_less_or_equal ~constraints ~left ~right
+        add_lower_bound_to_initial_constraints ~order ~pair |> Option.to_list
+    | Type.PyreReadOnly left, Type.PyreReadOnly right -> solve_less_or_equal ~left ~right
     | _, Type.Bottom -> impossible
-    | Type.Bottom, _ -> [constraints]
+    | Type.Bottom, _ -> [initial_constraints]
     | _, Type.NoneType -> impossible
     | _, Type.RecursiveType recursive_type ->
         if
@@ -682,41 +727,37 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
             (instantiate_recursive_type_parameters ~recursive_type left)
             (Some [])
         then
-          [constraints]
+          [initial_constraints]
         else
           impossible
     | Type.RecursiveType recursive_type, _ ->
-        solve_less_or_equal
-          ~constraints
-          ~left:(Type.RecursiveType.unfold_recursive_type recursive_type)
-          ~right
+        solve_less_or_equal ~left:(Type.RecursiveType.unfold_recursive_type recursive_type) ~right
     | (Type.Callable _ | Type.NoneType), Type.Primitive protocol when is_protocol right ->
         if
           [%compare.equal: Type.Argument.t list option]
             (instantiate_protocol_parameters ~protocol left)
             (Some [])
         then
-          [constraints]
+          [initial_constraints]
         else
           impossible
     | (Type.Callable _ | Type.NoneType), Type.Parametric { name; _ } when is_protocol right ->
         instantiate_protocol_parameters ~protocol:name left
         >>| Type.parametric name
-        >>| (fun left -> solve_less_or_equal ~constraints ~left ~right)
+        >>| (fun left -> solve_less_or_equal ~left ~right)
         |> Option.value ~default:impossible
     | Type.Union lefts, right ->
         solve_ordered_types_less_or_equal
           ~left:(Concrete lefts)
           ~right:(Concrete (List.map lefts ~f:(fun _ -> right)))
-          ~constraints
-    | _, Type.PyreReadOnly right -> solve_less_or_equal ~constraints ~left ~right
+    | _, Type.PyreReadOnly right -> solve_less_or_equal ~left ~right
     | Type.Top, _ -> impossible
     | Type.NoneType, Type.Union rights when List.exists rights ~f:Type.is_none ->
         (* Technically speaking, removing this special-case still leads to correct, but somewhat
            redundant solutions, when `rights` contains both None and type varaibles *)
-        [constraints]
+        [initial_constraints]
     | Type.NoneType, Type.Union rights ->
-        List.concat_map rights ~f:(fun right -> solve_less_or_equal ~constraints ~left ~right)
+        List.concat_map rights ~f:(fun right -> solve_less_or_equal ~left ~right)
     | Type.NoneType, _ -> impossible
     | Type.Variable bound_variable, Type.Union union ->
         (* We have to consider two cases: (a) the `bound_variable <: each element of union` or (b)
@@ -734,16 +775,10 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
            union as `object`. And, since we pick the first valid solution, we would ignore any
            solution from the other approach (a) and return the confusing solution that `T =
            object`. *)
-        List.concat_map ~f:(fun right -> solve_less_or_equal ~constraints ~left ~right) union
-        @ solve_less_or_equal
-            ~constraints
-            ~left:(Type.Variable.TypeVar.upper_bound bound_variable)
-            ~right
+        List.concat_map ~f:(fun right -> solve_less_or_equal ~left ~right) union
+        @ solve_less_or_equal ~left:(Type.Variable.TypeVar.upper_bound bound_variable) ~right
     | Type.Variable bound_variable, _ ->
-        solve_less_or_equal
-          ~constraints
-          ~left:(Type.Variable.TypeVar.upper_bound bound_variable)
-          ~right
+        solve_less_or_equal ~left:(Type.Variable.TypeVar.upper_bound bound_variable) ~right
     | _, Type.Variable _bound_variable -> impossible
     | _, Type.Union rights ->
         if
@@ -752,11 +787,9 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         then
           (* This is a pure performance optimization, but is practically mandatory because there are
              some humongous unions out there *)
-          let simple_solve right =
-            solve_less_or_equal ~constraints ~left ~right |> List.is_empty |> not
-          in
+          let simple_solve right = solve_less_or_equal ~left ~right |> List.is_empty |> not in
           if List.exists rights ~f:simple_solve then
-            [constraints]
+            [initial_constraints]
           else
             impossible
         else if
@@ -764,28 +797,28 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           && List.exists
                ~f:(fun right ->
                  Type.Variable.all_variables_are_resolved right
-                 && solve_less_or_equal ~constraints ~left ~right |> List.is_empty |> not)
+                 && solve_less_or_equal ~left ~right |> List.is_empty |> not)
                rights
         then (* If X <= Union[Y, Z] with X and Y already resolved and X <= Y *)
-          [constraints]
+          [initial_constraints]
         else
-          List.concat_map rights ~f:(fun right -> solve_less_or_equal ~constraints ~left ~right)
+          List.concat_map rights ~f:(fun right -> solve_less_or_equal ~left ~right)
     | Type.PyreReadOnly _, _ -> impossible
     | ( Type.Parametric
           { name = "typing.TypeGuard" | "typing_extensions.TypeGuard"; arguments = [Single left] },
         Type.Parametric
           { name = "typing.TypeGuard" | "typing_extensions.TypeGuard"; arguments = [Single right] }
       ) ->
-        solve_less_or_equal ~constraints ~left ~right
+        solve_less_or_equal ~left ~right
     | ( Type.Parametric { name = "type"; arguments = [Single left] },
         Type.Parametric { name = "type"; arguments = [Single right] } ) ->
-        solve_less_or_equal ~constraints ~left ~right
+        solve_less_or_equal ~left ~right
     | Type.Parametric { name = "type"; arguments = [Single meta_argument] }, _ ->
         let through_meta_hierarchy =
           match meta_argument, right with
           | Primitive meta_argument, Primitive _ ->
               metaclass meta_argument ~cycle_detections
-              >>| (fun left -> solve_less_or_equal ~left ~right ~constraints)
+              >>| (fun left -> solve_less_or_equal ~left ~right)
               |> Option.value ~default:impossible
           | _ -> impossible
         in
@@ -797,30 +830,28 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                   (instantiate_protocol_parameters ~protocol:right_name left)
                   (Some [])
               then
-                [constraints]
+                [initial_constraints]
               else
                 impossible
           | Parametric { name = right_name; _ }, true ->
               instantiate_protocol_parameters ~protocol:right_name left
               >>| Type.parametric right_name
-              >>| (fun left -> solve_less_or_equal ~left ~right ~constraints)
+              >>| (fun left -> solve_less_or_equal ~left ~right)
               |> Option.value ~default:impossible
           | Callable _, _ -> (
               match meta_argument with
               | Type.Union types ->
-                  solve_less_or_equal
-                    ~constraints
-                    ~left:(Type.union (List.map ~f:Type.class_type types))
-                    ~right
+                  solve_less_or_equal ~left:(Type.union (List.map ~f:Type.class_type types)) ~right
               | _ ->
                   resolve_callable_protocol ~order ~assumption:right left
-                  >>| (fun left -> solve_less_or_equal ~constraints ~left ~right)
+                  >>| (fun left -> solve_less_or_equal ~left ~right)
                   |> Option.value ~default:impossible)
           | _ -> impossible
         in
         List.append through_protocol_hierarchy through_meta_hierarchy
     | _, Type.Parametric { name = right_name; arguments = right_arguments } ->
-        let solve_respecting_variance ~class_name ~parameters constraints = function
+        let solve_respecting_variance_with_constraints ~class_name ~parameters constraints
+          = function
           | Type.GenericParameter.ZipTwoArgumentsLists.TypeVarZipResult { name; left; right; _ }
             -> (
               let variance =
@@ -840,29 +871,29 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               | left, right, Type.Record.Variance.Covariant ->
                   constraints
                   |> List.concat_map ~f:(fun constraints ->
-                         solve_less_or_equal ~constraints ~left ~right)
+                         solve_less_or_equal_with_constraints ~constraints ~left ~right)
               | left, right, Type.Record.Variance.Contravariant ->
                   constraints
                   |> List.concat_map ~f:(fun constraints ->
-                         solve_less_or_equal ~constraints ~left:right ~right:left)
+                         solve_less_or_equal_with_constraints ~constraints ~left:right ~right:left)
               | left, right, Type.Record.Variance.Invariant ->
                   constraints
                   |> List.concat_map ~f:(fun constraints ->
-                         solve_less_or_equal ~constraints ~left ~right)
+                         solve_less_or_equal_with_constraints ~constraints ~left ~right)
                   |> List.concat_map ~f:(fun constraints ->
-                         solve_less_or_equal ~constraints ~left:right ~right:left)
+                         solve_less_or_equal_with_constraints ~constraints ~left:right ~right:left)
               | _, _, Type.Record.Variance.Bivariant -> constraints)
           | Type.GenericParameter.ZipTwoArgumentsLists.TypeVarTupleZipResult { left; right; _ } ->
               (* We assume variadic classes are covariant by default since they represent the
                  immutable shape of a datatype. *)
               constraints
               |> List.concat_map ~f:(fun constraints ->
-                     solve_ordered_types_less_or_equal ~left ~right ~constraints)
+                     solve_ordered_types_less_or_equal_with_constraints ~constraints ~left ~right)
           | Type.GenericParameter.ZipTwoArgumentsLists.ParamSpecZipResult { left; right; _ } ->
               let left = Type.Callable.create ~parameters:left ~annotation:Type.Any () in
               let right = Type.Callable.create ~parameters:right ~annotation:Type.Any () in
               List.concat_map constraints ~f:(fun constraints ->
-                  solve_less_or_equal ~constraints ~left ~right)
+                  solve_less_or_equal_with_constraints ~constraints ~left ~right)
           | Type.GenericParameter.ZipTwoArgumentsLists.MismatchedKindsZipResult _
           | Type.GenericParameter.ZipTwoArgumentsLists.MismatchedLengthsZipResult _
           | Type.GenericParameter.ZipTwoArgumentsLists.MismatchedVariadicZipResult _ ->
@@ -874,10 +905,10 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           >>| Type.GenericParameter.ZipTwoArgumentsLists.zip ~left_arguments ~right_arguments
           >>| List.fold
                 ~f:
-                  (solve_respecting_variance
+                  (solve_respecting_variance_with_constraints
                      ~class_name:right_name
                      ~parameters:(parameters |> Option.value ~default:[]))
-                ~init:[constraints]
+                ~init:[initial_constraints]
         in
         let left_arguments =
           let left_arguments = instantiate_successors_parameters ~source:left ~target:right_name in
@@ -924,18 +955,15 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                   then
                     impossible
                   else if right_field.readonly then
-                    solve_less_or_equal
-                      ~left:left_field.annotation
-                      ~right:right_field.annotation
-                      ~constraints
+                    solve_less_or_equal ~left:left_field.annotation ~right:right_field.annotation
                   else if Type.equal left_field.annotation right_field.annotation then
-                    [constraints]
+                    [initial_constraints]
                   else
                     impossible
             in
             let partial_solutions = List.map ~f:solve_for fields_needed_from_left in
             if List.for_all ~f:potentially_satisfiable partial_solutions then
-              [constraints]
+              [initial_constraints]
             else
               impossible
         | Some { fields; _ }, None ->
@@ -944,40 +972,32 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                 (Type.TypedDictionary.class_name
                    ~total:(Type.TypedDictionary.are_fields_total fields))
             in
-            solve_less_or_equal ~constraints ~left ~right
+            solve_less_or_equal ~left ~right
         | None, Some { fields; _ } ->
             let right =
               Type.Primitive
                 (Type.TypedDictionary.class_name
                    ~total:(Type.TypedDictionary.are_fields_total fields))
             in
-            solve_less_or_equal ~constraints ~left ~right
+            solve_less_or_equal ~left ~right
         | None, None -> solve_less_or_equal_primitives ~source ~target)
     | Type.Parametric { name = source; _ }, Type.Primitive target ->
         solve_less_or_equal_primitives ~source ~target
     (* A <= B -> A <= Optional[B].*)
-    | Type.Tuple left, Type.Tuple right ->
-        solve_ordered_types_less_or_equal ~left ~right ~constraints
+    | Type.Tuple left, Type.Tuple right -> solve_ordered_types_less_or_equal ~left ~right
     | Type.Tuple (Concatenation concatenation), Type.Primitive _ ->
         Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
         >>| (fun argument ->
-              solve_less_or_equal
-                ~constraints
-                ~left:(Type.parametric "tuple" [Single argument])
-                ~right)
+              solve_less_or_equal ~left:(Type.parametric "tuple" [Single argument]) ~right)
         |> Option.value ~default:impossible
     | Type.Tuple (Concrete members), Type.Primitive _ ->
-        solve_less_or_equal
-          ~constraints
-          ~left:(Type.parametric "tuple" [Single (Type.union members)])
-          ~right
+        solve_less_or_equal ~left:(Type.parametric "tuple" [Single (Type.union members)]) ~right
     | Type.Primitive name, Type.Tuple right -> (
         if Type.Primitive.equal name "tuple" then
-          [constraints]
+          [initial_constraints]
         else
           match get_named_tuple_fields (Type.Primitive name) with
-          | Some fields ->
-              solve_ordered_types_less_or_equal ~left:(Concrete fields) ~right ~constraints
+          | Some fields -> solve_ordered_types_less_or_equal ~left:(Concrete fields) ~right
           | _ -> impossible)
     | Type.Tuple _, _
     | _, Type.Tuple _ ->
@@ -985,7 +1005,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     | ( Type.Callable { Callable.kind = Callable.Named left; _ },
         Type.Callable { Callable.kind = Callable.Named right; _ } ) ->
         if Reference.equal left right then
-          [constraints]
+          [initial_constraints]
         else (* TODO(T200727911): this is wrong, but Pysa needs it *)
           impossible
     | ( Type.Callable
@@ -1022,36 +1042,43 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           let call_as_overload constraints =
             simulate_signature_select ~callable ~called_as ~constraints ~get_typed_dictionary
             |> List.concat_map ~f:(fun (left, constraints) ->
-                   solve_less_or_equal ~constraints ~left ~right:called_as.annotation)
+                   solve_less_or_equal_with_constraints
+                     ~constraints
+                     ~left
+                     ~right:called_as.annotation)
           in
           List.concat_map sofar ~f:call_as_overload
         in
-        List.fold called_as_options ~f:fold_overload ~init:[constraints]
+        List.fold called_as_options ~f:fold_overload ~init:[initial_constraints]
     | left, Type.Callable _ ->
         resolve_callable_protocol ~order ~assumption:right left
-        >>| (fun left -> solve_less_or_equal ~constraints ~left ~right)
+        >>| (fun left -> solve_less_or_equal ~left ~right)
         |> Option.value ~default:impossible
     | Type.Callable _, _ -> impossible
-    | Type.Literal (String (LiteralValue _)), Type.Literal (String AnyLiteral) -> [constraints]
+    | Type.Literal (String (LiteralValue _)), Type.Literal (String AnyLiteral) ->
+        [initial_constraints]
     | _, Type.Literal _ -> impossible
-    | Type.Literal _, _ -> solve_less_or_equal ~constraints ~left:(Type.weaken_literals left) ~right
+    | Type.Literal _, _ -> solve_less_or_equal ~left:(Type.weaken_literals left) ~right
     | Type.TypeOperation _, _
     | _, Type.TypeOperation _ ->
         impossible
 
 
-  and solve_ordered_types_less_or_equal ~cache order ~left ~right ~constraints =
-    let solve_less_or_equal = solve_less_or_equal ~cache order in
-    let solve_non_variadic_pairs ~pairs constraints =
+  and solve_ordered_types_less_or_equal ~cache order ~left ~right ~constraints:initial_constraints =
+    let solve_less_or_equal_with_constraints = solve_less_or_equal ~cache order in
+    let solve_non_variadic_pairs_with_constraints ~pairs constraints =
       let solve_pair constraints (left, right) =
         List.concat_map constraints ~f:(fun constraints ->
-            solve_less_or_equal ~constraints ~left ~right)
+            solve_less_or_equal_with_constraints ~constraints ~left ~right)
       in
       List.fold ~init:[constraints] ~f:solve_pair pairs
     in
+    let solve_non_variadic_pairs ~pairs =
+      solve_non_variadic_pairs_with_constraints ~pairs initial_constraints
+    in
     let open Type.OrderedTypes in
     if Type.OrderedTypes.equal left right then
-      [constraints]
+      [initial_constraints]
     else
       let solve_split_ordered_types { prefix_pairs; middle_pair; suffix_pairs } =
         match middle_pair with
@@ -1060,9 +1087,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         | Concrete left_middle, Concrete right_middle -> (
             match List.zip left_middle right_middle with
             | Ok middle_pairs ->
-                solve_non_variadic_pairs
-                  ~pairs:(prefix_pairs @ middle_pairs @ suffix_pairs)
-                  constraints
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ middle_pairs @ suffix_pairs)
             | Unequal_lengths -> impossible)
         | Concrete concrete, Concatenation concatenation -> (
             match
@@ -1070,16 +1095,16 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                 Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation )
             with
             | Some variadic, _ when Type.Variable.TypeVarTuple.is_free variadic ->
-                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs)
                 |> List.filter_map
                      ~f:
                        (OrderedConstraints.add_lower_bound
                           ~order
                           ~pair:(Type.Variable.TypeVarTuplePair (variadic, Concrete concrete)))
             | _, Some unbounded_element ->
-                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs)
                 |> List.concat_map ~f:(fun constraints ->
-                       solve_less_or_equal
+                       solve_less_or_equal_with_constraints
                          ~constraints
                          ~left:(Type.union concrete)
                          ~right:unbounded_element)
@@ -1090,7 +1115,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                 Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation )
             with
             | Some variadic, _ when Type.Variable.TypeVarTuple.is_free variadic ->
-                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs)
                 |> List.filter_map
                      ~f:
                        (OrderedConstraints.add_upper_bound
@@ -1103,7 +1128,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                 Type.OrderedTypes.Concatenation.extract_sole_variadic right_concatenation )
             with
             | _, Some variadic when Type.Variable.TypeVarTuple.is_free variadic ->
-                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs)
                 |> List.filter_map
                      ~f:
                        (OrderedConstraints.add_lower_bound
@@ -1112,7 +1137,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                             (Type.Variable.TypeVarTuplePair
                                (variadic, Concatenation left_concatenation)))
             | Some variadic, _ when Type.Variable.TypeVarTuple.is_free variadic ->
-                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs)
                 |> List.filter_map
                      ~f:
                        (OrderedConstraints.add_upper_bound
@@ -1128,16 +1153,16 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                       right_concatenation )
                 with
                 | Some left_unbounded_element, Some right_unbounded_element ->
-                    solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                    solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs)
                     |> List.concat_map ~f:(fun constraints ->
-                           solve_less_or_equal
+                           solve_less_or_equal_with_constraints
                              ~constraints
                              ~left:left_unbounded_element
                              ~right:right_unbounded_element)
                 | None, Some right_unbounded_element ->
-                    solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                    solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs)
                     |> List.concat_map ~f:(fun constraints ->
-                           solve_less_or_equal
+                           solve_less_or_equal_with_constraints
                              ~constraints
                              ~left:Type.object_primitive
                              ~right:right_unbounded_element)
