@@ -1068,6 +1068,13 @@ module LocationCallees = struct
           | Some existing_callees -> Some (ExpressionCallees.join existing_callees callees)
           | None -> Some callees)
         map
+
+
+    let to_json map =
+      let bindings =
+        fold (fun key value sofar -> (key, ExpressionCallees.to_json value) :: sofar) map []
+      in
+      `Assoc bindings
   end
 
   type t =
@@ -1103,11 +1110,7 @@ module LocationCallees = struct
 
   let to_json = function
     | Singleton callees -> `Assoc ["singleton", ExpressionCallees.to_json callees]
-    | Compound map ->
-        let bindings =
-          Map.fold (fun key value sofar -> (key, ExpressionCallees.to_json value) :: sofar) map []
-        in
-        `Assoc ["compound", `Assoc bindings]
+    | Compound map -> `Assoc ["compound", Map.to_json map]
 end
 
 let call_identifier { Call.callee; _ } =
@@ -1125,7 +1128,7 @@ let expression_identifier = function
   | _ -> (* not a valid call site. *) None
 
 
-module type ResolveCallGraphType = sig
+module MakeCallGraph (CallGraph : sig
   type t [@@deriving eq]
 
   val resolve_expression
@@ -1133,51 +1136,99 @@ module type ResolveCallGraphType = sig
     location:Location.t ->
     expression_identifier:string ->
     ExpressionCallees.t option
-end
 
-module MakeResolveCallGraph (ResolveCallGraph : ResolveCallGraphType) = struct
-  include ResolveCallGraph
+  val to_json : t -> Yojson.Safe.t
+end) =
+struct
+  include CallGraph
 
   let resolve_call call_graph ~location ~call =
     expression_identifier (Expression.Call call)
     >>= fun expression_identifier ->
-    ResolveCallGraph.resolve_expression call_graph ~location ~expression_identifier
+    CallGraph.resolve_expression call_graph ~location ~expression_identifier
     >>= fun { call; _ } -> call
 
 
   let resolve_attribute_access call_graph ~location ~attribute =
-    ResolveCallGraph.resolve_expression call_graph ~location ~expression_identifier:attribute
+    CallGraph.resolve_expression call_graph ~location ~expression_identifier:attribute
     >>= fun { attribute_access; _ } -> attribute_access
 
 
   let resolve_identifier call_graph ~location ~identifier =
-    ResolveCallGraph.resolve_expression call_graph ~location ~expression_identifier:identifier
+    CallGraph.resolve_expression call_graph ~location ~expression_identifier:identifier
     >>= fun { identifier; _ } -> identifier
 
 
   let string_format_expression_identifier = "$__str__$"
 
   let resolve_string_format call_graph ~location =
-    ResolveCallGraph.resolve_expression
+    CallGraph.resolve_expression
       call_graph
       ~location
       ~expression_identifier:string_format_expression_identifier
     >>= fun { string_format; _ } -> string_format
+
+
+  let to_json ~pyre_api ~resolve_module_path ~callable (call_graph : t) : Yojson.Safe.t =
+    let bindings = ["callable", `String (Target.external_name callable)] in
+    let bindings =
+      let resolve_module_path = Option.value ~default:(fun _ -> None) resolve_module_path in
+      Target.get_module_and_definition ~pyre_api callable
+      >>| fst
+      >>= resolve_module_path
+      >>| (function
+            | { RepositoryPath.filename = Some filename; _ } ->
+                ("filename", `String filename) :: bindings
+            | { path; _ } ->
+                ("filename", `String "*") :: ("path", `String (PyrePath.absolute path)) :: bindings)
+      |> Option.value ~default:bindings
+    in
+    let bindings = ("calls", CallGraph.to_json call_graph) :: bindings in
+    `Assoc (List.rev bindings)
 end
 
 module MutableDefineCallGraph = struct
-  module ResolveCallGraph = struct
-    type t = LocationCallees.Map.t Location.Table.t [@@deriving eq]
+  module T = struct
+    type t = LocationCallees.Map.t Location.SerializableMap.t [@@deriving eq]
 
     let resolve_expression call_graph ~location ~expression_identifier =
-      match Hashtbl.find call_graph location with
+      match Location.SerializableMap.find_opt location call_graph with
       | Some callees -> SerializableStringMap.find_opt expression_identifier callees
       | None -> None
+
+
+    let to_json call_graph =
+      let bindings =
+        Location.SerializableMap.fold
+          (fun key data sofar -> (Location.show key, LocationCallees.Map.to_json data) :: sofar)
+          call_graph
+          []
+      in
+      `Assoc bindings
   end
 
-  include MakeResolveCallGraph (ResolveCallGraph)
+  include MakeCallGraph (T)
 
-  let copy = Hashtbl.copy
+  let empty = Location.SerializableMap.empty
+
+  let is_empty = Location.SerializableMap.is_empty
+
+  let merge =
+    let merge_location_callees_map =
+      LocationCallees.Map.merge (fun _ left right ->
+          match left, right with
+          | Some left, Some right -> Some (ExpressionCallees.join left right)
+          | Some left, None -> Some left
+          | None, Some right -> Some right
+          | None, None -> None)
+    in
+    Location.SerializableMap.merge (fun _ left right ->
+        match left, right with
+        | Some left, Some right -> Some (merge_location_callees_map left right)
+        | Some left, None -> Some left
+        | None, Some right -> Some right
+        | None, None -> None)
+
 
   let pp formatter call_graph =
     let pp_pair formatter (key, value) =
@@ -1190,42 +1241,60 @@ module MutableDefineCallGraph = struct
         value
     in
     let pp_pairs formatter = List.iter ~f:(pp_pair formatter) in
-    call_graph |> Hashtbl.to_alist |> Format.fprintf formatter "{@[<v 2>%a@]@,}" pp_pairs
+    call_graph
+    |> Location.SerializableMap.to_alist
+    |> Format.fprintf formatter "{@[<v 2>%a@]@,}" pp_pairs
 
 
-  let add_callees ~expression_identifier ~location ~callees map =
-    Hashtbl.update map location ~f:(function
-        | None -> LocationCallees.Map.singleton ~expression_identifier ~callees
+  let add_callees ~expression_identifier ~location ~callees =
+    Location.SerializableMap.update location (function
+        | None -> Some (LocationCallees.Map.singleton ~expression_identifier ~callees)
         | Some existing_callees ->
-            LocationCallees.Map.add existing_callees ~expression_identifier ~callees)
+            Some (LocationCallees.Map.add existing_callees ~expression_identifier ~callees))
 
 
-  let set_call_callees ~expression_identifier ~location ~call_callees map =
-    Hashtbl.update map location ~f:(function
+  let set_call_callees ~expression_identifier ~location ~call_callees =
+    Location.SerializableMap.update location (function
         | None ->
-            LocationCallees.Map.singleton
-              ~expression_identifier
-              ~callees:(ExpressionCallees.from_call call_callees)
+            Some
+              (LocationCallees.Map.singleton
+                 ~expression_identifier
+                 ~callees:(ExpressionCallees.from_call call_callees))
         | Some callees ->
-            LocationCallees.Map.update
-              expression_identifier
-              (function
-                | Some callees -> Some { callees with ExpressionCallees.call = Some call_callees }
-                | None -> Some (ExpressionCallees.from_call call_callees))
-              callees)
+            Some
+              (LocationCallees.Map.update
+                 expression_identifier
+                 (function
+                   | Some callees ->
+                       Some { callees with ExpressionCallees.call = Some call_callees }
+                   | None -> Some (ExpressionCallees.from_call call_callees))
+                 callees))
 
 
   let filter_empty_attribute_access =
-    Hashtbl.filter
-      ~f:
-        (SerializableStringMap.exists (fun _ callees ->
-             not (ExpressionCallees.is_empty_attribute_access_callees callees)))
+    let exist_non_empty_attribute_access =
+      SerializableStringMap.exists (fun _ callees ->
+          not (ExpressionCallees.is_empty_attribute_access_callees callees))
+    in
+    Location.SerializableMap.filter (fun _ -> exist_non_empty_attribute_access)
+
+
+  (** Return all callees of the call graph, as a sorted list. Setting `exclude_reference_only` to
+      true excludes the targets that are not required in building the dependency graph. *)
+  let all_targets ~exclude_reference_only call_graph =
+    call_graph
+    |> Location.SerializableMap.data
+    |> List.concat_map ~f:(fun map ->
+           map
+           |> LocationCallees.Map.data
+           |> List.concat_map ~f:(ExpressionCallees.all_targets ~exclude_reference_only))
+    |> List.dedup_and_sort ~compare:Target.compare
 end
 
 (** The call graph of a function or method definition. Unlike `MutableDefineCallGraph`, this is
     immutable. *)
 module DefineCallGraph = struct
-  module ResolveCallGraph = struct
+  module T = struct
     type t = LocationCallees.t Location.Map.Tree.t [@@deriving eq]
 
     let resolve_expression call_graph ~location ~expression_identifier =
@@ -1234,13 +1303,21 @@ module DefineCallGraph = struct
       | Some (LocationCallees.Compound name_to_callees) ->
           SerializableStringMap.find_opt expression_identifier name_to_callees
       | None -> None
+
+
+    let to_json call_graph =
+      let bindings =
+        Location.Map.Tree.fold call_graph ~init:[] ~f:(fun ~key ~data sofar ->
+            (Location.show key, LocationCallees.to_json data) :: sofar)
+      in
+      `Assoc bindings
   end
 
-  include MakeResolveCallGraph (ResolveCallGraph)
+  include MakeCallGraph (T)
 
   let from_mutable_define_call_graph map =
     map
-    |> Hashtbl.to_alist
+    |> Location.SerializableMap.to_alist
     |> List.map ~f:(fun (location, callees) ->
            match SerializableStringMap.to_alist callees with
            | [] -> failwith "unreachable"
@@ -1281,30 +1358,6 @@ module DefineCallGraph = struct
     Location.Map.Tree.data call_graph
     |> List.concat_map ~f:(LocationCallees.all_targets ~exclude_reference_only)
     |> List.dedup_and_sort ~compare:Target.compare
-
-
-  let to_json ~pyre_api ~resolve_module_path ~callable call_graph =
-    let bindings = ["callable", `String (Target.external_name callable)] in
-    let bindings =
-      let resolve_module_path = Option.value ~default:(fun _ -> None) resolve_module_path in
-      Target.get_module_and_definition ~pyre_api callable
-      >>| fst
-      >>= resolve_module_path
-      >>| (function
-            | { RepositoryPath.filename = Some filename; _ } ->
-                ("filename", `String filename) :: bindings
-            | { path; _ } ->
-                ("filename", `String "*") :: ("path", `String (PyrePath.absolute path)) :: bindings)
-      |> Option.value ~default:bindings
-    in
-    let bindings =
-      let edges =
-        Location.Map.Tree.fold call_graph ~init:[] ~f:(fun ~key ~data sofar ->
-            (Location.show key, LocationCallees.to_json data) :: sofar)
-      in
-      ("calls", `Assoc edges) :: bindings
-    in
-    `Assoc (List.rev bindings)
 end
 
 (* Produce call targets with a textual order index.
@@ -2679,7 +2732,7 @@ module DefineCallGraphFixpoint (Context : sig
 
   val debug : bool
 
-  val callees_at_location : MutableDefineCallGraph.t
+  val callees_at_location : MutableDefineCallGraph.t ref
 
   val override_graph : OverrideGraph.SharedMemory.ReadOnly.t option
 
@@ -2874,11 +2927,12 @@ struct
           expression
           ExpressionCallees.pp
           callees;
-        MutableDefineCallGraph.add_callees
-          ~expression_identifier
-          ~location
-          ~callees
-          Context.callees_at_location
+        Context.callees_at_location :=
+          MutableDefineCallGraph.add_callees
+            ~expression_identifier
+            ~location
+            ~callees
+            !Context.callees_at_location
       in
       let value = redirect_expressions ~pyre_in_context ~location value in
       let () =
@@ -3261,6 +3315,20 @@ module HigherOrderCallGraph = struct
   }
   [@@deriving eq, show]
 
+  let empty =
+    { returned_callables = CallTarget.Set.bottom; call_graph = MutableDefineCallGraph.empty }
+
+
+  let merge
+      { returned_callables = left_returned_callables; call_graph = left_call_graph }
+      { returned_callables = right_returned_callables; call_graph = right_call_graph }
+    =
+    {
+      returned_callables = CallTarget.Set.join left_returned_callables right_returned_callables;
+      call_graph = MutableDefineCallGraph.merge left_call_graph right_call_graph;
+    }
+
+
   module State = struct
     include
       Abstract.MapDomain.Make
@@ -3308,8 +3376,12 @@ module HigherOrderCallGraph = struct
 
     val pyre_api : PyrePysaEnvironment.ReadOnly.t
 
+    val get_callee_model : Target.t -> t option
+
+    val debug : bool
+
     (* Inputs and outputs. *)
-    val mutable_define_call_graph : MutableDefineCallGraph.t
+    val mutable_define_call_graph : MutableDefineCallGraph.t ref
   end) =
   struct
     let get_result = State.get TaintAccessPath.Root.LocalResult
@@ -3385,7 +3457,7 @@ module HigherOrderCallGraph = struct
         let ({ CallCallees.call_targets = existing_call_targets; higher_order_parameters; _ } as
             existing_call_callees)
           =
-          Context.mutable_define_call_graph
+          !Context.mutable_define_call_graph
           |> MutableDefineCallGraph.resolve_call ~location ~call
           |> Option.value_exn
                ~message:
@@ -3463,33 +3535,47 @@ module HigherOrderCallGraph = struct
         let non_parameterized_targets =
           non_parameterized_targets ~parameterized_call_targets existing_call_targets
         in
-        MutableDefineCallGraph.set_call_callees
-          ~location
-          ~expression_identifier:(call_identifier call)
-          ~call_callees:
-            {
-              existing_call_callees with
-              (* Remove any existing call target that is now parameterized, because the taint
-                 analysis is more precise for the parameterized targets. *)
-              call_targets =
-                parameterized_call_targets
-                |> CallTarget.Set.to_sorted_list
-                |> List.rev_append non_parameterized_targets;
-              (* Do not keep keep higher order parameters if each existing call target is
-                 parameterized. *)
-              higher_order_parameters =
-                (if List.is_empty non_parameterized_targets then
-                   HigherOrderParameterMap.empty
-                else
-                  higher_order_parameters);
-            }
-          Context.mutable_define_call_graph;
-        (* TODO: Return the summaries of calling `call_targets`. *)
-        CallTarget.Set.bottom, state
+        (* Remove any existing call target that is now parameterized, because the taint analysis is
+           more precise for the parameterized targets. *)
+        let call_targets =
+          parameterized_call_targets
+          |> CallTarget.Set.to_sorted_list
+          |> List.rev_append non_parameterized_targets
+        in
+        (* Do not keep keep higher order parameters if each existing call target is
+           parameterized. *)
+        let higher_order_parameters =
+          if List.is_empty non_parameterized_targets then
+            HigherOrderParameterMap.empty
+          else
+            higher_order_parameters
+        in
+        Context.mutable_define_call_graph :=
+          MutableDefineCallGraph.set_call_callees
+            ~location
+            ~expression_identifier:(call_identifier call)
+            ~call_callees:{ existing_call_callees with call_targets; higher_order_parameters }
+            !Context.mutable_define_call_graph;
+        let returned_callees =
+          call_targets
+          |> List.map ~f:(fun { CallTarget.target; _ } ->
+                 match Context.get_callee_model target with
+                 | Some { returned_callables; _ } -> returned_callables
+                 | None -> CallTarget.Set.bottom)
+          |> Algorithms.fold_balanced ~f:CallTarget.Set.join ~init:CallTarget.Set.bottom
+        in
+        returned_callees, state
 
 
       (* Return possible callees and the new state. *)
-      and analyze_expression ~state ~expression:{ Node.value; location } =
+      and analyze_expression ~state ~expression:({ Node.value; location } as expression) =
+        log
+          ~debug:Context.debug
+          "Analyzing expression `%a` with state `%a`"
+          Expression.pp
+          expression
+          State.pp
+          state;
         match value with
         | Expression.Await expression -> analyze_expression ~state ~expression
         | BinaryOperator _ -> CallTarget.Set.bottom, state
@@ -3505,7 +3591,7 @@ module HigherOrderCallGraph = struct
         | ListComprehension _ -> CallTarget.Set.bottom, state
         | Name (Name.Identifier identifier) ->
             let global_callables =
-              Context.mutable_define_call_graph
+              !Context.mutable_define_call_graph
               |> MutableDefineCallGraph.resolve_identifier ~location ~identifier
               |> Option.map ~f:(fun { IdentifierCallees.callable_targets; _ } ->
                      CallTarget.Set.of_list callable_targets)
@@ -3517,7 +3603,7 @@ module HigherOrderCallGraph = struct
             CallTarget.Set.join global_callables callables_from_variable, state
         | Name (Name.Attribute { base = _; attribute; special = _ }) ->
             let callables =
-              Context.mutable_define_call_graph
+              !Context.mutable_define_call_graph
               |> MutableDefineCallGraph.resolve_attribute_access ~location ~attribute
               |> Option.map ~f:(fun { AttributeAccessCallees.callable_targets; _ } ->
                      CallTarget.Set.of_list callable_targets)
@@ -3544,6 +3630,13 @@ module HigherOrderCallGraph = struct
 
 
       let analyze_statement ~state ~statement =
+        log
+          ~debug:Context.debug
+          "Analyzing statement `%a` with state `%a`"
+          Statement.pp
+          statement
+          State.pp
+          state;
         match Node.value statement with
         | Statement.Assign { Assign.target = _; value = Some _; _ } -> state
         | Assign { Assign.target = _; value = None; _ } -> state
@@ -3584,27 +3677,50 @@ module HigherOrderCallGraph = struct
   end
 end
 
-let higher_order_call_graph_of_define ~define_call_graph ~pyre_api ~qualifier ~define ~initial_state
+let debug_higher_order_call_graph define =
+  Ast.Statement.Define.dump define
+  || Ast.Statement.Define.dump_call_graph define
+  || Ast.Statement.Define.dump_higher_order_call_graph define
+
+
+let higher_order_call_graph_of_define
+    ~define_call_graph
+    ~pyre_api
+    ~qualifier
+    ~define
+    ~initial_state
+    ~get_callee_model
   =
-  let mutable_define_call_graph = MutableDefineCallGraph.copy define_call_graph in
-  let module Fixpoint = HigherOrderCallGraph.MakeFixpoint (struct
-    let mutable_define_call_graph = mutable_define_call_graph
+  let module Context = struct
+    let mutable_define_call_graph = ref define_call_graph
 
     let qualifier = qualifier
 
     let pyre_api = pyre_api
-  end)
+
+    let get_callee_model = get_callee_model
+
+    let debug = debug_higher_order_call_graph define
+  end
   in
+  log
+    ~debug:Context.debug
+    "Building higher order call graph of `%a` with initial state `%a`"
+    Reference.pp
+    (PyrePysaLogic.qualified_name_of_define ~module_name:qualifier define)
+    HigherOrderCallGraph.State.pp
+    initial_state;
+  let module Fixpoint = HigherOrderCallGraph.MakeFixpoint (Context) in
   let returned_callables =
     Fixpoint.Fixpoint.forward ~cfg:(PyrePysaLogic.Cfg.create define) ~initial:initial_state
     |> Fixpoint.Fixpoint.exit
     >>| Fixpoint.get_result
     |> Option.value ~default:CallTarget.Set.bottom
   in
-  { HigherOrderCallGraph.returned_callables; call_graph = mutable_define_call_graph }
+  { HigherOrderCallGraph.returned_callables; call_graph = !Context.mutable_define_call_graph }
 
 
-let higher_order_call_graph_of_callable ~pyre_api ~define_call_graph ~callable =
+let higher_order_call_graph_of_callable ~pyre_api ~define_call_graph ~callable ~get_callee_model =
   let qualifier, define =
     match Target.get_module_and_definition ~pyre_api callable with
     | None -> Format.asprintf "Found no definition for `%a`" Target.pp_pretty callable |> failwith
@@ -3616,6 +3732,7 @@ let higher_order_call_graph_of_callable ~pyre_api ~define_call_graph ~callable =
     ~qualifier
     ~define
     ~initial_state:(HigherOrderCallGraph.State.from_callable callable)
+    ~get_callee_model
 
 
 (* TODO(T206240754): Re-index `CallTarget`s after building the higher order call graphs. *)
@@ -3640,7 +3757,7 @@ let call_graph_of_define
 
     let debug = Ast.Statement.Define.dump define || Ast.Statement.Define.dump_call_graph define
 
-    let callees_at_location = Location.Table.create ()
+    let callees_at_location = ref MutableDefineCallGraph.empty
 
     let override_graph = override_graph
 
@@ -3674,7 +3791,7 @@ let call_graph_of_define
 
   DefineFixpoint.forward ~cfg:(PyrePysaLogic.Cfg.create define) ~initial:() |> ignore;
   let mutable_call_graph =
-    MutableDefineCallGraph.filter_empty_attribute_access Context.callees_at_location
+    MutableDefineCallGraph.filter_empty_attribute_access !Context.callees_at_location
   in
   Statistics.performance
     ~randomly_log_every:1000
@@ -3705,45 +3822,6 @@ let call_graph_of_callable
         ~qualifier
         ~define:(Node.value define)
 
-
-(** Call graphs of callables, stored in the shared memory. This is a mapping from a callable to its
-    `DefineCallGraph.t`. *)
-module DefineCallGraphSharedMemory = struct
-  module T =
-    SaveLoadSharedMemory.MakeKeyValue
-      (Target.SharedMemoryKey)
-      (struct
-        type t = LocationCallees.t Location.Map.Tree.t
-
-        let prefix = Hack_parallel.Std.Prefix.make ()
-
-        let handle_prefix = Hack_parallel.Std.Prefix.make ()
-
-        let description = "call graphs of defines"
-      end)
-
-  type t = T.t
-
-  let add handle ~callable ~call_graph = T.add handle callable call_graph
-
-  let create = T.create
-
-  let merge_same_handle = T.merge_same_handle
-
-  module ReadOnly = struct
-    type t = T.ReadOnly.t
-
-    let get handle ~callable = T.ReadOnly.get handle callable
-  end
-
-  let read_only = T.read_only
-
-  let cleanup = T.cleanup
-
-  let save_to_cache = T.save_to_cache
-
-  let load_from_cache = T.load_from_cache
-end
 
 (** Whole-program call graph, stored in the ocaml heap. This is a mapping from a callable to all its
     callees. *)
@@ -3778,159 +3856,277 @@ module WholeProgramCallGraph = struct
   let to_target_graph graph = graph
 end
 
-type call_graphs = {
-  whole_program_call_graph: WholeProgramCallGraph.t;
-  define_call_graphs: DefineCallGraphSharedMemory.t;
-}
+module type SharedMemory = sig
+  type t
 
-(** Build the whole call graph of the program.
+  type call_graph
 
-    The overrides must be computed first because we depend on a global shared memory graph to
-    include overrides in the call graph. Without it, we'll underanalyze and have an inconsistent
-    fixpoint. *)
-let build_whole_program_call_graph
-    ~scheduler
-    ~static_analysis_configuration:
-      ({
-         Configuration.StaticAnalysis.save_results_to;
-         output_format;
-         dump_call_graph;
-         scheduler_policies;
-         configuration = { local_root; _ };
-         _;
-       } as static_analysis_configuration)
-    ~pyre_api
-    ~resolve_module_path
-    ~override_graph
-    ~store_shared_memory
-    ~attribute_targets
-    ~skip_analysis_targets
-    ~definitions
-  =
-  let attribute_targets = attribute_targets |> Target.Set.elements |> Target.HashSet.of_list in
-  let define_call_graphs, whole_program_call_graph =
-    let build_call_graph ((define_call_graphs, whole_program_call_graph) as so_far) callable =
-      if Target.Set.mem callable skip_analysis_targets then
-        so_far
-      else
-        let callable_call_graph =
-          Alarm.with_alarm
-            ~max_time_in_seconds:60
-            ~event_name:"call graph building"
-            ~callable:(Target.show_pretty callable)
-            (fun () ->
-              call_graph_of_callable
-                ~static_analysis_configuration
-                ~pyre_api
-                ~override_graph
-                ~attribute_targets
-                ~callable)
-            ()
-          |> DefineCallGraph.from_mutable_define_call_graph
-        in
-        let define_call_graphs =
-          if store_shared_memory then
-            DefineCallGraphSharedMemory.add
+  module ReadOnly : sig
+    type t
+
+    val get : t -> callable:Target.t -> call_graph option
+  end
+
+  val read_only : t -> ReadOnly.t
+
+  val cleanup : t -> unit
+
+  val save_to_cache : t -> unit
+
+  val load_from_cache : unit -> (t, SaveLoadSharedMemory.Usage.t) result
+
+  type call_graphs = {
+    whole_program_call_graph: WholeProgramCallGraph.t;
+    define_call_graphs: t;
+  }
+
+  val build_whole_program_call_graph
+    :  scheduler:Scheduler.t ->
+    static_analysis_configuration:Configuration.StaticAnalysis.t ->
+    pyre_api:PyrePysaEnvironment.ReadOnly.t ->
+    resolve_module_path:(Reference.t -> RepositoryPath.t option) option ->
+    override_graph:OverrideGraph.SharedMemory.ReadOnly.t option ->
+    store_shared_memory:bool ->
+    attribute_targets:Target.Set.t ->
+    skip_analysis_targets:Target.Set.t ->
+    definitions:Target.t list ->
+    call_graphs
+end
+
+module MakeDefineCallGraphSharedMemory (CallGraph : sig
+  type t
+
+  val is_empty : t -> bool
+
+  val to_json
+    :  pyre_api:PyrePysaEnvironment.ReadOnly.t ->
+    resolve_module_path:(Reference.t -> RepositoryPath.t option) option ->
+    callable:Target.t ->
+    t ->
+    Yojson.Safe.t
+
+  val call_graph_of_callable
+    :  static_analysis_configuration:Configuration.StaticAnalysis.t ->
+    pyre_api:PyrePysaEnvironment.ReadOnly.t ->
+    override_graph:OverrideGraph.SharedMemory.ReadOnly.t option ->
+    attribute_targets:Target.HashSet.t ->
+    callable:Target.t ->
+    t
+
+  val all_targets : exclude_reference_only:bool -> t -> Target.t list
+end) : SharedMemory with type call_graph = CallGraph.t = struct
+  module T =
+    SaveLoadSharedMemory.MakeKeyValue
+      (Target.SharedMemoryKey)
+      (struct
+        type t = CallGraph.t
+
+        let prefix = Hack_parallel.Std.Prefix.make ()
+
+        let handle_prefix = Hack_parallel.Std.Prefix.make ()
+
+        let description = "call graphs of defines"
+      end)
+
+  type t = T.t
+
+  type call_graph = CallGraph.t
+
+  type call_graphs = {
+    whole_program_call_graph: WholeProgramCallGraph.t;
+    define_call_graphs: t;
+  }
+
+  let add handle ~callable ~call_graph = T.add handle callable call_graph
+
+  let create = T.create
+
+  let merge_same_handle = T.merge_same_handle
+
+  module ReadOnly = struct
+    type t = T.ReadOnly.t
+
+    let get handle ~callable = T.ReadOnly.get handle callable
+  end
+
+  let read_only = T.read_only
+
+  let cleanup = T.cleanup
+
+  let save_to_cache = T.save_to_cache
+
+  let load_from_cache = T.load_from_cache
+
+  (** Build the whole call graph of the program.
+
+      The overrides must be computed first because we depend on a global shared memory graph to
+      include overrides in the call graph. Without it, we'll underanalyze and have an inconsistent
+      fixpoint. *)
+  let build_whole_program_call_graph
+      ~scheduler
+      ~static_analysis_configuration:
+        ({
+           Configuration.StaticAnalysis.save_results_to;
+           output_format;
+           dump_call_graph;
+           scheduler_policies;
+           configuration = { local_root; _ };
+           _;
+         } as static_analysis_configuration)
+      ~pyre_api
+      ~resolve_module_path
+      ~override_graph
+      ~store_shared_memory
+      ~attribute_targets
+      ~skip_analysis_targets
+      ~definitions
+    =
+    let attribute_targets = attribute_targets |> Target.Set.elements |> Target.HashSet.of_list in
+    let define_call_graphs, whole_program_call_graph =
+      let build_call_graph ((define_call_graphs, whole_program_call_graph) as so_far) callable =
+        if Target.Set.mem callable skip_analysis_targets then
+          so_far
+        else
+          let callable_call_graph =
+            Alarm.with_alarm
+              ~max_time_in_seconds:60
+              ~event_name:"call graph building"
+              ~callable:(Target.show_pretty callable)
+              (fun () ->
+                CallGraph.call_graph_of_callable
+                  ~static_analysis_configuration
+                  ~pyre_api
+                  ~override_graph
+                  ~attribute_targets
+                  ~callable)
+              ()
+          in
+          let define_call_graphs =
+            if store_shared_memory then
+              add define_call_graphs ~callable ~call_graph:callable_call_graph
+            else
               define_call_graphs
+          in
+          let whole_program_call_graph =
+            WholeProgramCallGraph.add_or_exn
+              whole_program_call_graph
               ~callable
-              ~call_graph:callable_call_graph
-          else
-            define_call_graphs
-        in
-        let whole_program_call_graph =
-          WholeProgramCallGraph.add_or_exn
-            whole_program_call_graph
-            ~callable
-            ~callees:(DefineCallGraph.all_targets ~exclude_reference_only:true callable_call_graph)
-        in
-        define_call_graphs, whole_program_call_graph
-    in
-    let reduce
-        (left_define_call_graphs, left_whole_program_call_graph)
-        (right_define_call_graphs, right_whole_program_call_graph)
-      =
-      (* We should check the keys in two define call graphs are disjoint. If not disjoint, we should
-       * fail the analysis. But we don't perform such check due to performance reasons.
-       * Additionally, since this `reduce` is used in `Scheduler.map_reduce`, the right parameter
-       * is accumulated, so we must select left as smaller and right as larger for O(n) merging. *)
-      ( DefineCallGraphSharedMemory.merge_same_handle
-          ~smaller:left_define_call_graphs
-          ~larger:right_define_call_graphs,
-        WholeProgramCallGraph.merge_disjoint
-          left_whole_program_call_graph
-          right_whole_program_call_graph )
-    in
-    let define_call_graphs = DefineCallGraphSharedMemory.create () in
-    let scheduler_policy =
-      Scheduler.Policy.from_configuration_or_default
-        scheduler_policies
-        Configuration.ScheduleIdentifier.CallGraph
-        ~default:
-          (Scheduler.Policy.fixed_chunk_size
-             ~minimum_chunks_per_worker:1
-             ~minimum_chunk_size:1
-             ~preferred_chunk_size:6000
-             ())
-    in
-    Scheduler.map_reduce
-      scheduler
-      ~policy:scheduler_policy
-      ~initial:(define_call_graphs, WholeProgramCallGraph.empty)
-      ~map:(fun definitions ->
-        List.fold
-          definitions
-          ~init:(define_call_graphs, WholeProgramCallGraph.empty)
-          ~f:build_call_graph)
-      ~reduce
-      ~inputs:definitions
-      ()
-  in
-  let define_call_graphs_read_only = DefineCallGraphSharedMemory.read_only define_call_graphs in
-  let call_graph_to_json callable =
-    match DefineCallGraphSharedMemory.ReadOnly.get define_call_graphs_read_only ~callable with
-    | Some call_graph when not (DefineCallGraph.is_empty call_graph) ->
-        [
-          {
-            NewlineDelimitedJson.Line.kind = CallGraph;
-            data = DefineCallGraph.to_json ~pyre_api ~resolve_module_path ~callable call_graph;
-          };
-        ]
-    | _ -> []
-  in
-  let () =
-    match save_results_to with
-    | Some directory ->
-        Log.info "Writing the call graph to `%s`" (PyrePath.absolute directory);
-        let () =
-          match output_format with
-          | Configuration.TaintOutputFormat.Json ->
-              NewlineDelimitedJson.write_file
-                ~path:(PyrePath.append directory ~element:"call-graph.json")
-                ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
-                ~to_json_lines:call_graph_to_json
-                definitions
-          | Configuration.TaintOutputFormat.ShardedJson ->
-              NewlineDelimitedJson.remove_sharded_files ~directory ~filename_prefix:"call-graph";
-              NewlineDelimitedJson.write_sharded_files
-                ~scheduler
-                ~directory
-                ~filename_prefix:"call-graph"
-                ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
-                ~to_json_lines:call_graph_to_json
-                definitions
-        in
+              ~callees:(CallGraph.all_targets ~exclude_reference_only:true callable_call_graph)
+          in
+          define_call_graphs, whole_program_call_graph
+      in
+      let reduce
+          (left_define_call_graphs, left_whole_program_call_graph)
+          (right_define_call_graphs, right_whole_program_call_graph)
+        =
+        (* We should check the keys in two define call graphs are disjoint. If not disjoint, we should
+         * fail the analysis. But we don't perform such check due to performance reasons.
+         * Additionally, since this `reduce` is used in `Scheduler.map_reduce`, the right parameter
+         * is accumulated, so we must select left as smaller and right as larger for O(n) merging. *)
+        ( merge_same_handle ~smaller:left_define_call_graphs ~larger:right_define_call_graphs,
+          WholeProgramCallGraph.merge_disjoint
+            left_whole_program_call_graph
+            right_whole_program_call_graph )
+      in
+      let define_call_graphs = create () in
+      let scheduler_policy =
+        Scheduler.Policy.from_configuration_or_default
+          scheduler_policies
+          Configuration.ScheduleIdentifier.CallGraph
+          ~default:
+            (Scheduler.Policy.fixed_chunk_size
+               ~minimum_chunks_per_worker:1
+               ~minimum_chunk_size:1
+               ~preferred_chunk_size:6000
+               ())
+      in
+      Scheduler.map_reduce
+        scheduler
+        ~policy:scheduler_policy
+        ~initial:(define_call_graphs, WholeProgramCallGraph.empty)
+        ~map:(fun definitions ->
+          List.fold
+            definitions
+            ~init:(define_call_graphs, WholeProgramCallGraph.empty)
+            ~f:build_call_graph)
+        ~reduce
+        ~inputs:definitions
         ()
-    | None -> ()
-  in
-  let () =
-    match dump_call_graph with
-    | Some path ->
-        Log.warning "Emitting the contents of the call graph to `%s`" (PyrePath.absolute path);
-        NewlineDelimitedJson.write_file
-          ~path
-          ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
-          ~to_json_lines:call_graph_to_json
-          definitions
-    | None -> ()
-  in
-  { whole_program_call_graph; define_call_graphs }
+    in
+    let define_call_graphs_read_only = read_only define_call_graphs in
+    let call_graph_to_json callable =
+      match ReadOnly.get define_call_graphs_read_only ~callable with
+      | Some call_graph when not (CallGraph.is_empty call_graph) ->
+          [
+            {
+              NewlineDelimitedJson.Line.kind = CallGraph;
+              data = CallGraph.to_json ~pyre_api ~resolve_module_path ~callable call_graph;
+            };
+          ]
+      | _ -> []
+    in
+    let () =
+      match save_results_to with
+      | Some directory ->
+          Log.info "Writing the call graph to `%s`" (PyrePath.absolute directory);
+          let () =
+            match output_format with
+            | Configuration.TaintOutputFormat.Json ->
+                NewlineDelimitedJson.write_file
+                  ~path:(PyrePath.append directory ~element:"call-graph.json")
+                  ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+                  ~to_json_lines:call_graph_to_json
+                  definitions
+            | Configuration.TaintOutputFormat.ShardedJson ->
+                NewlineDelimitedJson.remove_sharded_files ~directory ~filename_prefix:"call-graph";
+                NewlineDelimitedJson.write_sharded_files
+                  ~scheduler
+                  ~directory
+                  ~filename_prefix:"call-graph"
+                  ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+                  ~to_json_lines:call_graph_to_json
+                  definitions
+          in
+          ()
+      | None -> ()
+    in
+    let () =
+      match dump_call_graph with
+      | Some path ->
+          Log.warning "Emitting the contents of the call graph to `%s`" (PyrePath.absolute path);
+          NewlineDelimitedJson.write_file
+            ~path
+            ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+            ~to_json_lines:call_graph_to_json
+            definitions
+      | None -> ()
+    in
+    { whole_program_call_graph; define_call_graphs }
+end
+
+(** Call graphs of callables, stored in the shared memory. This is a mapping from a callable to its
+    `DefineCallGraph.t`. *)
+module DefineCallGraphSharedMemory = MakeDefineCallGraphSharedMemory (struct
+  include DefineCallGraph
+
+  let call_graph_of_callable
+      ~static_analysis_configuration
+      ~pyre_api
+      ~override_graph
+      ~attribute_targets
+      ~callable
+    =
+    call_graph_of_callable
+      ~static_analysis_configuration
+      ~pyre_api
+      ~override_graph
+      ~attribute_targets
+      ~callable
+    |> DefineCallGraph.from_mutable_define_call_graph
+end)
+
+module MutableDefineCallGraphSharedMemory = MakeDefineCallGraphSharedMemory (struct
+  include MutableDefineCallGraph
+
+  let call_graph_of_callable = call_graph_of_callable
+end)

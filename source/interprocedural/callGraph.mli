@@ -60,6 +60,10 @@ module CallTarget : sig
     type t [@@deriving show, eq]
 
     val of_list : call_target list -> t
+
+    val join : t -> t -> t
+
+    val bottom : t
   end
 
   val target : t -> Target.t
@@ -283,6 +287,12 @@ val resolve_callees_from_type_external
 
 module MutableDefineCallGraph : sig
   type t
+
+  val empty : t
+
+  val merge : t -> t -> t
+
+  val all_targets : exclude_reference_only:bool -> t -> Target.t list
 end
 
 (** The call graph of a function or method definition. Unlike `MutableDefineCallGraph`, this is
@@ -366,6 +376,10 @@ module HigherOrderCallGraph : sig
   }
   [@@deriving eq, show]
 
+  val empty : t
+
+  val merge : t -> t -> t
+
   module State : sig
     type t
 
@@ -375,39 +389,23 @@ module HigherOrderCallGraph : sig
   end
 end
 
+val debug_higher_order_call_graph : Ast.Statement.Define.t -> bool
+
 val higher_order_call_graph_of_define
   :  define_call_graph:MutableDefineCallGraph.t ->
   pyre_api:PyrePysaEnvironment.ReadOnly.t ->
   qualifier:Reference.t ->
   define:Ast.Statement.Define.t ->
   initial_state:HigherOrderCallGraph.State.t ->
+  get_callee_model:(Target.t -> HigherOrderCallGraph.t option) ->
   HigherOrderCallGraph.t
 
 val higher_order_call_graph_of_callable
   :  pyre_api:PyrePysaEnvironment.ReadOnly.t ->
   define_call_graph:MutableDefineCallGraph.t ->
   callable:Target.t ->
+  get_callee_model:(Target.t -> HigherOrderCallGraph.t option) ->
   HigherOrderCallGraph.t
-
-(** Call graphs of callables, stored in the shared memory. This is a mapping from a callable to its
-    `DefineCallGraph.t`. *)
-module DefineCallGraphSharedMemory : sig
-  type t
-
-  val cleanup : t -> unit
-
-  val save_to_cache : t -> unit
-
-  val load_from_cache : unit -> (t, SaveLoadSharedMemory.Usage.t) result
-
-  module ReadOnly : sig
-    type t
-
-    val get : t -> callable:Target.t -> DefineCallGraph.t option
-  end
-
-  val read_only : t -> ReadOnly.t
-end
 
 (** Whole-program call graph, stored in the ocaml heap. This is a mapping from a callable to all its
     callees. *)
@@ -427,24 +425,51 @@ module WholeProgramCallGraph : sig
   val to_target_graph : t -> TargetGraph.t
 end
 
-type call_graphs = {
-  whole_program_call_graph: WholeProgramCallGraph.t;
-  define_call_graphs: DefineCallGraphSharedMemory.t;
-}
+module type SharedMemory = sig
+  type t
 
-(** Build the whole call graph of the program.
+  type call_graph
 
-    The overrides must be computed first because we depend on a global shared memory graph to
-    include overrides in the call graph. Without it, we'll underanalyze and have an inconsistent
-    fixpoint. *)
-val build_whole_program_call_graph
-  :  scheduler:Scheduler.t ->
-  static_analysis_configuration:Configuration.StaticAnalysis.t ->
-  pyre_api:PyrePysaEnvironment.ReadOnly.t ->
-  resolve_module_path:(Reference.t -> RepositoryPath.t option) option ->
-  override_graph:OverrideGraph.SharedMemory.ReadOnly.t option ->
-  store_shared_memory:bool ->
-  attribute_targets:Target.Set.t ->
-  skip_analysis_targets:Target.Set.t ->
-  definitions:Target.t list ->
-  call_graphs
+  module ReadOnly : sig
+    type t
+
+    val get : t -> callable:Target.t -> call_graph option
+  end
+
+  val read_only : t -> ReadOnly.t
+
+  val cleanup : t -> unit
+
+  val save_to_cache : t -> unit
+
+  val load_from_cache : unit -> (t, SaveLoadSharedMemory.Usage.t) result
+
+  type call_graphs = {
+    whole_program_call_graph: WholeProgramCallGraph.t;
+    define_call_graphs: t;
+  }
+
+  (** Build the whole call graph of the program.
+
+      The overrides must be computed first because we depend on a global shared memory graph to
+      include overrides in the call graph. Without it, we'll underanalyze and have an inconsistent
+      fixpoint. *)
+  val build_whole_program_call_graph
+    :  scheduler:Scheduler.t ->
+    static_analysis_configuration:Configuration.StaticAnalysis.t ->
+    pyre_api:PyrePysaEnvironment.ReadOnly.t ->
+    resolve_module_path:(Reference.t -> RepositoryPath.t option) option ->
+    override_graph:OverrideGraph.SharedMemory.ReadOnly.t option ->
+    store_shared_memory:bool ->
+    attribute_targets:Target.Set.t ->
+    skip_analysis_targets:Target.Set.t ->
+    definitions:Target.t list ->
+    call_graphs
+end
+
+(** Call graphs of callables, stored in the shared memory. This is a mapping from a callable to its
+    `DefineCallGraph.t`. *)
+module DefineCallGraphSharedMemory : SharedMemory with type call_graph = DefineCallGraph.t
+
+module MutableDefineCallGraphSharedMemory :
+  SharedMemory with type call_graph = MutableDefineCallGraph.t
