@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Arguments;
@@ -129,7 +136,13 @@ impl<'a> AnswersSolver<'a> {
                 args: Args::Ellipsis,
                 ret: style.propagate(),
             }),
-            Type::TypeAlias(ta) => self.as_callable(*ta.ty),
+            Type::TypeAlias(ta) => {
+                if let Some(t) = ta.as_value() {
+                    self.as_callable(t)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -427,6 +440,16 @@ impl<'a> AnswersSolver<'a> {
                         .map(|ty| self.attr_infer(ty, attr_name, range))
                         .collect::<Vec<_>>(),
                 ),
+                Type::TypeAlias(ta) => {
+                    if let Some(t) = ta.as_value() {
+                        self.attr_infer(t, attr_name, range)
+                    } else {
+                        self.error(
+                            range,
+                            format!("Cannot use type alias `{}` as a value", ta.name),
+                        )
+                    }
+                }
                 // Class and Any case already handled before
                 _ => self.error(
                     range,

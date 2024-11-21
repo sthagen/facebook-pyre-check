@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Display;
@@ -64,7 +71,6 @@ impl Variable {
 #[derive(Debug)]
 pub struct Solver<'a> {
     uniques: &'a UniqueFactory,
-    errors: &'a ErrorCollector,
     variables: RwLock<SmallMap<Var, Variable>>,
 }
 
@@ -82,20 +88,25 @@ impl Display for Solver<'_> {
 const TYPE_LIMIT: usize = 20;
 
 impl<'a> Solver<'a> {
-    pub fn new(uniques: &'a UniqueFactory, errors: &'a ErrorCollector) -> Self {
+    /// Create a new solver.
+    pub fn new(uniques: &'a UniqueFactory) -> Self {
         Self {
             uniques,
-            errors,
             variables: Default::default(),
         }
     }
 
+    /// Expand a type. All variables that have been bound will be replaced with non-Var types,
+    /// even if they are recursive (using `Any` for self-referential occurrences).
+    /// Variables that have not yet been bound will remain as Var.
+    ///
+    /// In addition, if the type exceeds a large depth, it will be replaced with `Any`.
     pub fn expand(&self, mut t: Type) -> Type {
         self.expand_with_limit(&mut t, TYPE_LIMIT, &Recurser::new());
         t
     }
 
-    /// Expand, but if the resulting type will be greater than limit levels deep, return an error.
+    /// Expand, but if the resulting type will be greater than limit levels deep, return an `Any`.
     /// Avoids producing things that stack overflow later in the process.
     fn expand_with_limit(&self, t: &mut Type, limit: usize, recurser: &Recurser<Var>) {
         if limit == 0 {
@@ -121,6 +132,9 @@ impl<'a> Solver<'a> {
         }
     }
 
+    /// Given a `Var`, ensures that the solver has an answer for it (or inserts Any if not already),
+    /// and returns that answer. Note that if the `Var` is already bound to something that contains a
+    /// `Var` (including itself), then we will return the answer.
     pub fn force_var(&self, v: Var) -> Type {
         let mut lock = self.variables.write().unwrap();
         match lock.entry(v) {
@@ -132,27 +146,26 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn deep_force_mut_with_limit(&self, t: &mut Type, limit: usize, seen: &mut HashSet<Var>) {
+    fn deep_force_mut_with_limit(&self, t: &mut Type, limit: usize, recurser: &Recurser<Var>) {
         if limit == 0 {
             // FIXME: Should probably add an error here, and use any_error,
             // but don't have any good location information to hand.
             *t = Type::any_implicit();
         } else if let Type::Var(v) = t {
-            if seen.insert(*v) {
-                let vv = *v;
+            if let Some(_guard) = recurser.recurse(*v) {
                 *t = self.force_var(*v);
-                self.deep_force_mut_with_limit(t, limit - 1, seen);
-                seen.remove(&vv);
+                self.deep_force_mut_with_limit(t, limit - 1, recurser);
             } else {
                 *t = Type::any_implicit();
             }
         } else {
-            t.visit_mut(|t| self.deep_force_mut_with_limit(t, limit - 1, seen));
+            t.visit_mut(|t| self.deep_force_mut_with_limit(t, limit - 1, recurser));
         }
     }
 
+    /// A version of `deep_force` that works in-place on a `Type`.
     pub fn deep_force_mut(&self, t: &mut Type) {
-        self.deep_force_mut_with_limit(t, TYPE_LIMIT, &mut HashSet::new());
+        self.deep_force_mut_with_limit(t, TYPE_LIMIT, &Recurser::new());
         // After forcing, we might be able to simplify some unions
         t.transform_mut(|x| {
             if let Type::Union(xs) = x {
@@ -161,6 +174,11 @@ impl<'a> Solver<'a> {
         });
     }
 
+    /// Like [`expand`], but also forces variables that haven't yet been bound
+    /// to become `Any`, both in the result and in the `Solver` going forward.
+    /// Guarantees there will be no `Var` in the result.
+    ///
+    /// In addition, if the type exceeds a large depth, it will be replaced with `Any`.
     pub fn deep_force(&self, mut t: Type) -> Type {
         self.deep_force_mut(&mut t);
         t
@@ -197,19 +215,28 @@ impl<'a> Solver<'a> {
         v
     }
 
-    pub fn error(&self, want: &Type, got: &Type, module_info: &ModuleInfo, loc: TextRange) {
+    /// Generate an error message that `got <: want` failed.
+    pub fn error(
+        &self,
+        want: &Type,
+        got: &Type,
+        errors: &ErrorCollector,
+        module_info: &ModuleInfo,
+        loc: TextRange,
+    ) {
         let got = self.expand(got.clone()).deterministic_printing();
         let want = self.expand(want.clone()).deterministic_printing();
         let mut ctx = TypeDisplayContext::new();
         ctx.add(&got);
         ctx.add(&want);
-        self.errors.add(
+        errors.add(
             module_info,
             loc,
             format!("EXPECTED {} <: {}", ctx.display(&got), ctx.display(&want)),
         );
     }
 
+    /// Union a list of types together. In the process may cause some variables to be forced.
     pub fn unions(&self, branches: Vec<Type>, type_order: TypeOrder) -> Type {
         if branches.is_empty() {
             return Type::never();
@@ -258,6 +285,7 @@ impl<'a> Solver<'a> {
         v: Var,
         t: Type,
         type_order: TypeOrder,
+        errors: &ErrorCollector,
         module_info: &ModuleInfo,
         loc: TextRange,
     ) {
@@ -293,7 +321,7 @@ impl<'a> Solver<'a> {
                 mem::drop(lock);
                 // We got forced into choosing a type to satisfy a subset constraint, so check we are OK with that.
                 if !self.is_subset_eq(&got, &t, type_order) {
-                    self.error(&t, &got, module_info, loc);
+                    self.error(&t, &got, errors, module_info, loc);
                 }
             }
             _ => {
@@ -309,6 +337,8 @@ impl<'a> Solver<'a> {
         }
     }
 
+    /// Is `got <: want`? If you aren't sure, return `false`.
+    /// May cause contained variables to be resolved to an answer.
     pub fn is_subset_eq(&self, got: &Type, want: &Type, type_order: TypeOrder) -> bool {
         Subset {
             solver: self,

@@ -11,7 +11,7 @@ module CallGraphAnalysis = struct
   module Context = struct
     type t = {
       pyre_api: Analysis.PyrePysaEnvironment.ReadOnly.t;
-      define_call_graphs: CallGraph.MutableDefineCallGraphSharedMemory.ReadOnly.t;
+      define_call_graphs: CallGraph.SharedMemory.ReadOnly.t;
     }
   end
 
@@ -35,6 +35,13 @@ module CallGraphAnalysis = struct
         model with
         CallGraph.HigherOrderCallGraph.call_graph = CallGraph.MutableDefineCallGraph.empty;
       }
+
+
+    let for_new_dependency ~get_model callable =
+      callable
+      |> Target.strip_parameters
+      |> get_model
+      |> Option.value ~default:CallGraph.HigherOrderCallGraph.empty
   end
 
   module Result = struct
@@ -56,29 +63,55 @@ module CallGraphAnalysis = struct
 
   module Logger = FixpointAnalysis.WithoutLogging
 
+  module AnalyzeDefineResult = struct
+    type t = {
+      result: Result.t;
+      model: Model.t;
+      additional_dependencies: Target.t list;
+    }
+  end
+
   let analyze_define
       ~context:{ Context.pyre_api; define_call_graphs; _ }
-      ~qualifier:_
+      ~qualifier
       ~callable
-      ~define:_
-      ~previous_model:_
+      ~define:{ Ast.Node.value = define; _ }
+      ~previous_model:{ CallGraph.HigherOrderCallGraph.call_graph = previous_call_graph; _ }
       ~get_callee_model
     =
     let define_call_graph =
       define_call_graphs
-      |> CallGraph.MutableDefineCallGraphSharedMemory.ReadOnly.get ~callable
+      |> CallGraph.SharedMemory.ReadOnly.get ~callable:(Target.strip_parameters callable)
       |> Option.value_exn
            ~message:(Format.asprintf "Missing call graph for `%a`" Target.pp callable)
     in
-    let result = () in
-    let higher_order_call_graph =
+    let ({ CallGraph.HigherOrderCallGraph.call_graph; _ } as model) =
       CallGraph.higher_order_call_graph_of_callable
         ~pyre_api
         ~define_call_graph
         ~callable
         ~get_callee_model
     in
-    result, higher_order_call_graph
+    let dependencies call_graph =
+      call_graph
+      |> CallGraph.MutableDefineCallGraph.all_targets ~exclude_reference_only:true
+      |> Target.Set.of_list
+    in
+    let additional_dependencies =
+      Target.Set.diff (dependencies call_graph) (dependencies previous_call_graph)
+      |> Target.Set.elements
+    in
+    (if CallGraph.debug_higher_order_call_graph define then
+       let pp_targets formatter =
+         List.iter ~f:(fun target -> Format.fprintf formatter "%a" Target.pp target)
+       in
+       Log.dump
+         "Additional dependencies for `%a`: `%a`"
+         Ast.Reference.pp
+         (Analysis.PyrePysaLogic.qualified_name_of_define ~module_name:qualifier define)
+         pp_targets
+         additional_dependencies);
+    { AnalyzeDefineResult.result = (); model; additional_dependencies }
 end
 
 module Fixpoint = FixpointAnalysis.Make (CallGraphAnalysis)
@@ -89,7 +122,7 @@ let compute
     ~scheduler
     ~scheduler_policy
     ~pyre_api
-    ~call_graph:{ CallGraph.MutableDefineCallGraphSharedMemory.define_call_graphs; _ }
+    ~call_graph:{ CallGraph.SharedMemory.define_call_graphs; _ }
     ~dependency_graph:
       { DependencyGraph.dependency_graph; callables_to_analyze; override_targets; _ }
     ~override_graph_shared_memory
@@ -99,8 +132,8 @@ let compute
   let definitions = FetchCallables.get_definitions initial_callables in
   let initial_call_graph callable =
     define_call_graphs
-    |> CallGraph.MutableDefineCallGraphSharedMemory.read_only
-    |> CallGraph.MutableDefineCallGraphSharedMemory.ReadOnly.get ~callable
+    |> CallGraph.SharedMemory.read_only
+    |> CallGraph.SharedMemory.ReadOnly.get ~callable
     |> Option.value ~default:CallGraph.MutableDefineCallGraph.empty
   in
   let initial_models =
@@ -128,8 +161,7 @@ let compute
     ~context:
       {
         CallGraphAnalysis.Context.pyre_api;
-        define_call_graphs =
-          CallGraph.MutableDefineCallGraphSharedMemory.read_only define_call_graphs;
+        define_call_graphs = CallGraph.SharedMemory.read_only define_call_graphs;
       }
     ~callables_to_analyze
     ~max_iterations

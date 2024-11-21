@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::env::current_dir;
 use std::path::Path;
 use std::path::PathBuf;
@@ -41,5 +48,5 @@ pub fn find_module(name: ModuleName, include: &[PathBuf]) -> anyhow::Result<Path
             }
         }
     }
-    Err(anyhow::anyhow!("Couldn't find path for `{name}`"))
+    Err(anyhow::anyhow!("Could not find path for `{name}`"))
 }

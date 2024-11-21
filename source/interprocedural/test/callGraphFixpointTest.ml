@@ -34,10 +34,8 @@ let assert_higher_order_call_graph_fixpoint ~source ~expected () context =
   let definitions = FetchCallables.get_definitions initial_callables in
   let override_graph_heap = OverrideGraph.Heap.from_source ~pyre_api ~source in
   let override_graph_shared_memory = OverrideGraph.SharedMemory.from_heap override_graph_heap in
-  let ({ MutableDefineCallGraphSharedMemory.whole_program_call_graph; define_call_graphs } as
-      call_graph)
-    =
-    MutableDefineCallGraphSharedMemory.build_whole_program_call_graph
+  let ({ SharedMemory.whole_program_call_graph; define_call_graphs } as call_graph) =
+    SharedMemory.build_whole_program_call_graph
       ~scheduler:(Test.mock_scheduler ())
       ~static_analysis_configuration
       ~pyre_api
@@ -90,7 +88,7 @@ let assert_higher_order_call_graph_fixpoint ~source ~expected () context =
         expected_call_graph
         actual_call_graph);
   OverrideGraph.SharedMemory.cleanup override_graph_shared_memory;
-  MutableDefineCallGraphSharedMemory.cleanup define_call_graphs;
+  SharedMemory.cleanup define_call_graphs;
   CallGraphFixpoint.cleanup fixpoint_state;
   ()
 
@@ -361,8 +359,11 @@ let test_higher_order_call_graph_fixpoint =
                                  ]
                                ())) );
                    ];
-                 returned_callables = [];
-                 (* TODO: Analyze additional dependencies, which could be parameterized targets. *)
+                 returned_callables =
+                   [
+                     CallTarget.create_regular
+                       (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                   ];
                };
                {
                  Expected.callable =
@@ -375,7 +376,128 @@ let test_higher_order_call_graph_fixpoint =
                            |> Target.from_regular );
                        ];
                  call_graph = [];
+                 returned_callables =
+                   [
+                     CallTarget.create_regular
+                       (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                   ];
+               };
+             ]
+           ();
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_higher_order_call_graph_fixpoint
+           ~source:
+             {|
+     def propagate(x):
+       return x
+     def wrap_propagate(x):
+       return propagate(x)
+     def bar():
+       return 0
+     def foo():
+       return wrap_propagate(bar)
+  |}
+           ~expected:
+             [
+               {
+                 Expected.callable =
+                   Target.Regular.Function { name = "test.foo"; kind = Normal }
+                   |> Target.from_regular;
+                 call_graph =
+                   [
+                     ( "9:9-9:28",
+                       LocationCallees.Singleton
+                         (ExpressionCallees.from_call
+                            (CallCallees.create
+                               ~call_targets:
+                                 [
+                                   CallTarget.create
+                                     (create_parameterized_target
+                                        ~regular:
+                                          (Target.Regular.Function
+                                             { name = "test.wrap_propagate"; kind = Normal })
+                                        ~parameters:
+                                          [
+                                            ( create_positional_parameter 0 "x",
+                                              Target.Regular.Function
+                                                { name = "test.bar"; kind = Normal }
+                                              |> Target.from_regular );
+                                          ]);
+                                 ]
+                               ())) );
+                     ( "9:24-9:27",
+                       LocationCallees.Singleton
+                         (ExpressionCallees.from_attribute_access
+                            (AttributeAccessCallees.create
+                               ~callable_targets:
+                                 [
+                                   CallTarget.create_regular
+                                     (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                                 ]
+                               ())) );
+                   ];
+                 returned_callables =
+                   [
+                     CallTarget.create_regular
+                       (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                   ];
+               };
+             ]
+           ();
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_higher_order_call_graph_fixpoint
+           ~source:
+             {|
+     def decorator(f):
+       def inner():
+         f()
+       return inner
+     def bar():
+       return 0
+     def foo():
+       return decorator(bar)
+  |}
+           ~expected:
+             [
+               {
+                 Expected.callable =
+                   Target.Regular.Function { name = "test.foo"; kind = Normal }
+                   |> Target.from_regular;
+                 call_graph =
+                   [
+                     ( "9:9-9:23",
+                       LocationCallees.Singleton
+                         (ExpressionCallees.from_call
+                            (CallCallees.create
+                               ~call_targets:
+                                 [
+                                   CallTarget.create
+                                     (create_parameterized_target
+                                        ~regular:
+                                          (Target.Regular.Function
+                                             { name = "test.decorator"; kind = Normal })
+                                        ~parameters:
+                                          [
+                                            ( create_positional_parameter 0 "f",
+                                              Target.Regular.Function
+                                                { name = "test.bar"; kind = Normal }
+                                              |> Target.from_regular );
+                                          ]);
+                                 ]
+                               ())) );
+                     ( "9:19-9:22",
+                       LocationCallees.Singleton
+                         (ExpressionCallees.from_attribute_access
+                            (AttributeAccessCallees.create
+                               ~callable_targets:
+                                 [
+                                   CallTarget.create_regular
+                                     (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                                 ]
+                               ())) );
+                   ];
                  returned_callables = [];
+                 (* TODO: Expect `inner` with `f=bar` *)
                };
              ]
            ();

@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use crate::simple_test;
 
 simple_test!(
@@ -164,62 +171,5 @@ simple_test!(
     r#"
 from typing import TypeVar
 T = TypeVar('T', int, bound=int)  # E: TypeVar cannot have both constraints and bound
-    "#,
-);
-
-simple_test!(
-    test_generic_alias_implicit,
-    r#"
-from typing import TypeVar, assert_type
-T = TypeVar('T')
-X = list[T]
-def f(x: X[int]):
-    assert_type(x, list[int])
-    "#,
-);
-
-simple_test!(
-    test_generic_alias_explicit,
-    r#"
-from typing import TypeAlias, TypeVar, assert_type
-T = TypeVar('T')
-X: TypeAlias = list[T]
-def f(x: X[int]):
-    assert_type(x, list[int])
-    "#,
-);
-
-simple_test!(
-    test_generic_alias_union,
-    r#"
-from typing import TypeVar, assert_type
-T = TypeVar('T')
-X = T | list[T]
-def f(x: X[int]):
-    assert_type(x, int | list[int])
-    "#,
-);
-
-simple_test!(
-    test_generic_alias_callable,
-    r#"
-from typing import Callable, TypeVar, assert_type
-T = TypeVar('T')
-X1 = Callable[..., T]
-X2 = Callable[[T], str]
-def f(x1: X1[int], x2: X2[int]):
-    assert_type(x1, Callable[..., int])
-    assert_type(x2, Callable[[int], str])
-    "#,
-);
-
-simple_test!(
-    test_generic_alias_annotated,
-    r#"
-from typing import Annotated, TypeVar, assert_type
-T = TypeVar('T')
-X = Annotated[T, 'the world is quiet here']
-def f(x: X[int]):
-    assert_type(x, int)
     "#,
 );

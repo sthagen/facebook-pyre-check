@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -987,12 +994,12 @@ impl<'a> BindingsBuilder<'a> {
                 legacy_tparam_builder.forward_lookup(lookup_name, name)
             });
             self.table.insert(
-                KeyBaseClass::BaseClass(x.name.clone(), i),
-                BindingBaseClass::BaseClassExpr(base.clone(), self_type_key.clone()),
+                KeyBaseClass(x.name.clone(), i),
+                BindingBaseClass(base.clone(), self_type_key.clone()),
             );
         });
         self.table
-            .insert(KeyMro::Mro(x.name.clone()), BindingMro::Mro(self_type_key));
+            .insert(KeyMro(x.name.clone()), BindingMro(self_type_key));
 
         let definition_key = Key::Definition(x.name.clone());
         self.table.insert(
@@ -1185,8 +1192,12 @@ impl<'a> BindingsBuilder<'a> {
                     };
                     self.ensure_expr(&x.value);
                     let expr_binding = Binding::Expr(None, *x.value);
-                    let binding =
-                        Binding::ScopedTypeAlias(name.id.clone(), qs, Box::new(expr_binding));
+                    let binding = Binding::ScopedTypeAlias(
+                        name.id.clone(),
+                        qs,
+                        Box::new(expr_binding),
+                        x.range,
+                    );
                     self.bind_definition(&Ast::expr_name_identifier(name), binding, None);
                 } else {
                     self.todo("Bindings::stmt TypeAlias", &x);

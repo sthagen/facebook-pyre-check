@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::fmt;
 use std::fmt::Display;
 use std::sync::Arc;
@@ -202,8 +209,37 @@ pub enum TypeAliasStyle {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TypeAlias {
     pub name: Name,
-    pub ty: Box<Type>,
+    ty: Box<Type>,
     pub style: TypeAliasStyle,
+}
+
+impl TypeAlias {
+    pub fn new(name: Name, ty: Type, style: TypeAliasStyle) -> Self {
+        Self {
+            name,
+            ty: Box::new(ty),
+            style,
+        }
+    }
+
+    /// Gets the type contained within the type alias for use in a value
+    /// position - for example, for a function call or attribute access.
+    pub fn as_value(&self) -> Option<Type> {
+        if self.style == TypeAliasStyle::Scoped {
+            None
+        } else {
+            Some(*self.ty.clone())
+        }
+    }
+
+    /// Gets the type contained within the type alias for use in a type
+    /// position - for example, in a variable type annotation. Note that
+    /// the caller is still responsible for untyping the type. That is,
+    /// `type X = int` is represented as `TypeAlias(X, type[int])`, and
+    /// `as_type` returns `type[int]`; the caller must turn it into `int`.
+    pub fn as_type(&self) -> Type {
+        *self.ty.clone()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

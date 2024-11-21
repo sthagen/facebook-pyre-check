@@ -13,6 +13,16 @@
     },
     {
       "code": -2,
+      "column": 23,
+      "concise_description": "Expected `GoodTypeAlias13` to be a type alias, got Literal['int | str']",
+      "description": "Expected `GoodTypeAlias13` to be a type alias, got Literal['int | str']",
+      "line": 27,
+      "name": "PyreError",
+      "stop_column": 34,
+      "stop_line": 27
+    },
+    {
+      "code": -2,
       "column": 28,
       "concise_description": "untype, got Literal['int | str']",
       "description": "untype, got Literal['int | str']",
@@ -50,16 +60,6 @@
       "name": "PyreError",
       "stop_column": 41,
       "stop_line": 41
-    },
-    {
-      "code": -2,
-      "column": 10,
-      "concise_description": "untype, got LegacyExplicitTypeAlias[GoodTypeAlias13, Literal['int | str']]",
-      "description": "untype, got LegacyExplicitTypeAlias[GoodTypeAlias13, Literal['int | str']]",
-      "line": 45,
-      "name": "PyreError",
-      "stop_column": 25,
-      "stop_line": 45
     },
     {
       "code": -2,
@@ -213,6 +213,36 @@
     },
     {
       "code": -2,
+      "column": 21,
+      "concise_description": "Expected `BadTypeAlias2` to be a type alias, got list[type[int] | type[str]]",
+      "description": "Expected `BadTypeAlias2` to be a type alias, got list[type[int] | type[str]]",
+      "line": 80,
+      "name": "PyreError",
+      "stop_column": 31,
+      "stop_line": 80
+    },
+    {
+      "code": -2,
+      "column": 21,
+      "concise_description": "Expected `BadTypeAlias3` to be a type alias, got tuple[tuple[type[int], type[str]]]",
+      "description": "Expected `BadTypeAlias3` to be a type alias, got tuple[tuple[type[int], type[str]]]",
+      "line": 81,
+      "name": "PyreError",
+      "stop_column": 34,
+      "stop_line": 81
+    },
+    {
+      "code": -2,
+      "column": 21,
+      "concise_description": "Expected `BadTypeAlias4` to be a type alias, got list[type[int]]",
+      "description": "Expected `BadTypeAlias4` to be a type alias, got list[type[int]]",
+      "line": 82,
+      "name": "PyreError",
+      "stop_column": 44,
+      "stop_line": 82
+    },
+    {
+      "code": -2,
       "column": 41,
       "concise_description": "Expected 0 positional argument(s)",
       "description": "Expected 0 positional argument(s)",
@@ -220,6 +250,16 @@
       "name": "PyreError",
       "stop_column": 42,
       "stop_line": 82
+    },
+    {
+      "code": -2,
+      "column": 21,
+      "concise_description": "Expected `BadTypeAlias5` to be a type alias, got dict[str, str]",
+      "description": "Expected `BadTypeAlias5` to be a type alias, got dict[str, str]",
+      "line": 83,
+      "name": "PyreError",
+      "stop_column": 31,
+      "stop_line": 83
     },
     {
       "code": -2,
@@ -240,6 +280,46 @@
       "name": "PyreError",
       "stop_column": 29,
       "stop_line": 85
+    },
+    {
+      "code": -2,
+      "column": 21,
+      "concise_description": "Expected `BadTypeAlias9` to be a type alias, got Literal[3]",
+      "description": "Expected `BadTypeAlias9` to be a type alias, got Literal[3]",
+      "line": 87,
+      "name": "PyreError",
+      "stop_column": 25,
+      "stop_line": 87
+    },
+    {
+      "code": -2,
+      "column": 22,
+      "concise_description": "Expected `BadTypeAlias10` to be a type alias, got Literal[True]",
+      "description": "Expected `BadTypeAlias10` to be a type alias, got Literal[True]",
+      "line": 88,
+      "name": "PyreError",
+      "stop_column": 26,
+      "stop_line": 88
+    },
+    {
+      "code": -2,
+      "column": 22,
+      "concise_description": "Expected `BadTypeAlias11` to be a type alias, got Literal[1]",
+      "description": "Expected `BadTypeAlias11` to be a type alias, got Literal[1]",
+      "line": 89,
+      "name": "PyreError",
+      "stop_column": 23,
+      "stop_line": 89
+    },
+    {
+      "code": -2,
+      "column": 22,
+      "concise_description": "Expected `BadTypeAlias13` to be a type alias, got str",
+      "description": "Expected `BadTypeAlias13` to be a type alias, got str",
+      "line": 91,
+      "name": "PyreError",
+      "stop_column": 32,
+      "stop_line": 91
     },
     {
       "code": -2,
@@ -932,12 +1012,22 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "TODO: Answers::expr_infer attribute: `ScopedTypeAlias[GoodAlias1, type[int]]`.bit_count",
-      "description": "TODO: Answers::expr_infer attribute: `ScopedTypeAlias[GoodAlias1, type[int]]`.bit_count",
+      "concise_description": "Cannot use type alias `GoodAlias1` as a value",
+      "description": "Cannot use type alias `GoodAlias1` as a value",
       "line": 17,
       "name": "PyreError",
       "stop_column": 21,
       "stop_line": 17
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Expected a callable, got ScopedTypeAlias[GoodAlias1, type[int]]",
+      "description": "Expected a callable, got ScopedTypeAlias[GoodAlias1, type[int]]",
+      "line": 19,
+      "name": "PyreError",
+      "stop_column": 11,
+      "stop_line": 19
     },
     {
       "code": -2,
@@ -952,8 +1042,8 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "TODO: Answers::expr_infer attribute: `ScopedTypeAlias[GoodAlias1, type[int]]`.__value__",
-      "description": "TODO: Answers::expr_infer attribute: `ScopedTypeAlias[GoodAlias1, type[int]]`.__value__",
+      "concise_description": "Cannot use type alias `GoodAlias1` as a value",
+      "description": "Cannot use type alias `GoodAlias1` as a value",
       "line": 21,
       "name": "PyreError",
       "stop_column": 27,
@@ -972,8 +1062,8 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "TODO: Answers::expr_infer attribute: `ScopedTypeAlias[GoodAlias1, type[int]]`.__type_params__",
-      "description": "TODO: Answers::expr_infer attribute: `ScopedTypeAlias[GoodAlias1, type[int]]`.__type_params__",
+      "concise_description": "Cannot use type alias `GoodAlias1` as a value",
+      "description": "Cannot use type alias `GoodAlias1` as a value",
       "line": 22,
       "name": "PyreError",
       "stop_column": 33,
@@ -992,8 +1082,8 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "TODO: Answers::expr_infer attribute: `ScopedTypeAlias[GoodAlias1, type[int]]`.other_attrib",
-      "description": "TODO: Answers::expr_infer attribute: `ScopedTypeAlias[GoodAlias1, type[int]]`.other_attrib",
+      "concise_description": "Cannot use type alias `GoodAlias1` as a value",
+      "description": "Cannot use type alias `GoodAlias1` as a value",
       "line": 23,
       "name": "PyreError",
       "stop_column": 30,
@@ -1051,6 +1141,36 @@
     },
     {
       "code": -2,
+      "column": 1,
+      "concise_description": "Expected `BadTypeAlias2` to be a type alias, got list[type[int] | type[str]]",
+      "description": "Expected `BadTypeAlias2` to be a type alias, got list[type[int] | type[str]]",
+      "line": 38,
+      "name": "PyreError",
+      "stop_column": 32,
+      "stop_line": 38
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Expected `BadTypeAlias3` to be a type alias, got tuple[tuple[type[int], type[str]]]",
+      "description": "Expected `BadTypeAlias3` to be a type alias, got tuple[tuple[type[int], type[str]]]",
+      "line": 39,
+      "name": "PyreError",
+      "stop_column": 35,
+      "stop_line": 39
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Expected `BadTypeAlias4` to be a type alias, got list[type[int]]",
+      "description": "Expected `BadTypeAlias4` to be a type alias, got list[type[int]]",
+      "line": 40,
+      "name": "PyreError",
+      "stop_column": 45,
+      "stop_line": 40
+    },
+    {
+      "code": -2,
       "column": 42,
       "concise_description": "Expected 0 positional argument(s)",
       "description": "Expected 0 positional argument(s)",
@@ -1058,6 +1178,16 @@
       "name": "PyreError",
       "stop_column": 43,
       "stop_line": 40
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Expected `BadTypeAlias5` to be a type alias, got dict[str, str]",
+      "description": "Expected `BadTypeAlias5` to be a type alias, got dict[str, str]",
+      "line": 41,
+      "name": "PyreError",
+      "stop_column": 32,
+      "stop_line": 41
     },
     {
       "code": -2,
@@ -1078,6 +1208,66 @@
       "name": "PyreError",
       "stop_column": 30,
       "stop_line": 43
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Expected `BadTypeAlias9` to be a type alias, got Literal[1]",
+      "description": "Expected `BadTypeAlias9` to be a type alias, got Literal[1]",
+      "line": 45,
+      "name": "PyreError",
+      "stop_column": 26,
+      "stop_line": 45
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Expected `BadTypeAlias10` to be a type alias, got Literal[True]",
+      "description": "Expected `BadTypeAlias10` to be a type alias, got Literal[True]",
+      "line": 46,
+      "name": "PyreError",
+      "stop_column": 27,
+      "stop_line": 46
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Expected `BadTypeAlias11` to be a type alias, got Literal[1]",
+      "description": "Expected `BadTypeAlias11` to be a type alias, got Literal[1]",
+      "line": 47,
+      "name": "PyreError",
+      "stop_column": 24,
+      "stop_line": 47
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Expected `BadTypeAlias13` to be a type alias, got str",
+      "description": "Expected `BadTypeAlias13` to be a type alias, got str",
+      "line": 49,
+      "name": "PyreError",
+      "stop_column": 33,
+      "stop_line": 49
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Type parameters used in `TA1` but not declared",
+      "description": "Type parameters used in `TA1` but not declared",
+      "line": 64,
+      "name": "PyreError",
+      "stop_column": 25,
+      "stop_line": 64
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Type parameters used in `TA2` but not declared",
+      "description": "Type parameters used in `TA2` but not declared",
+      "line": 69,
+      "name": "PyreError",
+      "stop_column": 20,
+      "stop_line": 69
     },
     {
       "code": -2,
@@ -7935,8 +8125,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Could not find import of `_directives_deprecated_library`, Couldn't find path for `_directives_deprecated_library`",
-      "description": "Could not find import of `_directives_deprecated_library`, Couldn't find path for `_directives_deprecated_library`",
+      "concise_description": "Could not find import of `_directives_deprecated_library`, Could not find path for `_directives_deprecated_library`",
+      "description": "Could not find import of `_directives_deprecated_library`, Could not find path for `_directives_deprecated_library`",
       "line": 18,
       "name": "PyreError",
       "stop_column": 47,
@@ -8938,8 +9128,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Could not find import of `_enums_member_values`, Couldn't find path for `_enums_member_values`",
-      "description": "Could not find import of `_enums_member_values`, Couldn't find path for `_enums_member_values`",
+      "concise_description": "Could not find import of `_enums_member_values`, Could not find path for `_enums_member_values`",
+      "description": "Could not find import of `_enums_member_values`, Could not find path for `_enums_member_values`",
       "line": 90,
       "name": "PyreError",
       "stop_column": 44,
@@ -8990,8 +9180,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Could not find import of `_enums_members`, Couldn't find path for `_enums_members`",
-      "description": "Could not find import of `_enums_members`, Couldn't find path for `_enums_members`",
+      "concise_description": "Could not find import of `_enums_members`, Could not find path for `_enums_members`",
+      "description": "Could not find import of `_enums_members`, Could not find path for `_enums_members`",
       "line": 33,
       "name": "PyreError",
       "stop_column": 32,
@@ -18857,8 +19047,8 @@
     {
       "code": -2,
       "column": 8,
-      "concise_description": "Could not find import of `_protocols_modules1`, Couldn't find path for `_protocols_modules1`",
-      "description": "Could not find import of `_protocols_modules1`, Couldn't find path for `_protocols_modules1`",
+      "concise_description": "Could not find import of `_protocols_modules1`, Could not find path for `_protocols_modules1`",
+      "description": "Could not find import of `_protocols_modules1`, Could not find path for `_protocols_modules1`",
       "line": 10,
       "name": "PyreError",
       "stop_column": 27,
@@ -18867,8 +19057,8 @@
     {
       "code": -2,
       "column": 8,
-      "concise_description": "Could not find import of `_protocols_modules2`, Couldn't find path for `_protocols_modules2`",
-      "description": "Could not find import of `_protocols_modules2`, Couldn't find path for `_protocols_modules2`",
+      "concise_description": "Could not find import of `_protocols_modules2`, Could not find path for `_protocols_modules2`",
+      "description": "Could not find import of `_protocols_modules2`, Could not find path for `_protocols_modules2`",
       "line": 11,
       "name": "PyreError",
       "stop_column": 27,
@@ -19571,8 +19761,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Could not find import of `_qualifiers_final_decorator`, Couldn't find path for `_qualifiers_final_decorator`",
-      "description": "Could not find import of `_qualifiers_final_decorator`, Couldn't find path for `_qualifiers_final_decorator`",
+      "concise_description": "Could not find import of `_qualifiers_final_decorator`, Could not find path for `_qualifiers_final_decorator`",
+      "description": "Could not find import of `_qualifiers_final_decorator`, Could not find path for `_qualifiers_final_decorator`",
       "line": 8,
       "name": "PyreError",
       "stop_column": 53,
@@ -20241,8 +20431,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "TODO: Answers::expr_infer attribute: `LegacyExplicitTypeAlias[TA1, type[Type]]`.unknown",
-      "description": "TODO: Answers::expr_infer attribute: `LegacyExplicitTypeAlias[TA1, type[Type]]`.unknown",
+      "concise_description": "TODO: Answers::expr_infer attribute: `type[Type]`.unknown",
+      "description": "TODO: Answers::expr_infer attribute: `type[Type]`.unknown",
       "line": 143,
       "name": "PyreError",
       "stop_column": 12,
@@ -20251,8 +20441,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "TODO: Answers::expr_infer attribute: `LegacyExplicitTypeAlias[TA2, type[type[Any]]]`.unknown",
-      "description": "TODO: Answers::expr_infer attribute: `LegacyExplicitTypeAlias[TA2, type[type[Any]]]`.unknown",
+      "concise_description": "TODO: Answers::expr_infer attribute: `type[type[Any]]`.unknown",
+      "description": "TODO: Answers::expr_infer attribute: `type[type[Any]]`.unknown",
       "line": 144,
       "name": "PyreError",
       "stop_column": 12,
@@ -20261,8 +20451,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "TODO: Answers::expr_infer attribute: `LegacyExplicitTypeAlias[TA3, type[type]]`.unknown",
-      "description": "TODO: Answers::expr_infer attribute: `LegacyExplicitTypeAlias[TA3, type[type]]`.unknown",
+      "concise_description": "Class `type` has no class attribute `unknown`",
+      "description": "Class `type` has no class attribute `unknown`",
       "line": 145,
       "name": "PyreError",
       "stop_column": 12,
@@ -20271,8 +20461,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "TODO: Answers::expr_infer attribute: `LegacyExplicitTypeAlias[TA4, type[type[Any]]]`.unknown",
-      "description": "TODO: Answers::expr_infer attribute: `LegacyExplicitTypeAlias[TA4, type[type[Any]]]`.unknown",
+      "concise_description": "TODO: Answers::expr_infer attribute: `type[type[Any]]`.unknown",
+      "description": "TODO: Answers::expr_infer attribute: `type[type[Any]]`.unknown",
       "line": 146,
       "name": "PyreError",
       "stop_column": 12,

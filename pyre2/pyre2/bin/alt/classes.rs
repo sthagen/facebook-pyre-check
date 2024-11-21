@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -139,12 +146,12 @@ impl<'a> AnswersSolver<'a> {
 
     pub fn get_mro_for_class(&self, cls: &Class) -> Arc<Mro> {
         self.with_module(cls.module_info().name())
-            .get_mro(&KeyMro::Mro(cls.name().clone()))
+            .get_mro(&KeyMro(cls.name().clone()))
     }
 
     fn get_base_class_index(&self, cls: &Class, base_idx: usize) -> Arc<BaseClass> {
         self.with_module(cls.module_info().name())
-            .get_base_class(&KeyBaseClass::BaseClass(cls.name().clone(), base_idx))
+            .get_base_class(&KeyBaseClass(cls.name().clone(), base_idx))
     }
 
     pub fn bases_of_class(&self, cls: &Class) -> Vec<Arc<BaseClass>> {

@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -460,6 +467,7 @@ impl<'a> AnswersSolver<'a> {
             recursive,
             (*answer).clone(),
             self.type_order(),
+            self.errors,
             self.module_info,
             key.range(),
         );
@@ -540,7 +548,7 @@ impl<'a> AnswersSolver<'a> {
 
     fn solve_mro(&self, binding: &BindingMro) -> Arc<Mro> {
         match binding {
-            BindingMro::Mro(k) => {
+            BindingMro(k) => {
                 let self_ty = self.get_type(k);
                 match &*self_ty {
                     Type::ClassType(cls) => Arc::new(self.mro_of(cls.class_object())),
@@ -554,9 +562,7 @@ impl<'a> AnswersSolver<'a> {
 
     fn solve_base_class(&self, binding: &BindingBaseClass) -> Arc<BaseClass> {
         match binding {
-            BindingBaseClass::BaseClassExpr(x, self_type) => {
-                Arc::new(self.base_class_of(x, self_type))
-            }
+            BindingBaseClass(x, self_type) => Arc::new(self.base_class_of(x, self_type)),
         }
     }
 
@@ -709,48 +715,38 @@ impl<'a> AnswersSolver<'a> {
     fn as_type_alias(
         &self,
         name: &Name,
-        annot: Option<Arc<Annotation>>,
+        style: TypeAliasStyle,
         ty: Type,
-        range: &TextRange,
+        range: TextRange,
     ) -> Type {
-        let mut ta = match (annot, &ty) {
-            (Some(annot), _) if annot.qualifiers.contains(&Qualifier::TypeAlias) => {
-                let ty = match &ty {
-                    Type::ClassDef(cls) => {
-                        Type::Type(Box::new(self.promote_to_class_type(cls, *range)))
-                    }
-                    t => t.clone(),
-                };
-                TypeAlias {
-                    name: name.clone(),
-                    ty: Box::new(ty),
-                    style: TypeAliasStyle::LegacyExplicit,
-                }
-            }
-            (None, Type::Type(box t)) if !t.is_tvar_declaration(name) => TypeAlias {
-                name: name.clone(),
-                ty: Box::new(ty),
-                style: TypeAliasStyle::LegacyImplicit,
-            },
-            // TODO(stroxler, rechen): Do we want to include Type::ClassDef(_)
-            // when there is no annotation, so that `mylist = list` is treated
-            // like a type alias rather than a value assignment?
-            _ => {
-                return ty; // Not a type alias, exit early with the raw expression type
-            }
+        if matches!(
+            style,
+            TypeAliasStyle::Scoped | TypeAliasStyle::LegacyExplicit
+        ) && self.untype_opt(ty.clone(), range).is_none()
+        {
+            self.error(
+                range,
+                format!("Expected `{name}` to be a type alias, got {ty}"),
+            );
+            return Type::any_error();
+        }
+        let mut ty = match &ty {
+            Type::ClassDef(cls) => Type::Type(Box::new(self.promote_to_class_type(cls, range))),
+            t => t.clone(),
         };
         let mut seen = SmallMap::new();
         let mut quantifieds = Vec::new();
-        match ta.ty.as_mut() {
-            Type::Type(t) => {
+        match ty {
+            Type::Type(ref mut t) => {
                 self.tvars_to_quantifieds_for_type_alias(t, &mut seen, &mut quantifieds)
             }
             _ => {}
         }
+        let ta = Type::TypeAlias(TypeAlias::new(name.clone(), ty, style));
         if quantifieds.is_empty() {
-            Type::TypeAlias(ta)
+            ta
         } else {
-            Type::Forall(quantifieds, Box::new(Type::TypeAlias(ta)))
+            Type::Forall(quantifieds, Box::new(ta))
         }
     }
 
@@ -1094,19 +1090,34 @@ impl<'a> AnswersSolver<'a> {
             Binding::NameAssign(name, annot_key, binding, range) => {
                 let annot = annot_key.map(|k| self.get_annotation_idx(k));
                 let ty = self.solve_binding_inner(binding);
-                self.as_type_alias(name, annot, ty, range)
+                match (annot, &ty) {
+                    (Some(annot), _) if annot.qualifiers.contains(&Qualifier::TypeAlias) => {
+                        self.as_type_alias(name, TypeAliasStyle::LegacyExplicit, ty, *range)
+                    }
+                    // TODO(stroxler, rechen): Do we want to include Type::ClassDef(_)
+                    // when there is no annotation, so that `mylist = list` is treated
+                    // like a value assignment rather than a type alias?
+                    (None, Type::Type(box t)) if !t.is_tvar_declaration(name) => {
+                        self.as_type_alias(name, TypeAliasStyle::LegacyImplicit, ty, *range)
+                    }
+                    _ => ty,
+                }
             }
-            Binding::ScopedTypeAlias(name, qs, binding) => {
+            Binding::ScopedTypeAlias(name, qs, binding, range) => {
                 let ty = self.solve_binding_inner(binding);
-                let ta = Type::TypeAlias(TypeAlias {
-                    name: name.clone(),
-                    ty: Box::new(ty),
-                    style: TypeAliasStyle::Scoped,
-                });
-                if qs.is_empty() {
-                    ta
-                } else {
-                    Type::Forall(qs.clone(), Box::new(ta))
+                let ta = self.as_type_alias(name, TypeAliasStyle::Scoped, ty, *range);
+                match ta {
+                    Type::Forall(other_qs, inner_ta) => {
+                        self.error(
+                            *range,
+                            format!("Type parameters used in `{name}` but not declared"),
+                        );
+                        let mut all_qs = qs.clone();
+                        all_qs.extend(other_qs);
+                        Type::Forall(all_qs, inner_ta)
+                    }
+                    Type::TypeAlias(_) if !qs.is_empty() => Type::Forall(qs.clone(), Box::new(ta)),
+                    _ => ta,
                 }
             }
         }
@@ -1119,7 +1130,8 @@ impl<'a> AnswersSolver<'a> {
         } else if self.solver.is_subset_eq(got, want, self.type_order()) {
             got.clone()
         } else {
-            self.solver.error(want, got, self.module_info, loc);
+            self.solver
+                .error(want, got, self.errors, self.module_info, loc);
             want.clone()
         }
     }
@@ -1210,7 +1222,7 @@ impl<'a> AnswersSolver<'a> {
             Type::None => Some(Type::None), // Both a value and a type
             Type::Ellipsis => Some(Type::Ellipsis), // A bit weird because of tuples, so just promote it
             Type::Any(style) => Some(style.propagate()),
-            Type::TypeAlias(ta) => self.untype_opt(*ta.ty, range),
+            Type::TypeAlias(ta) => self.untype_opt(ta.as_type(), range),
             _ => None,
         }
     }

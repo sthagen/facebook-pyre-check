@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::char;
 use std::fmt;
 use std::fmt::Display;
@@ -142,7 +149,7 @@ impl Lit {
         match self {
             Lit::Int(x) if let Some(x) = x.checked_neg() => Lit::Int(x),
             _ => {
-                errors.add(module_info, range, format!("Can't negate type {self}"));
+                errors.add(module_info, range, format!("Cannot negate type {self}"));
                 self.clone()
             }
         }

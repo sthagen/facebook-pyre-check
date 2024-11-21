@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use crate::simple_test;
 use crate::test::util::TestEnv;
 
@@ -413,25 +420,5 @@ class C:
         self.x = 0  # E: Object of class `C` has no attribute `x`
 def f(c: C):
     return c.x  # E: Object of class `C` has no attribute `x`
-    "#,
-);
-
-simple_test!(
-    test_type_alias_simple,
-    r#"
-from typing import assert_type
-type X = int
-def f(x: X):
-    assert_type(x, int)
-    "#,
-);
-
-simple_test!(
-    test_type_alias_generic,
-    r#"
-from typing import assert_type
-type X[T] = list[T]
-def f(x: X[int]):
-    assert_type(x, list[int])
     "#,
 );

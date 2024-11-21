@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 //! Display a type. The complexity comes from if we have two classes with the same name,
 //! we want to display disambiguating information (e.g. module name or location).
 
@@ -17,7 +24,6 @@ use crate::types::qname::QName;
 use crate::types::types::AnyStyle;
 use crate::types::types::NeverStyle;
 use crate::types::types::Type;
-use crate::types::types::TypeAlias;
 use crate::types::types::TypeAliasStyle;
 use crate::util::display::append;
 use crate::util::display::commas_iter;
@@ -209,13 +215,13 @@ impl<'a> TypeDisplayContext<'a> {
                 AnyStyle::Implicit => write!(f, "Unknown"),
                 AnyStyle::Error => write!(f, "Error"),
             },
-            Type::TypeAlias(TypeAlias { name, ty, style }) => {
-                let desc = match style {
+            Type::TypeAlias(ta) => {
+                let desc = match ta.style {
                     TypeAliasStyle::Scoped => "ScopedTypeAlias",
                     TypeAliasStyle::LegacyExplicit => "LegacyExplicitTypeAlias",
                     TypeAliasStyle::LegacyImplicit => "LegacyImplicitTypeAlias",
                 };
-                write!(f, "{}[{}, {}]", desc, name, self.display(ty))
+                write!(f, "{}[{}, {}]", desc, ta.name, self.display(&ta.as_type()))
             }
             Type::None => write!(f, "None"),
         }

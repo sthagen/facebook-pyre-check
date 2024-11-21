@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 use std::any::type_name_of_val;
 use std::mem;
 use std::path::PathBuf;
@@ -329,7 +336,7 @@ impl Driver {
         } else {
             ErrorCollector::new()
         };
-        let solver = Solver::new(&uniques, &errors);
+        let solver = Solver::new(&uniques);
 
         timers.add((timers_global_module(), Step::Startup, 0));
         let phase1 = run_phase1(timers, modules, config, &errors, load, debug, parallel);
@@ -381,25 +388,7 @@ impl Driver {
             total - printing
         ));
         if let Some(timings) = timings {
-            eprintln!("Expensive operations");
-            for ((module, step, number), time) in timers.ordered().iter().take(timings) {
-                eprintln!(
-                    "  {module} {step}{}: {time:.2?}",
-                    if *number == 0 {
-                        String::new()
-                    } else {
-                        format!(" ({number})")
-                    }
-                );
-            }
-            eprintln!("Expensive modules");
-            for (module, time) in timers.grouped(|x| x.0).iter().take(timings) {
-                eprintln!("  {module}: {time:.2?}");
-            }
-            eprintln!("Expensive steps");
-            for (step, time) in timers.grouped(|x| x.1).iter().take(timings) {
-                eprintln!("  {step}: {time:.2?}");
-            }
+            Self::print_timings(timings, timers);
         }
 
         mem::drop(answers);
@@ -418,6 +407,28 @@ impl Driver {
             expectations,
             solutions,
             phases,
+        }
+    }
+
+    fn print_timings(count: usize, timers: &mut TimerContext<(ModuleName, Step, usize)>) {
+        eprintln!("Expensive operations");
+        for ((module, step, number), time) in timers.ordered().iter().take(count) {
+            eprintln!(
+                "  {module} {step}{}: {time:.2?}",
+                if *number == 0 {
+                    String::new()
+                } else {
+                    format!(" ({number})")
+                }
+            );
+        }
+        eprintln!("Expensive modules");
+        for (module, time) in timers.grouped(|x| x.0).iter().take(count) {
+            eprintln!("  {module}: {time:.2?}");
+        }
+        eprintln!("Expensive steps");
+        for (step, time) in timers.grouped(|x| x.1).iter().take(count) {
+            eprintln!("  {step}: {time:.2?}");
         }
     }
 
@@ -453,30 +464,20 @@ impl Driver {
 
     #[cfg(test)]
     pub fn mro_of_export(&self, module: ModuleName, name: &str) -> Option<&Mro> {
-        use ruff_python_ast::name::Name;
-
-        use crate::alt::binding::Key;
         use crate::alt::binding::KeyMro;
-        use crate::types::types::Type;
 
-        match self.solutions.get(&module).unwrap().types.get(
-            self.phases
-                .get(&module)
-                .unwrap()
-                .1
-                .bindings
-                .key_to_idx(&Key::Export(Name::new(name))),
-        ) {
+        let solutions = self.solutions.get(&module).unwrap();
+        let bindings = &self.phases.get(&module).unwrap().1.bindings;
+
+        match solutions
+            .types
+            .get(bindings.key_to_idx(&Key::Export(Name::new(name))))
+        {
             Some(Type::ClassDef(cls)) => {
                 println!("Class {cls:?}");
-                let x = self.solutions.get(&module).unwrap().mros.get(
-                    self.phases
-                        .get(&module)
-                        .unwrap()
-                        .1
-                        .bindings
-                        .key_to_idx(&KeyMro::Mro(cls.name().clone())),
-                );
+                let x = solutions
+                    .mros
+                    .get(bindings.key_to_idx(&KeyMro(cls.name().clone())));
                 x
             }
             _ => None,
@@ -560,17 +561,8 @@ fn make_stdlib(
     uniques: &UniqueFactory,
     solver: &Solver,
 ) -> Stdlib {
-    let stdlib_modules = [
-        ModuleName::builtins(),
-        ModuleName::typing(),
-        ModuleName::types(),
-    ];
-    let stdlib_answers = stdlib_modules
-        .into_iter()
-        .map(|module| (module, answers.get(&module).unwrap()))
-        .collect::<SmallMap<_, _>>();
     let lookup_class = |module: ModuleName, name: &Name| {
-        stdlib_answers
+        answers
             .get(&module)
             .unwrap()
             .lookup_class_without_stdlib(module, name, answers, errors, uniques, solver)
