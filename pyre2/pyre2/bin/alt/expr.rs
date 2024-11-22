@@ -30,7 +30,6 @@ use crate::types::callable::Arg;
 use crate::types::callable::Args;
 use crate::types::callable::Callable;
 use crate::types::callable::Required;
-use crate::types::class::ClassType;
 use crate::types::literal::Lit;
 use crate::types::param_spec::ParamSpec;
 use crate::types::simplify::as_class_attribute_base;
@@ -425,15 +424,16 @@ impl<'a> AnswersSolver<'a> {
                     None => module.push_path(attr_name.clone()).to_type(),
                 },
                 Type::Type(box Type::Quantified(q)) if q.is_param_spec() && attr_name == "args" => {
-                    Type::Type(Box::new(Type::Args(q.id())))
+                    Type::type_form(Type::Args(q.id()))
                 }
                 Type::Type(box Type::Quantified(q))
                     if q.is_param_spec() && attr_name == "kwargs" =>
                 {
-                    Type::Type(Box::new(Type::Kwargs(q.id())))
+                    Type::type_form(Type::Kwargs(q.id()))
                 }
-                Type::Type(box Type::ClassType(ClassType(cls, _))) | Type::ClassDef(cls) => {
-                    self.get_class_attribute_or_error(&cls, attr_name, range)
+                Type::ClassDef(cls) => self.get_class_attribute_or_error(&cls, attr_name, range),
+                Type::Type(box Type::ClassType(class)) => {
+                    self.get_class_attribute_or_error(class.class_object(), attr_name, range)
                 }
                 Type::Type(box Type::Any(style)) => style.propagate(),
                 Type::Union(members) => self.unions(
@@ -491,7 +491,7 @@ impl<'a> AnswersSolver<'a> {
             && let Some(l) = self.untype_opt(lhs.clone(), x.left.range())
             && let Some(r) = self.untype_opt(rhs.clone(), x.right.range())
         {
-            return Type::Type(Box::new(self.union(&l, &r)));
+            return Type::type_form(self.union(&l, &r));
         }
         match lhs {
             Type::Union(members) => self.unions(
@@ -514,7 +514,7 @@ impl<'a> AnswersSolver<'a> {
     pub fn canonicalize_all_class_types(&self, ty: Type, range: TextRange) -> Type {
         ty.transform(|ty| match ty {
             Type::ClassDef(cls) => {
-                *ty = Type::Type(Box::new(self.promote_to_class_type(cls, range)));
+                *ty = Type::type_form(Type::ClassType(self.promote_to_class_type(cls, range)));
             }
             _ => {}
         })
@@ -669,40 +669,42 @@ impl<'a> AnswersSolver<'a> {
                 }
             }
             Expr::Dict(x) => {
-                let (key_ty, value_ty) = match hint {
-                    Some(ty) => {
-                        // We check `dict[key_var, value_var]` against the hint to make sure it's a
-                        // superclass of dict, then check the dict elements against the vars, which
-                        // have been solved to the hint's contained types.
-                        let key_var = self.solver.fresh_contained();
-                        let value_var = self.solver.fresh_contained();
-                        let dict_type = self.stdlib.dict(Type::Var(key_var), Type::Var(value_var));
-                        self.solver.is_subset_eq(&dict_type, ty, self.type_order());
-                        (
-                            Some(self.solver.force_var(key_var)),
-                            Some(self.solver.force_var(value_var)),
-                        )
+                let key_value_ty = hint.and_then(|ty| {
+                    // We check `dict[key_var, value_var]` against the hint to make sure it's a
+                    // superclass of dict, then check the dict elements against the vars, which
+                    // have been solved to the hint's contained types.
+                    let key_var = self.solver.fresh_contained();
+                    let value_var = self.solver.fresh_contained();
+                    let dict_type = self.stdlib.dict(Type::Var(key_var), Type::Var(value_var));
+                    if self.solver.is_subset_eq(&dict_type, ty, self.type_order()) {
+                        Some((
+                            self.solver.force_var(key_var),
+                            self.solver.force_var(value_var),
+                        ))
+                    } else {
+                        None
                     }
-                    None => (None, None),
-                };
+                });
                 if x.is_empty() {
-                    let key_ty = match key_ty {
-                        None => self.solver.fresh_contained().to_type(),
-                        Some(key_ty) => key_ty.clone(),
-                    };
-                    let value_ty = match value_ty {
-                        None => self.solver.fresh_contained().to_type(),
-                        Some(value_ty) => value_ty.clone(),
-                    };
-                    self.stdlib.dict(key_ty, value_ty)
+                    match key_value_ty {
+                        Some((key_ty, value_ty)) => self.stdlib.dict(key_ty, value_ty),
+                        None => self.stdlib.dict(
+                            self.solver.fresh_contained().to_type(),
+                            self.solver.fresh_contained().to_type(),
+                        ),
+                    }
                 } else {
+                    let (key_hint, value_hint) = match key_value_ty {
+                        Some((key_ty, value_ty)) => (Some(key_ty), Some(value_ty)),
+                        None => (None, None),
+                    };
                     let key_tys: Vec<Type> = x
                         .items
                         .iter()
                         .filter_map(|x| match &x.key {
                             Some(key) => {
-                                let key_t = self.expr(key, key_ty.as_ref());
-                                Some(self.promote(key_t, key_ty.as_ref()))
+                                let key_t = self.expr(key, key_hint.as_ref());
+                                Some(self.promote(key_t, key_hint.as_ref()))
                             }
                             _ => {
                                 self.error_todo("Answers::expr_infer expansion in dict literal", x);
@@ -715,8 +717,8 @@ impl<'a> AnswersSolver<'a> {
                         .iter()
                         .filter_map(|x| match x.key {
                             Some(_) => {
-                                let value_t = self.expr(&x.value, value_ty.as_ref());
-                                Some(self.promote(value_t, value_ty.as_ref()))
+                                let value_t = self.expr(&x.value, value_hint.as_ref());
+                                Some(self.promote(value_t, value_hint.as_ref()))
                             }
                             _ => {
                                 self.error_todo("Answers::expr_infer expansion in dict literal", x);
@@ -729,18 +731,19 @@ impl<'a> AnswersSolver<'a> {
                 }
             }
             Expr::Set(x) => {
-                let elem_ty = match hint {
-                    Some(ty) => {
-                        // We check `set[var]` against the hint to make sure it's a superclass of set,
-                        // then check the set elements against `var`, which has been solved to the
-                        // hint's contained type.
-                        let var = self.solver.fresh_contained();
-                        let set_type = self.stdlib.set(Type::Var(var));
-                        self.solver.is_subset_eq(&set_type, ty, self.type_order());
+                let elem_ty = hint.and_then(|ty| {
+                    // We check `set[var]` against the hint to make sure it's a superclass of set,
+                    // then check the set elements against `var`, which has been solved to the
+                    // hint's contained type.
+                    let var = self.solver.fresh_contained();
+                    let set_type = self.stdlib.set(Type::Var(var));
+                    if self.solver.is_subset_eq(&set_type, ty, self.type_order()) {
                         Some(self.solver.force_var(var))
+                    } else {
+                        None
                     }
-                    None => None,
-                };
+                });
+
                 if x.is_empty() {
                     let elem_ty = match elem_ty {
                         None => self.solver.fresh_contained().to_type(),
@@ -866,19 +869,15 @@ impl<'a> AnswersSolver<'a> {
                     })
                 };
                 if TypeVar::is_ctor(&ty_fun) {
-                    Type::Type(Box::new(self.tyvar_from_arguments(&x.arguments).to_type()))
+                    Type::type_form(self.tyvar_from_arguments(&x.arguments).to_type())
                 } else if TypeVarTuple::is_ctor(&ty_fun)
                     && let Some(name) = arguments_one_string(&x.arguments)
                 {
-                    Type::Type(Box::new(
-                        TypeVarTuple::new(name, self.module_info().dupe()).to_type(),
-                    ))
+                    Type::type_form(TypeVarTuple::new(name, self.module_info().dupe()).to_type())
                 } else if ParamSpec::is_ctor(&ty_fun)
                     && let Some(name) = arguments_one_string(&x.arguments)
                 {
-                    Type::Type(Box::new(
-                        ParamSpec::new(name, self.module_info().dupe()).to_type(),
-                    ))
+                    Type::type_form(ParamSpec::new(name, self.module_info().dupe()).to_type())
                 } else if let Type::Union(members) = ty_fun {
                     self.unions(&members.into_iter().map(check_call).collect::<Vec<_>>())
                 } else {
@@ -909,7 +908,7 @@ impl<'a> AnswersSolver<'a> {
                 // FIXME: We don't deal properly with hint here, we should.
                 let mut fun = self.expr_infer(&x.value);
                 if matches!(&fun, Type::ClassDef(t) if t.name() == "tuple") {
-                    fun = Type::Type(Box::new(Type::SpecialForm(SpecialForm::Tuple)));
+                    fun = Type::type_form(Type::SpecialForm(SpecialForm::Tuple));
                 }
                 match fun {
                     Type::Forall(quantifieds, ty) => {
@@ -940,13 +939,15 @@ impl<'a> AnswersSolver<'a> {
                         };
                         // TODO: Validate that `targ` refers to a "valid in-scope class or TypeVar"
                         // (https://typing.readthedocs.io/en/latest/spec/annotations.html#type-and-annotation-expressions)
-                        Type::Type(Box::new(Type::Type(Box::new(targ))))
+                        Type::type_form(Type::type_form(targ))
                     }
-                    Type::ClassDef(cls) => Type::Type(Box::new(self.specialize_as_class_type(
-                        &cls,
-                        xs.map(|x| self.expr_untype(x)),
-                        x.range,
-                    ))),
+                    Type::ClassDef(cls) => {
+                        Type::type_form(Type::ClassType(self.specialize_as_class_type(
+                            &cls,
+                            xs.map(|x| self.expr_untype(x)),
+                            x.range,
+                        )))
+                    }
                     Type::Type(box Type::SpecialForm(special)) => {
                         self.apply_special_form(special, xs, x.range)
                     }
@@ -1044,24 +1045,24 @@ impl<'a> AnswersSolver<'a> {
             }
             Expr::Starred(_) => self.error_todo("Answers::expr_infer", x),
             Expr::Name(x) => match x.id.as_str() {
-                "Any" => Type::Type(Box::new(Type::any_explicit())),
+                "Any" => Type::type_form(Type::any_explicit()),
                 _ => self
                     .get_type(&Key::Usage(Ast::expr_name_identifier(x.clone())))
                     .arc_clone(),
             },
             Expr::List(x) => {
-                let elem_ty = match hint {
-                    Some(ty) => {
-                        // We check `list[var]` against the hint to make sure it's a superclass of list,
-                        // then check the list elements against `var`, which has been solved to the
-                        // hint's contained type.
-                        let var = self.solver.fresh_contained();
-                        let list_type = self.stdlib.list(Type::Var(var));
-                        self.solver.is_subset_eq(&list_type, ty, self.type_order());
+                let elem_ty = hint.and_then(|ty| {
+                    // We check `list[var]` against the hint to make sure it's a superclass of list,
+                    // then check the list elements against `var`, which has been solved to the
+                    // hint's contained type.
+                    let var = self.solver.fresh_contained();
+                    let list_type = self.stdlib.list(Type::Var(var));
+                    if self.solver.is_subset_eq(&list_type, ty, self.type_order()) {
                         Some(self.solver.force_var(var))
+                    } else {
+                        None
                     }
-                    None => None,
-                };
+                });
                 if x.is_empty() {
                     let elem_ty = match elem_ty {
                         None => self.solver.fresh_contained().to_type(),
@@ -1085,9 +1086,12 @@ impl<'a> AnswersSolver<'a> {
                         // hint's contained type.
                         let var = self.solver.fresh_contained();
                         let tuple_type = self.stdlib.tuple(Type::Var(var));
-                        self.solver.is_subset_eq(&tuple_type, ty, self.type_order());
-                        let elem_ty = self.solver.force_var(var);
-                        &vec![elem_ty; x.elts.len()]
+                        if self.solver.is_subset_eq(&tuple_type, ty, self.type_order()) {
+                            let elem_ty = self.solver.force_var(var);
+                            &vec![elem_ty; x.elts.len()]
+                        } else {
+                            &Vec::new()
+                        }
                     }
                     None => &Vec::new(),
                 };

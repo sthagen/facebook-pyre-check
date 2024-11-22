@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
+use ruff_python_ast::Identifier;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
@@ -21,6 +22,7 @@ use crate::alt::binding::KeyLegacyTypeParam;
 use crate::alt::binding::KeyMro;
 use crate::alt::binding::KeyTypeParams;
 use crate::ast::Ast;
+use crate::graph::index::Idx;
 use crate::types::base_class::BaseClass;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
@@ -59,9 +61,9 @@ fn replace_return_type(ty: Type, ret: Type) -> Type {
 }
 
 impl<'a> AnswersSolver<'a> {
-    pub fn base_class_of(&self, base_expr: &Expr, self_type: &Key) -> BaseClass {
+    pub fn base_class_of(&self, base_expr: &Expr, self_type: Idx<Key>) -> BaseClass {
         let mut base = self.expr_base_class(base_expr);
-        let self_type = &*self.get_type(self_type);
+        let self_type = &*self.get_type_idx(self_type);
         base.subst_self_type_mut(self_type);
         base
     }
@@ -104,14 +106,14 @@ impl<'a> AnswersSolver<'a> {
         class.substitution(&self.get_tparams_for_class(class.class_object()))
     }
 
-    pub fn tparams_of(&self, cls: &Class, legacy: &[KeyLegacyTypeParam]) -> QuantifiedVec {
+    pub fn tparams_of(&self, cls: &Class, legacy: &[Idx<KeyLegacyTypeParam>]) -> QuantifiedVec {
         let legacy_tparams: SmallMap<_, _> = legacy
             .iter()
             .filter_map(|key| {
-                self.get_legacy_tparam(key)
+                self.get_legacy_tparam_idx(*key)
                     .deref()
                     .parameter()
-                    .map(|q| (key.0.clone(), *q))
+                    .map(|q| (self.bindings().idx_to_key(*key).0.clone(), *q))
             })
             .collect();
         let scoped_tparams = cls.scoped_tparams();
@@ -185,7 +187,7 @@ impl<'a> AnswersSolver<'a> {
         // Placeholder for strict mode: we want to force callers to pass a range so
         // that we don't refactor in a way where none is available, but this is unused
         // because we do not have a strict mode yet.
-        _range: TextRange,
+        _range: Option<TextRange>,
     ) -> TArgs {
         let tparams = self.get_tparams_for_class(cls);
         if tparams.0.is_empty() {
@@ -208,9 +210,9 @@ impl<'a> AnswersSolver<'a> {
         cls: &Class,
         targs: Vec<Type>,
         range: TextRange,
-    ) -> Type {
+    ) -> ClassType {
         let targs = self.check_and_create_targs(cls, targs, range);
-        Type::class_type(cls, targs)
+        ClassType::create_with_validated_targs(cls.clone(), targs)
     }
 
     /// Given a class, create a `Type` that represents to an instance annotated
@@ -221,9 +223,16 @@ impl<'a> AnswersSolver<'a> {
     ///
     /// We require a range because depending on the configuration we may raise
     /// a type error when a generic class is promoted using gradual types.
-    pub fn promote_to_class_type(&self, cls: &Class, range: TextRange) -> Type {
-        let targs = self.create_default_targs(cls, range);
-        Type::class_type(cls, targs)
+    pub fn promote_to_class_type(&self, cls: &Class, range: TextRange) -> ClassType {
+        let targs = self.create_default_targs(cls, Some(range));
+        ClassType::create_with_validated_targs(cls.clone(), targs)
+    }
+
+    /// Private version of `promote_to_class_type` that does not potentially
+    /// raise strict mode errors. Should only be used for unusual scenarios.
+    fn promote_to_class_type_silently(&self, cls: &Class) -> ClassType {
+        let targs = self.create_default_targs(cls, None);
+        ClassType::create_with_validated_targs(cls.clone(), targs)
     }
 
     fn instantiate_class_member(&self, cls: &ClassType, ty: Type) -> Type {
@@ -336,7 +345,10 @@ impl<'a> AnswersSolver<'a> {
                     // TODO(stroxler, yangdanny) Enums can contain attributes that are not
                     // members, we eventually need to implement enough checks to know the
                     // difference.
-                    Ok(Type::Literal(Lit::Enum(cls.clone(), name.to_owned())))
+                    Ok(Type::Literal(Lit::Enum(
+                        self.promote_to_class_type_silently(cls),
+                        name.to_owned(),
+                    )))
                 } else {
                     Ok(ty.as_ref().clone())
                 }
@@ -373,7 +385,7 @@ impl<'a> AnswersSolver<'a> {
             None
         };
         let tparams = self.get_tparams_for_class(cls);
-        let ret = cls.self_type(&tparams.0);
+        let ret = cls.self_type(tparams.deref());
         match init_ty.as_deref() {
             Some(ty) => replace_return_type(strip_first_argument(ty), ret),
             None => Type::callable(Vec::new(), ret),
@@ -389,5 +401,19 @@ impl<'a> AnswersSolver<'a> {
         let init_ty = self.get_init_method(cls);
         let tparams = self.get_tparams_for_class(cls);
         Type::forall(tparams.0.clone(), init_ty)
+    }
+
+    /// Given an identifier, see whether it is bound to an enum class. If so,
+    /// return a `ClassType` for the enum class, otherwise return `None`.
+    pub fn get_enum_class_type(&self, name: Identifier) -> Option<ClassType> {
+        match self.get_type(&Key::Usage(name.clone())).deref() {
+            Type::ClassDef(class) if class.is_enum(&|c| self.get_mro_for_class(c)) => {
+                // TODO(stroxler): Eventually, we should raise type errors on generic Enum because
+                // this doesn't make semantic sense. But in the meantime we need to be robust against
+                // this possibility.
+                Some(self.promote_to_class_type_silently(class))
+            }
+            _ => None,
+        }
     }
 }

@@ -14,7 +14,6 @@ use std::sync::Arc;
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
-use ruff_python_ast::Identifier;
 use ruff_python_ast::TypeParam;
 use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
@@ -393,24 +392,6 @@ impl<'a> AnswersSolver<'a> {
         TypeOrder::new(self)
     }
 
-    pub fn get_class_for_identifier(&self, name: &Identifier) -> Type {
-        self.untype(
-            (*self.get_type(&Key::Usage(name.clone()))).clone(),
-            name.range,
-        )
-    }
-
-    fn try_get<K: Solve>(
-        &self,
-        k: &K,
-    ) -> Result<(Arc<K::Answer>, Option<K::Recursive>), K::Recursive>
-    where
-        AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
-        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
-    {
-        self.try_get_idx(self.bindings().key_to_idx(k))
-    }
-
     fn try_get_idx<K: Solve>(
         &self,
         idx: Idx<K>,
@@ -479,7 +460,11 @@ impl<'a> AnswersSolver<'a> {
     }
 
     pub fn get_type(&self, key: &Key) -> Arc<Type> {
-        match self.try_get(key) {
+        self.get_type_idx(self.bindings().key_to_idx(key))
+    }
+
+    pub fn get_type_idx(&self, key: Idx<Key>) -> Arc<Type> {
+        match self.try_get_idx(key) {
             Err(v) => Arc::new(v.to_type()),
             Ok((v, _)) => v,
         }
@@ -499,8 +484,11 @@ impl<'a> AnswersSolver<'a> {
             .unwrap_or_else(|| Arc::new(QuantifiedVec(Vec::new())))
     }
 
-    pub fn get_legacy_tparam(&self, key: &KeyLegacyTypeParam) -> Arc<LegacyTypeParameterLookup> {
-        self.get(key).unwrap_or_else(|| {
+    pub fn get_legacy_tparam_idx(
+        &self,
+        key: Idx<KeyLegacyTypeParam>,
+    ) -> Arc<LegacyTypeParameterLookup> {
+        self.get_idx(key).unwrap_or_else(|| {
             Arc::new(LegacyTypeParameterLookup::NotParameter(Type::any_implicit()))
         })
     }
@@ -509,7 +497,7 @@ impl<'a> AnswersSolver<'a> {
         &self,
         binding: &BindingLegacyTypeParam,
     ) -> Arc<LegacyTypeParameterLookup> {
-        match &*self.get_type(&binding.0) {
+        match &*self.get_type_idx(binding.0) {
             Type::Type(box Type::TypeVar(_)) => {
                 let q = Quantified::type_var(self.uniques);
                 Arc::new(LegacyTypeParameterLookup::Parameter(q))
@@ -531,7 +519,12 @@ impl<'a> AnswersSolver<'a> {
             BindingTypeParams::Function(scoped, legacy) => {
                 let legacy_tparams: Vec<_> = legacy
                     .iter()
-                    .filter_map(|key| self.get_legacy_tparam(key).deref().parameter().copied())
+                    .filter_map(|key| {
+                        self.get_legacy_tparam_idx(*key)
+                            .deref()
+                            .parameter()
+                            .copied()
+                    })
                     .collect();
                 let mut tparams = scoped.clone();
                 tparams.extend(legacy_tparams);
@@ -554,7 +547,7 @@ impl<'a> AnswersSolver<'a> {
     fn solve_mro(&self, binding: &BindingMro) -> Arc<Mro> {
         match binding {
             BindingMro(k) => {
-                let self_ty = self.get_type(k);
+                let self_ty = self.get_type_idx(*k);
                 match &*self_ty {
                     Type::ClassType(cls) => Arc::new(self.mro_of(cls.class_object())),
                     _ => {
@@ -567,7 +560,7 @@ impl<'a> AnswersSolver<'a> {
 
     fn solve_base_class(&self, binding: &BindingBaseClass) -> Arc<BaseClass> {
         match binding {
-            BindingBaseClass(x, self_type) => Arc::new(self.base_class_of(x, self_type)),
+            BindingBaseClass(x, self_type) => Arc::new(self.base_class_of(x, *self_type)),
         }
     }
 
@@ -578,7 +571,7 @@ impl<'a> AnswersSolver<'a> {
                 if let Some(self_type) = self_type
                     && let Some(ty) = &mut ann.ty
                 {
-                    let self_type = &*self.get_type(self_type);
+                    let self_type = &*self.get_type_idx(*self_type);
                     ty.subst_self_type_mut(self_type);
                 }
                 Arc::new(ann)
@@ -590,7 +583,7 @@ impl<'a> AnswersSolver<'a> {
                 Arc::new(Annotation::new_type(t))
             }
             BindingAnnotation::Forward(k) => {
-                Arc::new(Annotation::new_type(self.get_type(k).arc_clone()))
+                Arc::new(Annotation::new_type(self.get_type_idx(*k).arc_clone()))
             }
         }
     }
@@ -691,7 +684,7 @@ impl<'a> AnswersSolver<'a> {
                 }
             }
             Type::ClassType(cls) => {
-                for t in cls.1.as_mut() {
+                for t in cls.targs_mut().as_mut() {
                     self.tvars_to_quantifieds_for_type_alias(t, seen, quantifieds);
                 }
             }
@@ -735,7 +728,9 @@ impl<'a> AnswersSolver<'a> {
             return Type::any_error();
         }
         let mut ty = match &ty {
-            Type::ClassDef(cls) => Type::Type(Box::new(self.promote_to_class_type(cls, range))),
+            Type::ClassDef(cls) => {
+                Type::type_form(Type::ClassType(self.promote_to_class_type(cls, range)))
+            }
             t => t.clone(),
         };
         let mut seen = SmallMap::new();
@@ -763,7 +758,7 @@ impl<'a> AnswersSolver<'a> {
     ) -> Type {
         let enter_type =
             self.call_method_with_types(&context_manager_type, enter_method_name, range, &[]);
-        let base_exception_class_type = Type::Type(Box::new(self.stdlib.base_exception()));
+        let base_exception_class_type = Type::type_form(self.stdlib.base_exception());
         let exit_type = self.call_method_with_types(
             &context_manager_type,
             exit_method_name,
@@ -1008,18 +1003,18 @@ impl<'a> AnswersSolver<'a> {
                 );
                 Type::ClassDef(c)
             }
-            Binding::SelfType(k) => match &*self.get_type(k) {
-                Type::ClassDef(c) => c.self_type(&self.get_tparams_for_class(c).0),
+            Binding::SelfType(k) => match &*self.get_type_idx(*k) {
+                Type::ClassDef(c) => c.self_type(self.get_tparams_for_class(c).deref()),
                 _ => unreachable!(),
             },
-            Binding::Forward(k) => self.get_type(k).arc_clone(),
+            Binding::Forward(k) => self.get_type_idx(*k).arc_clone(),
             Binding::Phi(ks) => {
                 if ks.len() == 1 {
-                    self.get_type(ks.first().unwrap()).arc_clone()
+                    self.get_type_idx(*ks.first().unwrap()).arc_clone()
                 } else {
                     self.unions(
                         &ks.iter()
-                            .map(|k| self.get_type(k).arc_clone())
+                            .map(|k| self.get_type_idx(*k).arc_clone())
                             .collect::<Vec<_>>(),
                     )
                 }
@@ -1039,11 +1034,11 @@ impl<'a> AnswersSolver<'a> {
             },
             Binding::AnyType(x) => Type::Any(*x),
             Binding::StrType => self.stdlib.str(),
-            Binding::TypeParameter(q) => Type::Type(Box::new(q.to_type())),
+            Binding::TypeParameter(q) => Type::type_form(q.to_type()),
             Binding::Module(m, path, prev) => {
                 let prev = prev
                     .as_ref()
-                    .and_then(|x| self.get_type(x).as_module().cloned());
+                    .and_then(|x| self.get_type_idx(*x).as_module().cloned());
                 match prev {
                     Some(prev) if prev.path() == path => prev.add_module(*m).to_type(),
                     _ => {
@@ -1060,7 +1055,7 @@ impl<'a> AnswersSolver<'a> {
                 }
             }
             Binding::CheckLegacyTypeParam(key, range_if_scoped_params_exist) => {
-                match &*self.get_legacy_tparam(key) {
+                match &*self.get_legacy_tparam_idx(*key) {
                     LegacyTypeParameterLookup::Parameter(q) => {
                         // This class or function has scoped (PEP 695) type parameters. Mixing legacy-style parameters is an error.
                         if let Some(r) = range_if_scoped_params_exist {
@@ -1068,11 +1063,11 @@ impl<'a> AnswersSolver<'a> {
                                 *r,
                                 format!(
                                     "Type parameter {} is not included in the type parameter list",
-                                    key.0.as_str()
+                                    self.bindings().idx_to_key(*key).0
                                 ),
                             );
                         }
-                        Type::Type(Box::new(q.to_type()))
+                        Type::type_form(q.to_type())
                     }
                     LegacyTypeParameterLookup::NotParameter(ty) => ty.clone(),
                 }

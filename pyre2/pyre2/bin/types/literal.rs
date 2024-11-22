@@ -8,7 +8,6 @@
 use std::char;
 use std::fmt;
 use std::fmt::Display;
-use std::sync::Arc;
 
 use ordered_float::NotNan;
 use ruff_python_ast::name::Name;
@@ -29,10 +28,7 @@ use ruff_text_size::TextRange;
 use crate::ast::Ast;
 use crate::error::collector::ErrorCollector;
 use crate::module::module_info::ModuleInfo;
-use crate::types::class::Class;
 use crate::types::class::ClassType;
-use crate::types::class::TArgs;
-use crate::types::mro::Mro;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
 
@@ -48,7 +44,7 @@ pub enum Lit {
     },
     Bool(bool),
     Bytes(Vec<u8>),
-    Enum(Class, Name),
+    Enum(ClassType, Name),
 }
 
 impl Display for Lit {
@@ -90,27 +86,25 @@ impl Lit {
     pub fn from_expr(
         x: &Expr,
         module_info: &ModuleInfo,
-        get_mro: &dyn Fn(&Class) -> Arc<Mro>,
-        get_class: &dyn Fn(Identifier) -> Type,
+        get_enum_class_type: &dyn Fn(Identifier) -> Option<ClassType>,
         errors: &ErrorCollector,
     ) -> Self {
         match x {
-            Expr::UnaryOp(x) => match x.op {
-                UnaryOp::UAdd => {
-                    Self::from_expr(&x.operand, module_info, get_mro, get_class, errors)
+            Expr::UnaryOp(x) => {
+                match x.op {
+                    UnaryOp::UAdd => {
+                        Self::from_expr(&x.operand, module_info, get_enum_class_type, errors)
+                    }
+                    UnaryOp::USub => {
+                        Self::from_expr(&x.operand, module_info, get_enum_class_type, errors)
+                            .negate(module_info, x.range, errors)
+                    }
+                    _ => {
+                        errors.todo(module_info, "Lit::from_expr", x);
+                        Lit::Bool(false)
+                    }
                 }
-                UnaryOp::USub => {
-                    Self::from_expr(&x.operand, module_info, get_mro, get_class, errors).negate(
-                        module_info,
-                        x.range,
-                        errors,
-                    )
-                }
-                _ => {
-                    errors.todo(module_info, "Lit::from_expr", x);
-                    Lit::Bool(false)
-                }
-            },
+            }
             Expr::StringLiteral(x) => Self::from_string_literal(x),
             Expr::BytesLiteral(x) => Self::from_bytes_literal(x),
             Expr::NumberLiteral(x) => Self::from_number_literal(x, module_info, errors),
@@ -120,14 +114,8 @@ impl Lit {
                 value: box Expr::Name(maybe_enum_name),
                 attr: member_name,
                 ctx: _,
-            }) => match get_class(Ast::expr_name_identifier(maybe_enum_name.clone())) {
-                // TODO(stroxler): This match seems fishy, these two types are not interchangeable.
-                // At least one arm is probably unnecessary.
-                Type::ClassDef(cls) | Type::ClassType(ClassType(cls, _))
-                    if cls.is_enum(get_mro) =>
-                {
-                    Lit::Enum(cls, member_name.id.to_owned())
-                }
+            }) => match get_enum_class_type(Ast::expr_name_identifier(maybe_enum_name.clone())) {
+                Some(class_type) => Lit::Enum(class_type, member_name.id.to_owned()),
                 _ => {
                     errors.todo(module_info, "Lit::from_expr", x);
                     Lit::Bool(false)
@@ -220,7 +208,7 @@ impl Lit {
             Lit::Bytes(_) => stdlib.bytes(),
             Lit::Float(_) => stdlib.float(),
             Lit::Complex { .. } => stdlib.complex(),
-            Lit::Enum(enum_name, _) => Type::class_type(enum_name, TArgs::default()),
+            Lit::Enum(class_type, _) => Type::ClassType(class_type.clone()),
         }
     }
 
