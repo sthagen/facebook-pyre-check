@@ -130,8 +130,6 @@
     "Line 44: Expected 1 errors"
   ],
   "annotations_coroutines.py": [
-    "Line 19: Unexpected errors ['assert_type(Callable[[int], str], Callable[[int], Coroutine[Any, Any, str]]) failed']",
-    "Line 23: Unexpected errors ['TODO: Await(ExprAwait - Answers::expr_infer']",
     "Line 24: Unexpected errors ['assert_type(Any, str) failed']"
   ],
   "annotations_forward_refs.py": [
@@ -169,15 +167,17 @@
     "Line 145: Unexpected errors ['EXPECTED None <: AsyncIterable[str]', 'TODO: ExprYield - Answers::expr_infer']",
     "Line 149: Unexpected errors ['TODO: YieldFrom(ExprYieldFrom - Answers::expr_infer']",
     "Line 150: Unexpected errors ['EXPECTED None <: Generator[int, None, None]', 'TODO: YieldFrom(ExprYieldFrom - Answers::expr_infer']",
-    "Line 154: Unexpected errors ['TODO: Await(ExprAwait - Answers::expr_infer']",
+    "Line 154: Unexpected errors [\"Missing argument 'result'\", 'EXPECTED Literal[1] <: float']",
     "Line 159: Unexpected errors ['EXPECTED None <: AsyncGenerator[str, None]', 'Expected `list.__iter__` to be a callable, got Callable[[_PyreReadOnly_[list[int]]], Iterator[_PyreReadOnly_[int]]] | Callable[[list[int]], Iterator[int]]']",
-    "Line 160: Unexpected errors ['TODO: Await(ExprAwait - Answers::expr_infer']",
+    "Line 160: Unexpected errors [\"Missing argument 'result'\", 'EXPECTED Literal[1] <: float']",
     "Line 161: Unexpected errors ['TODO: ExprYield - Answers::expr_infer']",
-    "Line 165: Unexpected errors ['TODO: Await(ExprAwait - Answers::expr_infer']",
-    "Line 172: Unexpected errors ['TODO: Await(ExprAwait - Answers::expr_infer']",
+    "Line 167: Unexpected errors ['assert_type(Coroutine[Any, Any, AsyncGenerator[str, None]], AsyncGenerator[str, None]) failed']",
+    "Line 168: Unexpected errors ['EXPECTED Coroutine[Unknown, Unknown, AsyncGenerator[str, None]] <: AsyncGenerator[str, None]']",
+    "Line 174: Unexpected errors ['assert_type(Coroutine[Any, Any, AsyncGenerator[str, None]], AsyncGenerator[str, None]) failed']",
+    "Line 175: Unexpected errors ['EXPECTED Coroutine[Unknown, Unknown, AsyncGenerator[str, None]] <: AsyncIterator[str]']",
     "Line 179: Unexpected errors ['EXPECTED None <: AsyncIterator[int]']",
-    "Line 182: Unexpected errors ['assert_type(Callable[[], AsyncIterator[int]], Callable[[], Coroutine[Any, Any, AsyncIterator[int]]]) failed']",
-    "Line 187: Unexpected errors ['EXPECTED None <: AsyncIterator[int]', 'TODO: ExprYield - Answers::expr_infer']"
+    "Line 187: Unexpected errors ['EXPECTED None <: AsyncIterator[int]', 'TODO: ExprYield - Answers::expr_infer']",
+    "Line 190: Unexpected errors ['assert_type(Callable[[], Coroutine[Any, Any, AsyncIterator[int]]], Callable[[], AsyncIterator[int]]) failed']"
   ],
   "annotations_methods.py": [
     "Line 19: Unexpected errors ['Expected a callable, got type[?_]']",
@@ -728,6 +728,7 @@
     "Line 23: Unexpected errors ['assert_type(type[slice], type[slice[int, int, int | None]]) failed']",
     "Line 24: Unexpected errors ['assert_type(slice[Any, Any, Any], slice[int, int, int | None]) failed']",
     "Line 25: Unexpected errors ['assert_type(slice[Any, Any, Any], slice[str, str, int | None]) failed', 'Expected 3 type arguments for class `slice`, got 1.']",
+    "Line 49: Unexpected errors [\"untype, got Literal['StopT']\"]",
     "Line 94: Unexpected errors ['assert_type(type[Bar], type[Bar[Any, list[Any]]]) failed']",
     "Line 95: Unexpected errors ['assert_type(type[Bar[Any, Any]], type[Bar[int, list[int]]]) failed', 'Expected 2 type arguments for class `Bar`, got 1.']",
     "Line 96: Unexpected errors ['assert_type(Bar[Any, Any], Bar[int, list[int]]) failed', 'Expected 2 type arguments for class `Bar`, got 1.']"
@@ -898,8 +899,6 @@
     "Line 33: Unexpected errors ['TODO: Answers::expr_infer attribute: `?_`.capitalize']"
   ],
   "generics_syntax_infer_variance.py": [
-    "Line 15: Expected 1 errors",
-    "Line 17: Expected 1 errors",
     "Line 28: Unexpected errors ['EXPECTED ShouldBeCovariant1[int] <: ShouldBeCovariant1[float]']",
     "Line 36: Unexpected errors ['EXPECTED ShouldBeCovariant2[int] <: ShouldBeCovariant2[float]']",
     "Line 45: Unexpected errors ['EXPECTED ShouldBeCovariant3[int] <: ShouldBeCovariant3[float]']",
@@ -1074,7 +1073,6 @@
     "Line 38: Unexpected errors ['assert_type(set[Any], set[int]) failed']"
   ],
   "generics_variance.py": [
-    "Line 14: Expected 1 errors",
     "Line 77: Expected 1 errors",
     "Line 81: Expected 1 errors",
     "Line 93: Expected 1 errors",
@@ -1252,7 +1250,7 @@
     "Line 15: Unexpected errors ['EXPECTED bool <: TypeIs[tuple[?_, ?_]]', 'EXPECTED tuple[?_, ...] <: _PyreReadOnly_[Sized]']",
     "Line 19: Unexpected errors ['assert_type(tuple[str, ...], tuple[str, str]) failed']",
     "Line 28: Unexpected errors ['EXPECTED bool <: TypeIs[Awaitable[Any]]', 'EXPECTED type[Awaitable] <: UnionType | type | tuple[Unknown, ...]']",
-    "Line 35: Unexpected errors ['TODO: Await(ExprAwait - Answers::expr_infer']",
+    "Line 35: Unexpected errors ['Expression is not awaitable']",
     "Line 38: Unexpected errors ['assert_type(Awaitable[int] | int, int) failed']",
     "Line 45: Unexpected errors ['EXPECTED bool <: TypeIs[int]', 'EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]']",
     "Line 49: Unexpected errors ['EXPECTED bool <: TypeIs[int]', 'EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]']",
@@ -1745,7 +1743,6 @@
   ],
   "typeddicts_usage.py": [
     "Line 35: Expected 1 errors",
-    "Line 40: Expected 1 errors",
     "Line 8: Unexpected errors ['untype, got object']",
     "Line 13: Unexpected errors ['EXPECTED dict[Unknown, Unknown] <: Movie']",
     "Line 20: Unexpected errors ['EXPECTED dict[Unknown, Unknown] <: Movie']",

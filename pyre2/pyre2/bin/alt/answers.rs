@@ -95,6 +95,7 @@ use crate::util::recurser::Recurser;
 pub struct Answers<'a> {
     exports: &'a SmallMap<ModuleName, Exports>,
     bindings: &'a Bindings,
+    errors: &'a ErrorCollector,
     table: AnswerTable,
 }
 
@@ -151,9 +152,7 @@ pub struct AnswersSolver<'a> {
     uniques: &'a UniqueFactory,
     pub recurser: &'a Recurser<Var>,
     pub solver: &'a Solver<'a>,
-    pub errors: &'a ErrorCollector,
     pub stdlib: &'a Stdlib,
-    pub module_info: &'a ModuleInfo,
 }
 
 pub trait Solve: Keyed {
@@ -258,7 +257,11 @@ impl Solve for KeyTypeParams {
 }
 
 impl<'a> Answers<'a> {
-    pub fn new(exports: &'a SmallMap<ModuleName, Exports>, bindings: &'a Bindings) -> Self {
+    pub fn new(
+        exports: &'a SmallMap<ModuleName, Exports>,
+        bindings: &'a Bindings,
+        errors: &'a ErrorCollector,
+    ) -> Self {
         fn presize<K: Solve>(items: &mut AnswerEntry<K>, bindings: &Bindings)
         where
             BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -275,6 +278,7 @@ impl<'a> Answers<'a> {
         Self {
             exports,
             bindings,
+            errors,
             table,
         }
     }
@@ -289,7 +293,6 @@ impl<'a> Answers<'a> {
         &self,
         answers: &SmallMap<ModuleName, Answers>,
         stdlib: &Stdlib,
-        errors: &'a ErrorCollector,
         uniques: &'a UniqueFactory,
         solver: &'a Solver<'a>,
     ) -> Solutions {
@@ -312,12 +315,10 @@ impl<'a> Answers<'a> {
         let answers_solver = AnswersSolver {
             stdlib,
             answers,
-            errors,
             uniques,
             solver,
             recurser: &Recurser::new(),
             current: self,
-            module_info: self.bindings.module_info(),
         };
         table_mut_for_each!(&mut res, |items| pre_solve(items, &answers_solver));
 
@@ -339,19 +340,16 @@ impl<'a> Answers<'a> {
         module: ModuleName,
         name: &Name,
         answers: &SmallMap<ModuleName, Answers<'_>>,
-        errors: &'a ErrorCollector,
         uniques: &'a UniqueFactory,
         solver: &'a Solver<'a>,
     ) -> Option<Class> {
         let solver = AnswersSolver {
             stdlib: &Stdlib::for_bootstrapping(),
-            errors,
             uniques,
             solver,
             answers,
             recurser: &Recurser::new(),
             current: self,
-            module_info: self.bindings.module_info(),
         };
         match solver.get_import(name, module, TextRange::default()) {
             Type::ClassDef(cls) => Some(cls),
@@ -375,11 +373,18 @@ impl<'a> AnswersSolver<'a> {
         self.current.bindings
     }
 
+    pub fn errors(&self) -> &ErrorCollector {
+        self.current.errors
+    }
+
+    pub fn module_info(&self) -> &ModuleInfo {
+        self.current.bindings.module_info()
+    }
+
     pub fn with_module(&self, name: ModuleName) -> Self {
         let current = self.answers.get(&name).unwrap();
         AnswersSolver {
             current,
-            module_info: current.bindings.module_info(),
             ..self.clone()
         }
     }
@@ -419,7 +424,7 @@ impl<'a> AnswersSolver<'a> {
             // We should always be sure before calling `get`.
             panic!(
                 "Internal error: Answer not found: {}, {}",
-                self.module_info.name(),
+                self.module_info().name(),
                 self.bindings().idx_to_key(idx),
             )
         });
@@ -467,8 +472,8 @@ impl<'a> AnswersSolver<'a> {
             recursive,
             (*answer).clone(),
             self.type_order(),
-            self.errors,
-            self.module_info,
+            self.errors(),
+            self.module_info(),
             key.range(),
         );
     }
@@ -505,16 +510,16 @@ impl<'a> AnswersSolver<'a> {
         binding: &BindingLegacyTypeParam,
     ) -> Arc<LegacyTypeParameterLookup> {
         match &*self.get_type(&binding.0) {
-            Type::Type(box Type::TypeVar(x)) => {
-                let q = Quantified::type_var(self.uniques, format!("TypeVar {x}"));
+            Type::Type(box Type::TypeVar(_)) => {
+                let q = Quantified::type_var(self.uniques);
                 Arc::new(LegacyTypeParameterLookup::Parameter(q))
             }
-            Type::Type(box Type::TypeVarTuple(x)) => {
-                let q = Quantified::type_var_tuple(self.uniques, format!("TypeVarTuple {x}"));
+            Type::Type(box Type::TypeVarTuple(_)) => {
+                let q = Quantified::type_var_tuple(self.uniques);
                 Arc::new(LegacyTypeParameterLookup::Parameter(q))
             }
-            Type::Type(box Type::ParamSpec(x)) => {
-                let q = Quantified::param_spec(self.uniques, format!("ParamSpec {x}"));
+            Type::Type(box Type::ParamSpec(_)) => {
+                let q = Quantified::param_spec(self.uniques);
                 Arc::new(LegacyTypeParameterLookup::Parameter(q))
             }
             ty => Arc::new(LegacyTypeParameterLookup::NotParameter(ty.clone())),
@@ -667,7 +672,7 @@ impl<'a> AnswersSolver<'a> {
                 range,
                 format!(
                     "Expression `{}` has type `{actual_type}` which does not derive from BaseException",
-                    self.module_info.display(x)
+                    self.module_info().display(x)
                 ),
             );
         }
@@ -699,8 +704,7 @@ impl<'a> AnswersSolver<'a> {
                 let q = match seen.entry(ty_var.dupe()) {
                     Entry::Occupied(e) => *e.get(),
                     Entry::Vacant(e) => {
-                        let q =
-                            Quantified::type_var(self.uniques, ty_var.qname().name.id.to_string());
+                        let q = Quantified::type_var(self.uniques);
                         e.insert(q);
                         quantifieds.push(q);
                         q
@@ -980,6 +984,12 @@ impl<'a> AnswersSolver<'a> {
                     Arg::Kwargs(ty.clone())
                 }));
                 let ret = self.get_type(&Key::ReturnType(x.name.clone())).arc_clone();
+                let ret = if x.is_async {
+                    self.stdlib
+                        .coroutine(Type::any_implicit(), Type::any_implicit(), ret)
+                } else {
+                    ret
+                };
                 let qs = self.get_tparams(&KeyTypeParams(x.name.clone()));
                 Type::forall(qs.0.clone(), Type::callable(args, ret))
             }
@@ -991,7 +1001,7 @@ impl<'a> AnswersSolver<'a> {
                 let tparams = self.type_params(&x.type_params);
                 let c = Class::new(
                     x.name.clone(),
-                    self.module_info.dupe(),
+                    self.module_info().dupe(),
                     tparams,
                     fields.clone(),
                     *n_bases,
@@ -1054,8 +1064,7 @@ impl<'a> AnswersSolver<'a> {
                     LegacyTypeParameterLookup::Parameter(q) => {
                         // This class or function has scoped (PEP 695) type parameters. Mixing legacy-style parameters is an error.
                         if let Some(r) = range_if_scoped_params_exist {
-                            self.errors.add(
-                                self.module_info,
+                            self.error(
                                 *r,
                                 format!(
                                     "Type parameter {} is not included in the type parameter list",
@@ -1131,7 +1140,7 @@ impl<'a> AnswersSolver<'a> {
             got.clone()
         } else {
             self.solver
-                .error(want, got, self.errors, self.module_info, loc);
+                .error(want, got, self.errors(), self.module_info(), loc);
             want.clone()
         }
     }
@@ -1145,12 +1154,12 @@ impl<'a> AnswersSolver<'a> {
     }
 
     pub fn error_todo(&self, msg: &str, x: impl Ranged + Debug) -> Type {
-        self.errors.todo(self.module_info, msg, x);
+        self.errors().todo(self.module_info(), msg, x);
         Type::any_error()
     }
 
     pub fn error(&self, range: TextRange, msg: String) -> Type {
-        self.errors.add(self.module_info, range, msg);
+        self.errors().add(self.module_info(), range, msg);
         Type::any_error()
     }
 

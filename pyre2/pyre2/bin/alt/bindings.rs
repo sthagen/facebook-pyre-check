@@ -20,6 +20,7 @@ use ruff_python_ast::name::Name;
 use ruff_python_ast::Comprehension;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
+use ruff_python_ast::ExprCall;
 use ruff_python_ast::ExprName;
 use ruff_python_ast::ExprNoneLiteral;
 use ruff_python_ast::ExprSubscript;
@@ -781,18 +782,15 @@ impl<'a> BindingsBuilder<'a> {
         for x in x.iter() {
             let (q, name) = match x {
                 TypeParam::TypeVar(x) => {
-                    let q = Quantified::type_var(self.uniques, format!("generic {}", x.name));
+                    let q = Quantified::type_var(self.uniques);
                     (q, &x.name)
                 }
                 TypeParam::ParamSpec(x) => {
-                    let q = Quantified::param_spec(self.uniques, format!("param spec {}", x.name));
+                    let q = Quantified::param_spec(self.uniques);
                     (q, &x.name)
                 }
                 TypeParam::TypeVarTuple(x) => {
-                    let q = Quantified::type_var_tuple(
-                        self.uniques,
-                        format!("type var tuple {}", x.name),
-                    );
+                    let q = Quantified::type_var_tuple(self.uniques);
                     (q, &x.name)
                 }
             };
@@ -1088,12 +1086,40 @@ impl<'a> BindingsBuilder<'a> {
                 } else {
                     None
                 };
-                self.ensure_expr(&x.value);
+                let mut value = *x.value;
+                // Handle forward references in a TypeVar call.
+                match &mut value {
+                    Expr::Call(ExprCall {
+                        range: _,
+                        func: box Expr::Name(name),
+                        arguments,
+                    }) if name.id == "TypeVar" && !arguments.is_empty() => {
+                        self.ensure_expr(&Expr::Name(name.clone()));
+                        // The constraints (i.e., any positional arguments after the first)
+                        // and the "bound" keyword argument are types.
+                        for arg in arguments.args[1..].iter_mut() {
+                            self.ensure_type(arg, &mut BindingsBuilder::forward_lookup);
+                        }
+                        for kw in arguments.keywords.iter_mut() {
+                            if let Some(id) = &kw.arg
+                                && id.id == "bound"
+                            {
+                                self.ensure_type(
+                                    &mut kw.value,
+                                    &mut BindingsBuilder::forward_lookup,
+                                );
+                            } else {
+                                self.ensure_expr(&kw.value);
+                            }
+                        }
+                    }
+                    _ => self.ensure_expr(&value),
+                }
                 for target in x.targets.iter() {
                     let make_binding = |k: Option<Idx<KeyAnnotation>>| {
-                        let b = Binding::Expr(k, *x.value.clone());
+                        let b = Binding::Expr(k, value.clone());
                         if let Some(name) = &name {
-                            Binding::NameAssign(name.clone(), k, Box::new(b), x.value.range())
+                            Binding::NameAssign(name.clone(), k, Box::new(b), value.range())
                         } else {
                             b
                         }

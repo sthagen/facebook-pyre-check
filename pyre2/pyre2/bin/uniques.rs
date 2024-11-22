@@ -10,7 +10,8 @@
 
 use std::fmt;
 use std::fmt::Display;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use dupe::Dupe;
 
@@ -18,8 +19,7 @@ use dupe::Dupe;
 /// Deliberately NOT Clone.
 #[derive(Debug)]
 pub struct UniqueFactory {
-    // For each Var we maintain a hint about what it means.
-    hints: Mutex<Vec<String>>,
+    unique: AtomicUsize,
 }
 
 impl Default for UniqueFactory {
@@ -47,39 +47,16 @@ impl Unique {
         // Safe because we create every UniqueFactory with a zero.
         Self(0)
     }
-
-    #[allow(dead_code)] // Only used in dead code
-    pub fn display_with_hint<'a>(
-        self,
-        prefix: &'static str,
-        uniques: &'a UniqueFactory,
-    ) -> impl Display + 'a {
-        struct X<'a>(Unique, &'static str, &'a UniqueFactory);
-        impl<'a> Display for X<'a> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}{}[{}]", self.0, self.1, self.2.hint(self.0))
-            }
-        }
-        X(self, prefix, uniques)
-    }
 }
 
 impl UniqueFactory {
     pub fn new() -> Self {
         Self {
-            hints: Mutex::new(vec!["zero".to_owned()]),
+            unique: AtomicUsize::new(1),
         }
     }
 
-    pub fn fresh(&self, hint: String) -> Unique {
-        let mut me = self.hints.lock().unwrap();
-        let v = Unique(me.len());
-        me.push(hint);
-        v
-    }
-
-    #[allow(dead_code)] // Only used in dead code
-    fn hint(&self, var: Unique) -> String {
-        self.hints.lock().unwrap()[var.0].clone()
+    pub fn fresh(&self) -> Unique {
+        Unique(self.unique.fetch_add(1, Ordering::Relaxed))
     }
 }
