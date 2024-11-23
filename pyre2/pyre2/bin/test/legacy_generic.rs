@@ -208,3 +208,43 @@ T1 = TypeVar('T1', int, A)
 T2 = TypeVar('T2', int, B)  # E: Could not find name `B`
     "#,
 );
+
+simple_test!(
+    test_ordering_of_tparams_on_generic_base,
+    r#"
+from typing import Generic, TypeVar, assert_type
+
+T = TypeVar("T")
+S = TypeVar("S")
+
+class Base(Generic[T]):
+    x: T
+
+class Child(Base[S], Generic[T, S]):
+    y: T
+
+def f(c: Child[int, str]):
+    assert_type(c.x, str)
+    assert_type(c.y, int)
+    "#,
+);
+
+simple_test!(
+    test_ordering_of_tparams_on_protocol_base,
+    r#"
+from typing import Protocol, TypeVar, assert_type
+
+T = TypeVar("T")
+S = TypeVar("S")
+
+class Base(Protocol[T]):
+    x: T
+
+class Child(Base[S], Protocol[T, S]):
+    y: T
+
+def f(c: Child[int, str]):
+    assert_type(c.x, str)
+    assert_type(c.y, int)
+    "#,
+);

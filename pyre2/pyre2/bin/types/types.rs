@@ -433,12 +433,18 @@ impl Type {
         (mp.into_values().map(|x| x.as_var().unwrap()).collect(), res)
     }
 
-    pub fn collect_quantifieds(&self, acc: &mut SmallSet<Quantified>) {
+    pub fn for_each_quantified(&self, f: &mut impl FnMut(Quantified)) {
         self.universe(|x| {
             if let Type::Quantified(x) = x {
-                acc.insert(*x);
+                f(*x);
             }
         })
+    }
+
+    pub fn collect_quantifieds(&self, acc: &mut SmallSet<Quantified>) {
+        self.for_each_quantified(&mut |q| {
+            acc.insert(q);
+        });
     }
 
     pub fn contains(&self, x: &Type) -> bool {
@@ -591,6 +597,13 @@ impl Type {
     pub fn transform(mut self, mut f: impl FnMut(&mut Type)) -> Self {
         self.transform_mut(&mut f);
         self
+    }
+
+    pub fn as_quantified(&self) -> Option<Quantified> {
+        match self {
+            Type::Quantified(q) => Some(*q),
+            _ => None,
+        }
     }
 
     // The result of calling bool() on a value of this type if we can get a definitive answer, None otherwise.

@@ -8,11 +8,11 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
+use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Identifier;
 use ruff_text_size::TextRange;
-use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
 use super::answers::AnswersSolver;
@@ -61,13 +61,6 @@ fn replace_return_type(ty: Type, ret: Type) -> Type {
 }
 
 impl<'a> AnswersSolver<'a> {
-    pub fn base_class_of(&self, base_expr: &Expr, self_type: Idx<Key>) -> BaseClass {
-        let mut base = self.expr_base_class(base_expr);
-        let self_type = &*self.get_type_idx(self_type);
-        base.subst_self_type_mut(self_type);
-        base
-    }
-
     /// This helper deals with special cases where we want to intercept an `Expr`
     /// manually and create a special variant of `BaseClass` instead of calling
     /// `expr_untype` and creating a `BaseClass::Type`.
@@ -75,7 +68,7 @@ impl<'a> AnswersSolver<'a> {
     /// TODO(stroxler): See if there's a way to express this more clearly in the types.
     fn special_base_class(&self, base_expr: &Expr) -> Option<BaseClass> {
         if let Expr::Name(name) = base_expr {
-            match &*self.get_type(&Key::Usage(Ast::expr_name_identifier(name.clone()))) {
+            match &*self.get(&Key::Usage(Ast::expr_name_identifier(name.clone()))) {
                 Type::Type(box Type::SpecialForm(special)) => special.to_base_class(),
                 _ => None,
             }
@@ -84,7 +77,7 @@ impl<'a> AnswersSolver<'a> {
         }
     }
 
-    fn expr_base_class(&self, base_expr: &Expr) -> BaseClass {
+    pub fn base_class_of(&self, base_expr: &Expr) -> BaseClass {
         if let Some(special_base_class) = self.special_base_class(base_expr) {
             // This branch handles cases like `NamedTuple` or `Protocol`
             special_base_class
@@ -107,28 +100,54 @@ impl<'a> AnswersSolver<'a> {
     }
 
     pub fn tparams_of(&self, cls: &Class, legacy: &[Idx<KeyLegacyTypeParam>]) -> QuantifiedVec {
-        let legacy_tparams: SmallMap<_, _> = legacy
+        let scoped_tparams: SmallSet<_> = cls.scoped_tparams().values().copied().collect();
+        let legacy_quantifieds: SmallSet<_> = legacy
             .iter()
-            .filter_map(|key| {
-                self.get_legacy_tparam_idx(*key)
-                    .deref()
-                    .parameter()
-                    .map(|q| (self.bindings().idx_to_key(*key).0.clone(), *q))
-            })
+            .filter_map(|key| self.get_idx(*key).deref().parameter().copied())
             .collect();
-        let scoped_tparams = cls.scoped_tparams();
-        // TODO(stroxler): Add checks for:
-        // - Use of both Generic and Protocol with parameters as arguments.
-        // - Use of both a Generic/Protocol base and implicit generic parameters.
-        //
-        // Note that we should *not* validate the absence of legacy parameters when there are
-        // scoped parameters, that is handled by CheckLegacyTypeParam.
-        let mut tparams = scoped_tparams.clone();
-        for (identifier, q) in legacy_tparams.iter() {
-            let entry = tparams.entry(identifier.id.clone());
-            entry.or_insert_with(|| *q);
+        // TODO(stroxler): There are a lot of checks, such as that `Generic` only appears once
+        // and no non-type-vars are used, that we can more easily detect in a dedictated class
+        // validation step that validates all the bases. We are deferring these for now.
+        let bases = self.bases_of_class(cls);
+        let mut generic_tparams = SmallSet::new();
+        let mut protocol_tparams = SmallSet::new();
+        for base in bases.iter() {
+            match base.deref() {
+                BaseClass::Generic(ts) => {
+                    generic_tparams.extend(ts.iter().filter_map(|t| t.as_quantified()))
+                }
+                BaseClass::Protocol(ts) if !ts.is_empty() => {
+                    protocol_tparams.extend(ts.iter().filter_map(|t| t.as_quantified()))
+                }
+                _ => {}
+            }
         }
-        QuantifiedVec(tparams.values().copied().collect())
+        if !generic_tparams.is_empty() && !protocol_tparams.is_empty() {
+            // TODO(stroxler) Complain about using both Generic[...] and Protocol[...].
+        }
+        // Initialized the tparams: combine scoped and explicit type parameters
+        let mut tparams = scoped_tparams;
+        tparams.extend(generic_tparams);
+        tparams.extend(protocol_tparams);
+        // Handle implicit tparams: if a Quantified was bound at this scope and is not yet
+        // in tparams, we add it. These will be added in left-to-right order.
+        let implicit_tparams_okay = tparams.is_empty();
+        for base in self.bases_of_class(cls).iter() {
+            match base.deref() {
+                BaseClass::Type(t) => {
+                    t.for_each_quantified(&mut |q| {
+                        if !tparams.contains(&q) && legacy_quantifieds.contains(&q) {
+                            if !implicit_tparams_okay {
+                                // TODO(stroxler): complain if explicit and implicit legacy type parameters are mixed.
+                            }
+                            tparams.insert(q);
+                        }
+                    });
+                }
+                _ => {}
+            }
+        }
+        QuantifiedVec(tparams.into_iter().collect())
     }
 
     pub fn mro_of(&self, cls: &Class) -> Mro {
@@ -142,18 +161,15 @@ impl<'a> AnswersSolver<'a> {
     }
 
     pub fn get_tparams_for_class(&self, cls: &Class) -> Arc<QuantifiedVec> {
-        self.with_module(cls.module_info().name())
-            .get_tparams(&KeyTypeParams(cls.name().clone()))
+        self.get_from_class(cls, &KeyTypeParams(cls.name().clone()))
     }
 
     pub fn get_mro_for_class(&self, cls: &Class) -> Arc<Mro> {
-        self.with_module(cls.module_info().name())
-            .get_mro(&KeyMro(cls.name().clone()))
+        self.get_from_class(cls, &KeyMro(cls.name().clone()))
     }
 
     fn get_base_class_index(&self, cls: &Class, base_idx: usize) -> Arc<BaseClass> {
-        self.with_module(cls.module_info().name())
-            .get_base_class(&KeyBaseClass(cls.name().clone(), base_idx))
+        self.get_from_class(cls, &KeyBaseClass(cls.name().clone(), base_idx))
     }
 
     pub fn bases_of_class(&self, cls: &Class) -> Vec<Arc<BaseClass>> {
@@ -212,7 +228,7 @@ impl<'a> AnswersSolver<'a> {
         range: TextRange,
     ) -> ClassType {
         let targs = self.check_and_create_targs(cls, targs, range);
-        ClassType::create_with_validated_targs(cls.clone(), targs)
+        ClassType::create_with_validated_targs(cls.dupe(), targs)
     }
 
     /// Given a class, create a `Type` that represents to an instance annotated
@@ -225,14 +241,14 @@ impl<'a> AnswersSolver<'a> {
     /// a type error when a generic class is promoted using gradual types.
     pub fn promote_to_class_type(&self, cls: &Class, range: TextRange) -> ClassType {
         let targs = self.create_default_targs(cls, Some(range));
-        ClassType::create_with_validated_targs(cls.clone(), targs)
+        ClassType::create_with_validated_targs(cls.dupe(), targs)
     }
 
     /// Private version of `promote_to_class_type` that does not potentially
     /// raise strict mode errors. Should only be used for unusual scenarios.
     fn promote_to_class_type_silently(&self, cls: &Class) -> ClassType {
         let targs = self.create_default_targs(cls, None);
-        ClassType::create_with_validated_targs(cls.clone(), targs)
+        ClassType::create_with_validated_targs(cls.dupe(), targs)
     }
 
     fn instantiate_class_member(&self, cls: &ClassType, ty: Type) -> Type {
@@ -269,9 +285,7 @@ impl<'a> AnswersSolver<'a> {
 
     fn get_class_field(&self, cls: &Class, name: &Name) -> Option<Arc<Type>> {
         if cls.contains(name) {
-            let ty = self
-                .with_module(cls.module_info().name())
-                .get_type(&Key::ClassField(cls.name().clone(), name.clone()));
+            let ty = self.get_from_class(cls, &Key::ClassField(cls.name().clone(), name.clone()));
             Some(ty)
         } else {
             None
@@ -288,9 +302,7 @@ impl<'a> AnswersSolver<'a> {
                     self.get_class_field(ancestor.class_object(), name)
                         .as_deref()
                         .map(|ty| {
-                            let raw_member = self
-                                .with_module(cls.module_info().name())
-                                .instantiate_class_member(ancestor, ty.clone());
+                            let raw_member = self.instantiate_class_member(ancestor, ty.clone());
                             Arc::new(raw_member)
                         })
                 })
@@ -376,14 +388,7 @@ impl<'a> AnswersSolver<'a> {
 
     pub fn get_init_method(&self, cls: &Class) -> Type {
         let init = Name::new("__init__");
-        let init_ty = if cls.contains(&init) {
-            Some(
-                self.with_module(cls.module_info().name())
-                    .get_type(&Key::ClassField(cls.name().clone(), init)),
-            )
-        } else {
-            None
-        };
+        let init_ty = self.get_class_field(cls, &init);
         let tparams = self.get_tparams_for_class(cls);
         let ret = cls.self_type(tparams.deref());
         match init_ty.as_deref() {
@@ -406,7 +411,7 @@ impl<'a> AnswersSolver<'a> {
     /// Given an identifier, see whether it is bound to an enum class. If so,
     /// return a `ClassType` for the enum class, otherwise return `None`.
     pub fn get_enum_class_type(&self, name: Identifier) -> Option<ClassType> {
-        match self.get_type(&Key::Usage(name.clone())).deref() {
+        match self.get(&Key::Usage(name.clone())).deref() {
             Type::ClassDef(class) if class.is_enum(&|c| self.get_mro_for_class(c)) => {
                 // TODO(stroxler): Eventually, we should raise type errors on generic Enum because
                 // this doesn't make semantic sense. But in the meantime we need to be robust against

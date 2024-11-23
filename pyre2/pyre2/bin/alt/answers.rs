@@ -169,6 +169,8 @@ pub trait Solve: Keyed {
     ) {
     }
 
+    fn promote_recursive(x: Self::Recursive) -> Self::Answer;
+
     fn visit_type_mut(v: &mut Self::Answer, f: &mut dyn FnMut(&mut Type));
 }
 
@@ -187,6 +189,10 @@ impl Solve for Key {
         answers.record_recursive(key, answer, recursive);
     }
 
+    fn promote_recursive(x: Self::Recursive) -> Self::Answer {
+        Type::Var(x)
+    }
+
     fn visit_type_mut(v: &mut Type, f: &mut dyn FnMut(&mut Type)) {
         f(v);
     }
@@ -198,6 +204,10 @@ impl Solve for KeyAnnotation {
     }
 
     fn recursive(_answers: &AnswersSolver) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        Annotation::default()
+    }
 
     fn visit_type_mut(v: &mut Annotation, f: &mut dyn FnMut(&mut Type)) {
         v.ty.iter_mut().for_each(f);
@@ -211,6 +221,10 @@ impl Solve for KeyBaseClass {
 
     fn recursive(_answers: &AnswersSolver) -> Self::Recursive {}
 
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        BaseClass::Type(Type::any_implicit())
+    }
+
     fn visit_type_mut(v: &mut BaseClass, f: &mut dyn FnMut(&mut Type)) {
         v.visit_mut(f);
     }
@@ -222,6 +236,10 @@ impl Solve for KeyMro {
     }
 
     fn recursive(_answers: &AnswersSolver) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        Mro::cyclic()
+    }
 
     fn visit_type_mut(v: &mut Mro, f: &mut dyn FnMut(&mut Type)) {
         v.visit_mut(f);
@@ -238,6 +256,10 @@ impl Solve for KeyLegacyTypeParam {
 
     fn recursive(_answers: &AnswersSolver) -> Self::Recursive {}
 
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        LegacyTypeParameterLookup::NotParameter(Type::any_implicit())
+    }
+
     fn visit_type_mut(v: &mut LegacyTypeParameterLookup, f: &mut dyn FnMut(&mut Type)) {
         v.not_parameter_mut().into_iter().for_each(f);
     }
@@ -249,6 +271,10 @@ impl Solve for KeyTypeParams {
     }
 
     fn recursive(_answers: &AnswersSolver) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        QuantifiedVec(Vec::new())
+    }
 
     fn visit_type_mut(_: &mut Self::Answer, _: &mut dyn FnMut(&mut Type)) {
         // There are no types in the answer
@@ -305,9 +331,7 @@ impl<'a> Answers<'a> {
             items.reserve(answers.current.bindings.keys::<K>().len());
             for idx in answers.current.bindings.keys::<K>() {
                 let k = answers.current.bindings.idx_to_key(idx);
-                let v = Arc::unwrap_or_clone(
-                    answers.get(k).expect("Shouldn't have recursion in solve"),
-                );
+                let v = Arc::unwrap_or_clone(answers.get(k));
                 items.insert_once(idx, v);
             }
         }
@@ -380,22 +404,31 @@ impl<'a> AnswersSolver<'a> {
         self.current.bindings.module_info()
     }
 
-    pub fn with_module(&self, name: ModuleName) -> Self {
-        let current = self.answers.get(&name).unwrap();
-        AnswersSolver {
-            current,
+    pub fn get_from_module<K: Solve>(&self, name: ModuleName, k: &K) -> Arc<K::Answer>
+    where
+        AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
+        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+    {
+        let new_answers = AnswersSolver {
+            current: self.answers.get(&name).unwrap(),
             ..self.clone()
-        }
+        };
+        new_answers.get(k)
+    }
+
+    pub fn get_from_class<K: Solve>(&self, cls: &Class, k: &K) -> Arc<K::Answer>
+    where
+        AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
+        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+    {
+        self.get_from_module(cls.module_info().name(), k)
     }
 
     pub fn type_order(&self) -> TypeOrder {
         TypeOrder::new(self)
     }
 
-    fn try_get_idx<K: Solve>(
-        &self,
-        idx: Idx<K>,
-    ) -> Result<(Arc<K::Answer>, Option<K::Recursive>), K::Recursive>
+    pub fn get_idx<K: Solve>(&self, idx: Idx<K>) -> Arc<K::Answer>
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -420,10 +453,13 @@ impl<'a> AnswersSolver<'a> {
             let k = self.bindings().idx_to_key(idx);
             K::record_recursive(self, k, v.clone(), r.clone());
         }
-        result
+        match result {
+            Ok((v, _)) => v,
+            Err(r) => Arc::new(K::promote_recursive(r)),
+        }
     }
 
-    fn get<K: Solve>(&self, k: &K) -> Option<Arc<K::Answer>>
+    pub fn get<K: Solve>(&self, k: &K) -> Arc<K::Answer>
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -431,27 +467,10 @@ impl<'a> AnswersSolver<'a> {
         self.get_idx(self.bindings().key_to_idx(k))
     }
 
-    fn get_idx<K: Solve>(&self, k: Idx<K>) -> Option<Arc<K::Answer>>
-    where
-        AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
-        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
-    {
-        self.try_get_idx(k).ok().map(|(v, _)| v)
-    }
-
-    fn get_annotation(&self, key: &KeyAnnotation) -> Arc<Annotation> {
-        self.get_annotation_idx(self.bindings().key_to_idx(key))
-    }
-
-    fn get_annotation_idx(&self, key: Idx<KeyAnnotation>) -> Arc<Annotation> {
-        self.get_idx(key)
-            .unwrap_or_else(|| Arc::new(Annotation::default()))
-    }
-
     fn record_recursive(&self, key: &Key, answer: Arc<Type>, recursive: Var) {
         self.solver.record_recursive(
             recursive,
-            (*answer).clone(),
+            answer.arc_clone(),
             self.type_order(),
             self.errors(),
             self.module_info(),
@@ -459,45 +478,11 @@ impl<'a> AnswersSolver<'a> {
         );
     }
 
-    pub fn get_type(&self, key: &Key) -> Arc<Type> {
-        self.get_type_idx(self.bindings().key_to_idx(key))
-    }
-
-    pub fn get_type_idx(&self, key: Idx<Key>) -> Arc<Type> {
-        match self.try_get_idx(key) {
-            Err(v) => Arc::new(v.to_type()),
-            Ok((v, _)) => v,
-        }
-    }
-
-    pub fn get_base_class(&self, key: &KeyBaseClass) -> Arc<BaseClass> {
-        self.get(key)
-            .unwrap_or_else(|| Arc::new(BaseClass::Type(Type::any_implicit())))
-    }
-
-    pub fn get_mro(&self, key: &KeyMro) -> Arc<Mro> {
-        self.get(key).unwrap_or_else(|| Arc::new(Mro::cyclic()))
-    }
-
-    pub fn get_tparams(&self, key: &KeyTypeParams) -> Arc<QuantifiedVec> {
-        self.get(key)
-            .unwrap_or_else(|| Arc::new(QuantifiedVec(Vec::new())))
-    }
-
-    pub fn get_legacy_tparam_idx(
-        &self,
-        key: Idx<KeyLegacyTypeParam>,
-    ) -> Arc<LegacyTypeParameterLookup> {
-        self.get_idx(key).unwrap_or_else(|| {
-            Arc::new(LegacyTypeParameterLookup::NotParameter(Type::any_implicit()))
-        })
-    }
-
     fn solve_legacy_tparam(
         &self,
         binding: &BindingLegacyTypeParam,
     ) -> Arc<LegacyTypeParameterLookup> {
-        match &*self.get_type_idx(binding.0) {
+        match &*self.get_idx(binding.0) {
             Type::Type(box Type::TypeVar(_)) => {
                 let q = Quantified::type_var(self.uniques);
                 Arc::new(LegacyTypeParameterLookup::Parameter(q))
@@ -519,19 +504,14 @@ impl<'a> AnswersSolver<'a> {
             BindingTypeParams::Function(scoped, legacy) => {
                 let legacy_tparams: Vec<_> = legacy
                     .iter()
-                    .filter_map(|key| {
-                        self.get_legacy_tparam_idx(*key)
-                            .deref()
-                            .parameter()
-                            .copied()
-                    })
+                    .filter_map(|key| self.get_idx(*key).deref().parameter().copied())
                     .collect();
                 let mut tparams = scoped.clone();
                 tparams.extend(legacy_tparams);
                 QuantifiedVec(tparams)
             }
             BindingTypeParams::Class(class_def, legacy_params) => {
-                match &*self.get_type(class_def) {
+                match &*self.get_idx(*class_def) {
                     Type::ClassDef(cls) => self.tparams_of(cls, legacy_params),
                     _ => {
                         unreachable!(
@@ -547,7 +527,7 @@ impl<'a> AnswersSolver<'a> {
     fn solve_mro(&self, binding: &BindingMro) -> Arc<Mro> {
         match binding {
             BindingMro(k) => {
-                let self_ty = self.get_type_idx(*k);
+                let self_ty = self.get_idx(*k);
                 match &*self_ty {
                     Type::ClassType(cls) => Arc::new(self.mro_of(cls.class_object())),
                     _ => {
@@ -560,7 +540,7 @@ impl<'a> AnswersSolver<'a> {
 
     fn solve_base_class(&self, binding: &BindingBaseClass) -> Arc<BaseClass> {
         match binding {
-            BindingBaseClass(x, self_type) => Arc::new(self.base_class_of(x, *self_type)),
+            BindingBaseClass(x) => Arc::new(self.base_class_of(x)),
         }
     }
 
@@ -571,7 +551,7 @@ impl<'a> AnswersSolver<'a> {
                 if let Some(self_type) = self_type
                     && let Some(ty) = &mut ann.ty
                 {
-                    let self_type = &*self.get_type_idx(*self_type);
+                    let self_type = &*self.get_idx(*self_type);
                     ty.subst_self_type_mut(self_type);
                 }
                 Arc::new(ann)
@@ -583,7 +563,7 @@ impl<'a> AnswersSolver<'a> {
                 Arc::new(Annotation::new_type(t))
             }
             BindingAnnotation::Forward(k) => {
-                Arc::new(Annotation::new_type(self.get_type_idx(*k).arc_clone()))
+                Arc::new(Annotation::new_type(self.get_idx(*k).arc_clone()))
             }
         }
     }
@@ -749,35 +729,71 @@ impl<'a> AnswersSolver<'a> {
         }
     }
 
+    fn context_value_enter(
+        &self,
+        context_manager_type: &Type,
+        kind: ContextManagerKind,
+        range: TextRange,
+    ) -> Type {
+        match kind {
+            ContextManagerKind::Sync => {
+                self.call_method_with_types(context_manager_type, &dunder::ENTER, range, &[])
+            }
+            ContextManagerKind::Async => self.unwrap_awaitable(
+                self.call_method_with_types(context_manager_type, &dunder::AENTER, range, &[]),
+                None,
+            ),
+        }
+    }
+
+    fn context_value_exit(
+        &self,
+        context_manager_type: &Type,
+        kind: ContextManagerKind,
+        range: TextRange,
+    ) -> Type {
+        let base_exception_class_type = Type::type_form(self.stdlib.base_exception());
+        let exit_arg_types = [
+            TypeCallArg::new(
+                Type::Union(vec![base_exception_class_type, Type::None]),
+                range,
+            ),
+            TypeCallArg::new(
+                Type::Union(vec![self.stdlib.base_exception(), Type::None]),
+                range,
+            ),
+            TypeCallArg::new(
+                Type::Union(vec![self.stdlib.traceback_type(), Type::None]),
+                range,
+            ),
+        ];
+        match kind {
+            ContextManagerKind::Sync => self.call_method_with_types(
+                context_manager_type,
+                &dunder::EXIT,
+                range,
+                &exit_arg_types,
+            ),
+            ContextManagerKind::Async => self.unwrap_awaitable(
+                self.call_method_with_types(
+                    context_manager_type,
+                    &dunder::AEXIT,
+                    range,
+                    &exit_arg_types,
+                ),
+                None,
+            ),
+        }
+    }
+
     fn context_value(
         &self,
         context_manager_type: Type,
-        enter_method_name: &Name,
-        exit_method_name: &Name,
+        kind: ContextManagerKind,
         range: TextRange,
     ) -> Type {
-        let enter_type =
-            self.call_method_with_types(&context_manager_type, enter_method_name, range, &[]);
-        let base_exception_class_type = Type::type_form(self.stdlib.base_exception());
-        let exit_type = self.call_method_with_types(
-            &context_manager_type,
-            exit_method_name,
-            range,
-            &[
-                TypeCallArg::new(
-                    Type::Union(vec![base_exception_class_type, Type::None]),
-                    range,
-                ),
-                TypeCallArg::new(
-                    Type::Union(vec![self.stdlib.base_exception(), Type::None]),
-                    range,
-                ),
-                TypeCallArg::new(
-                    Type::Union(vec![self.stdlib.traceback_type(), Type::None]),
-                    range,
-                ),
-            ],
-        );
+        let enter_type = self.context_value_enter(&context_manager_type, kind, range);
+        let exit_type = self.context_value_exit(&context_manager_type, kind, range);
         self.check_type(
             &Type::Union(vec![self.stdlib.bool(), Type::None]),
             &exit_type,
@@ -803,11 +819,11 @@ impl<'a> AnswersSolver<'a> {
     fn solve_binding_inner(&self, binding: &Binding) -> Type {
         match binding {
             Binding::Expr(ann, e) => {
-                let ty = ann.map(|k| self.get_annotation_idx(k));
+                let ty = ann.map(|k| self.get_idx(k));
                 self.expr(e, ty.as_ref().and_then(|x| x.ty.as_ref()))
             }
             Binding::IterableValue(ann, e) => {
-                let ty = ann.map(|k| self.get_annotation_idx(k));
+                let ty = ann.map(|k| self.get_idx(k));
                 let hint = ty.and_then(|x| x.ty.clone().map(|ty| self.stdlib.iterable(ty)));
                 let iterable = self.iterate(&self.expr(e, hint.as_ref()), e.range());
                 match iterable {
@@ -817,22 +833,8 @@ impl<'a> AnswersSolver<'a> {
             }
             Binding::ContextValue(ann, e, kind) => {
                 let context_manager = self.expr(e, None);
-                let context_value = match kind {
-                    ContextManagerKind::Sync => self.context_value(
-                        context_manager,
-                        &dunder::ENTER,
-                        &dunder::EXIT,
-                        e.range(),
-                    ),
-                    ContextManagerKind::Async => self.context_value(
-                        context_manager,
-                        &dunder::AENTER,
-                        &dunder::AEXIT,
-                        e.range(),
-                    ),
-                };
-
-                let ty = ann.map(|k| self.get_annotation_idx(k));
+                let context_value = self.context_value(context_manager, *kind, e.range());
+                let ty = ann.map(|k| self.get_idx(k));
                 match ty.as_ref().and_then(|x| x.ty.as_ref()) {
                     Some(ty) => self.check_type(ty, &context_value, e.range()),
                     None => context_value,
@@ -948,49 +950,45 @@ impl<'a> AnswersSolver<'a> {
                 };
                 let mut args = Vec::with_capacity(x.parameters.len());
                 args.extend(x.parameters.posonlyargs.iter().map(|x| {
-                    let annot =
-                        self.get_annotation(&KeyAnnotation::Annotation(x.parameter.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(x.parameter.name.clone()));
                     let ty = annot.get_type();
                     let required = check_default(&x.default, ty);
                     Arg::PosOnly(ty.clone(), required)
                 }));
                 args.extend(x.parameters.args.iter().map(|x| {
-                    let annot =
-                        self.get_annotation(&KeyAnnotation::Annotation(x.parameter.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(x.parameter.name.clone()));
                     let ty = annot.get_type();
                     let required = check_default(&x.default, ty);
                     Arg::Pos(x.parameter.name.id.clone(), ty.clone(), required)
                 }));
                 args.extend(x.parameters.vararg.iter().map(|x| {
-                    let annot = self.get_annotation(&KeyAnnotation::Annotation(x.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(x.name.clone()));
                     let ty = annot.get_type();
                     Arg::VarArg(ty.clone())
                 }));
                 args.extend(x.parameters.kwonlyargs.iter().map(|x| {
-                    let annot =
-                        self.get_annotation(&KeyAnnotation::Annotation(x.parameter.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(x.parameter.name.clone()));
                     let ty = annot.get_type();
                     let required = check_default(&x.default, ty);
                     Arg::KwOnly(x.parameter.name.id.clone(), ty.clone(), required)
                 }));
                 args.extend(x.parameters.kwarg.iter().map(|x| {
-                    let annot = self.get_annotation(&KeyAnnotation::Annotation(x.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(x.name.clone()));
                     let ty = annot.get_type();
                     Arg::Kwargs(ty.clone())
                 }));
-                let ret = self.get_type(&Key::ReturnType(x.name.clone())).arc_clone();
+                let ret = self.get(&Key::ReturnType(x.name.clone())).arc_clone();
                 let ret = if x.is_async {
                     self.stdlib
                         .coroutine(Type::any_implicit(), Type::any_implicit(), ret)
                 } else {
                     ret
                 };
-                let qs = self.get_tparams(&KeyTypeParams(x.name.clone()));
+                let qs = self.get(&KeyTypeParams(x.name.clone()));
                 Type::forall(qs.0.clone(), Type::callable(args, ret))
             }
             Binding::Import(m, name) => self
-                .with_module(*m)
-                .get_type(&Key::Export(name.clone()))
+                .get_from_module(*m, &Key::Export(name.clone()))
                 .arc_clone(),
             Binding::Class(x, fields, n_bases) => {
                 let tparams = self.type_params(&x.type_params);
@@ -1003,18 +1001,18 @@ impl<'a> AnswersSolver<'a> {
                 );
                 Type::ClassDef(c)
             }
-            Binding::SelfType(k) => match &*self.get_type_idx(*k) {
+            Binding::SelfType(k) => match &*self.get_idx(*k) {
                 Type::ClassDef(c) => c.self_type(self.get_tparams_for_class(c).deref()),
                 _ => unreachable!(),
             },
-            Binding::Forward(k) => self.get_type_idx(*k).arc_clone(),
+            Binding::Forward(k) => self.get_idx(*k).arc_clone(),
             Binding::Phi(ks) => {
                 if ks.len() == 1 {
-                    self.get_type_idx(*ks.first().unwrap()).arc_clone()
+                    self.get_idx(*ks.first().unwrap()).arc_clone()
                 } else {
                     self.unions(
                         &ks.iter()
-                            .map(|k| self.get_type_idx(*k).arc_clone())
+                            .map(|k| self.get_idx(*k).arc_clone())
                             .collect::<Vec<_>>(),
                     )
                 }
@@ -1028,7 +1026,7 @@ impl<'a> AnswersSolver<'a> {
                 self.check_is_exception(cause, cause.range(), true);
                 Type::None // Unused
             }
-            Binding::AnnotatedType(ann, val) => match &self.get_annotation_idx(*ann).ty {
+            Binding::AnnotatedType(ann, val) => match &self.get_idx(*ann).ty {
                 Some(ty) => ty.clone(),
                 None => self.solve_binding_inner(val),
             },
@@ -1038,7 +1036,7 @@ impl<'a> AnswersSolver<'a> {
             Binding::Module(m, path, prev) => {
                 let prev = prev
                     .as_ref()
-                    .and_then(|x| self.get_type_idx(*x).as_module().cloned());
+                    .and_then(|x| self.get_idx(*x).as_module().cloned());
                 match prev {
                     Some(prev) if prev.path() == path => prev.add_module(*m).to_type(),
                     _ => {
@@ -1055,7 +1053,7 @@ impl<'a> AnswersSolver<'a> {
                 }
             }
             Binding::CheckLegacyTypeParam(key, range_if_scoped_params_exist) => {
-                match &*self.get_legacy_tparam_idx(*key) {
+                match &*self.get_idx(*key) {
                     LegacyTypeParameterLookup::Parameter(q) => {
                         // This class or function has scoped (PEP 695) type parameters. Mixing legacy-style parameters is an error.
                         if let Some(r) = range_if_scoped_params_exist {
@@ -1073,8 +1071,8 @@ impl<'a> AnswersSolver<'a> {
                 }
             }
             Binding::Eq(k1, k2, name) => {
-                let ann1 = self.get_annotation_idx(*k1);
-                let ann2 = self.get_annotation_idx(*k2);
+                let ann1 = self.get_idx(*k1);
+                let ann2 = self.get_idx(*k2);
                 if let Some(t1) = &ann1.ty
                     && let Some(t2) = &ann2.ty
                     && *t1 != *t2
@@ -1092,7 +1090,7 @@ impl<'a> AnswersSolver<'a> {
                 Type::None // Unused
             }
             Binding::NameAssign(name, annot_key, binding, range) => {
-                let annot = annot_key.map(|k| self.get_annotation_idx(k));
+                let annot = annot_key.map(|k| self.get_idx(k));
                 let ty = self.solve_binding_inner(binding);
                 match (annot, &ty) {
                     (Some(annot), _) if annot.qualifiers.contains(&Qualifier::TypeAlias) => {
@@ -1189,7 +1187,7 @@ impl<'a> AnswersSolver<'a> {
             .map(|x| {
                 (
                     x.id.clone(),
-                    get_quantified(&self.get_type(&Key::Definition(x.clone()))),
+                    get_quantified(&self.get(&Key::Definition(x.clone()))),
                 )
             })
             .collect()
@@ -1240,8 +1238,7 @@ impl<'a> AnswersSolver<'a> {
         if !exports.contains(name, self.current.exports) {
             self.error(range, format!("No attribute `{name}` in module `{from}`",))
         } else {
-            self.with_module(from)
-                .get_type(&Key::Export(name.clone()))
+            self.get_from_module(from, &Key::Export(name.clone()))
                 .arc_clone()
         }
     }

@@ -271,10 +271,8 @@ pub enum BindingAnnotation {
 /// Binding used to compute a `BaseClass`.
 ///
 /// The `Expr` is the base class expression, from the containing class header.
-/// The `Key` is the self type of the containing class, which might appear in base
-/// class type arguments.
 #[derive(Clone, Debug)]
-pub struct BindingBaseClass(pub Expr, pub Idx<Key>);
+pub struct BindingBaseClass(pub Expr);
 
 /// Binding for the class `Mro`. The `Key` is the self type of the class.
 #[derive(Clone, Debug)]
@@ -290,7 +288,7 @@ pub enum BindingTypeParams {
     /// The first argument is a lookup for the class definition.
     /// The second argument tracks all names that appear in bases, which might
     /// indicate legacy type parameters if they point to variable declarations.
-    Class(Key, Vec<Idx<KeyLegacyTypeParam>>),
+    Class(Idx<Key>, Vec<Idx<KeyLegacyTypeParam>>),
 }
 
 #[derive(Clone, Debug)]
@@ -373,12 +371,7 @@ impl DisplayWith<Bindings> for BindingAnnotation {
 
 impl DisplayWith<Bindings> for BindingBaseClass {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
-        write!(
-            f,
-            "_: {} (self {})",
-            ctx.module_info().display(&self.0),
-            ctx.display(self.1)
-        )
+        write!(f, "base_class {}", ctx.module_info().display(&self.0),)
     }
 }
 
@@ -395,10 +388,10 @@ impl DisplayWith<Bindings> for Key {
 }
 
 impl DisplayWith<Bindings> for BindingTypeParams {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>, _: &Bindings) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
         match self {
             Self::Function(_, _) => write!(f, "function_type_params"),
-            Self::Class(id, _) => write!(f, "class_type_params {}", id),
+            Self::Class(id, _) => write!(f, "class_type_params {}", ctx.display(*id)),
         }
     }
 }
