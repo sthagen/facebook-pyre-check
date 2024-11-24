@@ -248,3 +248,44 @@ def f(c: Child[int, str]):
     assert_type(c.y, int)
     "#,
 );
+
+simple_test!(
+    test_both_generic_and_protocol,
+    r#"
+from typing import Generic, Protocol, TypeVar, assert_type
+
+T = TypeVar("T")
+S = TypeVar("S")
+U = TypeVar("U")
+V = TypeVar("V")
+
+class C(Protocol[V, T], Generic[S, T, U]):  # E: Class `C` specifies type parameters in both `Generic` and `Protocol` bases
+    s: S
+    t: T
+    u: U
+    v: V
+
+def f(c: C[int, str, bool, bytes]):
+    assert_type(c.s, int)
+    assert_type(c.t, str)
+    assert_type(c.u, bool)
+    assert_type(c.v, bytes)
+    "#,
+);
+
+simple_test!(
+    test_both_generic_and_implicit,
+    r#"
+from typing import Generic, Protocol, TypeVar, assert_type
+
+T = TypeVar("T")
+S = TypeVar("S")
+
+class C(Generic[T], list[S]):  # E: Class `C` uses type variables not specified in `Generic` or `Protocol` base
+    t: T
+
+def f(c: C[int, str]):
+    assert_type(c.t, int)
+    assert_type(c[0], str)
+    "#,
+);

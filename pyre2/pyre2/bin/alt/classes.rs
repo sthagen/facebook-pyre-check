@@ -123,7 +123,13 @@ impl<'a> AnswersSolver<'a> {
             }
         }
         if !generic_tparams.is_empty() && !protocol_tparams.is_empty() {
-            // TODO(stroxler) Complain about using both Generic[...] and Protocol[...].
+            self.error(
+                cls.name().range,
+                format!(
+                    "Class `{}` specifies type parameters in both `Generic` and `Protocol` bases",
+                    cls.name().id,
+                ),
+            );
         }
         // Initialized the tparams: combine scoped and explicit type parameters
         let mut tparams = scoped_tparams;
@@ -138,7 +144,13 @@ impl<'a> AnswersSolver<'a> {
                     t.for_each_quantified(&mut |q| {
                         if !tparams.contains(&q) && legacy_quantifieds.contains(&q) {
                             if !implicit_tparams_okay {
-                                // TODO(stroxler): complain if explicit and implicit legacy type parameters are mixed.
+                                self.error(
+                                    cls.name().range,
+                                    format!(
+                                        "Class `{}` uses type variables not specified in `Generic` or `Protocol` base",
+                                        cls.name().id,
+                                    ),
+                                );
                             }
                             tparams.insert(q);
                         }
