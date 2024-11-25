@@ -29,10 +29,12 @@ use crate::alt::binding::BindingLegacyTypeParam;
 use crate::alt::binding::BindingMro;
 use crate::alt::binding::BindingTypeParams;
 use crate::alt::binding::ContextManagerKind;
+use crate::alt::binding::Exported;
 use crate::alt::binding::FunctionKind;
 use crate::alt::binding::Key;
 use crate::alt::binding::KeyAnnotation;
 use crate::alt::binding::KeyBaseClass;
+use crate::alt::binding::KeyExported;
 use crate::alt::binding::KeyLegacyTypeParam;
 use crate::alt::binding::KeyMro;
 use crate::alt::binding::KeyTypeParams;
@@ -186,7 +188,36 @@ impl Solve for Key {
     }
 
     fn record_recursive(answers: &AnswersSolver, key: &Key, answer: Arc<Type>, recursive: Var) {
-        answers.record_recursive(key, answer, recursive);
+        answers.record_recursive(key.range(), answer, recursive);
+    }
+
+    fn promote_recursive(x: Self::Recursive) -> Self::Answer {
+        Type::Var(x)
+    }
+
+    fn visit_type_mut(v: &mut Type, f: &mut dyn FnMut(&mut Type)) {
+        f(v);
+    }
+}
+
+impl Solve for KeyExported {
+    type Recursive = Var;
+
+    fn solve(answers: &AnswersSolver, binding: &Binding) -> Arc<Type> {
+        answers.solve_binding(binding)
+    }
+
+    fn recursive(answers: &AnswersSolver) -> Self::Recursive {
+        answers.solver().fresh_recursive()
+    }
+
+    fn record_recursive(
+        answers: &AnswersSolver,
+        key: &KeyExported,
+        answer: Arc<Type>,
+        recursive: Var,
+    ) {
+        answers.record_recursive(key.range(), answer, recursive);
     }
 
     fn promote_recursive(x: Self::Recursive) -> Self::Answer {
@@ -406,7 +437,7 @@ impl<'a> AnswersSolver<'a> {
         &self.current.solver
     }
 
-    pub fn get_from_module<K: Solve>(&self, name: ModuleName, k: &K) -> Arc<K::Answer>
+    pub fn get_from_module<K: Solve + Exported>(&self, name: ModuleName, k: &K) -> Arc<K::Answer>
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -420,7 +451,7 @@ impl<'a> AnswersSolver<'a> {
         Arc::new(ans)
     }
 
-    pub fn get_from_class<K: Solve>(&self, cls: &Class, k: &K) -> Arc<K::Answer>
+    pub fn get_from_class<K: Solve + Exported>(&self, cls: &Class, k: &K) -> Arc<K::Answer>
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -471,14 +502,14 @@ impl<'a> AnswersSolver<'a> {
         self.get_idx(self.bindings().key_to_idx(k))
     }
 
-    fn record_recursive(&self, key: &Key, answer: Arc<Type>, recursive: Var) {
+    fn record_recursive(&self, loc: TextRange, answer: Arc<Type>, recursive: Var) {
         self.solver().record_recursive(
             recursive,
             answer.arc_clone(),
             self.type_order(),
             self.errors(),
             self.module_info(),
-            key.range(),
+            loc,
         );
     }
 
@@ -992,7 +1023,7 @@ impl<'a> AnswersSolver<'a> {
                 Type::forall(qs.0.clone(), Type::callable(args, ret))
             }
             Binding::Import(m, name) => self
-                .get_from_module(*m, &Key::Export(name.clone()))
+                .get_from_module(*m, &KeyExported::Export(name.clone()))
                 .arc_clone(),
             Binding::Class(x, fields, n_bases) => {
                 let tparams = self.type_params(&x.type_params);
@@ -1242,7 +1273,7 @@ impl<'a> AnswersSolver<'a> {
         if !exports.contains(name, self.current.exports) {
             self.error(range, format!("No attribute `{name}` in module `{from}`",))
         } else {
-            self.get_from_module(from, &Key::Export(name.clone()))
+            self.get_from_module(from, &KeyExported::Export(name.clone()))
                 .arc_clone()
         }
     }
