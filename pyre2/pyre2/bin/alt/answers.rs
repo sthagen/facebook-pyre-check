@@ -405,8 +405,12 @@ impl<'a> Answers<'a> {
         match solver.get_import(name, module, TextRange::default()) {
             Type::ClassDef(cls) => Some(cls),
             ty => {
-                tracing::error!(
-                    "Did not expect non-class type `{ty}` for stdlib import `{module}.{name}`"
+                self.errors.add(
+                    self.bindings.module_info(),
+                    TextRange::default(),
+                    format!(
+                        "Did not expect non-class type `{ty}` for stdlib import `{module}.{name}`"
+                    ),
                 );
                 None
             }
@@ -1183,6 +1187,13 @@ impl<'a> AnswersSolver<'a> {
             self.solver()
                 .error(want, got, self.errors(), self.module_info(), loc);
             want.clone()
+        }
+    }
+
+    pub fn distribute_over_union(&self, ty: &Type, mut f: impl FnMut(&Type) -> Type) -> Type {
+        match ty {
+            Type::Union(tys) => self.unions(&tys.iter().map(f).collect::<Vec<_>>()),
+            _ => f(ty),
         }
     }
 
