@@ -73,3 +73,73 @@ a2: type[A] = B[int]
 b2: type[B] = A[int]  # E: EXPECTED type[A[int]] <: type[B[Error]]
 "#,
 );
+
+simple_test!(
+    test_literal_string_subtyping,
+    r#"
+from typing import Literal, LiteralString
+
+def l0() -> Literal["foo"]: ...
+def l1() -> Literal["foo"] | Literal["bar"]: ...
+def l2() -> LiteralString: ...
+def l3() -> LiteralString | Literal["foo"]: ...
+def l4() -> str: ...
+
+test0: LiteralString = l0()
+test1: LiteralString = l1()
+test2: str = l0()
+test3: str = l1()
+test4: str = l2()
+test5: Literal["foo"] = l2()  # E: LiteralString <: Literal['foo']
+test6: str = l3()
+test7: LiteralString = l4()  # E: str <: LiteralString
+
+test10: object = l0()
+test11: object = l3()
+"#,
+);
+
+simple_test!(
+    test_type_guard_subtyping,
+    r#"
+from typing import Callable, TypeGuard
+
+def t0() -> TypeGuard[bool]: ...
+def t1() -> TypeGuard[int]: ...
+def t2() -> TypeGuard[bool] | TypeGuard[int]: ...
+def t3() -> bool: ...
+
+test0: Callable[[], bool] = t0
+test1: Callable[[], TypeGuard[int]] = t0
+test2: Callable[[], bool] = t1
+test3: Callable[[], TypeGuard[bool]] = t1  # E: Callable[[], TypeGuard[int]] <: Callable[[], TypeGuard[bool]]
+test4: Callable[[], bool] = t2
+test5: Callable[[], TypeGuard[int]] = t2
+test6: Callable[[], TypeGuard[bool]] = t2  # E: Callable[[], TypeGuard[bool] | TypeGuard[int]] <: Callable[[], TypeGuard[bool]]
+test7: Callable[[], TypeGuard[bool]] = t3  # E: Callable[[], bool] <: Callable[[], TypeGuard[bool]]
+
+test8: Callable[[], object] = t0
+test9: Callable[[], object] = t2
+"#,
+);
+
+simple_test!(
+    test_type_is_subtyping,
+    r#"
+from typing import Callable, TypeIs
+
+def t0() -> TypeIs[bool]: ...
+def t1() -> TypeIs[int]: ...
+def t2() -> TypeIs[bool] | TypeIs[int]: ...
+def t3() -> bool: ...
+
+test0: Callable[[], bool] = t0
+test1: Callable[[], TypeIs[int]] = t0  # E: Callable[[], TypeIs[bool]] <: Callable[[], TypeIs[int]]
+test2: Callable[[], bool] = t1
+test4: Callable[[], bool] = t2
+test5: Callable[[], TypeIs[int]] = t3  # E: Callable[[], bool] <: Callable[[], TypeIs[int]]
+
+test6: Callable[[], object] = t0
+test7: Callable[[], object] = t2
+"#,
+);

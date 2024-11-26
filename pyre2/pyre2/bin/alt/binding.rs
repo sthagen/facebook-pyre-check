@@ -13,6 +13,7 @@ use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprSubscript;
 use ruff_python_ast::Identifier;
+use ruff_python_ast::StmtAugAssign;
 use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
 use ruff_text_size::Ranged;
@@ -61,17 +62,8 @@ pub enum Key {
     Phi(Name, TextRange),
     /// The binding definition site, anywhere it occurs
     Anywhere(Name, TextRange),
-}
-
-/// Like `Key`, but used for things accessible in another module.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum KeyExported {
-    /// The binding definition site, at the end of the module (used for export).
-    /// If it has an annotation, only the annotation will be returned.
-    Export(Name),
-    /// A reference to a field in a class.
-    /// The range is the range of the class name, not the field name.
-    ClassField(Identifier, Name),
+    /// A 'keyword argument' appearing in a class header, e.g. `metaclass`.
+    ClassKeyword(Identifier, Name),
 }
 
 impl Ranged for Key {
@@ -86,15 +78,53 @@ impl Ranged for Key {
             Self::Anon(r) => *r,
             Self::Phi(_, r) => *r,
             Self::Anywhere(_, r) => *r,
+            Self::ClassKeyword(c, _) => c.range,
         }
     }
+}
+
+impl Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Import(n, r) => write!(f, "import {n} {r:?}"),
+            Self::Definition(x) => write!(f, "{} {:?}", x.id, x.range),
+            Self::SelfType(x) => write!(f, "self {} {:?}", x.id, x.range),
+            Self::Usage(x) => write!(f, "use {} {:?}", x.id, x.range),
+            Self::Anon(r) => write!(f, "anon {r:?}"),
+            Self::Phi(n, r) => write!(f, "phi {n} {r:?}"),
+            Self::Anywhere(n, r) => write!(f, "anywhere {n} {r:?}"),
+            Self::ClassKeyword(x, n) => write!(f, "class_keyword {} {:?} . {}", x.id, x.range, n),
+            Self::ReturnType(x) => write!(f, "return {} {:?}", x.id, x.range),
+            Self::ReturnExpression(x, i) => write!(f, "return {} {:?} @ {i:?}", x.id, x.range),
+        }
+    }
+}
+
+/// Like `Key`, but used for things accessible in another module.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum KeyExported {
+    /// The binding definition site, at the end of the module (used for export).
+    /// If it has an annotation, only the annotation will be returned.
+    Export(Name),
+    /// A reference to a field in a class.
+    /// The range is the range of the class name, not the field name.
+    ClassField(Identifier, Name),
 }
 
 impl Ranged for KeyExported {
     fn range(&self) -> TextRange {
         match self {
             Self::Export(_) => TextRange::default(),
-            Self::ClassField(x, _) => x.range,
+            Self::ClassField(c, _) => c.range,
+        }
+    }
+}
+
+impl Display for KeyExported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Export(n) => write!(f, "export {n}"),
+            Self::ClassField(x, n) => write!(f, "field {} {:?} . {}", x.id, x.range, n),
         }
     }
 }
@@ -120,6 +150,16 @@ impl Ranged for KeyAnnotation {
     }
 }
 
+impl Display for KeyAnnotation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Annotation(x) => write!(f, "annot {} {:?}", x.id, x.range),
+            Self::ReturnAnnotation(x) => write!(f, "return {} {:?}", x.id, x.range),
+            Self::AttrAnnotation(r) => write!(f, "attr {:?}", r),
+        }
+    }
+}
+
 /// Key that refers to a `BaseClass`
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct KeyBaseClass(pub Identifier, pub usize);
@@ -127,6 +167,16 @@ pub struct KeyBaseClass(pub Identifier, pub usize);
 impl Ranged for KeyBaseClass {
     fn range(&self) -> TextRange {
         self.0.range
+    }
+}
+
+impl Display for KeyBaseClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "base_class {} {:?} [{}]",
+            self.0.id, self.0.range, self.1
+        )
     }
 }
 
@@ -141,12 +191,24 @@ impl Ranged for KeyMro {
     }
 }
 
+impl Display for KeyMro {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "mro {} {:?}", self.0.id, self.0.range)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct KeyLegacyTypeParam(pub Identifier);
 
 impl Ranged for KeyLegacyTypeParam {
     fn range(&self) -> TextRange {
         self.0.range
+    }
+}
+
+impl Display for KeyLegacyTypeParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "legacy_type_param {} {:?}", self.0.id, self.0.range)
     }
 }
 
@@ -157,6 +219,12 @@ pub struct KeyTypeParams(pub Identifier);
 impl Ranged for KeyTypeParams {
     fn range(&self) -> TextRange {
         self.0.range
+    }
+}
+
+impl Display for KeyTypeParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "type_params {} {:?}", self.0.id, self.0.range)
     }
 }
 
@@ -218,6 +286,7 @@ pub enum Binding {
     /// If the annotation has a type inside it (e.g. `int` then use the annotation).
     /// If the annotation doesn't (e.g. it's `Final`), then use the binding.
     AnnotatedType(Idx<KeyAnnotation>, Box<Binding>),
+    AugAssign(StmtAugAssign),
     /// The Any type.
     AnyType(AnyStyle),
     /// The str type.
@@ -232,6 +301,8 @@ pub enum Binding {
     /// The field names should be used to build `ClassField` keys for lookup.
     /// Track the number of base classes, use this to build `BaseClass` keys for lookup.
     Class(StmtClassDef, SmallSet<Name>, usize),
+    /// A class header keyword argument (e.g. the `metaclass`).
+    ClassKeyword(Expr),
     /// The Self type for a class, must point at a class.
     SelfType(Idx<Key>),
     /// A forward reference to another binding.
@@ -294,7 +365,7 @@ pub enum BindingAnnotation {
 #[derive(Clone, Debug)]
 pub struct BindingBaseClass(pub Expr);
 
-/// Binding for the class `Mro`. The `Key` is the self type of the class.
+/// Binding for the class `Mro`. The `Key` points to the definition of the class.
 #[derive(Clone, Debug)]
 pub struct BindingMro(pub Idx<Key>);
 
@@ -313,69 +384,6 @@ pub enum BindingTypeParams {
 
 #[derive(Clone, Debug)]
 pub struct BindingLegacyTypeParam(pub Idx<Key>);
-
-impl Display for KeyAnnotation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Annotation(x) => write!(f, "annot {} {:?}", x.id, x.range),
-            Self::ReturnAnnotation(x) => write!(f, "return {} {:?}", x.id, x.range),
-            Self::AttrAnnotation(r) => write!(f, "attr {:?}", r),
-        }
-    }
-}
-
-impl Display for KeyBaseClass {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "base_class {} {:?} [{}]",
-            self.0.id, self.0.range, self.1
-        )
-    }
-}
-
-impl Display for KeyMro {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "mro {} {:?}", self.0.id, self.0.range)
-    }
-}
-
-impl Display for KeyLegacyTypeParam {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "legacy_type_param {} {:?}", self.0.id, self.0.range)
-    }
-}
-
-impl Display for KeyTypeParams {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "type_params {} {:?}", self.0.id, self.0.range)
-    }
-}
-
-impl Display for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Import(n, r) => write!(f, "import {n} {r:?}"),
-            Self::Definition(x) => write!(f, "{} {:?}", x.id, x.range),
-            Self::SelfType(x) => write!(f, "self {} {:?}", x.id, x.range),
-            Self::Usage(x) => write!(f, "use {} {:?}", x.id, x.range),
-            Self::Anon(r) => write!(f, "anon {r:?}"),
-            Self::Phi(n, r) => write!(f, "phi {n} {r:?}"),
-            Self::Anywhere(n, r) => write!(f, "anywhere {n} {r:?}"),
-            Self::ReturnType(x) => write!(f, "return {} {:?}", x.id, x.range),
-            Self::ReturnExpression(x, i) => write!(f, "return {} {:?} @ {i:?}", x.id, x.range),
-        }
-    }
-}
-
-impl Display for KeyExported {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Export(n) => write!(f, "export {n}"),
-            Self::ClassField(x, n) => write!(f, "field {} {:?} . {}", x.id, x.range, n),
-        }
-    }
-}
 
 impl DisplayWith<Bindings> for BindingAnnotation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
@@ -485,8 +493,10 @@ impl DisplayWith<Bindings> for Binding {
             Self::Function(x, _) => write!(f, "def {}", x.name.id),
             Self::Import(m, n) => write!(f, "import {m}.{n}"),
             Self::Class(c, _, _) => write!(f, "class {}", c.name.id),
+            Self::ClassKeyword(x) => write!(f, "class_keyword {}", m.display(x)),
             Self::SelfType(k) => write!(f, "self {}", ctx.display(*k)),
             Self::Forward(k) => write!(f, "{}", ctx.display(*k)),
+            Self::AugAssign(s) => write!(f, "augmented_assign {:?}", s),
             Self::AnyType(s) => write!(f, "anytype {s}"),
             Self::StrType => write!(f, "strtype"),
             Self::TypeParameter(q) => write!(f, "type_parameter {q}"),

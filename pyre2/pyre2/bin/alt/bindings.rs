@@ -59,7 +59,7 @@ use crate::alt::binding::RaisedException;
 use crate::alt::binding::SizeExpectation;
 use crate::alt::binding::UnpackedPosition;
 use crate::alt::definitions::Definitions;
-use crate::alt::exports::Exports;
+use crate::alt::exports::LookupExport;
 use crate::alt::table::Keyed;
 use crate::alt::table::TableKeyed;
 use crate::alt::util::is_ellipse;
@@ -118,7 +118,7 @@ impl Display for Bindings {
 
 struct BindingsBuilder<'a> {
     module_info: ModuleInfo,
-    modules: &'a SmallMap<ModuleName, Exports>,
+    modules: &'a LookupExport,
     config: &'a Config,
     errors: &'a ErrorCollector,
     uniques: &'a UniqueFactory,
@@ -144,7 +144,7 @@ impl Static {
         x: &[Stmt],
         module_info: &ModuleInfo,
         top_level: bool,
-        modules: &SmallMap<ModuleName, Exports>,
+        modules: &LookupExport,
         config: &Config,
     ) {
         let mut d = Definitions::new(x, module_info.name(), module_info.is_init(), config);
@@ -155,7 +155,7 @@ impl Static {
             self.add(name, range)
         }
         for (m, range) in d.import_all {
-            let extra = modules.get(&m).unwrap().wildcard(modules);
+            let extra = modules.get(m).wildcard(modules);
             for name in extra.iter() {
                 self.add(name.clone(), range)
             }
@@ -355,7 +355,7 @@ impl Bindings {
     pub fn new(
         x: Vec<Stmt>,
         module_info: ModuleInfo,
-        modules: &SmallMap<ModuleName, Exports>,
+        modules: &LookupExport,
         config: &Config,
         errors: &ErrorCollector,
         uniques: &UniqueFactory,
@@ -445,7 +445,7 @@ impl<'a> BindingsBuilder<'a> {
 
     fn inject_implicit(&mut self) {
         let builtins_module = ModuleName::builtins();
-        let builtins_export = self.modules.get(&builtins_module).unwrap();
+        let builtins_export = self.modules.get(builtins_module);
         for name in builtins_export.wildcard(self.modules).iter() {
             let key = Key::Import(name.clone(), TextRange::default());
             let idx = self
@@ -515,7 +515,7 @@ impl<'a> BindingsBuilder<'a> {
             for comp in comps.iter() {
                 self.scopes.last_mut().stat.expr_lvalue(&comp.target);
                 let make_binding = |k| Binding::IterableValue(k, comp.iter.clone());
-                self.bind_target(&comp.target, &make_binding);
+                self.bind_target(&comp.target, &make_binding, true);
             }
         };
         match x {
@@ -631,11 +631,13 @@ impl<'a> BindingsBuilder<'a> {
         self.bind_key(&name.id, idx, annotation, false)
     }
 
+    // `should_ensure_expr` determines whether to call `ensure_expr` recursively in `bind_target`
     fn bind_unpacking(
         &mut self,
         elts: &[Expr],
         make_binding: &dyn Fn(Option<Idx<KeyAnnotation>>) -> Binding,
         range: TextRange,
+        should_ensure_expr: bool,
     ) {
         // An unpacking has zero or one splats (starred expressions).
         let mut splat = false;
@@ -652,7 +654,7 @@ impl<'a> BindingsBuilder<'a> {
                             UnpackedPosition::Slice(i, j),
                         )
                     };
-                    self.bind_target(&e.value, &make_nested_binding);
+                    self.bind_target(&e.value, &make_nested_binding, should_ensure_expr);
                 }
                 _ => {
                     let idx = if splat {
@@ -665,7 +667,7 @@ impl<'a> BindingsBuilder<'a> {
                     let make_nested_binding = |ann: Option<Idx<KeyAnnotation>>| {
                         Binding::UnpackedValue(Box::new(make_binding(ann)), range, idx.clone())
                     };
-                    self.bind_target(e, &make_nested_binding);
+                    self.bind_target(e, &make_nested_binding, should_ensure_expr);
                 }
             }
         }
@@ -702,11 +704,18 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
+    // `should_ensure_expr` determines whether to call `ensure_expr` recursively
     fn bind_target(
         &mut self,
         target: &Expr,
         make_binding: &dyn Fn(Option<Idx<KeyAnnotation>>) -> Binding,
+        should_ensure_expr: bool,
     ) {
+        let mut maybe_ensure_expr = |expr| {
+            if should_ensure_expr {
+                self.ensure_expr(expr)
+            }
+        };
         match target {
             Expr::Name(name) => {
                 let id = Ast::expr_name_identifier(name.clone());
@@ -716,7 +725,7 @@ impl<'a> BindingsBuilder<'a> {
                 self.table.types.1.insert(idx, make_binding(ann));
             }
             Expr::Attribute(x) => {
-                self.ensure_expr(&x.value);
+                maybe_ensure_expr(&x.value);
                 let ann = self.table.insert(
                     KeyAnnotation::AttrAnnotation(x.range),
                     BindingAnnotation::AttrType(x.clone()),
@@ -726,8 +735,8 @@ impl<'a> BindingsBuilder<'a> {
                 self.table.insert(Key::Anon(x.range), binding);
             }
             Expr::Subscript(x) => {
-                self.ensure_expr(&x.value);
-                self.ensure_expr(&x.slice);
+                maybe_ensure_expr(&x.value);
+                maybe_ensure_expr(&x.slice);
                 let binding = make_binding(None);
                 self.table.insert(
                     Key::Anon(x.range),
@@ -735,10 +744,10 @@ impl<'a> BindingsBuilder<'a> {
                 );
             }
             Expr::Tuple(tup) => {
-                self.bind_unpacking(&tup.elts, make_binding, tup.range);
+                self.bind_unpacking(&tup.elts, make_binding, tup.range, should_ensure_expr);
             }
             Expr::List(lst) => {
-                self.bind_unpacking(&lst.elts, make_binding, lst.range);
+                self.bind_unpacking(&lst.elts, make_binding, lst.range, should_ensure_expr);
             }
             _ => self.todo("unrecognized assignment target", target),
         }
@@ -833,7 +842,6 @@ impl<'a> BindingsBuilder<'a> {
                 Key::Definition(name.clone()),
                 Binding::AnnotatedType(ann_key, Box::new(Binding::AnyType(AnyStyle::Implicit))),
             );
-
             self.scopes.last_mut().stat.add(name.id.clone(), name.range);
             self.bind_key(&name.id, bind_key, Some(ann_key), false);
         }
@@ -967,15 +975,13 @@ impl<'a> BindingsBuilder<'a> {
         let body = mem::take(&mut x.body);
 
         self.scopes.push(Scope::class_body(x.name.clone()));
-        let self_binding = Binding::SelfType(
-            self.table
-                .types
-                .0
-                .insert_if_missing(Key::Definition(x.name.clone())),
-        );
-        let self_type_key = self
+
+        let definition_key = self
             .table
-            .insert(Key::SelfType(x.name.clone()), self_binding);
+            .types
+            .0
+            .insert_if_missing(Key::Definition(x.name.clone()));
+
         x.type_params.iter().for_each(|x| {
             self.type_params(x);
         });
@@ -1010,17 +1016,40 @@ impl<'a> BindingsBuilder<'a> {
             );
         });
         self.table
-            .insert(KeyMro(x.name.clone()), BindingMro(self_type_key));
+            .insert(KeyMro(x.name.clone()), BindingMro(definition_key));
 
-        let definition_key = self
-            .table
-            .types
-            .0
-            .insert_if_missing(Key::Definition(x.name.clone()));
-        let value =
+        let mut keywords = SmallSet::new();
+        x.keywords().iter().for_each(|keyword| {
+            if let Some(name) = &keyword.arg {
+                self.ensure_expr(&keyword.value);
+                if keywords.insert(name.id.clone()) {
+                    self.table.insert(
+                        Key::ClassKeyword(x.name.clone(), name.id.clone()),
+                        Binding::ClassKeyword(keyword.value.clone()),
+                    );
+                } else {
+                    self.errors.add(
+                        &self.module_info,
+                        keyword.range(),
+                        format!("Duplicate keyword in class header of `{}`", x.name),
+                    )
+                }
+            } else {
+                self.errors.add(
+                    &self.module_info,
+                    keyword.range(),
+                    format!(
+                        "The use of unpacking in class header of `{}` is not supported",
+                        x.name
+                    ),
+                )
+            }
+        });
+
+        let legacy_tparams =
             BindingTypeParams::Class(definition_key, legacy_tparam_builder.lookup_keys(self));
-        self.table.insert(KeyTypeParams(x.name.clone()), value);
-
+        self.table
+            .insert(KeyTypeParams(x.name.clone()), legacy_tparams);
         legacy_tparam_builder.add_name_definitions(self);
 
         self.scopes.last_mut().stat.stmts(
@@ -1061,6 +1090,10 @@ impl<'a> BindingsBuilder<'a> {
         } else {
             unreachable!("Expected class body scope, got {:?}", last_scope.kind);
         }
+
+        let self_binding = Binding::SelfType(definition_key);
+        self.table
+            .insert(Key::SelfType(x.name.clone()), self_binding);
 
         self.bind_definition(&x.name.clone(), Binding::Class(x, fields, n_bases), None);
     }
@@ -1138,7 +1171,7 @@ impl<'a> BindingsBuilder<'a> {
                             b
                         }
                     };
-                    self.bind_target(target, &make_binding)
+                    self.bind_target(target, &make_binding, true)
                 }
             }
             Stmt::AugAssign(x) => {
@@ -1146,7 +1179,11 @@ impl<'a> BindingsBuilder<'a> {
                     // For now, don't raise a todo, since we use it everywhere.
                     // Fix it later.
                 } else {
-                    self.todo("Bindings::stmt", &x)
+                    self.ensure_expr(&x.target);
+                    self.ensure_expr(&x.value);
+                    let make_binding =
+                        |_: Option<Idx<KeyAnnotation>>| Binding::AugAssign(x.clone());
+                    self.bind_target(&x.target, &make_binding, false);
                 }
             }
             Stmt::AnnAssign(mut x) => match *x.target {
@@ -1255,7 +1292,7 @@ impl<'a> BindingsBuilder<'a> {
                 self.setup_loop(range);
                 self.ensure_expr(&x.iter);
                 let make_binding = |k| Binding::IterableValue(k, *x.iter.clone());
-                self.bind_target(&x.target, &make_binding);
+                self.bind_target(&x.target, &make_binding, true);
                 self.stmts(x.body.clone());
                 self.teardown_loop(range, x.orelse);
             }
@@ -1303,7 +1340,7 @@ impl<'a> BindingsBuilder<'a> {
                         let make_binding = |k: Option<Idx<KeyAnnotation>>| {
                             Binding::ContextValue(k, item.context_expr.clone(), kind)
                         };
-                        self.bind_target(opts, &make_binding);
+                        self.bind_target(opts, &make_binding, true);
                     } else {
                         self.table.insert(
                             Key::Anon(item.range()),
@@ -1376,7 +1413,7 @@ impl<'a> BindingsBuilder<'a> {
                 ) {
                     for x in x.names {
                         if &x.name == "*" {
-                            let module = self.modules.get(&m).unwrap();
+                            let module = self.modules.get(m);
                             for name in module.wildcard(self.modules).iter() {
                                 let key = Key::Import(name.clone(), x.range);
                                 let val = if module.contains(name, self.modules) {
@@ -1394,12 +1431,7 @@ impl<'a> BindingsBuilder<'a> {
                             }
                         } else {
                             let asname = x.asname.unwrap_or_else(|| x.name.clone());
-                            let val = if self
-                                .modules
-                                .get(&m)
-                                .unwrap()
-                                .contains(&x.name.id, self.modules)
-                            {
+                            let val = if self.modules.get(m).contains(&x.name.id, self.modules) {
                                 Binding::Import(m, x.name.id)
                             } else {
                                 self.errors.add(

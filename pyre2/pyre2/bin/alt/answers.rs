@@ -44,10 +44,11 @@ use crate::alt::binding::UnpackedPosition;
 use crate::alt::bindings::BindingEntry;
 use crate::alt::bindings::BindingTable;
 use crate::alt::bindings::Bindings;
-use crate::alt::exports::Exports;
+use crate::alt::exports::LookupExport;
 use crate::alt::expr::TypeCallArg;
 use crate::alt::table::Keyed;
 use crate::alt::table::TableKeyed;
+use crate::alt::util::inplace_dunder;
 use crate::ast::Ast;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
@@ -94,10 +95,9 @@ use crate::util::recurser::Recurser;
 /// We never issue contains queries on these maps.
 #[derive(Debug)]
 pub struct Answers<'a> {
-    exports: &'a SmallMap<ModuleName, Exports>,
     bindings: &'a Bindings,
     errors: &'a ErrorCollector,
-    solver: Solver<'a>,
+    solver: Solver,
     table: AnswerTable,
 }
 
@@ -149,9 +149,10 @@ table!(
 
 #[derive(Debug, Clone)]
 pub struct AnswersSolver<'a> {
+    exports: &'a LookupExport,
     answers: &'a SmallMap<ModuleName, Answers<'a>>,
     current: &'a Answers<'a>,
-    uniques: &'a UniqueFactory,
+    pub uniques: &'a UniqueFactory,
     pub recurser: &'a Recurser<Var>,
     pub stdlib: &'a Stdlib,
 }
@@ -184,7 +185,7 @@ impl Solve for Key {
     }
 
     fn recursive(answers: &AnswersSolver) -> Self::Recursive {
-        answers.solver().fresh_recursive()
+        answers.solver().fresh_recursive(answers.uniques)
     }
 
     fn record_recursive(answers: &AnswersSolver, key: &Key, answer: Arc<Type>, recursive: Var) {
@@ -208,7 +209,7 @@ impl Solve for KeyExported {
     }
 
     fn recursive(answers: &AnswersSolver) -> Self::Recursive {
-        answers.solver().fresh_recursive()
+        answers.solver().fresh_recursive(answers.uniques)
     }
 
     fn record_recursive(
@@ -313,12 +314,7 @@ impl Solve for KeyTypeParams {
 }
 
 impl<'a> Answers<'a> {
-    pub fn new(
-        exports: &'a SmallMap<ModuleName, Exports>,
-        bindings: &'a Bindings,
-        errors: &'a ErrorCollector,
-        uniques: &'a UniqueFactory,
-    ) -> Self {
+    pub fn new(bindings: &'a Bindings, errors: &'a ErrorCollector) -> Self {
         fn presize<K: Solve>(items: &mut AnswerEntry<K>, bindings: &Bindings)
         where
             BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -333,10 +329,9 @@ impl<'a> Answers<'a> {
         table_mut_for_each!(&mut table, |items| presize(items, bindings));
 
         Self {
-            exports,
             bindings,
             errors,
-            solver: Solver::new(uniques),
+            solver: Solver::new(),
             table,
         }
     }
@@ -349,6 +344,7 @@ impl<'a> Answers<'a> {
 
     pub fn solve(
         &self,
+        exports: &LookupExport,
         answers: &SmallMap<ModuleName, Answers>,
         stdlib: &Stdlib,
         uniques: &'a UniqueFactory,
@@ -370,6 +366,7 @@ impl<'a> Answers<'a> {
         let answers_solver = AnswersSolver {
             stdlib,
             answers,
+            exports,
             uniques,
             recurser: &Recurser::new(),
             current: self,
@@ -393,6 +390,7 @@ impl<'a> Answers<'a> {
         &self,
         module: ModuleName,
         name: &Name,
+        exports: &LookupExport,
         answers: &SmallMap<ModuleName, Answers<'_>>,
         uniques: &'a UniqueFactory,
     ) -> Option<Class> {
@@ -400,6 +398,7 @@ impl<'a> Answers<'a> {
             stdlib: &Stdlib::for_bootstrapping(),
             uniques,
             answers,
+            exports,
             recurser: &Recurser::new(),
             current: self,
         };
@@ -564,7 +563,7 @@ impl<'a> AnswersSolver<'a> {
             BindingMro(k) => {
                 let self_ty = self.get_idx(*k);
                 match &*self_ty {
-                    Type::ClassType(cls) => Arc::new(self.mro_of(cls.class_object())),
+                    Type::ClassDef(cls) => Arc::new(self.mro_of(cls)),
                     _ => {
                         unreachable!("The key inside an Mro binding must be a class type")
                     }
@@ -641,7 +640,7 @@ impl<'a> AnswersSolver<'a> {
                         self.call_method_with_types(iterable, &dunder::ITER, range, &[]);
                     self.call_method_with_types(&iterator_ty, &dunder::NEXT, range, &[])
                 } else if self.has_attribute(cls.class_object(), &dunder::GETITEM) {
-                    let arg = TypeCallArg::new(self.stdlib.int(), range);
+                    let arg = TypeCallArg::new(self.stdlib.int().to_type(), range);
                     self.call_method_with_types(iterable, &dunder::GETITEM, range, &[arg])
                 } else {
                     self.error(range, format!("Class `{}` is not iterable", cls.name()))
@@ -650,8 +649,8 @@ impl<'a> AnswersSolver<'a> {
             }
             Type::Tuple(Tuple::Concrete(elts)) => Iterable::FixedLen(elts.clone()),
             Type::Tuple(Tuple::Unbounded(box elt)) => Iterable::OfType(elt.clone()),
-            Type::LiteralString => Iterable::OfType(self.stdlib.str()),
-            Type::Literal(lit) if lit.is_string() => Iterable::OfType(self.stdlib.str()),
+            Type::LiteralString => Iterable::OfType(self.stdlib.str().to_type()),
+            Type::Literal(lit) if lit.is_string() => Iterable::OfType(self.stdlib.str().to_type()),
             Type::Any(_) => Iterable::OfType(Type::any_implicit()),
             _ => Iterable::OfType(
                 self.error_todo("Answers::solve_binding - Binding::IterableValue", range),
@@ -664,13 +663,14 @@ impl<'a> AnswersSolver<'a> {
         if allow_none && actual_type.is_none() {
             return;
         }
-        let expected_types =
-            if let base_exception_type @ Type::ClassType(c) = &self.stdlib.base_exception() {
-                let base_exception_class_type = Type::ClassDef(c.class_object().dupe());
-                vec![base_exception_type.clone(), base_exception_class_type]
-            } else {
-                unreachable!("The stdlib base exception type should be a ClassInstance")
-            };
+        let expected_types = if let base_exception_type @ Type::ClassType(c) =
+            &self.stdlib.base_exception().to_type()
+        {
+            let base_exception_class_type = Type::ClassDef(c.class_object().dupe());
+            vec![base_exception_type.clone(), base_exception_class_type]
+        } else {
+            unreachable!("The stdlib base exception type should be a ClassInstance")
+        };
         if !self.solver().is_subset_eq(
             &actual_type,
             &Type::Union(expected_types),
@@ -787,18 +787,18 @@ impl<'a> AnswersSolver<'a> {
         kind: ContextManagerKind,
         range: TextRange,
     ) -> Type {
-        let base_exception_class_type = Type::type_form(self.stdlib.base_exception());
+        let base_exception_class_type = Type::type_form(self.stdlib.base_exception().to_type());
         let exit_arg_types = [
             TypeCallArg::new(
                 Type::Union(vec![base_exception_class_type, Type::None]),
                 range,
             ),
             TypeCallArg::new(
-                Type::Union(vec![self.stdlib.base_exception(), Type::None]),
+                Type::Union(vec![self.stdlib.base_exception().to_type(), Type::None]),
                 range,
             ),
             TypeCallArg::new(
-                Type::Union(vec![self.stdlib.traceback_type(), Type::None]),
+                Type::Union(vec![self.stdlib.traceback_type().to_type(), Type::None]),
                 range,
             ),
         ];
@@ -830,7 +830,7 @@ impl<'a> AnswersSolver<'a> {
         let enter_type = self.context_value_enter(&context_manager_type, kind, range);
         let exit_type = self.context_value_exit(&context_manager_type, kind, range);
         self.check_type(
-            &Type::Union(vec![self.stdlib.bool(), Type::None]),
+            &Type::Union(vec![self.stdlib.bool().to_type(), Type::None]),
             &exit_type,
             range,
         );
@@ -857,9 +857,20 @@ impl<'a> AnswersSolver<'a> {
                 let ty = ann.map(|k| self.get_idx(k));
                 self.expr(e, ty.as_ref().and_then(|x| x.ty.as_ref()))
             }
+            Binding::AugAssign(x) => {
+                let base = self.expr(&x.target, None);
+                self.call_method(
+                    &base,
+                    &Name::new(inplace_dunder(x.op)),
+                    x.range,
+                    &[*x.value.clone()],
+                    &[],
+                )
+            }
             Binding::IterableValue(ann, e) => {
                 let ty = ann.map(|k| self.get_idx(k));
-                let hint = ty.and_then(|x| x.ty.clone().map(|ty| self.stdlib.iterable(ty)));
+                let hint =
+                    ty.and_then(|x| x.ty.clone().map(|ty| self.stdlib.iterable(ty).to_type()));
                 let iterable = self.iterate(&self.expr(e, hint.as_ref()), e.range());
                 match iterable {
                     Iterable::OfType(ty) => ty,
@@ -895,7 +906,7 @@ impl<'a> AnswersSolver<'a> {
                 match iterable {
                     Iterable::OfType(ty) => match pos {
                         UnpackedPosition::Index(_) | UnpackedPosition::ReverseIndex(_) => ty,
-                        UnpackedPosition::Slice(_, _) => self.stdlib.list(ty),
+                        UnpackedPosition::Slice(_, _) => self.stdlib.list(ty).to_type(),
                     },
                     Iterable::FixedLen(ts) => {
                         match pos {
@@ -917,7 +928,7 @@ impl<'a> AnswersSolver<'a> {
                                 let end = ts.len() - *j;
                                 if start <= ts.len() && end >= start {
                                     let elem_ty = self.unions(&ts[start..end]);
-                                    self.stdlib.list(elem_ty)
+                                    self.stdlib.list(elem_ty).to_type()
                                 } else {
                                     // We'll report this error when solving for Binding::UnpackedLength.
                                     Type::any_error()
@@ -1016,6 +1027,7 @@ impl<'a> AnswersSolver<'a> {
                 let ret = if x.is_async {
                     self.stdlib
                         .coroutine(Type::any_implicit(), Type::any_implicit(), ret)
+                        .to_type()
                 } else {
                     ret
                 };
@@ -1025,6 +1037,7 @@ impl<'a> AnswersSolver<'a> {
             Binding::Import(m, name) => self
                 .get_from_module(*m, &KeyExported::Export(name.clone()))
                 .arc_clone(),
+            Binding::ClassKeyword(x) => self.expr(x, None),
             Binding::Class(x, fields, n_bases) => {
                 let tparams = self.type_params(&x.type_params);
                 let c = Class::new(
@@ -1066,7 +1079,7 @@ impl<'a> AnswersSolver<'a> {
                 None => self.solve_binding_inner(val),
             },
             Binding::AnyType(x) => Type::Any(*x),
-            Binding::StrType => self.stdlib.str(),
+            Binding::StrType => self.stdlib.str().to_type(),
             Binding::TypeParameter(q) => Type::type_form(q.to_type()),
             Binding::Module(m, path, prev) => {
                 let prev = prev
@@ -1269,8 +1282,8 @@ impl<'a> AnswersSolver<'a> {
     }
 
     pub fn get_import(&self, name: &Name, from: ModuleName, range: TextRange) -> Type {
-        let exports = self.current.exports.get(&from).unwrap();
-        if !exports.contains(name, self.current.exports) {
+        let exports = self.exports.get(from);
+        if !exports.contains(name, self.exports) {
             self.error(range, format!("No attribute `{name}` in module `{from}`",))
         } else {
             self.get_from_module(from, &KeyExported::Export(name.clone()))

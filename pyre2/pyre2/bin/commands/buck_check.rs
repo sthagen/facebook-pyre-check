@@ -19,7 +19,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::alt::driver::Driver;
-use crate::alt::driver::LoadResult;
+use crate::alt::loader::LoadResult;
 use crate::commands::common::CommonArgs;
 use crate::config::Config;
 use crate::config::PythonVersion;
@@ -157,10 +157,9 @@ fn compute_errors(config: Config, sourcedb: BuckSourceDatabase, common: &CommonA
     Driver::new(
         &modules_to_check,
         &config,
-        common.debug,
         common.timings,
         common.parallel(),
-        lookup_module,
+        &lookup_module,
     )
     .errors_in_checked_modules()
 }

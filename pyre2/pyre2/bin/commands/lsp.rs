@@ -59,7 +59,7 @@ use serde::de::DeserializeOwned;
 use starlark_map::small_map::SmallMap;
 
 use crate::alt::driver::Driver;
-use crate::alt::driver::LoadResult;
+use crate::alt::loader::LoadResult;
 use crate::commands::util::default_include;
 use crate::commands::util::find_module;
 use crate::commands::util::module_from_path;
@@ -233,10 +233,9 @@ impl<'a> Server<'a> {
         self.driver = Driver::new(
             &modules.keys().copied().collect::<Vec<_>>(),
             &Config::default(),
-            false,
             None,
             true,
-            load,
+            &load,
         );
         let mut diags: SmallMap<&Path, Vec<Diagnostic>> = SmallMap::new();
         for x in self.open_files.keys() {

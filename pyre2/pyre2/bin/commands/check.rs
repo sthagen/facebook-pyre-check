@@ -13,7 +13,7 @@ use clap::Parser;
 use starlark_map::small_map::SmallMap;
 
 use crate::alt::driver::Driver;
-use crate::alt::driver::LoadResult;
+use crate::alt::loader::LoadResult;
 use crate::commands::common::CommonArgs;
 use crate::commands::util::default_include;
 use crate::commands::util::find_module;
@@ -76,10 +76,9 @@ pub fn run_once(args: Args) -> anyhow::Result<()> {
     let driver = Driver::new(
         &modules,
         &Config::default(),
-        args.common.debug,
         args.common.timings,
         args.common.parallel(),
-        load,
+        &load,
     );
     if let Some(debug_info) = args.debug_info {
         let mut output = serde_json::to_string_pretty(&driver.debug_info(&modules))?;

@@ -198,9 +198,9 @@ impl Lit {
         Type::Literal(self)
     }
 
-    /// Convert a literal to a `Type` that is the general type of the literal.
+    /// Convert a literal to a `ClassType` that is the general class_type of the literal.
     /// For example, `1` is converted to `int`, and `"foo"` is converted to `str`.
-    pub fn general_type(&self, stdlib: &Stdlib) -> Type {
+    pub fn general_class_type(&self, stdlib: &Stdlib) -> ClassType {
         match self {
             Lit::String(_) => stdlib.str(),
             Lit::Int(_) => stdlib.int(),
@@ -208,7 +208,7 @@ impl Lit {
             Lit::Bytes(_) => stdlib.bytes(),
             Lit::Float(_) => stdlib.float(),
             Lit::Complex { .. } => stdlib.complex(),
-            Lit::Enum(class_type, _) => Type::ClassType(class_type.clone()),
+            Lit::Enum(class_type, _) => class_type.clone(),
         }
     }
 

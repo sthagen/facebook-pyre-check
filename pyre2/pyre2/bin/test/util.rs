@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use starlark_map::small_map::SmallMap;
 
 use crate::alt::driver::Driver;
-use crate::alt::driver::LoadResult;
+use crate::alt::loader::LoadResult;
 use crate::config::Config;
 use crate::module::module_name::ModuleName;
 use crate::test::stdlib::Stdlib;
@@ -92,7 +92,7 @@ pub fn simple_test_driver(stdlib: Stdlib, env: TestEnv) -> Driver {
         (loaded, true)
     };
     let config = Config::default();
-    Driver::new(&modules, &config, false, None, true, lookup)
+    Driver::new(&modules, &config, None, true, &lookup)
 }
 
 /// Should only be used from the `simple_test!` macro.
