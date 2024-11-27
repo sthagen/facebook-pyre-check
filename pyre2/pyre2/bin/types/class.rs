@@ -121,7 +121,13 @@ impl Class {
     }
 
     pub fn self_type(&self, tparams: &QuantifiedVec) -> Type {
-        let tparams_as_targs = TArgs::new(tparams.as_slice().iter().map(|q| q.to_type()).collect());
+        let tparams_as_targs = TArgs::new(
+            tparams
+                .as_slice()
+                .iter()
+                .map(|q| q.clone().to_type())
+                .collect(),
+        );
         ClassType::create_with_validated_targs(self.clone(), tparams_as_targs).to_type()
     }
 
@@ -226,23 +232,18 @@ impl ClassType {
         if targs.len() != tparams.len() {
             // Invariant violation: all type arguments should be constructed through
             // `check_and_sanitize_targs_for_class`, which should guarantee zippability.
-            /* TODO(stroxler): until this is enabled, there are edge cases with undefined
-               behavior. Needed because we are still working out how to handle recursion in
-               base classes.
             unreachable!(
                 "Encountered invalid type arguments of length {} in class `{}` (expected {})",
                 targs.len(),
                 self.name().id,
                 tparams.len(),
             );
-            */
-            return Substitution(SmallMap::new());
         }
         Substitution(
             tparams
                 .as_slice()
                 .iter()
-                .copied()
+                .cloned()
                 .zip(targs.iter().cloned())
                 .collect(),
         )

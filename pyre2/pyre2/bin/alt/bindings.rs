@@ -797,19 +797,19 @@ impl<'a> BindingsBuilder<'a> {
         for x in x.iter() {
             let (q, name) = match x {
                 TypeParam::TypeVar(x) => {
-                    let q = Quantified::type_var(self.uniques);
+                    let q = Quantified::type_var(self.uniques, x.name.id.clone());
                     (q, &x.name)
                 }
                 TypeParam::ParamSpec(x) => {
-                    let q = Quantified::param_spec(self.uniques);
+                    let q = Quantified::param_spec(self.uniques, x.name.id.clone());
                     (q, &x.name)
                 }
                 TypeParam::TypeVarTuple(x) => {
-                    let q = Quantified::type_var_tuple(self.uniques);
+                    let q = Quantified::type_var_tuple(self.uniques, x.name.id.clone());
                     (q, &x.name)
                 }
             };
-            qs.push(q);
+            qs.push(q.clone());
             self.scopes.last_mut().stat.add(name.id.clone(), name.range);
             self.bind_definition(name, Binding::TypeParameter(q), None);
         }
@@ -1143,13 +1143,13 @@ impl<'a> BindingsBuilder<'a> {
                     }) if name.id == "TypeVar" && !arguments.is_empty() => {
                         self.ensure_expr(&Expr::Name(name.clone()));
                         // The constraints (i.e., any positional arguments after the first)
-                        // and the "bound" keyword argument are types.
+                        // and some keyword arguments are types.
                         for arg in arguments.args[1..].iter_mut() {
                             self.ensure_type(arg, &mut BindingsBuilder::forward_lookup);
                         }
                         for kw in arguments.keywords.iter_mut() {
                             if let Some(id) = &kw.arg
-                                && id.id == "bound"
+                                && (id.id == "bound" || id.id == "default")
                             {
                                 self.ensure_type(
                                     &mut kw.value,

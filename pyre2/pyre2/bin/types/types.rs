@@ -55,8 +55,14 @@ impl Var {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Quantified(Unique, QuantifiedKind);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Quantified {
+    /// Unique identifier
+    unique: Unique,
+    /// Display name
+    name: Name,
+    kind: QuantifiedKind,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QuantifiedKind {
@@ -67,25 +73,29 @@ pub enum QuantifiedKind {
 
 impl Display for Quantified {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "?{}", self.0)
+        write!(f, "{}", self.name)
     }
 }
 
 impl Quantified {
-    pub fn new(uniques: &UniqueFactory, kind: QuantifiedKind) -> Self {
-        Quantified(uniques.fresh(), kind)
+    pub fn new(uniques: &UniqueFactory, name: Name, kind: QuantifiedKind) -> Self {
+        Quantified {
+            unique: uniques.fresh(),
+            name,
+            kind,
+        }
     }
 
-    pub fn type_var(uniques: &UniqueFactory) -> Self {
-        Quantified::new(uniques, QuantifiedKind::TypeVar)
+    pub fn type_var(uniques: &UniqueFactory, name: Name) -> Self {
+        Quantified::new(uniques, name, QuantifiedKind::TypeVar)
     }
 
-    pub fn param_spec(uniques: &UniqueFactory) -> Self {
-        Quantified::new(uniques, QuantifiedKind::ParamSpec)
+    pub fn param_spec(uniques: &UniqueFactory, name: Name) -> Self {
+        Quantified::new(uniques, name, QuantifiedKind::ParamSpec)
     }
 
-    pub fn type_var_tuple(uniques: &UniqueFactory) -> Self {
-        Quantified::new(uniques, QuantifiedKind::TypeVarTuple)
+    pub fn type_var_tuple(uniques: &UniqueFactory, name: Name) -> Self {
+        Quantified::new(uniques, name, QuantifiedKind::TypeVarTuple)
     }
 
     pub fn to_type(self) -> Type {
@@ -93,15 +103,11 @@ impl Quantified {
     }
 
     pub fn is_param_spec(&self) -> bool {
-        matches!(self.1, QuantifiedKind::ParamSpec)
+        matches!(self.kind, QuantifiedKind::ParamSpec)
     }
 
     pub fn id(&self) -> Unique {
-        self.0
-    }
-
-    pub fn zero(&mut self) {
-        self.0 = Unique::zero();
+        self.unique
     }
 }
 
@@ -423,23 +429,23 @@ impl Type {
     ) -> (Vec<Var>, Self) {
         let mp: SmallMap<Quantified, Type> = gargs
             .iter()
-            .map(|x| (*x, Var::new(uniques).to_type()))
+            .map(|x| (x.clone(), Var::new(uniques).to_type()))
             .collect();
         let res = self.subst(&mp);
         (mp.into_values().map(|x| x.as_var().unwrap()).collect(), res)
     }
 
-    pub fn for_each_quantified(&self, f: &mut impl FnMut(Quantified)) {
+    pub fn for_each_quantified(&self, f: &mut impl FnMut(&Quantified)) {
         self.universe(|x| {
             if let Type::Quantified(x) = x {
-                f(*x);
+                f(x);
             }
         })
     }
 
     pub fn collect_quantifieds(&self, acc: &mut SmallSet<Quantified>) {
         self.for_each_quantified(&mut |q| {
-            acc.insert(q);
+            acc.insert(q.clone());
         });
     }
 
@@ -488,16 +494,6 @@ impl Type {
     pub fn deterministic_printing(self) -> Self {
         self.transform(|ty| {
             match ty {
-                Type::Forall(qs, _) => {
-                    // FIXME: Should store the name along side, and print that.
-                    for q in qs {
-                        q.zero();
-                    }
-                }
-                Type::Quantified(q) => {
-                    // FIXME: Should store the name along side, and print that.
-                    q.zero();
-                }
                 Type::Var(v) => {
                     // FIXME: Should mostly be forcing these before printing
                     v.zero();
@@ -595,9 +591,9 @@ impl Type {
         self
     }
 
-    pub fn as_quantified(&self) -> Option<Quantified> {
+    pub fn as_quantified(&self) -> Option<&Quantified> {
         match self {
-            Type::Quantified(q) => Some(*q),
+            Type::Quantified(q) => Some(q),
             _ => None,
         }
     }

@@ -192,6 +192,8 @@ T1 = TypeVar('T1', bound='A')
 T2 = TypeVar('T2', bound='B')  # E: Could not find name `B`
 T3 = TypeVar('T3', 'A', int)
 T4 = TypeVar('T4', 'B', int)  # E: Could not find name `B`
+T5 = TypeVar('T5', default='A')
+T6 = TypeVar('T6', default='B')  # E: Could not find name `B`
 
 class A:
     pass
@@ -287,5 +289,59 @@ class C(Generic[T], list[S]):  # E: Class `C` uses type variables not specified 
 def f(c: C[int, str]):
     assert_type(c.t, int)
     assert_type(c[0], str)
+    "#,
+);
+
+// TODO: support TypeVar defaults
+simple_test!(
+    test_default,
+    r#"
+from typing import Generic, TypeVar, assert_type
+T1 = TypeVar('T1')
+T2 = TypeVar('T2', default=int)
+class C(Generic[T1, T2]):
+    pass
+def f9(c1: C[int, str], c2: C[str]):  # E: Expected 2 type arguments
+    assert_type(c1, C[int, str])
+    assert_type(c2, C[str, int])  # E: assert_type
+    "#,
+);
+
+// TODO: support declared variance
+simple_test!(
+    test_variance,
+    r#"
+from typing import Generic, TypeVar
+T1 = TypeVar('T1', covariant=True)
+T2 = TypeVar('T2', contravariant=True)
+class C(Generic[T1, T2]):
+    pass
+class Parent:
+    pass
+class Child(Parent):
+    pass
+def f1(c: C[Parent, Child]):
+    f2(c)  # E: EXPECTED
+def f2(c: C[Child, Parent]):
+    f1(c)  # E: EXPECTED
+    "#,
+);
+
+// TODO(stroxler)
+// This test exercises an edge case where naively using type analysis on base classes
+// can cause problems in the interaction of tparams validation and recursion.
+simple_test!(
+    test_generic_with_reference_to_self_in_base,
+    r#"
+from typing import Generic, TypeVar, Any, assert_type
+
+T = TypeVar("T")
+
+class C(list[C[T]]):
+    t: T
+
+def f(c: C[int]):
+    assert_type(c.t, int)
+    assert_type(c[0], C[int])
     "#,
 );

@@ -14,8 +14,6 @@ use std::sync::Arc;
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
-use ruff_python_ast::TypeParam;
-use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::ordered_set::OrderedSet;
@@ -254,7 +252,11 @@ impl Solve for KeyBaseClass {
     fn recursive(_answers: &AnswersSolver) -> Self::Recursive {}
 
     fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        BaseClass::Type(Type::any_implicit())
+        // TODO(stroxler): Putting a panic here is risky, but I am expecting to refactor
+        // within a few commits to make the base class handling internal to `classes.rs`
+        // and eliminate the binding, which will eliminate this kind of boilerplate
+        // altogether.
+        unreachable!("BaseClass cannot hit recursive cases without violating invariants");
     }
 
     fn visit_type_mut(v: &mut BaseClass, f: &mut dyn FnMut(&mut Type)) {
@@ -445,12 +447,15 @@ impl<'a> AnswersSolver<'a> {
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
     {
+        let new_current = self.answers.get(&name).unwrap();
         let new_answers = AnswersSolver {
-            current: self.answers.get(&name).unwrap(),
+            current: new_current,
+            recurser: &Recurser::new(),
             ..self.clone()
         };
         let mut ans = Arc::unwrap_or_clone(new_answers.get(k));
-        K::visit_type_mut(&mut ans, &mut |t| self.solver().deep_force_mut(t));
+        // Must force these variables using the solver associated with the module the type came from
+        K::visit_type_mut(&mut ans, &mut |t| new_current.solver.deep_force_mut(t));
         Arc::new(ans)
     }
 
@@ -521,16 +526,16 @@ impl<'a> AnswersSolver<'a> {
         binding: &BindingLegacyTypeParam,
     ) -> Arc<LegacyTypeParameterLookup> {
         match &*self.get_idx(binding.0) {
-            Type::Type(box Type::TypeVar(_)) => {
-                let q = Quantified::type_var(self.uniques);
+            Type::Type(box Type::TypeVar(x)) => {
+                let q = Quantified::type_var(self.uniques, x.qname().name.id.clone());
                 Arc::new(LegacyTypeParameterLookup::Parameter(q))
             }
-            Type::Type(box Type::TypeVarTuple(_)) => {
-                let q = Quantified::type_var_tuple(self.uniques);
+            Type::Type(box Type::TypeVarTuple(x)) => {
+                let q = Quantified::type_var_tuple(self.uniques, x.qname().name.id.clone());
                 Arc::new(LegacyTypeParameterLookup::Parameter(q))
             }
-            Type::Type(box Type::ParamSpec(_)) => {
-                let q = Quantified::param_spec(self.uniques);
+            Type::Type(box Type::ParamSpec(x)) => {
+                let q = Quantified::param_spec(self.uniques, x.qname().name.id.clone());
                 Arc::new(LegacyTypeParameterLookup::Parameter(q))
             }
             ty => Arc::new(LegacyTypeParameterLookup::NotParameter(ty.clone())),
@@ -542,7 +547,7 @@ impl<'a> AnswersSolver<'a> {
             BindingTypeParams::Function(scoped, legacy) => {
                 let legacy_tparams: Vec<_> = legacy
                     .iter()
-                    .filter_map(|key| self.get_idx(*key).deref().parameter().copied())
+                    .filter_map(|key| self.get_idx(*key).deref().parameter().cloned())
                     .collect();
                 let mut tparams = scoped.clone();
                 tparams.extend(legacy_tparams);
@@ -714,11 +719,11 @@ impl<'a> AnswersSolver<'a> {
             }
             Type::TypeVar(ty_var) => {
                 let q = match seen.entry(ty_var.dupe()) {
-                    Entry::Occupied(e) => *e.get(),
+                    Entry::Occupied(e) => e.get().clone(),
                     Entry::Vacant(e) => {
-                        let q = Quantified::type_var(self.uniques);
-                        e.insert(q);
-                        quantifieds.push(q);
+                        let q = Quantified::type_var(self.uniques, ty_var.qname().name.id.clone());
+                        e.insert(q.clone());
+                        quantifieds.push(q.clone());
                         q
                     }
                 };
@@ -1043,15 +1048,7 @@ impl<'a> AnswersSolver<'a> {
                 .arc_clone(),
             Binding::ClassKeyword(x) => self.expr(x, None),
             Binding::Class(x, fields, n_bases) => {
-                let tparams = self.type_params(&x.type_params);
-                let c = Class::new(
-                    x.name.clone(),
-                    self.module_info().dupe(),
-                    tparams,
-                    fields.clone(),
-                    *n_bases,
-                );
-                Type::ClassDef(c)
+                Type::ClassDef(self.class_definition(x, fields.clone(), *n_bases))
             }
             Binding::SelfType(k) => match &*self.get_idx(*k) {
                 Type::ClassDef(c) => c.self_type(self.get_tparams_for_class(c).deref()),
@@ -1084,7 +1081,7 @@ impl<'a> AnswersSolver<'a> {
             },
             Binding::AnyType(x) => Type::Any(*x),
             Binding::StrType => self.stdlib.str().to_type(),
-            Binding::TypeParameter(q) => Type::type_form(q.to_type()),
+            Binding::TypeParameter(q) => Type::type_form(q.clone().to_type()),
             Binding::Module(m, path, prev) => {
                 let prev = prev
                     .as_ref()
@@ -1117,7 +1114,7 @@ impl<'a> AnswersSolver<'a> {
                                 ),
                             );
                         }
-                        Type::type_form(q.to_type())
+                        Type::type_form(q.clone().to_type())
                     }
                     LegacyTypeParameterLookup::NotParameter(ty) => ty.clone(),
                 }
@@ -1213,43 +1210,6 @@ impl<'a> AnswersSolver<'a> {
     pub fn error(&self, range: TextRange, msg: String) -> Type {
         self.errors().add(self.module_info(), range, msg);
         Type::any_error()
-    }
-
-    fn type_params(&self, x: &Option<Box<TypeParams>>) -> SmallMap<Name, Quantified> {
-        let mut names = Vec::new();
-        match x {
-            Some(box x) => {
-                for x in &x.type_params {
-                    match x {
-                        TypeParam::TypeVar(x) => names.push(&x.name),
-                        TypeParam::ParamSpec(_) => {
-                            self.error_todo("Answers::type_params", x);
-                        }
-                        TypeParam::TypeVarTuple(_) => {
-                            self.error_todo("Answers::type_params", x);
-                        }
-                    }
-                }
-            }
-            None => {}
-        }
-
-        fn get_quantified(t: &Type) -> Quantified {
-            match t {
-                Type::Type(box Type::Quantified(q)) => *q,
-                _ => unreachable!(),
-            }
-        }
-
-        names
-            .into_iter()
-            .map(|x| {
-                (
-                    x.id.clone(),
-                    get_quantified(&self.get(&Key::Definition(x.clone()))),
-                )
-            })
-            .collect()
     }
 
     /// Unwraps a type, originally evaluated as a value, so that it can be used as a type annotation.

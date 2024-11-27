@@ -12,7 +12,11 @@ use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Identifier;
+use ruff_python_ast::StmtClassDef;
+use ruff_python_ast::TypeParam;
+use ruff_python_ast::TypeParams;
 use ruff_text_size::TextRange;
+use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
 use super::answers::AnswersSolver;
@@ -31,9 +35,11 @@ use crate::types::class::Substitution;
 use crate::types::class::TArgs;
 use crate::types::literal::Lit;
 use crate::types::mro::Mro;
+use crate::types::types::Quantified;
 use crate::types::types::QuantifiedVec;
 use crate::types::types::Type;
 use crate::util::prelude::SliceExt;
+use crate::visitors::Visitors;
 
 /// Class members can fail to be
 pub enum NoClassAttribute {
@@ -62,6 +68,59 @@ fn replace_return_type(ty: Type, ret: Type) -> Type {
 }
 
 impl<'a> AnswersSolver<'a> {
+    fn scoped_type_params(&self, x: &Option<Box<TypeParams>>) -> SmallMap<Name, Quantified> {
+        let mut names = Vec::new();
+        match x {
+            Some(box x) => {
+                for x in &x.type_params {
+                    match x {
+                        TypeParam::TypeVar(x) => names.push(&x.name),
+                        TypeParam::ParamSpec(_) => {
+                            self.error_todo("Answers::type_params", x);
+                        }
+                        TypeParam::TypeVarTuple(_) => {
+                            self.error_todo("Answers::type_params", x);
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+
+        fn get_quantified(t: &Type) -> &Quantified {
+            match t {
+                Type::Type(box Type::Quantified(q)) => q,
+                _ => unreachable!(),
+            }
+        }
+
+        names
+            .into_iter()
+            .map(|x| {
+                (
+                    x.id.clone(),
+                    get_quantified(&self.get(&Key::Definition(x.clone()))).clone(),
+                )
+            })
+            .collect()
+    }
+
+    pub fn class_definition(
+        &self,
+        x: &StmtClassDef,
+        fields: SmallSet<Name>,
+        n_bases: usize,
+    ) -> Class {
+        let tparams = self.scoped_type_params(&x.type_params);
+        Class::new(
+            x.name.clone(),
+            self.module_info().dupe(),
+            tparams,
+            fields.clone(),
+            n_bases,
+        )
+    }
+
     /// This helper deals with special cases where we want to intercept an `Expr`
     /// manually and create a special variant of `BaseClass` instead of calling
     /// `expr_untype` and creating a `BaseClass::Type`.
@@ -92,7 +151,7 @@ impl<'a> AnswersSolver<'a> {
             special_base_class
         } else {
             // This branch handles all other base classes.
-            BaseClass::Type(self.expr_untype(base_expr))
+            BaseClass::Expr(base_expr.clone())
         }
     }
 
@@ -100,11 +159,38 @@ impl<'a> AnswersSolver<'a> {
         class.substitution(&self.get_tparams_for_class(class.class_object()))
     }
 
+    /// If the base class is a "normal" generic base (not `Protocol` or `Generic`), then
+    /// call `f` on each `Quantified` in left-to-right order.
+    fn for_each_quantified_if_not_special(&self, base: &BaseClass, f: &mut impl FnMut(Quantified)) {
+        fn for_each_quantified_in_expr(
+            x: &Expr,
+            answers_solver: &AnswersSolver,
+            f: &mut impl FnMut(Quantified),
+        ) {
+            match x {
+                Expr::Name(_) => match answers_solver.expr(x, None) {
+                    Type::Type(box Type::Quantified(q)) => f(q),
+                    _ => {}
+                },
+                _ => {}
+            }
+            Visitors::visit_expr(x, &mut |x: &Expr| {
+                for_each_quantified_in_expr(x, answers_solver, f)
+            })
+        }
+        match base {
+            BaseClass::Expr(base) => Visitors::visit_expr(base, &mut |x: &Expr| {
+                for_each_quantified_in_expr(x, self, f)
+            }),
+            _ => {}
+        }
+    }
+
     pub fn tparams_of(&self, cls: &Class, legacy: &[Idx<KeyLegacyTypeParam>]) -> QuantifiedVec {
-        let scoped_tparams: SmallSet<_> = cls.scoped_tparams().values().copied().collect();
+        let scoped_tparams: SmallSet<_> = cls.scoped_tparams().values().cloned().collect();
         let legacy_quantifieds: SmallSet<_> = legacy
             .iter()
-            .filter_map(|key| self.get_idx(*key).deref().parameter().copied())
+            .filter_map(|key| self.get_idx(*key).deref().parameter().cloned())
             .collect();
         // TODO(stroxler): There are a lot of checks, such as that `Generic` only appears once
         // and no non-type-vars are used, that we can more easily detect in a dedictated class
@@ -115,10 +201,10 @@ impl<'a> AnswersSolver<'a> {
         for base in bases.iter() {
             match base.deref() {
                 BaseClass::Generic(ts) => {
-                    generic_tparams.extend(ts.iter().filter_map(|t| t.as_quantified()))
+                    generic_tparams.extend(ts.iter().filter_map(|t| t.as_quantified().cloned()))
                 }
                 BaseClass::Protocol(ts) if !ts.is_empty() => {
-                    protocol_tparams.extend(ts.iter().filter_map(|t| t.as_quantified()))
+                    protocol_tparams.extend(ts.iter().filter_map(|t| t.as_quantified().cloned()))
                 }
                 _ => {}
             }
@@ -140,34 +226,42 @@ impl<'a> AnswersSolver<'a> {
         // in tparams, we add it. These will be added in left-to-right order.
         let implicit_tparams_okay = tparams.is_empty();
         for base in self.bases_of_class(cls).iter() {
-            match base.deref() {
-                BaseClass::Type(t) => {
-                    t.for_each_quantified(&mut |q| {
-                        if !tparams.contains(&q) && legacy_quantifieds.contains(&q) {
-                            if !implicit_tparams_okay {
-                                self.error(
-                                    cls.name().range,
-                                    format!(
-                                        "Class `{}` uses type variables not specified in `Generic` or `Protocol` base",
-                                        cls.name().id,
-                                    ),
-                                );
-                            }
-                            tparams.insert(q);
-                        }
-                    });
+            self.for_each_quantified_if_not_special(base, &mut |q| {
+                if !tparams.contains(&q) && legacy_quantifieds.contains(&q) {
+                    if !implicit_tparams_okay {
+                        self.error(
+                            cls.name().range,
+                            format!(
+                                "Class `{}` uses type variables not specified in `Generic` or `Protocol` base",
+                                cls.name().id,
+                            ),
+                        );
+                    }
+                    tparams.insert(q);
                 }
-                _ => {}
-            }
+            });
         }
         QuantifiedVec(tparams.into_iter().collect())
+    }
+
+    fn base_class_types(&self, class: &Class) -> Vec<ClassType> {
+        self.bases_of_class(class)
+            .iter()
+            .filter_map(|base| match base.deref() {
+                BaseClass::Expr(x) => match self.expr_untype(x) {
+                    Type::ClassType(c) => Some(c),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn mro_of(&self, cls: &Class) -> Mro {
         Mro::new(
             cls,
+            self.base_class_types(cls),
             &|cls| self.get_mro_for_class(cls),
-            &|cls| self.bases_of_class(cls),
             &|base| self.get_substitution(base),
             self.errors(),
         )
