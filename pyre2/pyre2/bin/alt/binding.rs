@@ -271,6 +271,8 @@ pub enum Binding {
     /// If the annotation has a type inside it (e.g. `int` then use the annotation).
     /// If the annotation doesn't (e.g. it's `Final`), then use the binding.
     AnnotatedType(Idx<KeyAnnotation>, Box<Binding>),
+    /// A record of an "augmented assignment" statement like `x -= _`
+    /// or `a.b *= _`. These desugar to special method calls.
     AugAssign(StmtAugAssign),
     /// The Any type.
     AnyType(AnyStyle),
@@ -286,7 +288,7 @@ pub enum Binding {
     /// The field names should be used to build `ClassField` keys for lookup.
     /// The `Vec<Expr>` contains the base classes from the class header.
     /// The `Vec<Idx<KeyLegacyTypeParam>>` contains binding information for possible legacy type params.
-    Class(
+    ClassDef(
         StmtClassDef,
         SmallSet<Name>,
         Vec<Expr>,
@@ -391,7 +393,7 @@ impl DisplayWith<Bindings> for Binding {
             }
             Self::Function(x, _) => write!(f, "def {}", x.name.id),
             Self::Import(m, n) => write!(f, "import {m}.{n}"),
-            Self::Class(c, _, _, _) => write!(f, "class {}", c.name.id),
+            Self::ClassDef(c, _, _, _) => write!(f, "class {}", c.name.id),
             Self::ClassKeyword(x) => write!(f, "class_keyword {}", m.display(x)),
             Self::SelfType(k) => write!(f, "self {}", ctx.display(*k)),
             Self::Forward(k) => write!(f, "{}", ctx.display(*k)),

@@ -61,6 +61,7 @@ use crate::type_order::TypeOrder;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
 use crate::types::callable::Arg;
+use crate::types::callable::Callable;
 use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::module::Module;
@@ -163,7 +164,8 @@ pub trait LookupAnswer: Sized {
     ) -> Arc<K::Answer>
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
-        BindingTable: TableKeyed<K, Value = BindingEntry<K>>;
+        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+        Solutions: TableKeyed<K, Value = SolutionsEntry<K>>;
 }
 
 impl<'a> LookupAnswer
@@ -507,6 +509,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+        Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
         if name == self.module_info().name() {
             self.get(k)
@@ -520,6 +523,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+        Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
         self.get_from_module(cls.module_info().name(), k)
     }
@@ -1088,7 +1092,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .get_from_module(*m, &KeyExported::Export(name.clone()))
                 .arc_clone(),
             Binding::ClassKeyword(x) => self.expr(x, None),
-            Binding::Class(x, fields, bases, legacy_tparams) => {
+            Binding::ClassDef(x, fields, bases, legacy_tparams) => {
                 Type::ClassDef(self.class_definition(x, fields.clone(), bases, legacy_tparams))
             }
             Binding::SelfType(k) => match &*self.get_idx(*k) {
@@ -1251,6 +1255,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn error(&self, range: TextRange, msg: String) -> Type {
         self.errors().add(self.module_info(), range, msg);
         Type::any_error()
+    }
+
+    pub fn error_callable(&self, range: TextRange, msg: String) -> Callable {
+        self.errors().add(self.module_info(), range, msg);
+        AnyStyle::Error.propagate_callable()
     }
 
     /// Unwraps a type, originally evaluated as a value, so that it can be used as a type annotation.

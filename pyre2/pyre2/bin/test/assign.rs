@@ -517,3 +517,43 @@ def foo(a: tuple[int, ...], b: NoneType, c: EllipsisType) -> None:
     c2: object = c
 "#,
 );
+
+simple_test!(
+    test_subscript_assign_any_check_rhs,
+    r#"
+from typing import Any
+def expect_str(x: str): ...
+def test(x: Any):
+    x[0] += expect_str(0) # E: EXPECTED Literal[0] <: str
+"#,
+);
+
+simple_test!(
+    test_aug_assign_any_check_rhs,
+    r#"
+from typing import Any
+def expect_str(x: str): ...
+def test(x: Any):
+    x += expect_str(0) # E: EXPECTED Literal[0] <: str
+"#,
+);
+
+simple_test!(
+    test_aug_assign_error_not_class_check_rhs,
+    r#"
+def expect_str(x: str): ...
+def test(x: None):
+    x += expect_str(0) # E: Expected class, got None # E: EXPECTED Literal[0] <: str
+"#,
+);
+
+simple_test!(
+    test_aug_assign_error_not_callable_check_rhs,
+    r#"
+def expect_str(x: str): ...
+class C:
+    __iadd__: None = None
+def test(x: C):
+    x += expect_str(0) # E: Expected `C.__iadd__` to be a callable, got None # E: EXPECTED Literal[0] <: str
+"#,
+);
