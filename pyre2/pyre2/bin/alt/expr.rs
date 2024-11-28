@@ -23,6 +23,7 @@ use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
 use super::answers::AnswersSolver;
+use crate::alt::answers::LookupAnswer;
 use crate::alt::binding::Key;
 use crate::ast::Ast;
 use crate::dunder;
@@ -68,7 +69,7 @@ impl TypeCallArg {
     }
 }
 
-impl<'a> AnswersSolver<'a> {
+impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     // Helper method for inferring the type of a boolean operation over a sequence of values.
     fn boolop(&self, values: &[Expr], op: BoolOp) -> Type {
         let target = match op {
@@ -897,6 +898,9 @@ impl<'a> AnswersSolver<'a> {
                 let xs = Ast::unpack_slice(&x.slice);
                 // FIXME: We don't deal properly with hint here, we should.
                 let mut fun = self.expr_infer(&x.value);
+                if let Type::Var(v) = fun {
+                    fun = self.solver().force_var(v);
+                }
                 if matches!(&fun, Type::ClassDef(t) if t.name() == "tuple") {
                     fun = Type::type_form(Type::SpecialForm(SpecialForm::Tuple));
                 }
@@ -1099,7 +1103,11 @@ impl<'a> AnswersSolver<'a> {
                         .collect(),
                 )
             }
-            Expr::Slice(_) => self.stdlib.slice().to_type(),
+            Expr::Slice(_) => {
+                // TODO(stroxler, yangdanny): slices are generic, we should not hard code to int.
+                let int = self.stdlib.int().to_type();
+                self.stdlib.slice(int.clone(), int.clone(), int).to_type()
+            }
             Expr::IpyEscapeCommand(_) => self.error_todo("Answers::expr_infer", x),
         }
     }

@@ -34,9 +34,8 @@ pub struct Class(ArcId<ClassInner>);
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ClassInner {
     qname: QName,
-    scoped_tparams: SmallMap<Name, Quantified>,
+    tparams: QuantifiedVec,
     fields: SmallSet<Name>,
-    n_bases: usize,
 }
 
 impl PartialOrd for ClassInner {
@@ -54,13 +53,14 @@ impl Ord for ClassInner {
 impl Display for ClassInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "class {}", self.qname.name)?;
-        if !self.scoped_tparams.is_empty() {
+        if !self.tparams.0.is_empty() {
             write!(
                 f,
                 "[{}]",
-                self.scoped_tparams
-                    .keys()
-                    .map(|x| x.as_str())
+                self.tparams
+                    .0
+                    .iter()
+                    .map(|_| "_")
                     .collect::<Vec<_>>()
                     .join(", ")
             )?;
@@ -80,15 +80,13 @@ impl Class {
     pub fn new(
         name: Identifier,
         module_info: ModuleInfo,
-        scoped_tparams: SmallMap<Name, Quantified>,
+        tparams: QuantifiedVec,
         fields: SmallSet<Name>,
-        n_bases: usize,
     ) -> Self {
         Self(ArcId::new(ClassInner {
             qname: QName::new(name, module_info),
-            scoped_tparams,
+            tparams,
             fields,
-            n_bases,
         }))
     }
 
@@ -112,23 +110,19 @@ impl Class {
         &self.0.qname
     }
 
-    pub fn scoped_tparams(&self) -> &SmallMap<Name, Quantified> {
-        &self.0.scoped_tparams
+    pub fn tparams(&self) -> &QuantifiedVec {
+        &self.0.tparams
     }
 
-    pub fn n_bases(&self) -> usize {
-        self.0.n_bases
-    }
-
-    pub fn self_type(&self, tparams: &QuantifiedVec) -> Type {
+    pub fn self_type(&self) -> Type {
         let tparams_as_targs = TArgs::new(
-            tparams
+            self.tparams()
                 .as_slice()
                 .iter()
                 .map(|q| q.clone().to_type())
                 .collect(),
         );
-        ClassType::create_with_validated_targs(self.clone(), tparams_as_targs).to_type()
+        ClassType::new(self.clone(), tparams_as_targs).to_type()
     }
 
     pub fn module_info(&self) -> &ModuleInfo {
@@ -200,15 +194,42 @@ impl Display for ClassType {
 }
 
 impl ClassType {
-    /// Create a ClassType. The caller must have validated that
-    /// the targs are correctly aligned with the `tparams`; failure to do so
-    /// will lead to panics downstream.
-    pub fn create_with_validated_targs(class: Class, targs: TArgs) -> Self {
+    fn new_impl(class: Class, targs: TArgs, extra_context: &str) -> Self {
+        let tparams = class.tparams();
+        if targs.0.len() != tparams.len() {
+            // Invariant violation: we should always have valid type arguments when
+            // constructing `ClassType`.
+            assert_eq!(
+                targs.0.len(),
+                tparams.len(),
+                "Encountered invalid type arguments in class{}.{}",
+                class.name(),
+                extra_context,
+            )
+        }
         Self(class, targs)
+    }
+
+    /// Create a class type.
+    /// The `targs` must match the `tparams`, if this fails we will panic.
+    pub fn new(class: Class, targs: TArgs) -> Self {
+        Self::new_impl(class, targs, "")
+    }
+
+    pub fn new_for_stdlib(class: Class, targs: TArgs) -> Self {
+        Self::new_impl(
+            class,
+            targs,
+            " This is caused by typeshed not matching the type checker assumptions about stdlib.",
+        )
     }
 
     pub fn class_object(&self) -> &Class {
         &self.0
+    }
+
+    pub fn tparams(&self) -> &QuantifiedVec {
+        self.0.tparams()
     }
 
     pub fn targs(&self) -> &TArgs {
@@ -227,18 +248,9 @@ impl ClassType {
         Self(self.0.dupe(), self.1.substitute(substitution))
     }
 
-    pub fn substitution(&self, tparams: &QuantifiedVec) -> Substitution {
+    pub fn substitution(&self) -> Substitution {
+        let tparams = self.tparams();
         let targs = &self.1.as_slice();
-        if targs.len() != tparams.len() {
-            // Invariant violation: all type arguments should be constructed through
-            // `check_and_sanitize_targs_for_class`, which should guarantee zippability.
-            unreachable!(
-                "Encountered invalid type arguments of length {} in class `{}` (expected {})",
-                targs.len(),
-                self.name().id,
-                tparams.len(),
-            );
-        }
         Substitution(
             tparams
                 .as_slice()

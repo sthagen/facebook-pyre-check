@@ -7,7 +7,6 @@
 
 use std::any::type_name_of_val;
 use std::mem;
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 use dupe::Dupe;
@@ -30,9 +29,7 @@ use crate::alt::bindings::BindingTable;
 use crate::alt::bindings::Bindings;
 use crate::alt::exports::Exports;
 use crate::alt::exports::LookupExport;
-use crate::alt::loader::LoadResult;
 use crate::alt::loader::Loader;
-use crate::alt::loader::FAKE_MODULE;
 use crate::alt::table::Keyed;
 use crate::alt::table::TableKeyed;
 use crate::ast::Ast;
@@ -75,12 +72,6 @@ enum Step {
     PrintErrors,
 }
 
-fn fake_path(module_name: ModuleName) -> PathBuf {
-    // The generated fake module shouldn't have an errors, but lets make it clear
-    // this is a fake path if it ever happens to leak into any output.
-    PathBuf::from(format!("/fake/{module_name}.py"))
-}
-
 #[derive(Debug)]
 struct Phase1 {
     expectations: Expectation,
@@ -95,28 +86,26 @@ struct Phase1 {
 impl Phase1 {
     fn new(
         timers: &mut Timers,
-        module_name: ModuleName,
-        path: anyhow::Result<PathBuf>,
-        code: String,
-        module: ModModule,
-        should_type_check: bool,
+        module_info: ModuleInfo,
+        error: Option<anyhow::Error>,
         quiet_errors: bool,
         config: &Config,
     ) -> Self {
-        let expectations = Expectation::parse(&code);
-        let (path, error) = match path {
-            Ok(path) => (path, None),
-            Err(err) => (fake_path(module_name), Some(err)),
-        };
-        let module_info = ModuleInfo::new(module_name, path, code, should_type_check);
-        timers.add((module_name, Step::Startup, 0));
-        let exports = Exports::new(&module.body, &module_info, config);
-        timers.add((module_name, Step::Exports, 0));
         let errors = if quiet_errors {
             ErrorCollector::new_quiet()
         } else {
             ErrorCollector::new()
         };
+        let expectations = Expectation::parse(module_info.contents());
+        timers.add((module_info.name(), Step::Startup, 0));
+        let module = module_info.parse(&errors);
+        timers.add((
+            module_info.name(),
+            Step::Parse,
+            module_info.contents().len(),
+        ));
+        let exports = Exports::new(&module.body, &module_info, config);
+        timers.add((module_info.name(), Step::Exports, 0));
         Self {
             expectations,
             module_info,
@@ -146,7 +135,7 @@ impl Phase2 {
     fn new(
         timers: &mut Timers,
         phase1: &Phase1,
-        modules: &LookupExport,
+        modules: &dyn LookupExport,
         uniques: &UniqueFactory,
         config: &Config,
     ) -> Self {
@@ -199,38 +188,28 @@ fn run_phase1(
         transitive_closure
     })(todo, |name: &ModuleName| {
         let mut timers = Timers::new();
-        let mut my_errors = Vec::new();
         let (loaded, should_type_check) = load(*name);
-        let (path, code) = match loaded {
-            LoadResult::Loaded(path, code) => (Ok(path), code),
-            LoadResult::FailedToLoad(path, err) => {
-                my_errors.push((
-                    TextRange::default(),
-                    format!("Failed to load {name} from {}, got {err:#}", path.display()),
-                ));
-                (Ok(path), FAKE_MODULE.to_owned())
-            }
-            LoadResult::FailedToFind(err) => (Err(err), FAKE_MODULE.to_owned()),
-        };
-        timers.add((*name, Step::Load, code.len()));
-        let (module, parse_errors) = Ast::parse(&code);
-        for err in parse_errors {
-            my_errors.push((err.location, format!("Parse error: {err}")));
-        }
-        timers.add((*name, Step::Parse, code.len()));
+        let components = loaded.components(*name);
+        timers.add((*name, Step::Load, components.code.len()));
+        let module_info =
+            ModuleInfo::new(*name, components.path, components.code, should_type_check);
         info!("Phase 1 for {name}");
         let p = Phase1::new(
             &mut timers,
-            *name,
-            path,
-            code,
-            module,
-            should_type_check,
+            module_info,
+            components.import_error,
             quiet_errors,
             config,
         );
-        for x in my_errors {
-            p.errors.add(&p.module_info, x.0, x.1);
+        if let Some(err) = components.self_error {
+            p.errors.add(
+                &p.module_info,
+                TextRange::default(),
+                format!(
+                    "Failed to load {name} from {}, got {err:#}",
+                    p.module_info.path().display()
+                ),
+            );
         }
         let my_imports = p.imports();
         imports
@@ -263,7 +242,7 @@ fn run_phase1(
 fn run_phase2(
     timers: &mut Timers,
     phase1: &[Phase1],
-    modules: &LookupExport,
+    modules: &(dyn LookupExport + Sync),
     uniques: &UniqueFactory,
     config: &Config,
     parallel: bool,
@@ -305,32 +284,36 @@ impl Driver {
 
         timers.add((timers_global_module(), Step::Startup, 0));
         let phase1 = run_phase1(timers, modules, config, timings.is_some(), load, parallel);
-        let exports = LookupExport::from_map(
-            phase1
-                .iter()
-                .map(|v| (v.module_info.name(), v.exports.dupe()))
-                .collect(),
-        );
+        let exports: SmallMap<_, _> = phase1
+            .iter()
+            .map(|v| (v.module_info.name(), v.exports.dupe()))
+            .collect();
 
         let phase2 = run_phase2(timers, &phase1, &exports, &uniques, config, parallel);
 
-        let answers: SmallMap<ModuleName, Answers> = phase1
+        let answers = phase2.map(|p2| {
+            let ans = Answers::new(&p2.bindings);
+            timers.add((p2.name, Step::Answers, ans.len()));
+            ans
+        });
+        let answers_info: SmallMap<ModuleName, (&Answers, &Bindings, &ErrorCollector)> = phase1
             .iter()
             .zip(&phase2)
-            .map(|(p1, p2)| {
-                let ans = Answers::new(&p2.bindings, &p1.errors);
-                timers.add((p2.name, Step::Answers, ans.len()));
-                (p2.name, ans)
-            })
+            .zip(&answers)
+            .map(|((p1, p2), ans)| (p1.module_info.name(), (ans, &p2.bindings, &p1.errors)))
             .collect();
-        let stdlib = make_stdlib(&exports, &answers, &uniques);
+
+        let stdlib = make_stdlib(&exports, &answers_info, &uniques);
         let solutions = (if parallel {
             small_map::par_map
         } else {
             small_map::map
-        })(&answers, |_, x: &Answers| {
-            x.solve(&exports, &answers, &stdlib, &uniques)
-        });
+        })(
+            &answers_info,
+            |_, (answers, bindings, errors): &(&Answers, &Bindings, &ErrorCollector)| {
+                answers.solve(&exports, &answers_info, bindings, errors, &stdlib, &uniques)
+            },
+        );
         timers.add((timers_global_module(), Step::Solve, 0));
 
         if timings.is_some() {
@@ -364,7 +347,7 @@ impl Driver {
             Self::print_timings(timings, timers);
         }
 
-        mem::drop(answers);
+        mem::drop(answers_info);
         assert_eq!(phase1.len(), phase2.len());
         let expectations = phase1
             .iter()
@@ -530,15 +513,13 @@ fn info_eprintln(msg: String) {
 }
 
 fn make_stdlib(
-    exports: &LookupExport,
-    answers: &SmallMap<ModuleName, Answers>,
+    exports: &dyn LookupExport,
+    answers: &SmallMap<ModuleName, (&Answers, &Bindings, &ErrorCollector)>,
     uniques: &UniqueFactory,
 ) -> Stdlib {
     let lookup_class = |module: ModuleName, name: &Name| {
-        answers
-            .get(&module)
-            .unwrap()
-            .lookup_class_without_stdlib(module, name, exports, answers, uniques)
+        let (me, bindings, errors) = answers.get(&module).unwrap();
+        me.lookup_class_without_stdlib(bindings, errors, module, name, exports, answers, uniques)
     };
     Stdlib::new(lookup_class)
 }
