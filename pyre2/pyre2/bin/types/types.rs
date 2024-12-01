@@ -14,6 +14,7 @@ use parse_display::Display;
 use ruff_python_ast::name::Name;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
+use static_assertions::assert_eq_size;
 
 use crate::types::callable::Arg;
 use crate::types::callable::Args;
@@ -61,7 +62,7 @@ pub struct Quantified {
     /// Unique identifier
     unique: Unique,
     /// Display name
-    name: Name,
+    name: Box<Name>,
     kind: QuantifiedKind,
 }
 
@@ -82,7 +83,7 @@ impl Quantified {
     pub fn new(uniques: &UniqueFactory, name: Name, kind: QuantifiedKind) -> Self {
         Quantified {
             unique: uniques.fresh(),
-            name,
+            name: Box::new(name),
             kind,
         }
     }
@@ -216,7 +217,7 @@ pub enum TypeAliasStyle {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TypeAlias {
-    pub name: Name,
+    pub name: Box<Name>,
     ty: Box<Type>,
     pub style: TypeAliasStyle,
 }
@@ -224,7 +225,7 @@ pub struct TypeAlias {
 impl TypeAlias {
     pub fn new(name: Name, ty: Type, style: TypeAliasStyle) -> Self {
         Self {
-            name,
+            name: Box::new(name),
             ty: Box::new(ty),
             style,
         }
@@ -249,6 +250,9 @@ impl TypeAlias {
         *self.ty.clone()
     }
 }
+
+// We have a lot of types, want to make sure they stay a reasonable size
+assert_eq_size!(Type, [usize; 4]);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {

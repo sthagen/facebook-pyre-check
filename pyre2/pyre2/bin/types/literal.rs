@@ -24,6 +24,7 @@ use ruff_python_ast::Identifier;
 use ruff_python_ast::Number;
 use ruff_python_ast::UnaryOp;
 use ruff_text_size::TextRange;
+use static_assertions::assert_eq_size;
 
 use crate::ast::Ast;
 use crate::error::collector::ErrorCollector;
@@ -32,10 +33,12 @@ use crate::types::class::ClassType;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
 
+assert_eq_size!(Lit, [usize; 3]);
+
 /// A literal value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Lit {
-    String(String),
+    String(Box<str>),
     Int(i64),
     Float(NotNan<f64>),
     Complex {
@@ -43,8 +46,8 @@ pub enum Lit {
         imag: NotNan<f64>,
     },
     Bool(bool),
-    Bytes(Vec<u8>),
-    Enum(ClassType, Name),
+    Bytes(Box<[u8]>),
+    Enum(Box<(ClassType, Name)>),
 }
 
 impl Display for Lit {
@@ -74,7 +77,7 @@ impl Display for Lit {
                 }
                 write!(f, "'")
             }
-            Lit::Enum(enumeration, member) => {
+            Lit::Enum(box (enumeration, member)) => {
                 let name = &enumeration.name();
                 write!(f, "{name}.{member}")
             }
@@ -115,7 +118,7 @@ impl Lit {
                 attr: member_name,
                 ctx: _,
             }) => match get_enum_class_type(Ast::expr_name_identifier(maybe_enum_name.clone())) {
-                Some(class_type) => Lit::Enum(class_type, member_name.id.to_owned()),
+                Some(class_type) => Lit::Enum(Box::new((class_type, member_name.id.to_owned()))),
                 _ => {
                     errors.todo(module_info, "Lit::from_expr", x);
                     Lit::Bool(false)
@@ -144,7 +147,7 @@ impl Lit {
     }
 
     pub fn from_string_literal(x: &ExprStringLiteral) -> Self {
-        Lit::String(x.value.to_str().to_owned())
+        Lit::String(x.value.to_str().into())
     }
 
     pub fn from_bytes_literal(x: &ExprBytesLiteral) -> Self {
@@ -166,7 +169,7 @@ impl Lit {
                 }
             }
         }
-        Some(Lit::String(collected_literals.join("")))
+        Some(Lit::String(collected_literals.join("").into_boxed_str()))
     }
 
     pub fn from_number_literal(
@@ -208,7 +211,7 @@ impl Lit {
             Lit::Bytes(_) => stdlib.bytes(),
             Lit::Float(_) => stdlib.float(),
             Lit::Complex { .. } => stdlib.complex(),
-            Lit::Enum(class_type, _) => class_type.clone(),
+            Lit::Enum(box (class_type, _)) => class_type.clone(),
         }
     }
 

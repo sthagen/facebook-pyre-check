@@ -333,9 +333,7 @@ impl Driver {
         info_eprintln(format!("Total errors: {}", error_count));
         let printing = timers.add((timers_global_module(), Step::PrintErrors, error_count));
 
-        if let Some(memory) = MemoryUsage::new().physical {
-            eprintln!("Memory usage: {memory}");
-        }
+        eprintln!("Memory usage: {}", MemoryUsage::new());
 
         let total = timers.total();
         info_eprintln(format!(
@@ -465,7 +463,7 @@ impl Driver {
                 let key = phase2.bindings.idx_to_key(idx);
                 bindings.push(debug::Binding {
                     kind: type_name_of_val(key).rsplit_once(':').unwrap().1.to_owned(),
-                    key: key.to_string(),
+                    key: phase1.module_info.display(key).to_string(),
                     location: phase1.module_info.source_range(key.range()).to_string(),
                     binding: phase2
                         .bindings
