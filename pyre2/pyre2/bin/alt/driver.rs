@@ -36,7 +36,6 @@ use crate::debug;
 use crate::error::collector::ErrorCollector;
 use crate::error::error::Error;
 use crate::expectation::Expectation;
-use crate::graph::index::Idx;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::table_for_each;
@@ -419,19 +418,19 @@ impl Driver {
     pub fn mro_of_export(&self, module: ModuleName, name: &str) -> Option<&Mro> {
         use crate::alt::binding::KeyExported;
         use crate::alt::binding::KeyMro;
+        use crate::module::short_identifier::ShortIdentifier;
 
         let solutions = self.solutions.get(&module).unwrap();
-        let bindings = &self.phases.get(&module).unwrap().1.bindings;
 
         match solutions
             .exported_types
-            .get(bindings.key_to_idx(&KeyExported::Export(Name::new(name))))
+            .get(&KeyExported::Export(Name::new(name)))
         {
             Some(Type::ClassDef(cls)) => {
                 println!("Class {cls:?}");
                 let x = solutions
                     .mros
-                    .get(bindings.key_to_idx(&KeyMro(cls.name().clone())));
+                    .get(&KeyMro(ShortIdentifier::new(cls.name())));
                 x
             }
             _ => None,
@@ -446,8 +445,8 @@ impl Driver {
         self.phases.get(&module).map(|x| &x.1.bindings)
     }
 
-    pub fn get_type_for_idx(&self, module: ModuleName, idx: Idx<Key>) -> Option<&Type> {
-        self.solutions.get(&module)?.types.get(idx)
+    pub fn get_type(&self, module: ModuleName, key: &Key) -> Option<&Type> {
+        self.solutions.get(&module)?.types.get(key)
     }
 
     pub fn debug_info(&self, modules: &[ModuleName]) -> debug::Info {
@@ -459,8 +458,8 @@ impl Driver {
         ) where
             BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
         {
-            for (idx, val) in t.iter() {
-                let key = phase2.bindings.idx_to_key(idx);
+            for (key, val) in t.iter() {
+                let idx = phase2.bindings.key_to_idx(key);
                 bindings.push(debug::Binding {
                     kind: type_name_of_val(key).rsplit_once(':').unwrap().1.to_owned(),
                     key: phase1.module_info.display(key).to_string(),

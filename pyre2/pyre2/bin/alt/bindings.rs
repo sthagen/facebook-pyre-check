@@ -209,7 +209,7 @@ struct ClassBodyInner {
 
 impl ClassBodyInner {
     fn as_self_type_key(&self) -> Key {
-        Key::SelfType(self.name.clone())
+        Key::SelfType(ShortIdentifier::new(&self.name))
     }
 }
 
@@ -491,7 +491,7 @@ impl<'a> BindingsBuilder<'a> {
     //
     // This function is the the core scope lookup logic for binding creation.
     fn ensure_name(&mut self, name: &Identifier, value: Option<Binding>) {
-        let key = Key::Usage(name.clone());
+        let key = Key::Usage(ShortIdentifier::new(name));
         match value {
             Some(value) => {
                 self.table.insert(key, value);
@@ -632,7 +632,9 @@ impl<'a> BindingsBuilder<'a> {
         binding: Binding,
         annotation: Option<Idx<KeyAnnotation>>,
     ) -> Option<Idx<KeyAnnotation>> {
-        let idx = self.table.insert(Key::Definition(name.clone()), binding);
+        let idx = self
+            .table
+            .insert(Key::Definition(ShortIdentifier::new(name)), binding);
         self.bind_key(&name.id, idx, annotation, false)
     }
 
@@ -724,7 +726,7 @@ impl<'a> BindingsBuilder<'a> {
         match target {
             Expr::Name(name) => {
                 let id = Ast::expr_name_identifier(name.clone());
-                let key = Key::Definition(id.clone());
+                let key = Key::Definition(ShortIdentifier::new(&id));
                 let idx = self.table.types.0.insert(key);
                 let ann = self.bind_key(&id.id, idx, None, false);
                 self.table.types.1.insert(idx, make_binding(ann));
@@ -840,11 +842,12 @@ impl<'a> BindingsBuilder<'a> {
                     }
                 }
             };
-            let ann_key = self
-                .table
-                .insert(KeyAnnotation::Annotation(name.clone()), ann_val);
+            let ann_key = self.table.insert(
+                KeyAnnotation::Annotation(ShortIdentifier::new(name)),
+                ann_val,
+            );
             let bind_key = self.table.insert(
-                Key::Definition(name.clone()),
+                Key::Definition(ShortIdentifier::new(name)),
                 Binding::AnnotatedType(ann_key, Box::new(Binding::AnyType(AnyStyle::Implicit))),
             );
             self.scopes.last_mut().stat.add(name.id.clone(), name.range);
@@ -928,7 +931,8 @@ impl<'a> BindingsBuilder<'a> {
             tparams.unwrap_or_default(),
             legacy_tparam_builder.lookup_keys(self),
         );
-        self.table.insert(KeyTypeParams(func_name.clone()), value);
+        self.table
+            .insert(KeyTypeParams(ShortIdentifier::new(&func_name)), value);
 
         self.parameters(&mut x.parameters, &self_type);
 
@@ -950,21 +954,21 @@ impl<'a> BindingsBuilder<'a> {
                 .insert(method.name.id.clone(), method.instance_attributes.clone());
         }
 
-        self.bind_definition(&x.name.clone(), Binding::Function(x, kind), None);
+        self.bind_definition(&x.name.clone(), Binding::Function(Box::new(x), kind), None);
 
         let mut return_exprs = Vec::new();
         while self.returns.len() > return_count {
             return_exprs.push(self.returns.pop().unwrap());
         }
         let return_ann = return_annotation.map(|x| {
-            let key = KeyAnnotation::ReturnAnnotation(func_name.clone());
+            let key = KeyAnnotation::ReturnAnnotation(ShortIdentifier::new(&func_name));
             self.table
                 .insert(key.clone(), BindingAnnotation::AnnotateExpr(*x, self_type))
         });
         let mut return_expr_keys = SmallSet::with_capacity(return_exprs.len());
         for x in return_exprs {
             let key = self.table.insert(
-                Key::ReturnExpression(func_name.clone(), x.range),
+                Key::ReturnExpression(ShortIdentifier::new(&func_name), x.range),
                 Binding::Expr(return_ann, return_expr(x)),
             );
             return_expr_keys.insert(key);
@@ -973,7 +977,10 @@ impl<'a> BindingsBuilder<'a> {
         if let Some(ann) = return_ann {
             return_type = Binding::AnnotatedType(ann, Box::new(return_type));
         }
-        self.table.insert(Key::ReturnType(func_name), return_type);
+        self.table.insert(
+            Key::ReturnType(ShortIdentifier::new(&func_name)),
+            return_type,
+        );
     }
 
     fn class_def(&mut self, mut x: StmtClassDef) {
@@ -985,7 +992,7 @@ impl<'a> BindingsBuilder<'a> {
             .table
             .types
             .0
-            .insert_if_missing(Key::Definition(x.name.clone()));
+            .insert_if_missing(Key::Definition(ShortIdentifier::new(&x.name)));
 
         x.type_params.iter().for_each(|x| {
             self.type_params(x);
@@ -1016,7 +1023,7 @@ impl<'a> BindingsBuilder<'a> {
         });
 
         self.table.insert(
-            KeyMro(x.name.clone()),
+            KeyMro(ShortIdentifier::new(&x.name)),
             BindingMro(definition_key, bases.clone()),
         );
 
@@ -1026,7 +1033,7 @@ impl<'a> BindingsBuilder<'a> {
                 self.ensure_expr(&keyword.value);
                 if keywords.insert(name.id.clone()) {
                     self.table.insert(
-                        Key::ClassKeyword(x.name.clone(), name.id.clone()),
+                        Key::ClassKeyword(ShortIdentifier::new(&x.name), name.id.clone()),
                         Binding::ClassKeyword(keyword.value.clone()),
                     );
                 } else {
@@ -1095,13 +1102,18 @@ impl<'a> BindingsBuilder<'a> {
 
         let self_binding = Binding::SelfType(definition_key);
         self.table
-            .insert(Key::SelfType(x.name.clone()), self_binding);
+            .insert(Key::SelfType(ShortIdentifier::new(&x.name)), self_binding);
 
         let legacy_tparams = legacy_tparam_builder.lookup_keys(self);
 
         self.bind_definition(
             &x.name.clone(),
-            Binding::ClassDef(x, fields, bases, legacy_tparams),
+            Binding::ClassDef(
+                Box::new(x),
+                fields,
+                bases.into_boxed_slice(),
+                legacy_tparams.into_boxed_slice(),
+            ),
             None,
         );
     }
@@ -1197,7 +1209,7 @@ impl<'a> BindingsBuilder<'a> {
             Stmt::AnnAssign(mut x) => match *x.target {
                 Expr::Name(name) => {
                     let name = Ast::expr_name_identifier(name);
-                    let ann_key = KeyAnnotation::Annotation(name.clone());
+                    let ann_key = KeyAnnotation::Annotation(ShortIdentifier::new(&name));
                     self.ensure_type(&mut x.annotation, &mut BindingsBuilder::forward_lookup);
                     let ann_val = if let Some(special) = SpecialForm::new(&name.id, &x.annotation) {
                         BindingAnnotation::Type(special.to_type())
@@ -1364,7 +1376,7 @@ impl<'a> BindingsBuilder<'a> {
                     self.ensure_expr(&exc);
                     let raised = if let Some(cause) = x.cause {
                         self.ensure_expr(&cause);
-                        RaisedException::WithCause(*exc, *cause)
+                        RaisedException::WithCause(*exc, cause)
                     } else {
                         RaisedException::WithoutCause(*exc)
                     };
@@ -1647,7 +1659,7 @@ impl LegacyTParamBuilder {
                         .table
                         .legacy_tparams
                         .0
-                        .insert_if_missing(KeyLegacyTypeParam(id.clone())),
+                        .insert_if_missing(KeyLegacyTypeParam(ShortIdentifier::new(id))),
                     range_if_scoped_params_exist,
                 )
             })
@@ -1663,7 +1675,7 @@ impl LegacyTParamBuilder {
         for entry in self.legacy_tparams.values() {
             if let Some((identifier, key)) = entry {
                 builder.table.insert(
-                    KeyLegacyTypeParam(identifier.clone()),
+                    KeyLegacyTypeParam(ShortIdentifier::new(identifier)),
                     BindingLegacyTypeParam(*key),
                 );
                 builder
@@ -1675,7 +1687,7 @@ impl LegacyTParamBuilder {
                     .table
                     .legacy_tparams
                     .0
-                    .insert_if_missing(KeyLegacyTypeParam(identifier.clone()));
+                    .insert_if_missing(KeyLegacyTypeParam(ShortIdentifier::new(identifier)));
                 builder.bind_definition(
                     identifier,
                     // Note: we use None as the range here because the range is
@@ -1703,7 +1715,7 @@ impl LegacyTParamBuilder {
                     .table
                     .legacy_tparams
                     .0
-                    .insert_if_missing(KeyLegacyTypeParam(id.clone()))
+                    .insert_if_missing(KeyLegacyTypeParam(ShortIdentifier::new(id)))
             })
             .collect()
     }

@@ -11,7 +11,6 @@ use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprSubscript;
-use ruff_python_ast::Identifier;
 use ruff_python_ast::StmtAugAssign;
 use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
@@ -37,23 +36,20 @@ impl Exported for KeyExported {}
 impl Exported for KeyMro {}
 impl Exported for KeyTypeParams {}
 
-assert_eq_size!(Key, [usize; 7]);
+assert_eq_size!(Key, [usize; 5]);
 assert_eq_size!(KeyExported, [usize; 4]);
-assert_eq_size!(KeyAnnotation, [usize; 5]);
-assert_eq_size!(KeyMro, [usize; 4]);
-assert_eq_size!(KeyTypeParams, [usize; 4]);
-assert_eq_size!(KeyLegacyTypeParam, [usize; 4]);
+assert_eq_size!(KeyAnnotation, [u8; 12]); // Equivalent to 1.5 usize
+assert_eq_size!(KeyMro, [usize; 1]);
+assert_eq_size!(KeyTypeParams, [usize; 1]);
+assert_eq_size!(KeyLegacyTypeParam, [usize; 1]);
 
-assert_eq_size!(Binding, [usize; 23]);
-assert_eq_size!(BindingAnnotation, [usize; 10]);
+assert_eq_size!(Binding, [usize; 10]);
+assert_eq_size!(BindingAnnotation, [usize; 9]);
 assert_eq_size!(BindingMro, [usize; 4]);
 assert_eq_size!(BindingTypeParams, [usize; 6]);
 assert_eq_size!(BindingLegacyTypeParam, [usize; 1]);
 
 /// Keys that refer to a `Type`.
-///
-/// Within a `Key`, `Identifier` MUST be a name in the original AST,
-/// not something we've synthesized.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     /// I am an `import` at this location with this name.
@@ -61,15 +57,15 @@ pub enum Key {
     /// and `from foo import *` (the names are injected from the exports)
     Import(Name, TextRange),
     /// I am defined in this module at this location.
-    Definition(Identifier),
+    Definition(ShortIdentifier),
     /// I am the self type for a particular class.
-    SelfType(Identifier),
+    SelfType(ShortIdentifier),
     /// The type at a specific return point.
-    ReturnExpression(Identifier, TextRange),
+    ReturnExpression(ShortIdentifier, TextRange),
     /// The actual type of the return for a function.
-    ReturnType(Identifier),
+    ReturnType(ShortIdentifier),
     /// I am a use in this module at this location.
-    Usage(Identifier),
+    Usage(ShortIdentifier),
     /// I am not defining a name or using one, but record me for checking.
     Anon(TextRange),
     /// I am the result of joining several branches.
@@ -77,39 +73,47 @@ pub enum Key {
     /// The binding definition site, anywhere it occurs
     Anywhere(Name, TextRange),
     /// A 'keyword argument' appearing in a class header, e.g. `metaclass`.
-    ClassKeyword(Identifier, Name),
+    ClassKeyword(ShortIdentifier, Name),
 }
 
 impl Ranged for Key {
     fn range(&self) -> TextRange {
         match self {
             Self::Import(_, r) => *r,
-            Self::Definition(x) => x.range,
-            Self::SelfType(x) => x.range,
+            Self::Definition(x) => x.range(),
+            Self::SelfType(x) => x.range(),
             Self::ReturnExpression(_, r) => *r,
-            Self::ReturnType(x) => x.range,
-            Self::Usage(x) => x.range,
+            Self::ReturnType(x) => x.range(),
+            Self::Usage(x) => x.range(),
             Self::Anon(r) => *r,
             Self::Phi(_, r) => *r,
             Self::Anywhere(_, r) => *r,
-            Self::ClassKeyword(c, _) => c.range,
+            Self::ClassKeyword(c, _) => c.range(),
         }
     }
 }
 
 impl DisplayWith<ModuleInfo> for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>, _: &ModuleInfo) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
         match self {
             Self::Import(n, r) => write!(f, "import {n} {r:?}"),
-            Self::Definition(x) => write!(f, "{} {:?}", x.id, x.range),
-            Self::SelfType(x) => write!(f, "self {} {:?}", x.id, x.range),
-            Self::Usage(x) => write!(f, "use {} {:?}", x.id, x.range),
+            Self::Definition(x) => write!(f, "{} {:?}", ctx.display(x), x.range()),
+            Self::SelfType(x) => write!(f, "self {} {:?}", ctx.display(x), x.range()),
+            Self::Usage(x) => write!(f, "use {} {:?}", ctx.display(x), x.range()),
             Self::Anon(r) => write!(f, "anon {r:?}"),
             Self::Phi(n, r) => write!(f, "phi {n} {r:?}"),
             Self::Anywhere(n, r) => write!(f, "anywhere {n} {r:?}"),
-            Self::ClassKeyword(x, n) => write!(f, "class_keyword {} {:?} . {}", x.id, x.range, n),
-            Self::ReturnType(x) => write!(f, "return {} {:?}", x.id, x.range),
-            Self::ReturnExpression(x, i) => write!(f, "return {} {:?} @ {i:?}", x.id, x.range),
+            Self::ClassKeyword(x, n) => write!(
+                f,
+                "class_keyword {} {:?} . {}",
+                ctx.display(x),
+                x.range(),
+                n
+            ),
+            Self::ReturnType(x) => write!(f, "return {} {:?}", ctx.display(x), x.range()),
+            Self::ReturnExpression(x, i) => {
+                write!(f, "return {} {:?} @ {i:?}", ctx.display(x), x.range())
+            }
         }
     }
 }
@@ -153,9 +157,9 @@ impl DisplayWith<ModuleInfo> for KeyExported {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum KeyAnnotation {
     /// I am the annotation for this instance of a name.
-    Annotation(Identifier),
+    Annotation(ShortIdentifier),
     /// The return type annotation for a function.
-    ReturnAnnotation(Identifier),
+    ReturnAnnotation(ShortIdentifier),
     /// I am the annotation for the attribute at this range.
     AttrAnnotation(TextRange),
 }
@@ -163,18 +167,18 @@ pub enum KeyAnnotation {
 impl Ranged for KeyAnnotation {
     fn range(&self) -> TextRange {
         match self {
-            Self::Annotation(x) => x.range,
-            Self::ReturnAnnotation(x) => x.range,
+            Self::Annotation(x) => x.range(),
+            Self::ReturnAnnotation(x) => x.range(),
             Self::AttrAnnotation(r) => *r,
         }
     }
 }
 
 impl DisplayWith<ModuleInfo> for KeyAnnotation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>, _: &ModuleInfo) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
         match self {
-            Self::Annotation(x) => write!(f, "annot {} {:?}", x.id, x.range),
-            Self::ReturnAnnotation(x) => write!(f, "return {} {:?}", x.id, x.range),
+            Self::Annotation(x) => write!(f, "annot {} {:?}", ctx.display(x), x.range()),
+            Self::ReturnAnnotation(x) => write!(f, "return {} {:?}", ctx.display(x), x.range()),
             Self::AttrAnnotation(r) => write!(f, "attr {:?}", r),
         }
     }
@@ -183,48 +187,58 @@ impl DisplayWith<ModuleInfo> for KeyAnnotation {
 /// Keys that refer to a class's `Mro` (which tracks its ancestors, in method
 /// resolution order).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct KeyMro(pub Identifier);
+pub struct KeyMro(pub ShortIdentifier);
 
 impl Ranged for KeyMro {
     fn range(&self) -> TextRange {
-        self.0.range
+        self.0.range()
     }
 }
 
 impl DisplayWith<ModuleInfo> for KeyMro {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>, _: &ModuleInfo) -> fmt::Result {
-        write!(f, "mro {} {:?}", self.0.id, self.0.range)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
+        write!(f, "mro {} {:?}", ctx.display(&self.0), self.0.range())
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct KeyLegacyTypeParam(pub Identifier);
+pub struct KeyLegacyTypeParam(pub ShortIdentifier);
 
 impl Ranged for KeyLegacyTypeParam {
     fn range(&self) -> TextRange {
-        self.0.range
+        self.0.range()
     }
 }
 
 impl DisplayWith<ModuleInfo> for KeyLegacyTypeParam {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>, _: &ModuleInfo) -> fmt::Result {
-        write!(f, "legacy_type_param {} {:?}", self.0.id, self.0.range)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
+        write!(
+            f,
+            "legacy_type_param {} {:?}",
+            ctx.display(&self.0),
+            self.0.range()
+        )
     }
 }
 
 /// Keys that refer to the `TypeParams` for a class or function.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct KeyTypeParams(pub Identifier);
+pub struct KeyTypeParams(pub ShortIdentifier);
 
 impl Ranged for KeyTypeParams {
     fn range(&self) -> TextRange {
-        self.0.range
+        self.0.range()
     }
 }
 
 impl DisplayWith<ModuleInfo> for KeyTypeParams {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>, _: &ModuleInfo) -> fmt::Result {
-        write!(f, "type_params {} {:?}", self.0.id, self.0.range)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
+        write!(
+            f,
+            "type_params {} {:?}",
+            ctx.display(&self.0),
+            self.0.range()
+        )
     }
 }
 
@@ -249,7 +263,7 @@ pub enum SizeExpectation {
 #[derive(Clone, Debug)]
 pub enum RaisedException {
     WithoutCause(Expr),
-    WithCause(Expr, Expr),
+    WithCause(Expr, Box<Expr>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -296,7 +310,7 @@ pub enum Binding {
     /// A type parameter.
     TypeParameter(Quantified),
     /// A function definition, but with the return/body stripped out.
-    Function(StmtFunctionDef, FunctionKind),
+    Function(Box<StmtFunctionDef>, FunctionKind),
     /// An import statement, typically with Self::Import.
     Import(ModuleName, Name),
     /// A class definition, but with the body stripped out.
@@ -304,10 +318,10 @@ pub enum Binding {
     /// The `Vec<Expr>` contains the base classes from the class header.
     /// The `Vec<Idx<KeyLegacyTypeParam>>` contains binding information for possible legacy type params.
     ClassDef(
-        StmtClassDef,
+        Box<StmtClassDef>,
         SmallSet<Name>,
-        Vec<Expr>,
-        Vec<Idx<KeyLegacyTypeParam>>,
+        Box<[Expr]>,
+        Box<[Idx<KeyLegacyTypeParam>]>,
     ),
     /// A class header keyword argument (e.g. the `metaclass`).
     ClassKeyword(Expr),

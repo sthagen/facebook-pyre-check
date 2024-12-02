@@ -8,6 +8,7 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 
 use dupe::Dupe;
 use starlark_map::small_map::SmallMap;
@@ -25,7 +26,9 @@ impl<K> Default for Index<K> {
 
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct Idx<K> {
-    idx: usize,
+    // We use a NonZeroUsize to have an optimised representation for Option<Idx>.
+    // We treat it as usize, and inc/dec as we store.
+    idx: NonZeroUsize,
     phantom: PhantomData<K>,
 }
 
@@ -43,13 +46,13 @@ impl<K> Idx<K> {
     /// Should be used cautiously - make sure this is really a valid index first.
     pub fn new(idx: usize) -> Self {
         Idx {
-            idx,
+            idx: NonZeroUsize::new(idx + 1).unwrap(),
             phantom: PhantomData,
         }
     }
 
     pub fn idx(self) -> usize {
-        self.idx
+        self.idx.get() - 1
     }
 }
 
@@ -70,10 +73,7 @@ impl<K: Eq + Hash + Debug> Index<K> {
     where
         K: Clone,
     {
-        let idx = Idx {
-            idx: self.map.len(),
-            phantom: PhantomData,
-        };
+        let idx = Idx::new(self.map.len());
         let res = self.map.insert(k.clone(), idx);
         if res.is_some() {
             panic!("Duplicate key: {k:?}");
@@ -82,10 +82,7 @@ impl<K: Eq + Hash + Debug> Index<K> {
     }
 
     pub fn insert_if_missing(&mut self, k: K) -> Idx<K> {
-        let idx = Idx {
-            idx: self.map.len(),
-            phantom: PhantomData,
-        };
+        let idx = Idx::new(self.map.len());
         *self.map.entry(k).or_insert(idx)
     }
 
@@ -102,7 +99,7 @@ impl<K: Eq + Hash + Debug> Index<K> {
     }
 
     pub fn idx_to_key(&self, idx: Idx<K>) -> &K {
-        self.map.get_index(idx.idx).unwrap().0
+        self.map.get_index(idx.idx()).unwrap().0
     }
 
     /// Does the index contain an element. Should be used very rarely.

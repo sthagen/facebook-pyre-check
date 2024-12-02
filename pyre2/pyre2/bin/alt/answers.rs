@@ -52,6 +52,7 @@ use crate::graph::index::Idx;
 use crate::graph::index_map::IndexMap;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
+use crate::module::short_identifier::ShortIdentifier;
 use crate::solver::Solver;
 use crate::table;
 use crate::table_for_each;
@@ -134,7 +135,7 @@ impl DisplayWith<Bindings> for Answers {
     }
 }
 
-pub type SolutionsEntry<K> = IndexMap<K, <K as Keyed>::Answer>;
+pub type SolutionsEntry<K> = SmallMap<K, <K as Keyed>::Answer>;
 
 table!(
     #[derive(Default, Debug, Clone)]
@@ -144,7 +145,7 @@ table!(
 #[derive(Clone)]
 pub struct AnswersSolver<'a, Ans: LookupAnswer> {
     exports: &'a dyn LookupExport,
-    answers: Ans,
+    answers: &'a Ans,
     current: &'a Answers,
     errors: &'a ErrorCollector,
     bindings: &'a Bindings,
@@ -168,9 +169,7 @@ pub trait LookupAnswer: Sized {
         Solutions: TableKeyed<K, Value = SolutionsEntry<K>>;
 }
 
-impl<'a> LookupAnswer
-    for &'a SmallMap<ModuleName, (&'a Answers, &'a Bindings, &'a ErrorCollector)>
-{
+impl<'a> LookupAnswer for SmallMap<ModuleName, (&'a Answers, &'a Bindings, &'a ErrorCollector)> {
     fn get<K: Solve<Self> + Exported>(
         &self,
         name: ModuleName,
@@ -369,7 +368,7 @@ impl Answers {
     pub fn solve<Ans: LookupAnswer>(
         &self,
         exports: &dyn LookupExport,
-        answers: Ans,
+        answers: &Ans,
         bindings: &Bindings,
         errors: &ErrorCollector,
         stdlib: &Stdlib,
@@ -388,7 +387,7 @@ impl Answers {
             for idx in answers.bindings.keys::<K>() {
                 let k = answers.bindings.idx_to_key(idx);
                 let v = Arc::unwrap_or_clone(answers.get(k));
-                items.insert_once(idx, v);
+                items.insert(k.clone(), v);
             }
         }
         let answers_solver = AnswersSolver {
@@ -423,7 +422,7 @@ impl Answers {
         module: ModuleName,
         name: &Name,
         exports: &dyn LookupExport,
-        answers: Ans,
+        answers: &Ans,
         uniques: &UniqueFactory,
     ) -> Option<Class> {
         let solver = AnswersSolver {
@@ -454,7 +453,7 @@ impl Answers {
     pub fn solve_key<Ans: LookupAnswer, K: Solve<Ans>>(
         &self,
         exports: &dyn LookupExport,
-        answers: Ans,
+        answers: &Ans,
         bindings: &Bindings,
         errors: &ErrorCollector,
         stdlib: &Stdlib,
@@ -706,6 +705,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::LiteralString => Iterable::OfType(self.stdlib.str().to_type()),
             Type::Literal(lit) if lit.is_string() => Iterable::OfType(self.stdlib.str().to_type()),
             Type::Any(_) => Iterable::OfType(Type::any_implicit()),
+            Type::Var(v) if let Some(_guard) = self.recurser.recurse(*v) => {
+                self.iterate(&self.solver().force_var(*v), range)
+            }
             _ => Iterable::OfType(
                 self.error_todo("Answers::solve_binding - Binding::IterableValue", range),
             ),
@@ -1050,34 +1052,42 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 };
                 let mut args = Vec::with_capacity(x.parameters.len());
                 args.extend(x.parameters.posonlyargs.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(x.parameter.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
+                        &x.parameter.name,
+                    )));
                     let ty = annot.get_type();
                     let required = check_default(&x.default, ty);
                     Arg::PosOnly(ty.clone(), required)
                 }));
                 args.extend(x.parameters.args.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(x.parameter.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
+                        &x.parameter.name,
+                    )));
                     let ty = annot.get_type();
                     let required = check_default(&x.default, ty);
                     Arg::Pos(x.parameter.name.id.clone(), ty.clone(), required)
                 }));
                 args.extend(x.parameters.vararg.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(x.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)));
                     let ty = annot.get_type();
                     Arg::VarArg(ty.clone())
                 }));
                 args.extend(x.parameters.kwonlyargs.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(x.parameter.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
+                        &x.parameter.name,
+                    )));
                     let ty = annot.get_type();
                     let required = check_default(&x.default, ty);
                     Arg::KwOnly(x.parameter.name.id.clone(), ty.clone(), required)
                 }));
                 args.extend(x.parameters.kwarg.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(x.name.clone()));
+                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)));
                     let ty = annot.get_type();
                     Arg::Kwargs(ty.clone())
                 }));
-                let ret = self.get(&Key::ReturnType(x.name.clone())).arc_clone();
+                let ret = self
+                    .get(&Key::ReturnType(ShortIdentifier::new(&x.name)))
+                    .arc_clone();
                 let ret = if x.is_async {
                     self.stdlib
                         .coroutine(Type::any_implicit(), Type::any_implicit(), ret)
@@ -1085,7 +1095,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 } else {
                     ret
                 };
-                let qs = self.get(&KeyTypeParams(x.name.clone()));
+                let qs = self.get(&KeyTypeParams(ShortIdentifier::new(&x.name)));
                 Type::forall(qs.0.clone(), Type::callable(args, ret))
             }
             Binding::Import(m, name) => self
@@ -1155,7 +1165,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 *r,
                                 format!(
                                     "Type parameter {} is not included in the type parameter list",
-                                    self.bindings().idx_to_key(*key).0
+                                    self.module_info()
+                                        .display(&self.bindings().idx_to_key(*key).0)
                                 ),
                             );
                         }
