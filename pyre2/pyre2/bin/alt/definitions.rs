@@ -7,6 +7,7 @@
 
 use std::cmp;
 
+use itertools::Either;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::ExceptHandler;
 use ruff_python_ast::Expr;
@@ -39,6 +40,8 @@ pub enum DefinitionStyle {
     ImportAsEq,
     /// Imported from another module, e.g. `from x import y`
     Import,
+    /// Imported directly, e.g. `import x` or `import x.y` (both of which add `x`)
+    ImportModule,
 }
 
 /// Find the definitions available in a scope. Does not traverse inside classes/functions,
@@ -48,7 +51,8 @@ pub struct Definitions {
     /// All the things defined in this module, along with a position pointing at the name.
     /// While the range will be a place it is defined, there is no guarantee it is the first/last or otherwise.
     /// If the definition occurs multiple times, the lowest `DefinitionStyle`` is used (e.g. prefer `Local`).
-    pub definitions: SmallMap<Name, (TextRange, DefinitionStyle)>,
+    /// The number is the distinct times this variable was defined.
+    pub definitions: SmallMap<Name, (TextRange, DefinitionStyle, usize)>,
     /// All the modules that are imported with `from x import *`.
     pub import_all: SmallMap<ModuleName, TextRange>,
     /// The `__all__` variable contents.
@@ -125,7 +129,7 @@ impl Definitions {
                 self.dunder_all.push(DunderAllEntry::Module(*x));
             }
         }
-        for (name, (_, defn)) in self.definitions.iter() {
+        for (name, (_, defn, _)) in self.definitions.iter() {
             if !name.starts_with('_')
                 && (style == ModuleStyle::Executable
                     || matches!(defn, DefinitionStyle::Local | DefinitionStyle::ImportAsEq))
@@ -145,9 +149,12 @@ impl<'a> DefinitionsBuilder<'a> {
 
     fn add_name(&mut self, x: &Name, range: TextRange, style: DefinitionStyle) {
         match self.inner.definitions.entry(x.clone()) {
-            Entry::Occupied(mut e) => e.get_mut().1 = cmp::min(e.get().1, style),
+            Entry::Occupied(mut e) => {
+                e.get_mut().1 = cmp::min(e.get().1, style);
+                e.get_mut().2 += 1;
+            }
             Entry::Vacant(e) => {
-                e.insert((range, style));
+                e.insert((range, style, 1));
             }
         }
     }
@@ -162,35 +169,10 @@ impl<'a> DefinitionsBuilder<'a> {
     }
 
     fn pattern(&mut self, x: &Pattern) {
-        match x {
-            Pattern::MatchValue(x) => self.expr_lvalue(&x.value),
-            Pattern::MatchSingleton(_) => {}
-            Pattern::MatchSequence(x) => x.patterns.iter().for_each(|x| self.pattern(x)),
-            Pattern::MatchMapping(x) => x.patterns.iter().for_each(|x| self.pattern(x)),
-            Pattern::MatchClass(x) => {
-                x.arguments.patterns.iter().for_each(|x| self.pattern(x));
-                x.arguments
-                    .keywords
-                    .iter()
-                    .for_each(|x| self.pattern(&x.pattern));
-            }
-            Pattern::MatchStar(x) => {
-                if let Some(x) = &x.name {
-                    self.add_identifier(x, DefinitionStyle::Local);
-                }
-            }
-            Pattern::MatchAs(x) => {
-                if let Some(x) = &x.pattern {
-                    self.pattern(x);
-                }
-                if let Some(x) = &x.name {
-                    self.add_identifier(x, DefinitionStyle::Local);
-                }
-            }
-            Pattern::MatchOr(x) => {
-                x.patterns.iter().for_each(|x| self.pattern(x));
-            }
-        }
+        Ast::pattern_lvalue(x, &mut |x| match x {
+            Either::Left(x) => self.add_identifier(x, DefinitionStyle::Local),
+            Either::Right(x) => self.expr_lvalue(x),
+        });
     }
 
     fn stmt(&mut self, x: &Stmt) {
@@ -202,7 +184,7 @@ impl<'a> DefinitionsBuilder<'a> {
                         None => self.add_name(
                             &module.first_component(),
                             a.name.range,
-                            DefinitionStyle::Import,
+                            DefinitionStyle::ImportModule,
                         ),
                         Some(alias) => self.add_identifier(
                             alias,

@@ -373,21 +373,28 @@ impl Answers {
         errors: &ErrorCollector,
         stdlib: &Stdlib,
         uniques: &UniqueFactory,
+        exported_only: bool,
     ) -> Solutions {
         let mut res = Solutions::default();
 
         fn pre_solve<Ans: LookupAnswer, K: Solve<Ans>>(
             items: &mut SolutionsEntry<K>,
             answers: &AnswersSolver<Ans>,
+            exported_only: bool,
         ) where
             AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
             BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
         {
-            items.reserve(answers.bindings.keys::<K>().len());
+            let retain = K::EXPORTED || !exported_only;
+            if retain {
+                items.reserve(answers.bindings.keys::<K>().len());
+            }
             for idx in answers.bindings.keys::<K>() {
                 let k = answers.bindings.idx_to_key(idx);
-                let v = Arc::unwrap_or_clone(answers.get(k));
-                items.insert(k.clone(), v);
+                let v = answers.get(k);
+                if retain {
+                    items.insert(k.clone(), Arc::unwrap_or_clone(v));
+                }
             }
         }
         let answers_solver = AnswersSolver {
@@ -400,7 +407,11 @@ impl Answers {
             recurser: &Recurser::new(),
             current: self,
         };
-        table_mut_for_each!(&mut res, |items| pre_solve(items, &answers_solver));
+        table_mut_for_each!(&mut res, |items| pre_solve(
+            items,
+            &answers_solver,
+            exported_only
+        ));
 
         // Now force all types to be fully resolved.
         fn post_solve<K: SolveRecursive>(items: &mut SolutionsEntry<K>, solver: &Solver) {
@@ -510,6 +521,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
         Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
+        assert!(K::EXPORTED);
         if name == self.module_info().name() {
             self.get(k)
         } else {
@@ -1102,7 +1114,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .get_from_module(*m, &KeyExported::Export(name.clone()))
                 .arc_clone(),
             Binding::ClassKeyword(x) => self.expr(x, None),
-            Binding::ClassDef(x, fields, bases, legacy_tparams) => {
+            Binding::ClassDef(box (x, fields), bases, legacy_tparams) => {
                 Type::ClassDef(self.class_definition(x, fields.clone(), bases, legacy_tparams))
             }
             Binding::SelfType(k) => match &*self.get_idx(*k) {
@@ -1125,7 +1137,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.check_is_exception(exc, exc.range(), false);
                 Type::None // Unused
             }
-            Binding::CheckRaisedException(RaisedException::WithCause(exc, cause)) => {
+            Binding::CheckRaisedException(RaisedException::WithCause(box (exc, cause))) => {
                 self.check_is_exception(exc, exc.range(), false);
                 self.check_is_exception(cause, cause.range(), true);
                 Type::None // Unused

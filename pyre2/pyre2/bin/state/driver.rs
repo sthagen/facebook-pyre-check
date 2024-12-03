@@ -6,8 +6,8 @@
  */
 
 use std::any::type_name_of_val;
-use std::mem;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use dupe::Dupe;
 use parse_display::Display;
@@ -27,7 +27,6 @@ use crate::alt::bindings::BindingTable;
 use crate::alt::bindings::Bindings;
 use crate::alt::exports::Exports;
 use crate::alt::exports::LookupExport;
-use crate::alt::loader::Loader;
 use crate::alt::table::Keyed;
 use crate::alt::table::TableKeyed;
 use crate::ast::Ast;
@@ -38,6 +37,7 @@ use crate::error::error::Error;
 use crate::expectation::Expectation;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
+use crate::state::loader::Loader;
 use crate::table_for_each;
 #[cfg(test)]
 use crate::types::mro::Mro;
@@ -46,6 +46,7 @@ use crate::types::types::Type;
 use crate::uniques::UniqueFactory;
 use crate::util::display::DisplayWith;
 use crate::util::memory::MemoryUsage;
+use crate::util::memory::MemoryUsageTrace;
 use crate::util::prelude::SliceExt;
 use crate::util::small_map;
 use crate::util::timer::TimerContext;
@@ -276,6 +277,7 @@ impl Driver {
         parallel: bool,
         load: &Loader,
     ) -> Self {
+        let mut memory_trace = MemoryUsageTrace::start(Duration::from_secs_f32(0.1));
         let mut timers = Timers::new();
         let timers = &mut timers;
         let uniques = UniqueFactory::new();
@@ -309,7 +311,15 @@ impl Driver {
         })(
             &answers_info,
             |_, (answers, bindings, errors): &(&Answers, &Bindings, &ErrorCollector)| {
-                answers.solve(&exports, &answers_info, bindings, errors, &stdlib, &uniques)
+                answers.solve(
+                    &exports,
+                    &answers_info,
+                    bindings,
+                    errors,
+                    &stdlib,
+                    &uniques,
+                    false,
+                )
             },
         );
         timers.add((timers_global_module(), Step::Solve, 0));
@@ -332,7 +342,9 @@ impl Driver {
         info_eprintln(format!("Total errors: {}", error_count));
         let printing = timers.add((timers_global_module(), Step::PrintErrors, error_count));
 
-        eprintln!("Memory usage: {}", MemoryUsage::new());
+        eprintln!("Memory usage: {}", MemoryUsage::now());
+        memory_trace.stop();
+        eprintln!("Memory peak : {}", memory_trace.peak());
 
         let total = timers.total();
         info_eprintln(format!(
@@ -343,7 +355,7 @@ impl Driver {
             Self::print_timings(timings, timers);
         }
 
-        mem::drop(answers_info);
+        drop(answers_info);
         assert_eq!(phase1.len(), phase2.len());
         let expectations = phase1
             .iter()

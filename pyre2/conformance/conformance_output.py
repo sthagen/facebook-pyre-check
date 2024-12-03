@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
+# pyre-strict
 
 
 import argparse
@@ -46,11 +46,13 @@ def is_excluded(test_case: str) -> bool:
 # temporarily being marked dirty by version control systems.
 def update_file(file_path: str, content: str) -> None:
     if Path(file_path).exists():
+        # lint-ignore: NoUnsafeFilesystemRule
         with open(file_path, "r") as f:
             old_content = f.read()
     else:
         old_content = None
     if content != old_content:
+        # lint-ignore: NoUnsafeFilesystemRule
         with open(file_path, "w") as f:
             f.write(content)
 
@@ -167,7 +169,7 @@ def diff_expected_errors(directory: str, test_case: str) -> List[str]:
 
 
 def compare_conformance_output(
-    directory: str, conformance_output: Dict[str, List[dict]]
+    directory: str, conformance_output: Dict[str, List[dict[str, str]]]
 ) -> Dict[str, List[str]]:
     """
     Compare conformance output with expected results in conformance test sources.
@@ -221,6 +223,7 @@ def get_conformance_output(
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stderr = result.stderr.decode()
         try:
+            # lint-ignore: NoUnsafeFilesystemRule
             with open(tmp_file.name, "r") as tmp_file:
                 errors = json.load(tmp_file)
                 for error in errors["errors"]:
@@ -259,6 +262,7 @@ def get_conformance_output_separate(
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stderr = result.stderr.decode()
             try:
+                # lint-ignore: NoUnsafeFilesystemRule
                 with open(tmp_file.name, "r") as tmp_file:
                     errors = json.load(tmp_file)
                     for error in errors["errors"]:
@@ -272,7 +276,7 @@ def get_conformance_output_separate(
     return outputs
 
 
-def collect_test_cases(directory) -> List[str]:
+def collect_test_cases(directory: str) -> List[str]:
     test_cases = []
     for root, _, files in os.walk(directory):
         for file in files:
@@ -349,7 +353,6 @@ def main() -> None:
         test_cases = collect_test_cases(args.directory)
         # emit .exp files
         expected_output_path = os.path.join(args.directory, EXPECTED_OUTPUT)
-        # lint-ignore: NoUnsafeFilesystemRule
         update_file(
             expected_output_path,
             AT_GENERATED
@@ -373,12 +376,10 @@ def main() -> None:
                 failing[path.split("/")[-1]] = len(diff)
                 n_fail += 1
             diff_output[path.split("/")[-1]] = diff
-        # lint-ignore: NoUnsafeFilesystemRule
         update_file(
             expected_output_path,
             AT_GENERATED + "\n" + json.dumps(diff_output, indent=2, sort_keys=True),
         )
-        # lint-ignore: NoUnsafeFilesystemRule
         update_file(
             args.directory + "/results.json",
             json.dumps(

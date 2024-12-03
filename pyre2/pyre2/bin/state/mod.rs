@@ -5,13 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-pub mod answers;
-pub mod binding;
-pub mod bindings;
-pub mod classes;
-pub mod definitions;
-pub mod exports;
-pub mod expr;
-pub mod specials;
-pub mod table;
-pub mod util;
+pub mod driver;
+pub mod ide;
+pub mod info;
+pub mod loader;
+pub mod state;
+pub mod steps;

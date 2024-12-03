@@ -56,6 +56,7 @@ use crate::alt::binding::KeyTypeParams;
 use crate::alt::binding::RaisedException;
 use crate::alt::binding::SizeExpectation;
 use crate::alt::binding::UnpackedPosition;
+use crate::alt::definitions::DefinitionStyle;
 use crate::alt::definitions::Definitions;
 use crate::alt::exports::LookupExport;
 use crate::alt::table::Keyed;
@@ -136,12 +137,32 @@ struct BindingsBuilder<'a> {
 /// Many names may map to the same TextRange (e.g. from foo import *).
 /// But no other static will point at the same TextRange.
 #[derive(Default, Clone, Debug)]
-struct Static(SmallMap<Name, TextRange>);
+struct Static(SmallMap<Name, StaticInfo>);
+
+#[derive(Clone, Debug)]
+struct StaticInfo {
+    loc: TextRange,
+    /// How many times this will be redefined
+    count: usize,
+    /// True if this is going to appear as a `Key::Import``.
+    /// A little fiddly to keep syncronised with the other field.
+    uses_key_import: bool,
+}
 
 impl Static {
-    fn add(&mut self, name: Name, range: TextRange) {
+    fn add_with_count(&mut self, name: Name, loc: TextRange, count: usize) -> &mut StaticInfo {
         // Use whichever one we see first
-        self.0.entry(name).or_insert(range);
+        let res = self.0.entry(name).or_insert(StaticInfo {
+            loc,
+            count: 0,
+            uses_key_import: false,
+        });
+        res.count += count;
+        res
+    }
+
+    fn add(&mut self, name: Name, range: TextRange) {
+        self.add_with_count(name, range, 1);
     }
 
     fn stmts(
@@ -156,13 +177,14 @@ impl Static {
         if top_level && module_info.name() != ModuleName::builtins() {
             d.inject_implicit();
         }
-        for (name, (range, _)) in d.definitions {
-            self.add(name, range)
+        for (name, (range, defn, count)) in d.definitions {
+            self.add_with_count(name, range, count).uses_key_import =
+                defn == DefinitionStyle::ImportModule;
         }
         for (m, range) in d.import_all {
             let extra = modules.get(m).wildcard(modules);
             for name in extra.iter() {
-                self.add(name.clone(), range)
+                self.add_with_count(name.clone(), range, 1).uses_key_import = true;
             }
         }
     }
@@ -322,13 +344,6 @@ impl Bindings {
         &self.0.module_info
     }
 
-    pub fn contains_key<K: Keyed>(&self, k: &K) -> bool
-    where
-        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
-    {
-        self.0.table.get::<K>().0.contains(k)
-    }
-
     pub fn key_to_idx<K: Keyed>(&self, k: &K) -> Idx<K>
     where
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -340,7 +355,15 @@ impl Bindings {
     where
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
     {
-        self.0.table.get::<K>().1.get_exists(idx)
+        self.0.table.get::<K>().1.get(idx).unwrap_or_else(|| {
+            let key = self.idx_to_key(idx);
+            panic!(
+                "Internal error: key lacking binding, module={}, path={}, key={}, key-debug={key:?}",
+                self.module_info().name(),
+                self.module_info().path().display(),
+                self.module_info().display(key),
+            )
+        })
     }
 
     pub fn idx_to_key<K: Keyed>(&self, idx: Idx<K>) -> &K
@@ -384,7 +407,7 @@ impl Bindings {
             builder.inject_implicit();
         }
         builder.stmts(x);
-        for (k, range) in builder.scopes.last().stat.0.iter() {
+        for (k, static_info) in builder.scopes.last().stat.0.iter() {
             let info = builder.scopes.last().flow.info.get(k);
             let val = match info {
                 Some(FlowInfo {
@@ -398,7 +421,7 @@ impl Bindings {
                     // This might be because we haven't fully implemented all bindings, or because the two disagree. Just guess.
                     errors.add(
                         &module_info,
-                        *range,
+                        static_info.loc,
                         format!("Could not find flow binding for `{k}`"),
                     );
                     Binding::AnyType(AnyStyle::Error)
@@ -419,7 +442,7 @@ impl BindingTable {
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
     {
         let entry = self.get_mut::<K>();
-        let idx = entry.0.insert_if_missing(key);
+        let idx = entry.0.insert(key);
         entry.1.insert_once(idx, value);
         idx
     }
@@ -429,7 +452,7 @@ impl BindingTable {
         name: Name,
         range: TextRange,
     ) -> (Idx<Key>, &mut SmallSet<Idx<Key>>) {
-        let idx = self.types.0.insert_if_missing(Key::Anywhere(name, range));
+        let idx = self.types.0.insert(Key::Anywhere(name, range));
         match self
             .types
             .1
@@ -470,10 +493,23 @@ impl<'a> BindingsBuilder<'a> {
             if !barrier && let Some(flow) = scope.flow.info.get(&name.id) {
                 return Some(flow.key);
             } else if !matches!(scope.kind, ScopeKind::ClassBody(_))
-                && let Some(name_id) = scope.stat.0.get(&name.id)
+                && let Some(info) = scope.stat.0.get(&name.id)
             {
-                let (idx, _) = self.table.insert_anywhere(name.id.clone(), *name_id);
-                return Some(idx);
+                let key = if info.count == 1 {
+                    if info.uses_key_import {
+                        Key::Import(name.id.clone(), info.loc)
+                    } else {
+                        // We are constructing an identifier, but it must have been one that we saw earlier
+                        assert_ne!(info.loc, TextRange::default());
+                        Key::Definition(ShortIdentifier::new(&Identifier {
+                            id: name.id.clone(),
+                            range: info.loc,
+                        }))
+                    }
+                } else {
+                    Key::Anywhere(name.id.clone(), info.loc)
+                };
+                return Some(self.table.types.0.insert(key));
             }
             barrier = barrier || scope.barrier;
         }
@@ -725,10 +761,9 @@ impl<'a> BindingsBuilder<'a> {
         };
         match target {
             Expr::Name(name) => {
-                let id = Ast::expr_name_identifier(name.clone());
-                let key = Key::Definition(ShortIdentifier::new(&id));
+                let key = Key::Definition(ShortIdentifier::expr_name(name));
                 let idx = self.table.types.0.insert(key);
-                let ann = self.bind_key(&id.id, idx, None, false);
+                let ann = self.bind_key(&name.id, idx, None, false);
                 self.table.types.1.insert(idx, make_binding(ann));
             }
             Expr::Attribute(x) => {
@@ -788,14 +823,16 @@ impl<'a> BindingsBuilder<'a> {
                 annotation
             }
         };
-        let defn_range = self.scopes.last().stat.0.get(name).unwrap_or_else(|| {
+        let info = self.scopes.last().stat.0.get(name).unwrap_or_else(|| {
             let module = self.module_info.name();
             panic!("Name `{name}` not found in static scope of module `{module}`")
         });
-        self.table
-            .insert_anywhere(name.clone(), *defn_range)
-            .1
-            .insert(key);
+        if info.count > 1 || matches!(self.scopes.last().kind, ScopeKind::ClassBody(_)) {
+            self.table
+                .insert_anywhere(name.clone(), info.loc)
+                .1
+                .insert(key);
+        }
         annotation
     }
 
@@ -886,12 +923,7 @@ impl<'a> BindingsBuilder<'a> {
         }
         let func_name = x.name.clone();
         let self_type = match &self.scopes.last().kind {
-            ScopeKind::ClassBody(body) => Some(
-                self.table
-                    .types
-                    .0
-                    .insert_if_missing(body.as_self_type_key()),
-            ),
+            ScopeKind::ClassBody(body) => Some(self.table.types.0.insert(body.as_self_type_key())),
             _ => None,
         };
 
@@ -992,7 +1024,7 @@ impl<'a> BindingsBuilder<'a> {
             .table
             .types
             .0
-            .insert_if_missing(Key::Definition(ShortIdentifier::new(&x.name)));
+            .insert(Key::Definition(ShortIdentifier::new(&x.name)));
 
         x.type_params.iter().for_each(|x| {
             self.type_params(x);
@@ -1069,9 +1101,9 @@ impl<'a> BindingsBuilder<'a> {
         let last_scope = self.scopes.pop().unwrap();
         let mut fields = SmallSet::new();
         for (name, info) in last_scope.flow.info.iter() {
-            let mut val = Binding::Forward(self.table.types.0.insert_if_missing(Key::Anywhere(
+            let mut val = Binding::Forward(self.table.types.0.insert(Key::Anywhere(
                 name.clone(),
-                *last_scope.stat.0.get(name).unwrap(),
+                last_scope.stat.0.get(name).unwrap().loc,
             )));
             if let Some(ann) = &info.ann {
                 val = Binding::AnnotatedType(*ann, Box::new(val));
@@ -1109,8 +1141,7 @@ impl<'a> BindingsBuilder<'a> {
         self.bind_definition(
             &x.name.clone(),
             Binding::ClassDef(
-                Box::new(x),
-                fields,
+                Box::new((x, fields)),
                 bases.into_boxed_slice(),
                 legacy_tparams.into_boxed_slice(),
             ),
@@ -1370,13 +1401,38 @@ impl<'a> BindingsBuilder<'a> {
                 }
                 self.stmts(x.body.clone());
             }
-            Stmt::Match(x) => self.todo("Bindings::stmt", &x),
+            Stmt::Match(x) => {
+                self.todo("Bindings::stmt", &x);
+
+                // Very bad version that binds the right things
+                self.ensure_expr(&x.subject);
+                self.table.insert(
+                    Key::Anon(x.subject.range()),
+                    Binding::Expr(None, *x.subject),
+                );
+                for case in x.cases {
+                    Ast::pattern_lvalue(&case.pattern, &mut |x| match x {
+                        Either::Left(x) => {
+                            self.bind_definition(x, Binding::AnyType(AnyStyle::Error), None);
+                        }
+                        Either::Right(x) => {
+                            self.bind_target(x, &|_| Binding::AnyType(AnyStyle::Error), true);
+                        }
+                    });
+                    if let Some(guard) = case.guard {
+                        self.ensure_expr(&guard);
+                        self.table
+                            .insert(Key::Anon(guard.range()), Binding::Expr(None, *guard));
+                    }
+                    self.stmts(case.body);
+                }
+            }
             Stmt::Raise(x) => {
                 if let Some(exc) = x.exc {
                     self.ensure_expr(&exc);
                     let raised = if let Some(cause) = x.cause {
                         self.ensure_expr(&cause);
-                        RaisedException::WithCause(*exc, cause)
+                        RaisedException::WithCause(Box::new((*exc, *cause)))
                     } else {
                         RaisedException::WithoutCause(*exc)
                     };
@@ -1387,7 +1443,22 @@ impl<'a> BindingsBuilder<'a> {
                 }
                 self.scopes.last_mut().flow.no_next = true;
             }
-            Stmt::Try(x) => self.todo("Bindings::stmt", &x),
+            Stmt::Try(x) => {
+                self.todo("Bindings::stmt", &x);
+
+                // FIXME: Not correct, just go through binding everything we need
+                self.stmts(x.body);
+                for h in x.handlers {
+                    let h = h.except_handler().unwrap(); // Only one variant for now
+                    // FIXME: Should be looking at h.type_ to get the type information
+                    if let Some(name) = h.name {
+                        self.bind_definition(&name, Binding::AnyType(AnyStyle::Error), None);
+                    }
+                    self.stmts(h.body);
+                }
+                self.stmts(x.orelse);
+                self.stmts(x.finalbody);
+            }
             Stmt::Assert(x) => {
                 self.ensure_expr(&x.test);
                 self.table
@@ -1510,7 +1581,7 @@ impl<'a> BindingsBuilder<'a> {
                 .table
                 .types
                 .0
-                .insert_if_missing(Key::Phi(name.key().clone(), range));
+                .insert(Key::Phi(name.key().clone(), range));
             res.insert_hashed(name, FlowInfo::new(key, ann));
         }
         Flow {
@@ -1557,7 +1628,14 @@ impl<'a> BindingsBuilder<'a> {
         if xs.len() == 1 && xs[0].no_next {
             return xs.pop().unwrap();
         }
-        let visible_branches = xs.into_iter().filter(|x| !x.no_next).collect::<Vec<_>>();
+        let (hidden_branches, mut visible_branches): (Vec<_>, Vec<_>) =
+            xs.into_iter().partition(|x| x.no_next);
+
+        // We normally go through the visible branches, but if nothing is visible no one is going to
+        // fill in the Phi keys we promised. So just given up and use the hidden branches instead.
+        if visible_branches.is_empty() {
+            visible_branches = hidden_branches;
+        }
 
         let names = visible_branches
             .iter()
@@ -1659,7 +1737,7 @@ impl LegacyTParamBuilder {
                         .table
                         .legacy_tparams
                         .0
-                        .insert_if_missing(KeyLegacyTypeParam(ShortIdentifier::new(id))),
+                        .insert(KeyLegacyTypeParam(ShortIdentifier::new(id))),
                     range_if_scoped_params_exist,
                 )
             })
@@ -1687,7 +1765,7 @@ impl LegacyTParamBuilder {
                     .table
                     .legacy_tparams
                     .0
-                    .insert_if_missing(KeyLegacyTypeParam(ShortIdentifier::new(identifier)));
+                    .insert(KeyLegacyTypeParam(ShortIdentifier::new(identifier)));
                 builder.bind_definition(
                     identifier,
                     // Note: we use None as the range here because the range is
@@ -1715,7 +1793,7 @@ impl LegacyTParamBuilder {
                     .table
                     .legacy_tparams
                     .0
-                    .insert_if_missing(KeyLegacyTypeParam(ShortIdentifier::new(id)))
+                    .insert(KeyLegacyTypeParam(ShortIdentifier::new(id)))
             })
             .collect()
     }

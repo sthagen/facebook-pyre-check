@@ -497,3 +497,46 @@ def test():
                 continue
 "#,
 );
+
+simple_test!(
+    test_flow_crash2,
+    r#"
+def magic_breakage(argument):
+    for it in []:
+        continue
+        break
+    else:
+        raise
+"#,
+);
+
+simple_test!(
+    test_try,
+    r#"
+from typing import assert_type, Literal
+
+try:  # E: TODO: StmtTry - Bindings::stmt
+    x = 1
+except:
+    x = 2
+
+assert_type(x, Literal[1, 2])  # E: assert_type(Literal[2], Literal[1, 2]) failed
+"#,
+);
+
+simple_test!(
+    test_match,
+    r#"
+from typing import assert_type
+
+def point() -> int:
+    return 3
+
+match point():  # E: TODO: StmtMatch - Bindings::stmt
+    case 1:  # E: unrecognized assignment target
+        x = 8
+    case q:
+        x = q
+assert_type(x, int)  # E: assert_type(Any, int) failed
+"#,
+);

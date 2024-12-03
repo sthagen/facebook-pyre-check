@@ -5111,6 +5111,26 @@
     },
     {
       "code": -2,
+      "column": 5,
+      "concise_description": "assert_type(Class5, NoReturn) failed",
+      "description": "assert_type(Class5, NoReturn) failed",
+      "line": 76,
+      "name": "PyreError",
+      "stop_column": 36,
+      "stop_line": 76
+    },
+    {
+      "code": -2,
+      "column": 17,
+      "concise_description": "Missing argument 'x'",
+      "description": "Missing argument 'x'",
+      "line": 76,
+      "name": "PyreError",
+      "stop_column": 23,
+      "stop_line": 76
+    },
+    {
+      "code": -2,
       "column": 1,
       "concise_description": "assert_type(Class6, Class6 | int) failed",
       "description": "assert_type(Class6, Class6 | int) failed",
@@ -5655,6 +5675,26 @@
     },
     {
       "code": -2,
+      "column": 5,
+      "concise_description": "assert_type(Any, NoReturn) failed",
+      "description": "assert_type(Any, NoReturn) failed",
+      "line": 100,
+      "name": "PyreError",
+      "stop_column": 32,
+      "stop_line": 100
+    },
+    {
+      "code": -2,
+      "column": 17,
+      "concise_description": "Answers::expr_infer wrong number of arguments to call",
+      "description": "Answers::expr_infer wrong number of arguments to call",
+      "line": 100,
+      "name": "PyreError",
+      "stop_column": 19,
+      "stop_line": 100
+    },
+    {
+      "code": -2,
       "column": 1,
       "concise_description": "TODO: StmtTry - Bindings::stmt",
       "description": "TODO: StmtTry - Bindings::stmt",
@@ -5662,6 +5702,26 @@
       "name": "PyreError",
       "stop_column": 9,
       "stop_line": 107
+    },
+    {
+      "code": -2,
+      "column": 5,
+      "concise_description": "assert_type(Any, NoReturn) failed",
+      "description": "assert_type(Any, NoReturn) failed",
+      "line": 105,
+      "name": "PyreError",
+      "stop_column": 38,
+      "stop_line": 105
+    },
+    {
+      "code": -2,
+      "column": 17,
+      "concise_description": "Answers::expr_infer wrong number of arguments to call",
+      "description": "Answers::expr_infer wrong number of arguments to call",
+      "line": 105,
+      "name": "PyreError",
+      "stop_column": 19,
+      "stop_line": 105
     },
     {
       "code": -2,
@@ -8666,6 +8726,36 @@
       "concise_description": "TODO: StmtMatch - Bindings::stmt",
       "description": "TODO: StmtMatch - Bindings::stmt",
       "line": 29,
+      "name": "PyreError",
+      "stop_column": 34,
+      "stop_line": 35
+    },
+    {
+      "code": -2,
+      "column": 13,
+      "concise_description": "Missing argument 'flush'",
+      "description": "Missing argument 'flush'",
+      "line": 31,
+      "name": "PyreError",
+      "stop_column": 18,
+      "stop_line": 31
+    },
+    {
+      "code": -2,
+      "column": 13,
+      "concise_description": "Missing argument 'flush'",
+      "description": "Missing argument 'flush'",
+      "line": 33,
+      "name": "PyreError",
+      "stop_column": 18,
+      "stop_line": 33
+    },
+    {
+      "code": -2,
+      "column": 13,
+      "concise_description": "assert_type(Color, Never) failed",
+      "description": "assert_type(Color, Never) failed",
+      "line": 35,
       "name": "PyreError",
       "stop_column": 34,
       "stop_line": 35
@@ -20491,10 +20581,60 @@
     },
     {
       "code": -2,
+      "column": 13,
+      "concise_description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int]) failed",
+      "description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int]) failed",
+      "line": 95,
+      "name": "PyreError",
+      "stop_column": 41,
+      "stop_line": 95
+    },
+    {
+      "code": -2,
+      "column": 13,
+      "concise_description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, int] | tuple[str, str]) failed",
+      "description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, int] | tuple[str, str]) failed",
+      "line": 99,
+      "name": "PyreError",
+      "stop_column": 64,
+      "stop_line": 99
+    },
+    {
+      "code": -2,
+      "column": 13,
+      "concise_description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, str, int]) failed",
+      "description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, str, int]) failed",
+      "line": 103,
+      "name": "PyreError",
+      "stop_column": 51,
+      "stop_line": 103
+    },
+    {
+      "code": -2,
       "column": 5,
       "concise_description": "TODO: StmtMatch - Bindings::stmt",
       "description": "TODO: StmtMatch - Bindings::stmt",
       "line": 113,
+      "name": "PyreError",
+      "stop_column": 53,
+      "stop_line": 117
+    },
+    {
+      "code": -2,
+      "column": 13,
+      "concise_description": "assert_type(tuple[int | str, int | str], tuple[int | str, str]) failed",
+      "description": "assert_type(tuple[int | str, int | str], tuple[int | str, str]) failed",
+      "line": 115,
+      "name": "PyreError",
+      "stop_column": 53,
+      "stop_line": 115
+    },
+    {
+      "code": -2,
+      "column": 13,
+      "concise_description": "assert_type(tuple[int | str, int | str], tuple[int | str, int]) failed",
+      "description": "assert_type(tuple[int | str, int | str], tuple[int | str, int]) failed",
+      "line": 117,
       "name": "PyreError",
       "stop_column": 53,
       "stop_line": 117

@@ -14,10 +14,10 @@ use ruff_text_size::TextSize;
 use crate::alt::binding::Binding;
 use crate::alt::binding::Key;
 use crate::alt::binding::KeyExported;
-use crate::alt::driver::Driver;
 use crate::ast::Ast;
 use crate::module::module_name::ModuleName;
 use crate::module::short_identifier::ShortIdentifier;
+use crate::state::driver::Driver;
 use crate::types::types::Type;
 use crate::visitors::Visitors;
 
@@ -126,25 +126,17 @@ impl Driver {
                         _ => {}
                     }
                 }
-                Key::Anywhere(name, range) => {
-                    let key = Key::Definition(ShortIdentifier::new(&Identifier {
-                        id: name.clone(),
-                        range: *range,
-                    }));
-                    if bindings.contains_key(&key)
-                        && let Some(ty) = self.get_type(module, &key)
+                key @ Key::Definition(_) if let Some(ty) = self.get_type(module, key) => {
+                    let idx_binding = match bindings.get(idx) {
+                        Binding::NameAssign(_, _, b, _) => b,
+                        b => b,
+                    };
+                    if let Binding::Expr(None, e) = idx_binding
+                        && is_interesting_expr(e)
+                        && is_interesting_type(ty)
                     {
-                        let idx_binding = match bindings.get(bindings.key_to_idx(&key)) {
-                            Binding::NameAssign(_, _, b, _) => b,
-                            b => b,
-                        };
-                        if let Binding::Expr(None, e) = idx_binding
-                            && is_interesting_expr(e)
-                            && is_interesting_type(ty)
-                        {
-                            let ty = format!(": {}", ty);
-                            res.push((range.end(), ty));
-                        }
+                        let ty = format!(": {}", ty);
+                        res.push((key.range().end(), ty));
                     }
                 }
                 _ => {}
