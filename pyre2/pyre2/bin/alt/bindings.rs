@@ -42,17 +42,15 @@ use vec1::Vec1;
 
 use crate::alt::binding::Binding;
 use crate::alt::binding::BindingAnnotation;
+use crate::alt::binding::BindingClassMetadata;
 use crate::alt::binding::BindingLegacyTypeParam;
-use crate::alt::binding::BindingMro;
-use crate::alt::binding::BindingTypeParams;
 use crate::alt::binding::ContextManagerKind;
 use crate::alt::binding::FunctionKind;
 use crate::alt::binding::Key;
 use crate::alt::binding::KeyAnnotation;
+use crate::alt::binding::KeyClassMetadata;
 use crate::alt::binding::KeyExported;
 use crate::alt::binding::KeyLegacyTypeParam;
-use crate::alt::binding::KeyMro;
-use crate::alt::binding::KeyTypeParams;
 use crate::alt::binding::RaisedException;
 use crate::alt::binding::SizeExpectation;
 use crate::alt::binding::UnpackedPosition;
@@ -959,12 +957,7 @@ impl<'a> BindingsBuilder<'a> {
             self.scopes.push(Scope::method(func_name.clone()));
         }
 
-        let value = BindingTypeParams::Function(
-            tparams.unwrap_or_default(),
-            legacy_tparam_builder.lookup_keys(self),
-        );
-        self.table
-            .insert(KeyTypeParams(ShortIdentifier::new(&func_name)), value);
+        let legacy_tparams = legacy_tparam_builder.lookup_keys(self);
 
         self.parameters(&mut x.parameters, &self_type);
 
@@ -986,7 +979,11 @@ impl<'a> BindingsBuilder<'a> {
                 .insert(method.name.id.clone(), method.instance_attributes.clone());
         }
 
-        self.bind_definition(&x.name.clone(), Binding::Function(Box::new(x), kind), None);
+        self.bind_definition(
+            &x.name.clone(),
+            Binding::Function(Box::new(x), kind, legacy_tparams.into_boxed_slice()),
+            None,
+        );
 
         let mut return_exprs = Vec::new();
         while self.returns.len() > return_count {
@@ -1054,21 +1051,14 @@ impl<'a> BindingsBuilder<'a> {
             base
         });
 
-        self.table.insert(
-            KeyMro(ShortIdentifier::new(&x.name)),
-            BindingMro(definition_key, bases.clone()),
-        );
-
-        let mut keywords = SmallSet::new();
+        let mut keywords = SmallMap::new();
         x.keywords().iter().for_each(|keyword| {
             if let Some(name) = &keyword.arg {
                 self.ensure_expr(&keyword.value);
-                if keywords.insert(name.id.clone()) {
-                    self.table.insert(
-                        Key::ClassKeyword(ShortIdentifier::new(&x.name), name.id.clone()),
-                        Binding::ClassKeyword(keyword.value.clone()),
-                    );
-                } else {
+                if keywords
+                    .insert(name.id.clone(), keyword.value.clone())
+                    .is_some()
+                {
                     self.errors.add(
                         &self.module_info,
                         keyword.range(),
@@ -1086,6 +1076,11 @@ impl<'a> BindingsBuilder<'a> {
                 )
             }
         });
+
+        self.table.insert(
+            KeyClassMetadata(ShortIdentifier::new(&x.name)),
+            BindingClassMetadata(definition_key, bases.clone(), keywords),
+        );
 
         legacy_tparam_builder.add_name_definitions(self);
 

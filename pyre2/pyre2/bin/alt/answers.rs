@@ -13,6 +13,8 @@ use std::sync::Arc;
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
+use ruff_python_ast::TypeParam;
+use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::ordered_set::OrderedSet;
@@ -21,18 +23,16 @@ use starlark_map::small_map::SmallMap;
 
 use crate::alt::binding::Binding;
 use crate::alt::binding::BindingAnnotation;
+use crate::alt::binding::BindingClassMetadata;
 use crate::alt::binding::BindingLegacyTypeParam;
-use crate::alt::binding::BindingMro;
-use crate::alt::binding::BindingTypeParams;
 use crate::alt::binding::ContextManagerKind;
 use crate::alt::binding::Exported;
 use crate::alt::binding::FunctionKind;
 use crate::alt::binding::Key;
 use crate::alt::binding::KeyAnnotation;
+use crate::alt::binding::KeyClassMetadata;
 use crate::alt::binding::KeyExported;
 use crate::alt::binding::KeyLegacyTypeParam;
-use crate::alt::binding::KeyMro;
-use crate::alt::binding::KeyTypeParams;
 use crate::alt::binding::RaisedException;
 use crate::alt::binding::SizeExpectation;
 use crate::alt::binding::UnpackedPosition;
@@ -65,15 +65,14 @@ use crate::types::callable::Arg;
 use crate::types::callable::Callable;
 use crate::types::callable::Required;
 use crate::types::class::Class;
+use crate::types::class_metadata::ClassMetadata;
 use crate::types::module::Module;
-use crate::types::mro::Mro;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
 use crate::types::type_var::TypeVar;
 use crate::types::types::AnyStyle;
 use crate::types::types::LegacyTypeParameterLookup;
 use crate::types::types::Quantified;
-use crate::types::types::QuantifiedVec;
 use crate::types::types::Type;
 use crate::types::types::TypeAlias;
 use crate::types::types::TypeAliasStyle;
@@ -226,11 +225,11 @@ impl SolveRecursive for KeyAnnotation {
         v.ty.iter_mut().for_each(f);
     }
 }
-impl SolveRecursive for KeyMro {
+impl SolveRecursive for KeyClassMetadata {
     fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        Mro::cyclic()
+        ClassMetadata::cyclic()
     }
-    fn visit_type_mut(v: &mut Mro, f: &mut dyn FnMut(&mut Type)) {
+    fn visit_type_mut(v: &mut ClassMetadata, f: &mut dyn FnMut(&mut Type)) {
         v.visit_mut(f);
     }
 }
@@ -240,14 +239,6 @@ impl SolveRecursive for KeyLegacyTypeParam {
     }
     fn visit_type_mut(v: &mut LegacyTypeParameterLookup, f: &mut dyn FnMut(&mut Type)) {
         v.not_parameter_mut().into_iter().for_each(f);
-    }
-}
-impl SolveRecursive for KeyTypeParams {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        QuantifiedVec(Vec::new())
-    }
-    fn visit_type_mut(_: &mut Self::Answer, _: &mut dyn FnMut(&mut Type)) {
-        // There are no types in the answer
     }
 }
 
@@ -311,8 +302,8 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyAnnotation {
     fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
 }
 
-impl<Ans: LookupAnswer> Solve<Ans> for KeyMro {
-    fn solve(answers: &AnswersSolver<Ans>, binding: &BindingMro) -> Arc<Mro> {
+impl<Ans: LookupAnswer> Solve<Ans> for KeyClassMetadata {
+    fn solve(answers: &AnswersSolver<Ans>, binding: &BindingClassMetadata) -> Arc<ClassMetadata> {
         answers.solve_mro(binding)
     }
 
@@ -325,14 +316,6 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyLegacyTypeParam {
         binding: &BindingLegacyTypeParam,
     ) -> Arc<LegacyTypeParameterLookup> {
         answers.solve_legacy_tparam(binding)
-    }
-
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyTypeParams {
-    fn solve(answers: &AnswersSolver<Ans>, binding: &BindingTypeParams) -> Arc<QuantifiedVec> {
-        answers.solve_tparams(binding)
     }
 
     fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
@@ -614,27 +597,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn solve_tparams(&self, binding: &BindingTypeParams) -> Arc<QuantifiedVec> {
-        let res = match binding {
-            BindingTypeParams::Function(scoped, legacy) => {
-                let legacy_tparams: Vec<_> = legacy
-                    .iter()
-                    .filter_map(|key| self.get_idx(*key).deref().parameter().cloned())
-                    .collect();
-                let mut tparams = scoped.clone();
-                tparams.extend(legacy_tparams);
-                QuantifiedVec(tparams)
-            }
-        };
-        Arc::new(res)
-    }
-
-    fn solve_mro(&self, binding: &BindingMro) -> Arc<Mro> {
+    fn solve_mro(&self, binding: &BindingClassMetadata) -> Arc<ClassMetadata> {
         match binding {
-            BindingMro(k, bases) => {
+            BindingClassMetadata(k, bases, keywords) => {
                 let self_ty = self.get_idx(*k);
                 match &*self_ty {
-                    Type::ClassDef(cls) => Arc::new(self.mro_of(cls, bases)),
+                    Type::ClassDef(cls) => Arc::new(self.class_metadata_of(cls, bases, keywords)),
                     _ => {
                         unreachable!("The key inside an Mro binding must be a class type")
                     }
@@ -907,6 +875,35 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         enter_type
     }
 
+    pub fn scoped_type_params(&self, x: &Option<Box<TypeParams>>) -> Vec<Quantified> {
+        let mut names = Vec::new();
+        match x {
+            Some(box x) => {
+                for x in &x.type_params {
+                    let name = match x {
+                        TypeParam::TypeVar(x) => &x.name,
+                        TypeParam::ParamSpec(x) => &x.name,
+                        TypeParam::TypeVarTuple(x) => &x.name,
+                    };
+                    names.push(name);
+                }
+            }
+            None => {}
+        }
+
+        fn get_quantified(t: &Type) -> &Quantified {
+            match t {
+                Type::Type(box Type::Quantified(q)) => q,
+                _ => unreachable!(),
+            }
+        }
+
+        names
+            .into_iter()
+            .map(|x| get_quantified(&self.get(&Key::Definition(ShortIdentifier::new(x)))).clone())
+            .collect()
+    }
+
     fn solve_binding(&self, binding: &Binding) -> Arc<Type> {
         // Replace any solved recursive variables with their answers.
         // We call self.unions() to simplify cases like
@@ -1049,7 +1046,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 Type::None // Unused
             }
-            Binding::Function(x, kind) => {
+            Binding::Function(x, kind, legacy_tparam_keys) => {
                 let check_default = |default: &Option<Box<Expr>>, ty: &Type| {
                     let mut required = Required::Required;
                     if let Some(default) = default {
@@ -1107,13 +1104,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 } else {
                     ret
                 };
-                let qs = self.get(&KeyTypeParams(ShortIdentifier::new(&x.name)));
-                Type::forall(qs.0.clone(), Type::callable(args, ret))
+                let mut tparams = self.scoped_type_params(&x.type_params);
+                let legacy_tparams = legacy_tparam_keys
+                    .iter()
+                    .filter_map(|key| self.get_idx(*key).deref().parameter().cloned());
+                tparams.extend(legacy_tparams);
+                Type::forall(tparams, Type::callable(args, ret))
             }
             Binding::Import(m, name) => self
                 .get_from_module(*m, &KeyExported::Export(name.clone()))
                 .arc_clone(),
-            Binding::ClassKeyword(x) => self.expr(x, None),
             Binding::ClassDef(box (x, fields), bases, legacy_tparams) => {
                 Type::ClassDef(self.class_definition(x, fields.clone(), bases, legacy_tparams))
             }

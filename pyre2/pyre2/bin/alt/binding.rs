@@ -16,6 +16,7 @@ use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
+use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use static_assertions::assert_eq_size;
 
@@ -33,20 +34,17 @@ use crate::util::display::DisplayWith;
 pub trait Exported {}
 
 impl Exported for KeyExported {}
-impl Exported for KeyMro {}
-impl Exported for KeyTypeParams {}
+impl Exported for KeyClassMetadata {}
 
 assert_eq_size!(Key, [usize; 5]);
 assert_eq_size!(KeyExported, [usize; 4]);
 assert_eq_size!(KeyAnnotation, [u8; 12]); // Equivalent to 1.5 usize
-assert_eq_size!(KeyMro, [usize; 1]);
-assert_eq_size!(KeyTypeParams, [usize; 1]);
+assert_eq_size!(KeyClassMetadata, [usize; 1]);
 assert_eq_size!(KeyLegacyTypeParam, [usize; 1]);
 
 assert_eq_size!(Binding, [usize; 9]);
 assert_eq_size!(BindingAnnotation, [usize; 9]);
-assert_eq_size!(BindingMro, [usize; 4]);
-assert_eq_size!(BindingTypeParams, [usize; 6]);
+assert_eq_size!(BindingClassMetadata, [usize; 8]);
 assert_eq_size!(BindingLegacyTypeParam, [u32; 1]);
 
 /// Keys that refer to a `Type`.
@@ -72,8 +70,6 @@ pub enum Key {
     Phi(Name, TextRange),
     /// The binding definition site, anywhere it occurs
     Anywhere(Name, TextRange),
-    /// A 'keyword argument' appearing in a class header, e.g. `metaclass`.
-    ClassKeyword(ShortIdentifier, Name),
 }
 
 impl Ranged for Key {
@@ -88,7 +84,6 @@ impl Ranged for Key {
             Self::Anon(r) => *r,
             Self::Phi(_, r) => *r,
             Self::Anywhere(_, r) => *r,
-            Self::ClassKeyword(c, _) => c.range(),
         }
     }
 }
@@ -103,13 +98,6 @@ impl DisplayWith<ModuleInfo> for Key {
             Self::Anon(r) => write!(f, "anon {r:?}"),
             Self::Phi(n, r) => write!(f, "phi {n} {r:?}"),
             Self::Anywhere(n, r) => write!(f, "anywhere {n} {r:?}"),
-            Self::ClassKeyword(x, n) => write!(
-                f,
-                "class_keyword {} {:?} . {}",
-                ctx.display(x),
-                x.range(),
-                n
-            ),
             Self::ReturnType(x) => write!(f, "return {} {:?}", ctx.display(x), x.range()),
             Self::ReturnExpression(x, i) => {
                 write!(f, "return {} {:?} @ {i:?}", ctx.display(x), x.range())
@@ -187,15 +175,15 @@ impl DisplayWith<ModuleInfo> for KeyAnnotation {
 /// Keys that refer to a class's `Mro` (which tracks its ancestors, in method
 /// resolution order).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct KeyMro(pub ShortIdentifier);
+pub struct KeyClassMetadata(pub ShortIdentifier);
 
-impl Ranged for KeyMro {
+impl Ranged for KeyClassMetadata {
     fn range(&self) -> TextRange {
         self.0.range()
     }
 }
 
-impl DisplayWith<ModuleInfo> for KeyMro {
+impl DisplayWith<ModuleInfo> for KeyClassMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
         write!(f, "mro {} {:?}", ctx.display(&self.0), self.0.range())
     }
@@ -215,27 +203,6 @@ impl DisplayWith<ModuleInfo> for KeyLegacyTypeParam {
         write!(
             f,
             "legacy_type_param {} {:?}",
-            ctx.display(&self.0),
-            self.0.range()
-        )
-    }
-}
-
-/// Keys that refer to the `TypeParams` for a class or function.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct KeyTypeParams(pub ShortIdentifier);
-
-impl Ranged for KeyTypeParams {
-    fn range(&self) -> TextRange {
-        self.0.range()
-    }
-}
-
-impl DisplayWith<ModuleInfo> for KeyTypeParams {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
-        write!(
-            f,
-            "type_params {} {:?}",
             ctx.display(&self.0),
             self.0.range()
         )
@@ -310,7 +277,12 @@ pub enum Binding {
     /// A type parameter.
     TypeParameter(Quantified),
     /// A function definition, but with the return/body stripped out.
-    Function(Box<StmtFunctionDef>, FunctionKind),
+    /// The `Vec<Idx<LegacyTypeParam>>` contains binding information for possible legacy type params.
+    Function(
+        Box<StmtFunctionDef>,
+        FunctionKind,
+        Box<[Idx<KeyLegacyTypeParam>]>,
+    ),
     /// An import statement, typically with Self::Import.
     Import(ModuleName, Name),
     /// A class definition, but with the body stripped out.
@@ -322,8 +294,6 @@ pub enum Binding {
         Box<[Expr]>,
         Box<[Idx<KeyLegacyTypeParam>]>,
     ),
-    /// A class header keyword argument (e.g. the `metaclass`).
-    ClassKeyword(Expr),
     /// The Self type for a class, must point at a class.
     SelfType(Idx<Key>),
     /// A forward reference to another binding.
@@ -419,10 +389,9 @@ impl DisplayWith<Bindings> for Binding {
                     range
                 )
             }
-            Self::Function(x, _) => write!(f, "def {}", x.name.id),
+            Self::Function(x, _, _) => write!(f, "def {}", x.name.id),
             Self::Import(m, n) => write!(f, "import {m}.{n}"),
             Self::ClassDef(box (c, _), _, _) => write!(f, "class {}", c.name.id),
-            Self::ClassKeyword(x) => write!(f, "class_keyword {}", m.display(x)),
             Self::SelfType(k) => write!(f, "self {}", ctx.display(*k)),
             Self::Forward(k) => write!(f, "{}", ctx.display(*k)),
             Self::AugAssign(s) => write!(f, "augmented_assign {:?}", s),
@@ -534,32 +503,21 @@ impl DisplayWith<Bindings> for BindingAnnotation {
     }
 }
 
-/// Binding for the class `Mro`.
+// TODO(stroxler) Rename this; I'm deferring it for now because it would lead to difficult
+// merge conflicts with outstanding diffs.
+//
+/// Binding for the class's metadata (type level information derived from the class header - this
+/// includes the MRO, the class keywords, and the metaclass).
+///
 /// The `Key` points to the definition of the class.
 /// The `Vec<Expr>` contains the base classes from the class header.
+/// The `SmallMap<Name, Expr>` contains the class keywords from the class header.
 #[derive(Clone, Debug)]
-pub struct BindingMro(pub Idx<Key>, pub Vec<Expr>);
+pub struct BindingClassMetadata(pub Idx<Key>, pub Vec<Expr>, pub SmallMap<Name, Expr>);
 
-impl DisplayWith<Bindings> for BindingMro {
+impl DisplayWith<Bindings> for BindingClassMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
         write!(f, "mro {}", ctx.display(self.0))
-    }
-}
-
-/// Values that represent type parameters of either functions or classes.
-#[derive(Clone, Debug)]
-pub enum BindingTypeParams {
-    /// The first argument is any scoped type parameters.
-    /// The second argument tracks all names that appear in parameter and return annotations, which might
-    /// indicate legacy type parameters if they point to variable declarations.
-    Function(Vec<Quantified>, Vec<Idx<KeyLegacyTypeParam>>),
-}
-
-impl DisplayWith<Bindings> for BindingTypeParams {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>, _ctx: &Bindings) -> fmt::Result {
-        match self {
-            Self::Function(_, _) => write!(f, "function_type_params"),
-        }
     }
 }
 

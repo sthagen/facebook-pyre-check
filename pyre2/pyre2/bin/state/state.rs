@@ -5,13 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::cell::Ref;
-use std::cell::RefCell;
-use std::cell::RefMut;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::RwLock;
 
 use dupe::Dupe;
 use dupe::OptionDupedExt;
+use parking_lot::FairMutex;
 use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
@@ -45,14 +47,45 @@ use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
 use crate::uniques::UniqueFactory;
 
+#[derive(Debug, Clone, Copy)]
+struct HeapItem {
+    /// The next Step that needs doing for this module.
+    /// The Eq/Ord impls only look at the step.
+    step: Step,
+    module: ModuleName,
+}
+
+impl Ord for HeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.step.cmp(&other.step)
+    }
+}
+
+impl PartialOrd for HeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Eq for HeapItem {}
+
+impl PartialEq for HeapItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.step == other.step
+    }
+}
+
 pub struct State<'a> {
     config: &'a Config,
     loader: &'a Loader<'a>,
     uniques: UniqueFactory,
-    #[allow(dead_code)]
     parallel: bool,
-    stdlib: RefCell<Arc<Stdlib>>,
-    modules: RefCell<SmallMap<ModuleName, ModuleState>>,
+    stdlib: RwLock<Arc<Stdlib>>,
+    modules: RwLock<SmallMap<ModuleName, Arc<ModuleState>>>,
+    /// Items we still need to process. Stored in a max heap, so that
+    /// the highest step (the module that is closest to being finished)
+    /// gets picked first, ensuring we release its memory quickly.
+    todo: Mutex<BinaryHeap<HeapItem>>,
 
     // Set to true to keep data around forever.
     retain_memory: bool,
@@ -60,14 +93,21 @@ pub struct State<'a> {
 
 #[derive(Default)]
 struct ModuleState {
-    errors: Arc<ErrorCollector>,
-    steps: ModuleSteps,
+    // BIG WARNING: This must be a FairMutex or you run into deadlocks.
+    // Imagine module Foo is having demand Solutions in one thread, and demand Exports in another.
+    // If the first thread ends up computing each entry in turn, it might starve the Exports waiting.
+    // If the Solutions for Foo depends on the Answers of Bar, and the Answers of Bar was the one who
+    // asked for the Exports of Foo, then you get a deadlock.
+    // A fair mutex means that everyone asking for Exports will be released before you move to the next step.
+    lock: FairMutex<()>,
+    errors: ErrorCollector,
+    steps: RwLock<ModuleSteps>,
 }
 
 impl ModuleState {
-    fn clear(&mut self) {
-        self.errors = Arc::new(ErrorCollector::new());
-        self.steps.clear();
+    fn clear(&self) {
+        self.errors.clear();
+        self.steps.write().unwrap().clear();
     }
 }
 
@@ -78,85 +118,110 @@ impl<'a> State<'a> {
         parallel: bool,
         modules: &[ModuleName],
     ) -> Self {
+        let stdlib_modules = Stdlib::required();
         Self {
             config,
             loader,
             uniques: UniqueFactory::new(),
             parallel,
-            stdlib: RefCell::new(Arc::new(Stdlib::for_bootstrapping())),
-            modules: RefCell::new(
+            stdlib: RwLock::new(Arc::new(Stdlib::for_bootstrapping())),
+            modules: RwLock::new(
                 modules
                     .iter()
-                    .chain(&Stdlib::required())
-                    .map(|x| (*x, ModuleState::default()))
+                    .chain(&stdlib_modules)
+                    .map(|x| (*x, Default::default()))
+                    .collect(),
+            ),
+            todo: Mutex::new(
+                modules
+                    .iter()
+                    .chain(&stdlib_modules)
+                    .map(|x| HeapItem {
+                        step: Step::first(),
+                        module: *x,
+                    })
                     .collect(),
             ),
             retain_memory: true, // Will always be overwritten by entry points
         }
     }
 
-    fn evict<T>(&self, module: ModuleName, f: fn(&mut ModuleSteps) -> &mut Info<T>) {
+    fn evict<T>(&self, info: &mut Info<T>) {
         if !self.retain_memory {
-            f(&mut self.modules.borrow_mut().get_mut(&module).unwrap().steps).clear();
+            info.clear();
         }
     }
 
     fn demand(&self, module: ModuleName, step: Step) {
+        let mut computed = false;
         loop {
             let module_state = self.get_module(module);
-            let todo = match step.compute_next(&module_state.steps) {
-                Some(todo) => todo,
-                None => return,
+            let lock = module_state.steps.read().unwrap();
+            if step.check(&lock) {
+                return;
+            }
+            drop(lock);
+            let _compute_lock = module_state.lock.lock();
+            let lock = module_state.steps.read().unwrap();
+
+            // BIG WARNING: We do Step::Solutions.compute_next, NOT step.compute_next.
+            // The reason being that we may evict Answers, and later ask for Answers,
+            // which would then say Answers needed to be computed. But because we only ever
+            // evict earlier things in the list when computing later things, if we always
+            // ask from the end we get the right thing, not the evicted thing.
+            let todo = match Step::Solutions.compute_next(&lock) {
+                Some(todo) if todo <= step => todo,
+                _ => break,
             };
-            let compute = todo.compute().0(&module_state.steps);
-            let errors = module_state.errors.dupe();
-            drop(module_state);
+            computed = true;
+            let compute = todo.compute().0(&lock);
+            drop(lock);
             if todo == Step::Bindings {
                 // We have captured the Ast, and must have already built Exports (we do it serially),
                 // so won't need the Ast again.
-                self.evict(module, |x| &mut x.ast);
+                self.evict(&mut module_state.steps.write().unwrap().ast);
             }
-            let stdlib = self.stdlib.borrow().dupe();
+            let stdlib = self.stdlib.read().unwrap().dupe();
             let set = compute(&Context {
                 name: module,
                 config: self.config,
                 loader: self.loader,
                 uniques: &self.uniques,
                 stdlib: &stdlib,
-                errors: &errors,
+                errors: &module_state.errors,
                 lookup: self,
             });
-            set(&mut self.get_module_mut(module).steps);
+            set(&mut module_state.steps.write().unwrap());
             if todo == Step::Solutions {
                 // From now on we can use the answers directly, so evict the bindings/answers.
-                self.evict(module, |x| &mut x.bindings);
-                self.evict(module, |x| &mut x.answers);
+                let mut lock = module_state.steps.write().unwrap();
+                self.evict(&mut lock.bindings);
+                self.evict(&mut lock.answers);
             }
             if todo == step {
-                return; // Fast path - avoid asking again since we just did it.
+                break; // Fast path - avoid asking again since we just did it.
             }
+        }
+        if computed && let Some(next) = step.next() {
+            self.todo
+                .lock()
+                .unwrap()
+                .push(HeapItem { step: next, module });
         }
     }
 
-    fn get_module(&self, module: ModuleName) -> Ref<ModuleState> {
-        match Ref::filter_map(self.modules.borrow(), |x| x.get(&module)) {
-            Ok(v) => v,
-            Err(r) => {
-                drop(r);
-                self.modules
-                    .borrow_mut()
-                    .insert(module, ModuleState::default());
-                Ref::map(self.modules.borrow(), |x| x.get(&module).unwrap())
-            }
+    fn get_module(&self, module: ModuleName) -> Arc<ModuleState> {
+        let lock = self.modules.read().unwrap();
+        if let Some(v) = lock.get(&module) {
+            return v.dupe();
         }
-    }
-
-    fn get_module_mut(&self, module: ModuleName) -> RefMut<ModuleState> {
-        RefMut::map(self.modules.borrow_mut(), |x| x.entry(module).or_default())
-    }
-
-    fn grab<T: 'static>(&self, module: ModuleName, f: fn(&ModuleState) -> T) -> T {
-        f(&self.get_module(module))
+        drop(lock);
+        self.modules
+            .write()
+            .unwrap()
+            .entry(module)
+            .or_default()
+            .dupe()
     }
 
     fn lookup_stdlib(&self, module: ModuleName, name: &Name) -> Option<Class> {
@@ -166,7 +231,7 @@ impl<'a> State<'a> {
             ty => {
                 let m = self.get_module(module);
                 m.errors.add(
-                    &m.steps.module_info.get().unwrap().0,
+                    &m.steps.read().unwrap().module_info.get().unwrap().0,
                     TextRange::default(),
                     format!(
                         "Did not expect non-class type `{ty}` for stdlib import `{module}.{name}`"
@@ -179,7 +244,13 @@ impl<'a> State<'a> {
 
     fn lookup_export(&self, module: ModuleName) -> Option<Exports> {
         self.demand(module, Step::Exports);
-        Some(self.grab(module, |x| x.steps.exports.get().unwrap().dupe()))
+        self.get_module(module)
+            .steps
+            .read()
+            .unwrap()
+            .exports
+            .get()
+            .duped()
     }
 
     fn lookup_answer<'b, K: Solve<Self> + Exported>(
@@ -194,26 +265,45 @@ impl<'a> State<'a> {
     {
         {
             // if we happen to have solutions available, use them instead
-            if let Some(solutions) = self.get_module(module).steps.solutions.get() {
+            if let Some(solutions) = self
+                .get_module(module)
+                .steps
+                .read()
+                .unwrap()
+                .solutions
+                .get()
+            {
                 return Arc::new(TableKeyed::<K>::get(&**solutions).get(key).unwrap().clone());
             }
         }
 
         self.demand(module, Step::Answers);
-        let (errors, bindings, answers) = self.grab(module, |x| {
+        let module_state = self.get_module(module);
+        let (bindings, answers) = {
+            let steps = module_state.steps.read().unwrap();
+            if let Some(solutions) = steps.solutions.get() {
+                return Arc::new(TableKeyed::<K>::get(&**solutions).get(key).unwrap().clone());
+            }
             (
-                x.errors.dupe(),
-                x.steps.bindings.get().unwrap().dupe(),
-                x.steps.answers.get().unwrap().dupe(),
+                steps.bindings.get().unwrap().dupe(),
+                steps.answers.get().unwrap().dupe(),
             )
-        });
-        let stdlib = self.stdlib.borrow().dupe();
-        answers.solve_key(self, self, &bindings, &errors, &stdlib, &self.uniques, key)
+        };
+        let stdlib = self.stdlib.read().unwrap().dupe();
+        answers.solve_key(
+            self,
+            self,
+            &bindings,
+            &module_state.errors,
+            &stdlib,
+            &self.uniques,
+            key,
+        )
     }
 
     fn collect_errors(&self) -> Vec<Error> {
         let mut errors = Vec::new();
-        for module in self.modules.borrow().values() {
+        for module in self.modules.read().unwrap().values() {
             errors.extend(module.errors.collect());
         }
         errors
@@ -221,30 +311,34 @@ impl<'a> State<'a> {
 
     fn compute_stdlib(&self) {
         let stdlib = Arc::new(Stdlib::new(|module, name| self.lookup_stdlib(module, name)));
-        *self.stdlib.borrow_mut() = stdlib;
+        *self.stdlib.write().unwrap() = stdlib;
+    }
+
+    fn work(&self) {
+        // ensure we have answers for everything, keep going until we don't discover any new modules
+        loop {
+            let mut lock = self.todo.lock().unwrap();
+            let x = match lock.pop() {
+                Some(x) => x,
+                None => break,
+            };
+            drop(lock);
+            self.demand(x.module, Step::last());
+        }
     }
 
     fn run_internal(&mut self) -> Vec<Error> {
         self.compute_stdlib();
 
-        // ensure we have answers for everything, keep going until we don't discover any new modules
-        let mut existing = 0;
-        loop {
-            let modules = self.modules.borrow();
-            let new = modules.len();
-            if new == existing {
-                break;
-            }
-            existing = new;
-            let force = modules
-                .iter()
-                .filter(|(_, v)| v.steps.solutions.get().is_none())
-                .map(|(k, _)| *k)
-                .collect::<Vec<_>>();
-            drop(modules);
-            for k in force {
-                self.demand(k, Step::Solutions);
-            }
+        if self.parallel {
+            rayon::scope(|s| {
+                for _ in 1..rayon::current_num_threads() {
+                    s.spawn(|_| self.work());
+                }
+                self.work();
+            });
+        } else {
+            self.work();
         }
 
         self.collect_errors()
@@ -268,20 +362,23 @@ impl<'a> State<'a> {
 
     fn clear(&mut self) {
         // Should we reset stdlib? Currently we don't.
-        for module in self.modules.borrow_mut().values_mut() {
+        for module in self.modules.get_mut().unwrap().values_mut() {
             module.clear();
         }
     }
 
     pub fn modules(&self) -> Vec<ModuleName> {
-        self.modules.borrow().keys().copied().collect()
+        self.modules.read().unwrap().keys().copied().collect()
     }
 
     pub fn get_bindings(&self, module: ModuleName) -> Option<Bindings> {
         self.modules
-            .borrow()
+            .read()
+            .unwrap()
             .get(&module)?
             .steps
+            .read()
+            .unwrap()
             .bindings
             .get()
             .duped()

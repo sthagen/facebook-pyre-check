@@ -15,21 +15,18 @@ use ruff_text_size::Ranged;
 
 use crate::alt::binding::Binding;
 use crate::alt::binding::BindingAnnotation;
+use crate::alt::binding::BindingClassMetadata;
 use crate::alt::binding::BindingLegacyTypeParam;
-use crate::alt::binding::BindingMro;
-use crate::alt::binding::BindingTypeParams;
 use crate::alt::binding::Key;
 use crate::alt::binding::KeyAnnotation;
+use crate::alt::binding::KeyClassMetadata;
 use crate::alt::binding::KeyExported;
 use crate::alt::binding::KeyLegacyTypeParam;
-use crate::alt::binding::KeyMro;
-use crate::alt::binding::KeyTypeParams;
 use crate::alt::bindings::Bindings;
 use crate::module::module_info::ModuleInfo;
 use crate::types::annotation::Annotation;
-use crate::types::mro::Mro;
+use crate::types::class_metadata::ClassMetadata;
 use crate::types::types::LegacyTypeParameterLookup;
-use crate::types::types::QuantifiedVec;
 use crate::types::types::Type;
 use crate::util::display::DisplayWith;
 
@@ -52,19 +49,14 @@ impl Keyed for KeyAnnotation {
     type Value = BindingAnnotation;
     type Answer = Annotation;
 }
-impl Keyed for KeyMro {
+impl Keyed for KeyClassMetadata {
     const EXPORTED: bool = true;
-    type Value = BindingMro;
-    type Answer = Mro;
+    type Value = BindingClassMetadata;
+    type Answer = ClassMetadata;
 }
 impl Keyed for KeyLegacyTypeParam {
     type Value = BindingLegacyTypeParam;
     type Answer = LegacyTypeParameterLookup;
-}
-impl Keyed for KeyTypeParams {
-    const EXPORTED: bool = true;
-    type Value = BindingTypeParams;
-    type Answer = QuantifiedVec;
 }
 
 pub trait TableKeyed<K> {
@@ -87,9 +79,8 @@ macro_rules! table {
             $($vis)* types: $t<Key>,
             $($vis)* exported_types: $t<KeyExported>,
             $($vis)* annotations: $t<KeyAnnotation>,
-            $($vis)* mros: $t<KeyMro>,
+            $($vis)* mros: $t<KeyClassMetadata>,
             $($vis)* legacy_tparams: $t<KeyLegacyTypeParam>,
-            $($vis)* tparams: $t<KeyTypeParams>,
         }
 
         impl $crate::alt::table::TableKeyed<Key> for $name {
@@ -110,8 +101,8 @@ macro_rules! table {
             fn get_mut(&mut self) -> &mut Self::Value { &mut self.annotations }
         }
 
-        impl $crate::alt::table::TableKeyed<KeyMro> for $name {
-            type Value = $t<KeyMro>;
+        impl $crate::alt::table::TableKeyed<KeyClassMetadata> for $name {
+            type Value = $t<KeyClassMetadata>;
             fn get(&self) -> &Self::Value { &self.mros }
             fn get_mut(&mut self) -> &mut Self::Value { &mut self.mros }
         }
@@ -120,12 +111,6 @@ macro_rules! table {
             type Value = $t<KeyLegacyTypeParam>;
             fn get(&self) -> &Self::Value { &self.legacy_tparams }
             fn get_mut(&mut self) -> &mut Self::Value { &mut self.legacy_tparams }
-        }
-
-        impl $crate::alt::table::TableKeyed<KeyTypeParams> for $name {
-            type Value = $t<KeyTypeParams>;
-            fn get(&self) -> &Self::Value { &self.tparams }
-            fn get_mut(&mut self) -> &mut Self::Value { &mut self.tparams }
         }
 
         impl $name {
@@ -156,7 +141,6 @@ macro_rules! table_for_each(
         $f(&($e).annotations);
         $f(&($e).mros);
         $f(&($e).legacy_tparams);
-        $f(&($e).tparams);
     };
 );
 
@@ -168,7 +152,6 @@ macro_rules! table_mut_for_each(
         $f(&mut ($e).annotations);
         $f(&mut ($e).mros);
         $f(&mut ($e).legacy_tparams);
-        $f(&mut ($e).tparams);
     };
 );
 
@@ -180,6 +163,5 @@ macro_rules! table_try_for_each(
         $f(&($e).annotations)?;
         $f(&($e).mros)?;
         $f(&($e).legacy_tparams)?;
-        $f(&($e).tparams)?;
     };
 );
