@@ -42,7 +42,7 @@
     "Line 89: Unexpected errors ['Expected 1 more positional argument(s)', 'EXPECTED map[@_] <: LiteralString', 'EXPECTED map[@_] <: str', 'Expected 0 positional argument(s)']",
     "Line 92: Unexpected errors ['Expected 0 positional argument(s)']",
     "Line 94: Unexpected errors ['TODO: Lambda(ExprLambda - Answers::expr_infer']",
-    "Line 95: Unexpected errors ['Expected `list.__getitem__` to be a callable, got Callable[[_PyreReadOnly_[list[type[int]]], SupportsIndex], _PyreReadOnly_[type[int]]] | Callable[[_PyreReadOnly_[list[type[int]]], slice[Error, Error, Error]], list[_PyreReadOnly_[type[int]]]] | Callable[[list[type[int]], SupportsIndex], type[int]] | Callable[[list[type[int]], slice[Error, Error, Error]], list[type[int]]]']",
+    "Line 95: Unexpected errors ['Expected `__getitem__` to be a callable, got Callable[[_PyreReadOnly_[list[type[int]]], SupportsIndex], _PyreReadOnly_[type[int]]] | Callable[[_PyreReadOnly_[list[type[int]]], slice[Error, Error, Error]], list[_PyreReadOnly_[type[int]]]] | Callable[[list[type[int]], SupportsIndex], type[int]] | Callable[[list[type[int]], slice[Error, Error, Error]], list[type[int]]]']",
     "Line 127: Unexpected errors ['Expected a callable, got type[list]']",
     "Line 128: Unexpected errors ['assert_type(Any, list[str]) failed']",
     "Line 130: Unexpected errors ['Expected a callable, got type[list[int]]']",
@@ -94,8 +94,8 @@
     "Line 86: Expected 1 errors",
     "Line 90: Expected 1 errors",
     "Line 9: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 21: Unexpected errors [\"Missing argument 'flush'\", 'Cannot use type alias `GoodAlias1` as a value']",
-    "Line 22: Unexpected errors [\"Missing argument 'flush'\", 'Cannot use type alias `GoodAlias1` as a value']",
+    "Line 21: Unexpected errors [\"Missing argument 'flush'\", 'EXPECTED Callable[[], Any] <: object']",
+    "Line 22: Unexpected errors [\"Missing argument 'flush'\", 'EXPECTED Callable[[], tuple[ParamSpec | TypeVar | TypeVarTuple, ...]] <: object']",
     "Line 82: Unexpected errors ['untype, got list[type[int] | type[str]]']"
   ],
   "aliases_typealiastype.py": [
@@ -166,7 +166,7 @@
     "Line 149: Unexpected errors ['TODO: YieldFrom(ExprYieldFrom - Answers::expr_infer']",
     "Line 150: Unexpected errors ['EXPECTED None <: Generator[int, None, None]', 'TODO: YieldFrom(ExprYieldFrom - Answers::expr_infer']",
     "Line 154: Unexpected errors [\"Missing argument 'result'\", 'EXPECTED Literal[1] <: float']",
-    "Line 159: Unexpected errors ['EXPECTED None <: AsyncGenerator[str, None]', 'Expected `list.__iter__` to be a callable, got Callable[[_PyreReadOnly_[list[int]]], Iterator[_PyreReadOnly_[int]]] | Callable[[list[int]], Iterator[int]]']",
+    "Line 159: Unexpected errors ['EXPECTED None <: AsyncGenerator[str, None]', 'Expected `__iter__` to be a callable, got Callable[[_PyreReadOnly_[list[int]]], Iterator[_PyreReadOnly_[int]]] | Callable[[list[int]], Iterator[int]]']",
     "Line 160: Unexpected errors [\"Missing argument 'result'\", 'EXPECTED Literal[1] <: float']",
     "Line 161: Unexpected errors ['TODO: ExprYield - Answers::expr_infer']",
     "Line 167: Unexpected errors ['assert_type(Coroutine[Any, Any, AsyncGenerator[str, None]], AsyncGenerator[str, None]) failed']",
@@ -314,7 +314,7 @@
     "Line 61: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `ClassVar[list[int]]`']",
     "Line 78: Unexpected errors ['assert_type(Literal[3.1], float) failed']",
     "Line 98: Unexpected errors ['EXPECTED str | None <: str']",
-    "Line 101: Unexpected errors ['Expected 1 more positional argument(s)', 'Object of class `_PyreReadOnly_` has no attribute `__add__`', 'TODO: Answers::expr_infer attribute: `@_`.__add__', 'TODO: Answers::expr_infer attribute: `None`.__add__', \"EXPECTED Literal['hits'] <: _PyreReadOnly_[dict[str, int]]\", \"EXPECTED Literal['hits'] <: dict[str, int]\", 'EXPECTED Literal[0] <: _PyreReadOnly_[str]', 'EXPECTED Literal[0] <: str']"
+    "Line 101: Unexpected errors ['Expected 1 more positional argument(s)', 'Object of class `NoneType` has no attribute `__add__`', 'Object of class `_PyreReadOnly_` has no attribute `__add__`', 'TODO: Answers::expr_infer attribute: `@_`.__add__', \"EXPECTED Literal['hits'] <: _PyreReadOnly_[dict[str, int]]\", \"EXPECTED Literal['hits'] <: dict[str, int]\", 'EXPECTED Literal[0] <: _PyreReadOnly_[str]', 'EXPECTED Literal[0] <: str']"
   ],
   "classes_override.py": [
     "Line 53: Expected 1 errors",
@@ -585,7 +585,7 @@
   "directives_cast.py": [
     "Line 16: Expected 1 errors",
     "Line 10: Unexpected errors ['Expected 1 more positional argument(s)', 'EXPECTED Generator[int, None, None] <: SupportsNext[@_]', 'Expected 0 positional argument(s)', 'EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]']",
-    "Line 11: Unexpected errors ['EXPECTED type[str] <: object', 'Expected `list.__getitem__` to be a callable, got Callable[[_PyreReadOnly_[list[object]], SupportsIndex], _PyreReadOnly_[object]] | Callable[[_PyreReadOnly_[list[object]], slice[Error, Error, Error]], list[_PyreReadOnly_[object]]] | Callable[[list[object], SupportsIndex], object] | Callable[[list[object], slice[Error, Error, Error]], list[object]]']",
+    "Line 11: Unexpected errors ['EXPECTED type[str] <: object', 'Expected `__getitem__` to be a callable, got Callable[[_PyreReadOnly_[list[object]], SupportsIndex], _PyreReadOnly_[object]] | Callable[[_PyreReadOnly_[list[object]], slice[Error, Error, Error]], list[_PyreReadOnly_[object]]] | Callable[[list[object], SupportsIndex], object] | Callable[[list[object], slice[Error, Error, Error]], list[object]]']",
     "Line 13: Unexpected errors ['EXPECTED type[int] <: object']"
   ],
   "directives_deprecated.py": [
@@ -630,11 +630,9 @@
   ],
   "enums_expansion.py": [
     "Line 23: Unexpected errors [\"Missing argument 'flush'\"]",
-    "Line 29: Unexpected errors ['TODO: StmtMatch - Bindings::stmt']",
     "Line 31: Unexpected errors [\"Missing argument 'flush'\"]",
     "Line 33: Unexpected errors [\"Missing argument 'flush'\"]",
     "Line 50: Unexpected errors [\"Missing argument 'flush'\"]",
-    "Line 57: Unexpected errors ['TODO: StmtMatch - Bindings::stmt']",
     "Line 78: Unexpected errors ['EXPECTED list[object] <: list[Answer]']"
   ],
   "enums_member_names.py": [],
@@ -674,14 +672,14 @@
     "Line 68: Expected 1 errors",
     "Line 45: Unexpected errors ['assert_type(Iterator[Any], Iterator[int]) failed', 'Expected 1 more positional argument(s)', 'EXPECTED LinkedList[int] <: Callable[[], @_]']",
     "Line 46: Unexpected errors ['EXPECTED Literal[1] <: _PyreReadOnly_[object]']",
-    "Line 58: Unexpected errors ['assert_type(Any, int) failed', 'Expected `MyDict.__getitem__` to be a callable, got Callable[[Mapping[str, int], str], int] | Callable[[_PyreReadOnly_[Mapping[str, int]], _PyreReadOnly_[str]], _PyreReadOnly_[int]]']"
+    "Line 58: Unexpected errors ['assert_type(Any, int) failed', 'Expected `__getitem__` to be a callable, got Callable[[Mapping[str, int], str], int] | Callable[[_PyreReadOnly_[Mapping[str, int]], _PyreReadOnly_[str]], _PyreReadOnly_[int]]']"
   ],
   "generics_basic.py": [
     "Line 49: Expected 1 errors",
     "Line 55: Expected 1 errors",
     "Line 121: Expected 1 errors",
     "Line 191: Expected 1 errors",
-    "Line 19: Unexpected errors ['Expected `Sequence.__getitem__` to be a callable, got Callable[[_PyreReadOnly_[Sequence[T]], int], _PyreReadOnly_[T]] | Callable[[_PyreReadOnly_[Sequence[T]], slice[Error, Error, Error]], _PyreReadOnly_[Sequence[T]]] | Callable[[Sequence[T], int], T] | Callable[[Sequence[T], slice[Error, Error, Error]], Sequence[T]]']",
+    "Line 19: Unexpected errors ['Expected `__getitem__` to be a callable, got Callable[[_PyreReadOnly_[Sequence[T]], int], _PyreReadOnly_[T]] | Callable[[_PyreReadOnly_[Sequence[T]], slice[Error, Error, Error]], _PyreReadOnly_[Sequence[T]]] | Callable[[Sequence[T], int], T] | Callable[[Sequence[T], slice[Error, Error, Error]], Sequence[T]]']",
     "Line 34: Unexpected errors ['TODO: Answers::expr_infer attribute: `AnyStr`.__add__']",
     "Line 67: Unexpected errors ['assert_type(MyStr, str) failed']",
     "Line 68: Unexpected errors ['assert_type(MyStr, str) failed', 'EXPECTED str <: MyStr']",
@@ -690,8 +688,8 @@
     "Line 100: Unexpected errors ['EXPECTED str <: LiteralString', 'EXPECTED str <: LiteralString']",
     "Line 139: Unexpected errors ['assert_type(Any, int) failed', 'Expected 1 more positional argument(s)', 'EXPECTED MyIter1[int] <: SupportsNext[@_]']",
     "Line 140: Unexpected errors ['assert_type(Any, int) failed', 'Expected 1 more positional argument(s)', 'EXPECTED MyIter2[int] <: SupportsNext[@_]']",
-    "Line 154: Unexpected errors ['assert_type(Any, int) failed', 'Expected `MyMap1.__getitem__` to be a callable, got Callable[[Mapping[str, int], str], int] | Callable[[_PyreReadOnly_[Mapping[str, int]], _PyreReadOnly_[str]], _PyreReadOnly_[int]]']",
-    "Line 155: Unexpected errors ['assert_type(Any, int) failed', 'Expected `MyMap2.__getitem__` to be a callable, got Callable[[Mapping[str, int], str], int] | Callable[[_PyreReadOnly_[Mapping[str, int]], _PyreReadOnly_[str]], _PyreReadOnly_[int]]']",
+    "Line 154: Unexpected errors ['assert_type(Any, int) failed', 'Expected `__getitem__` to be a callable, got Callable[[Mapping[str, int], str], int] | Callable[[_PyreReadOnly_[Mapping[str, int]], _PyreReadOnly_[str]], _PyreReadOnly_[int]]']",
+    "Line 155: Unexpected errors ['assert_type(Any, int) failed', 'Expected `__getitem__` to be a callable, got Callable[[Mapping[str, int], str], int] | Callable[[_PyreReadOnly_[Mapping[str, int]], _PyreReadOnly_[str]], _PyreReadOnly_[int]]']",
     "Line 182: Unexpected errors ['Expected 1 more positional argument(s)', 'EXPECTED MyIterableAny <: Callable[[], @_]']"
   ],
   "generics_defaults.py": [
@@ -721,8 +719,8 @@
     "Line 96: Unexpected errors ['Expected 0 type arguments for class `Class_TypeVarTuple`, got 2.', 'Expected 0 type arguments for class `Class_TypeVarTuple`, got 2.']",
     "Line 127: Unexpected errors ['assert_type(Any, int) failed']",
     "Line 148: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer', 'untype, got ParamSpec']",
-    "Line 151: Unexpected errors ['Expected 0 type arguments for class `Foo6`, got 2.', 'Expected 0 type arguments for class `Foo6`, got 3.', 'untype, got list[type[bool] | type[float]]']",
-    "Line 152: Unexpected errors ['Expected 0 type arguments for class `Foo6`, got 3.', 'untype, got list[type[bytes]]', 'Expected 0 type arguments for class `Foo6`, got 3.', 'untype, got list[type[bytes]]']",
+    "Line 151: Unexpected errors ['Expected 1 type argument for class `Foo6`, got 2.', 'Expected 1 type argument for class `Foo6`, got 3.', 'untype, got list[type[bool] | type[float]]']",
+    "Line 152: Unexpected errors ['Expected 1 type argument for class `Foo6`, got 3.', 'untype, got list[type[bytes]]', 'Expected 1 type argument for class `Foo6`, got 3.', 'untype, got list[type[bytes]]']",
     "Line 166: Unexpected errors ['assert_type(Any, Callable[[Foo7[int]], Foo7[int]]) failed', 'Generic attribute `meth` of class `Foo7` is not visible on the class']",
     "Line 167: Unexpected errors ['assert_type(Any, int) failed', 'Generic attribute `attr` of class `Foo7` is not visible on the class']"
   ],
@@ -834,10 +832,10 @@
     "Line 18: Unexpected errors ['assert_type(Callable[[], ParentA], ParentA) failed']",
     "Line 19: Unexpected errors ['assert_type(Callable[[], ParentA], ChildA) failed']",
     "Line 35: Unexpected errors ['assert_type(ChildB, Self) failed']",
-    "Line 37: Unexpected errors ['assert_type(Any, Self) failed', 'Expected `list.__getitem__` to be a callable, got Callable[[_PyreReadOnly_[list[Self]], SupportsIndex], _PyreReadOnly_[Self]] | Callable[[_PyreReadOnly_[list[Self]], slice[Error, Error, Error]], list[_PyreReadOnly_[Self]]] | Callable[[list[Self], SupportsIndex], Self] | Callable[[list[Self], slice[Error, Error, Error]], list[Self]]']",
+    "Line 37: Unexpected errors ['assert_type(Any, Self) failed', 'Expected `__getitem__` to be a callable, got Callable[[_PyreReadOnly_[list[Self]], SupportsIndex], _PyreReadOnly_[Self]] | Callable[[_PyreReadOnly_[list[Self]], slice[Error, Error, Error]], list[_PyreReadOnly_[Self]]] | Callable[[list[Self], SupportsIndex], Self] | Callable[[list[Self], slice[Error, Error, Error]], list[Self]]']",
     "Line 38: Unexpected errors ['assert_type(ParentB, Self) failed']",
     "Line 42: Unexpected errors ['assert_type(ChildB, type[Self]) failed']",
-    "Line 44: Unexpected errors ['assert_type(Any, Self) failed', 'Expected `list.__getitem__` to be a callable, got Callable[[_PyreReadOnly_[list[Self]], SupportsIndex], _PyreReadOnly_[Self]] | Callable[[_PyreReadOnly_[list[Self]], slice[Error, Error, Error]], list[_PyreReadOnly_[Self]]] | Callable[[list[Self], SupportsIndex], Self] | Callable[[list[Self], slice[Error, Error, Error]], list[Self]]']",
+    "Line 44: Unexpected errors ['assert_type(Any, Self) failed', 'Expected `__getitem__` to be a callable, got Callable[[_PyreReadOnly_[list[Self]], SupportsIndex], _PyreReadOnly_[Self]] | Callable[[_PyreReadOnly_[list[Self]], slice[Error, Error, Error]], list[_PyreReadOnly_[Self]]] | Callable[[list[Self], SupportsIndex], Self] | Callable[[list[Self], slice[Error, Error, Error]], list[Self]]']",
     "Line 45: Unexpected errors ['assert_type(ParentB, Self) failed']"
   ],
   "generics_self_attributes.py": [
@@ -964,15 +962,15 @@
     "Line 24: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
     "Line 25: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
     "Line 27: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 36: Unexpected errors ['Expected 0 type arguments for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType', 'EXPECTED tuple[Error, Error] <: tuple[Error]', 'Expected a callable, got NewType', 'Expected a callable, got NewType']",
-    "Line 37: Unexpected errors ['Expected 0 type arguments for class `Array`, got 3.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'EXPECTED tuple[Error, Error, Error] <: tuple[Error]', 'Expected a callable, got NewType', 'Expected a callable, got NewType', 'Expected a callable, got NewType']",
-    "Line 38: Unexpected errors ['Expected 0 type arguments for class `Array`, got 4.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
+    "Line 36: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType', 'EXPECTED tuple[Error, Error] <: tuple[Error]', 'Expected a callable, got NewType', 'Expected a callable, got NewType']",
+    "Line 37: Unexpected errors ['Expected 1 type argument for class `Array`, got 3.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'EXPECTED tuple[Error, Error, Error] <: tuple[Error]', 'Expected a callable, got NewType', 'Expected a callable, got NewType', 'Expected a callable, got NewType']",
+    "Line 38: Unexpected errors ['Expected 1 type argument for class `Array`, got 4.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
     "Line 39: Unexpected errors ['EXPECTED tuple[Error, Error, Error, Error] <: tuple[Error]', 'Expected a callable, got NewType', 'Expected a callable, got NewType', 'Expected a callable, got NewType', 'Expected a callable, got NewType']",
     "Line 54: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
     "Line 75: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
     "Line 84: Unexpected errors ['assert_type(tuple[Any], tuple[int]) failed']",
-    "Line 93: Unexpected errors ['Expected 0 type arguments for class `Array`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'Expected 0 type arguments for class `Array`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'Expected 0 type arguments for class `Array`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 97: Unexpected errors ['Expected 0 type arguments for class `Array`, got 1.', 'untype, got NewType', 'Expected 0 type arguments for class `Array`, got 1.', 'untype, got NewType', 'Expected 0 type arguments for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType']"
+    "Line 93: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 97: Unexpected errors ['untype, got NewType', 'untype, got NewType', 'Expected 1 type argument for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType']"
   ],
   "generics_typevartuple_callable.py": [
     "Line 17: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
@@ -985,13 +983,13 @@
   ],
   "generics_typevartuple_concat.py": [
     "Line 22: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 26: Unexpected errors ['Expected 0 type arguments for class `Array`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'Expected 0 type arguments for class `Array`, got 2.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 30: Unexpected errors ['Expected 0 type arguments for class `Array`, got 2.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'Expected 0 type arguments for class `Array`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 34: Unexpected errors ['Expected 0 type arguments for class `Array`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'Expected 0 type arguments for class `Array`, got 3.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'untype, got NewType']",
-    "Line 38: Unexpected errors ['Expected 0 type arguments for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType']",
-    "Line 40: Unexpected errors ['Expected 0 type arguments for class `Array`, got 3.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
-    "Line 42: Unexpected errors ['Expected 0 type arguments for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType']",
-    "Line 44: Unexpected errors ['Expected 0 type arguments for class `Array`, got 4.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
+    "Line 26: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer', 'Expected 1 type argument for class `Array`, got 2.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 30: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 34: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer', 'Expected 1 type argument for class `Array`, got 3.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'untype, got NewType']",
+    "Line 38: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType']",
+    "Line 40: Unexpected errors ['Expected 1 type argument for class `Array`, got 3.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
+    "Line 42: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType']",
+    "Line 44: Unexpected errors ['Expected 1 type argument for class `Array`, got 4.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
     "Line 47: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
     "Line 51: Unexpected errors [\"EXPECTED tuple[Literal[True], Literal['a']] <: tuple[Error]\"]",
     "Line 52: Unexpected errors ['assert_type(tuple[int, Any], tuple[int, bool, str]) failed']",
@@ -1000,33 +998,31 @@
   ],
   "generics_typevartuple_overloads.py": [
     "Line 16: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 18: Unexpected errors ['Expected 0 type arguments for class `Array`, got 2.', 'Expected 0 type arguments for class `Array`, got 2.']",
-    "Line 22: Unexpected errors ['Expected 0 type arguments for class `Array`, got 3.', 'Expected 0 type arguments for class `Array`, got 3.']",
-    "Line 29: Unexpected errors ['Expected 0 type arguments for class `Array`, got 2.', 'Expected 0 type arguments for class `Array`, got 3.']",
-    "Line 30: Unexpected errors ['assert_type(Array | Any, Array) failed', \"Missing argument 'self'\", 'Expected 0 type arguments for class `Array`, got 2.']",
-    "Line 31: Unexpected errors ['assert_type(Array | Any, Array) failed', \"Missing argument 'self'\", 'Expected 0 type arguments for class `Array`, got 3.']"
+    "Line 18: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'Expected 1 type argument for class `Array`, got 2.']",
+    "Line 22: Unexpected errors ['Expected 1 type argument for class `Array`, got 3.', 'Expected 1 type argument for class `Array`, got 3.']",
+    "Line 29: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'Expected 1 type argument for class `Array`, got 3.']",
+    "Line 30: Unexpected errors ['assert_type(Array[Any] | Any, Array[Any]) failed', \"Missing argument 'self'\", 'Expected 1 type argument for class `Array`, got 2.']",
+    "Line 31: Unexpected errors ['assert_type(Array[Any] | Any, Array[Any]) failed', \"Missing argument 'self'\", 'Expected 1 type argument for class `Array`, got 3.']"
   ],
   "generics_typevartuple_specialization.py": [
     "Line 16: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 24: Unexpected errors ['Expected 0 type arguments for class `Array`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 28: Unexpected errors ['Expected 0 type arguments for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType']",
-    "Line 33: Unexpected errors ['Expected 0 type arguments for class `Array`, got 3.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
+    "Line 24: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 28: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType']",
+    "Line 33: Unexpected errors ['Expected 1 type argument for class `Array`, got 3.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
     "Line 41: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 42: Unexpected errors ['Expected 0 type arguments for class `Array`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 45: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTuple, type[tuple[int, Error]]]\", \"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[NamedArray, type[tuple[str, Array]]]\"]",
+    "Line 42: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 45: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTuple, type[tuple[int, Error]]]\", \"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[NamedArray, type[tuple[str, Array[Error]]]]\"]",
     "Line 46: Unexpected errors ['assert_type(Any, tuple[int, float, bool]) failed']",
-    "Line 47: Unexpected errors ['assert_type(Any, tuple[str, Array]) failed', 'Expected 0 type arguments for class `Array`, got 1.', 'untype, got NewType']",
-    "Line 50: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTuple, type[tuple[int, Error]]]\", \"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[NamedArray, type[tuple[str, Array]]]\"]",
+    "Line 47: Unexpected errors ['assert_type(Any, tuple[str, Array[Any]]) failed', 'untype, got NewType']",
+    "Line 50: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTuple, type[tuple[int, Error]]]\", \"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[NamedArray, type[tuple[str, Array[Error]]]]\"]",
     "Line 51: Unexpected errors ['assert_type(Any, tuple[int]) failed']",
-    "Line 52: Unexpected errors ['assert_type(Any, tuple[str, Array]) failed']",
-    "Line 59: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 63: Unexpected errors ['Expected 1 type argument for class `Array2`, got 2.', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 64: Unexpected errors ['Expected 1 type argument for class `Array2`, got 2.']",
-    "Line 67: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[Array1D, type[Array2[Error]]]\"]",
-    "Line 68: Unexpected errors ['Expected 1 type argument for class `Array2`, got 2.']",
-    "Line 69: Unexpected errors ['assert_type(Any, Array2[Any]) failed', 'Expected 1 type argument for class `Array2`, got 2.']",
-    "Line 76: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[FloatArray, type[Array2[Error]]]\"]",
-    "Line 80: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[FloatArray, type[Array2[Error]]]\"]",
+    "Line 52: Unexpected errors ['assert_type(Any, tuple[str, Array[Any]]) failed', 'Expected 1 type argument for class `Array`, got 0.']",
+    "Line 59: Unexpected errors ['Class `Array2` uses type variables not specified in `Generic` or `Protocol` base', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 63: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 67: Unexpected errors ['untype, got Forall[DType, LegacyImplicitTypeAlias[Array1D, type[Array2[DType, Any]]]]']",
+    "Line 68: Unexpected errors ['assert_type(Any, Array2[Any, Any]) failed']",
+    "Line 76: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[FloatArray, type[Array2[float, Error]]]\"]",
+    "Line 80: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[FloatArray, type[Array2[float, Error]]]\"]",
     "Line 89: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
     "Line 92: Unexpected errors [\"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[VariadicTuple, type[tuple[TypeVar[T], Error]]]\", \"Can't apply arguments to non-class, got LegacyImplicitTypeAlias[VariadicTuple, type[tuple[TypeVar[T], Error]]]\"]",
     "Line 93: Unexpected errors ['assert_type(Any, tuple[str, int]) failed']",
@@ -1062,11 +1058,11 @@
   "generics_typevartuple_unpack.py": [
     "Line 30: Expected 1 errors",
     "Line 17: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 21: Unexpected errors ['Expected 0 type arguments for class `Array`, got 3.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'untype, got NewType']",
-    "Line 26: Unexpected errors ['Expected 0 type arguments for class `Array`, got 4.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'Expected 0 type arguments for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType', 'Expected 0 type arguments for class `Array`, got 1.', 'untype, got NewType']",
-    "Line 36: Unexpected errors ['Expected 0 type arguments for class `Array`, got 2.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 40: Unexpected errors ['Expected 0 type arguments for class `Array`, got 4.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
-    "Line 44: Unexpected errors ['Expected 0 type arguments for class `Array`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer']"
+    "Line 21: Unexpected errors ['Expected 1 type argument for class `Array`, got 3.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'untype, got NewType']",
+    "Line 26: Unexpected errors ['Expected 1 type argument for class `Array`, got 4.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'Expected 1 type argument for class `Array`, got 2.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
+    "Line 36: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'untype, got NewType', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 40: Unexpected errors ['Expected 1 type argument for class `Array`, got 4.', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType', 'untype, got NewType']",
+    "Line 44: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']"
   ],
   "generics_upper_bound.py": [
     "Line 24: Expected 1 errors",
@@ -1219,7 +1215,7 @@
     "Line 13: Unexpected errors ['EXPECTED bool <: TypeGuard[tuple[T, T]]', 'EXPECTED tuple[T, ...] <: _PyreReadOnly_[Sized]']",
     "Line 17: Unexpected errors ['assert_type(tuple[str, ...], tuple[str, str]) failed']",
     "Line 24: Unexpected errors ['EXPECTED bool <: TypeGuard[list[str]]']",
-    "Line 25: Unexpected errors ['EXPECTED bool <: TypeGuard[list[str]]', 'EXPECTED Generator[bool, None, None] <: Iterable[object]', 'EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]', 'Expected `list.__iter__` to be a callable, got Callable[[_PyreReadOnly_[list[object]]], Iterator[_PyreReadOnly_[object]]] | Callable[[list[object]], Iterator[object]]']",
+    "Line 25: Unexpected errors ['EXPECTED bool <: TypeGuard[list[str]]', 'EXPECTED Generator[bool, None, None] <: Iterable[object]', 'EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]', 'Expected `__iter__` to be a callable, got Callable[[_PyreReadOnly_[list[object]]], Iterator[_PyreReadOnly_[object]]] | Callable[[list[object]], Iterator[object]]']",
     "Line 28: Unexpected errors ['EXPECTED bool <: TypeGuard[set[T]]', 'EXPECTED Generator[bool, None, None] <: Iterable[object]']",
     "Line 32: Unexpected errors ['assert_type(set[object], set[int]) failed']",
     "Line 41: Unexpected errors ['EXPECTED bool <: TypeGuard[int]', 'EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]']",
@@ -1277,8 +1273,8 @@
   "overloads_basic.py": [
     "Lines 62, 63: Expected error (tag 'func1')",
     "Lines 74, 75: Expected error (tag 'func2')",
-    "Line 35: Unexpected errors ['assert_type(Any, int) failed', 'Expected `Bytes.__getitem__` to be a callable, got Callable[[Bytes, int], int] | Callable[[Bytes, int | slice[Error, Error, Error]], bytes | int] | Callable[[Bytes, slice[Error, Error, Error]], bytes]']",
-    "Line 36: Unexpected errors ['assert_type(Any, bytes) failed', 'Expected `Bytes.__getitem__` to be a callable, got Callable[[Bytes, int], int] | Callable[[Bytes, int | slice[Error, Error, Error]], bytes | int] | Callable[[Bytes, slice[Error, Error, Error]], bytes]']"
+    "Line 35: Unexpected errors ['assert_type(Any, int) failed', 'Expected `__getitem__` to be a callable, got Callable[[Bytes, int], int] | Callable[[Bytes, int | slice[Error, Error, Error]], bytes | int] | Callable[[Bytes, slice[Error, Error, Error]], bytes]']",
+    "Line 36: Unexpected errors ['assert_type(Any, bytes) failed', 'Expected `__getitem__` to be a callable, got Callable[[Bytes, int], int] | Callable[[Bytes, int | slice[Error, Error, Error]], bytes | int] | Callable[[Bytes, slice[Error, Error, Error]], bytes]']"
   ],
   "protocols_class_objects.py": [
     "Line 29: Expected 1 errors",
@@ -1340,7 +1336,7 @@
     "Line 39: Unexpected errors ['EXPECTED ImplicitColor <: PColor']"
   ],
   "protocols_generic.py": [
-    "Line 33: Unexpected errors ['Expected `list.__iter__` to be a callable, got Callable[[_PyreReadOnly_[list[int]]], Iterator[_PyreReadOnly_[int]]] | Callable[[list[int]], Iterator[int]]']",
+    "Line 33: Unexpected errors ['Expected `__iter__` to be a callable, got Callable[[_PyreReadOnly_[list[int]]], Iterator[_PyreReadOnly_[int]]] | Callable[[list[int]], Iterator[int]]']",
     "Line 39: Unexpected errors ['EXPECTED Concrete1 <: Proto1[str, int]']",
     "Line 55: Unexpected errors ['EXPECTED Box[int] <: Box[float]']",
     "Line 65: Unexpected errors ['EXPECTED Sender[float] <: Sender[int]']",
@@ -1474,10 +1470,8 @@
   ],
   "specialtypes_none.py": [
     "Line 24: Unexpected errors ['EXPECTED None <: Hashable']",
-    "Line 30: Unexpected errors ['TODO: Answers::expr_infer attribute: `None`.__class__']",
-    "Line 31: Unexpected errors ['TODO: Answers::expr_infer attribute: `None`.__doc__']",
-    "Line 32: Unexpected errors ['TODO: Answers::expr_infer attribute: `None`.__eq__']",
-    "Line 39: Unexpected errors ['TODO: Answers::expr_infer attribute: `None`.__class__']",
+    "Line 32: Unexpected errors ['EXPECTED Literal[0] <: _PyreReadOnly_[object]']",
+    "Line 39: Unexpected errors ['EXPECTED Callable[[object, type[object]], None] | Callable[[object], type[object]] <: type[None]']",
     "Line 40: Unexpected errors ['Expected a callable, got type[type]']"
   ],
   "specialtypes_promotions.py": [
@@ -1502,11 +1496,11 @@
     "Line 98: Unexpected errors ['assert_type(Callable[[], tuple[type, ...]], tuple[type, ...]) failed']",
     "Line 99: Unexpected errors ['Object of class `type` has no attribute `unknown`']",
     "Line 100: Unexpected errors ['Object of class `type` has no attribute `unknown`']",
-    "Line 102: Unexpected errors ['assert_type(Any, tuple[type, ...]) failed']",
+    "Line 102: Unexpected errors ['assert_type(Callable[[], tuple[type, ...]], tuple[type, ...]) failed']",
     "Line 106: Unexpected errors ['assert_type(Any, tuple[type, ...]) failed', 'TODO: Answers::expr_infer attribute: `Type`.__mro__']",
     "Line 107: Unexpected errors ['TODO: Answers::expr_infer attribute: `Type`.unknown']",
     "Line 108: Unexpected errors ['TODO: Answers::expr_infer attribute: `Type`.unknown']",
-    "Line 110: Unexpected errors ['assert_type(Any, tuple[type, ...]) failed']",
+    "Line 110: Unexpected errors ['assert_type(Callable[[], tuple[type, ...]], tuple[type, ...]) failed']",
     "Line 116: Unexpected errors ['assert_type(Any, str) failed', 'Class `object` has no class attribute `__name__`']",
     "Line 119: Unexpected errors ['assert_type(Any, str) failed', 'Class `object` has no class attribute `__name__`']",
     "Line 137: Unexpected errors ['assert_type(Type, type[Any]) failed']",
@@ -1533,11 +1527,9 @@
     "Line 78: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, int] | tuple[str, str]) failed']",
     "Line 82: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, str, int]) failed']",
     "Line 91: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 92: Unexpected errors ['TODO: StmtMatch - Bindings::stmt']",
     "Line 95: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int]) failed']",
     "Line 99: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, int] | tuple[str, str]) failed']",
     "Line 103: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, str, int]) failed']",
-    "Line 113: Unexpected errors ['TODO: StmtMatch - Bindings::stmt']",
     "Line 115: Unexpected errors ['assert_type(tuple[int | str, int | str], tuple[int | str, str]) failed']",
     "Line 117: Unexpected errors ['assert_type(tuple[int | str, int | str], tuple[int | str, int]) failed']",
     "Line 134: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
@@ -1629,7 +1621,7 @@
     "Line 23: Unexpected errors ['Object of class `Band` has no attribute `__setitem__`']",
     "Line 25: Unexpected errors ['Object of class `Band` has no attribute `__getitem__`']",
     "Line 31: Unexpected errors ['Expected a callable, got object', 'TODO: Answers::apply_special_form cannot handle `ReadOnly[list[str]]`']",
-    "Line 37: Unexpected errors ['Expected `dict.__getitem__` to be a callable, got Callable[[_PyreReadOnly_[dict[str, list[str] | str]], _PyreReadOnly_[str]], _PyreReadOnly_[list[str] | str]] | Callable[[dict[str, list[str] | str], str], list[str] | str]']",
+    "Line 37: Unexpected errors ['Expected `__getitem__` to be a callable, got Callable[[_PyreReadOnly_[dict[str, list[str] | str]], _PyreReadOnly_[str]], _PyreReadOnly_[list[str] | str]] | Callable[[dict[str, list[str] | str], str], list[str] | str]']",
     "Line 44: Unexpected errors ['untype, got object']",
     "Line 49: Unexpected errors ['EXPECTED dict[str, int | str] <: Movie1']",
     "Line 54: Unexpected errors ['untype, got object']",

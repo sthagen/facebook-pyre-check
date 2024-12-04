@@ -9,10 +9,13 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use dupe::Dupe;
+use itertools::Either;
+use itertools::Itertools;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::StmtClassDef;
+use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
@@ -36,7 +39,6 @@ use crate::types::types::Quantified;
 use crate::types::types::QuantifiedVec;
 use crate::types::types::Type;
 use crate::util::prelude::SliceExt;
-use crate::visitors::Visitors;
 
 /// Class members can fail to be
 pub enum NoClassAttribute {
@@ -150,33 +152,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    /// If the base class is a "normal" generic base (not `Protocol` or `Generic`), then
-    /// call `f` on each `Quantified` in left-to-right order.
-    fn for_each_quantified_if_not_special(&self, base: &BaseClass, f: &mut impl FnMut(Quantified)) {
-        fn for_each_quantified_in_expr<Ans: LookupAnswer>(
-            x: &Expr,
-            answers_solver: &AnswersSolver<Ans>,
-            f: &mut impl FnMut(Quantified),
-        ) {
-            match x {
-                Expr::Name(_) => match answers_solver.expr(x, None) {
-                    Type::Type(box Type::Quantified(q)) => f(q),
-                    _ => {}
-                },
-                _ => {}
-            }
-            Visitors::visit_expr(x, &mut |x: &Expr| {
-                for_each_quantified_in_expr(x, answers_solver, f)
-            })
-        }
-        match base {
-            BaseClass::Expr(base) => Visitors::visit_expr(base, &mut |x: &Expr| {
-                for_each_quantified_in_expr(x, self, f)
-            }),
-            _ => {}
-        }
-    }
-
     fn class_tparams(
         &self,
         name: &Identifier,
@@ -221,21 +196,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         // Handle implicit tparams: if a Quantified was bound at this scope and is not yet
         // in tparams, we add it. These will be added in left-to-right order.
         let implicit_tparams_okay = tparams.is_empty();
-        for base in bases.iter() {
-            self.for_each_quantified_if_not_special(base, &mut |q| {
-                if !tparams.contains(&q) && legacy_quantifieds.contains(&q) {
-                    if !implicit_tparams_okay {
-                        self.error(
-                            name.range,
-                            format!(
-                                "Class `{}` uses type variables not specified in `Generic` or `Protocol` base",
-                                name.id,
-                            ),
-                        );
-                    }
-                    tparams.insert(q);
+        for q in legacy_quantifieds.into_iter() {
+            if !tparams.contains(&q) {
+                if !implicit_tparams_okay {
+                    self.error(
+                        name.range,
+                        format!(
+                            "Class `{}` uses type variables not specified in `Generic` or `Protocol` base",
+                            name.id,
+                        ),
+                    );
                 }
-            });
+                tparams.insert(q);
+            }
         }
         QuantifiedVec(tparams.into_iter().collect())
     }
@@ -259,10 +232,110 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 _ => None,
             })
             .collect();
-        keywords.values().for_each(|x| {
-            self.expr(x, None);
-        });
-        ClassMetadata::new(cls, bases_with_metadata, self.errors())
+        let (metaclasses, keywords): (Vec<_>, SmallMap<_, _>) =
+            keywords.iter().partition_map(|(n, x)| match n.as_str() {
+                "metaclass" => Either::Left(x),
+                _ => Either::Right((n.clone(), self.expr(x, None))),
+            });
+        let metaclass =
+            self.calculate_metaclass(cls, metaclasses.into_iter().next(), &bases_with_metadata);
+        ClassMetadata::new(cls, bases_with_metadata, metaclass, keywords, self.errors())
+    }
+
+    fn calculate_metaclass(
+        &self,
+        cls: &Class,
+        raw_metaclass: Option<&Expr>,
+        bases_with_metadata: &[(ClassType, Arc<ClassMetadata>)],
+    ) -> Option<ClassType> {
+        let direct_meta = raw_metaclass.and_then(|x| self.direct_metaclass(cls, x));
+        let base_metaclasses: Vec<_> = bases_with_metadata
+            .iter()
+            .filter_map(|(b, metadata)| metadata.metaclass().map(|m| (&b.name().id, m)))
+            .collect();
+        let metaclass = if let Some(metaclass) = direct_meta {
+            Some(metaclass)
+        } else {
+            let mut inherited_meta: Option<ClassType> = None;
+            for (_, m) in base_metaclasses.iter() {
+                let m = (*m).clone();
+                let accept_m = match &inherited_meta {
+                    None => true,
+                    Some(inherited) => self.solver().is_subset_eq(
+                        &Type::ClassType(m.clone()),
+                        &Type::ClassType(inherited.clone()),
+                        self.type_order(),
+                    ),
+                };
+                if accept_m {
+                    inherited_meta = Some(m);
+                }
+            }
+            inherited_meta
+        };
+        // It is a runtime error to define a class whose metaclass (whether
+        // specified directly or through inheritance) is not a subtype of all
+        // base class metaclasses.
+        if let Some(metaclass) = &metaclass {
+            let metaclass_type = Type::ClassType(metaclass.clone());
+            for (base_name, m) in base_metaclasses.iter() {
+                let base_metaclass_type = Type::ClassType((*m).clone());
+                if !self.solver().is_subset_eq(
+                    &metaclass_type,
+                    &base_metaclass_type,
+                    self.type_order(),
+                ) {
+                    self.error(
+                            cls.name().range,
+                            format!(
+                                "Class `{}` has metaclass `{}` which is not a subclass of metaclass `{}` from base class `{}`",
+                                cls.name().id,
+                                metaclass_type,
+                                base_metaclass_type,
+                                base_name,
+                            )
+                        );
+                }
+            }
+        }
+        metaclass
+    }
+
+    // TODO(stroxler): Make sure inherited metaclasses are compatible; we are currently producing
+    // the right metaclass when the code is valid, but failing to catch cases that crash at runtime.
+    fn direct_metaclass(&self, cls: &Class, raw_metaclass: &Expr) -> Option<ClassType> {
+        match self.expr_untype(raw_metaclass) {
+            Type::ClassType(meta) => {
+                if self.solver().is_subset_eq(
+                    &Type::ClassType(meta.clone()),
+                    &Type::ClassType(self.stdlib.builtins_type()),
+                    self.type_order(),
+                ) {
+                    Some(meta)
+                } else {
+                    self.error(
+                        raw_metaclass.range(),
+                        format!(
+                            "Metaclass of `{}` has type `{}` which is not a subclass of `type`",
+                            cls.name().id,
+                            Type::ClassType(meta),
+                        ),
+                    );
+                    None
+                }
+            }
+            ty => {
+                self.error(
+                    cls.name().range,
+                    format!(
+                        "Metaclass of `{}` has type `{}` is not a simple class type.",
+                        cls.name().id,
+                        ty,
+                    ),
+                );
+                None
+            }
+        }
     }
 
     pub fn get_metadata_for_class(&self, cls: &Class) -> Arc<ClassMetadata> {

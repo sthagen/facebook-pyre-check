@@ -33,9 +33,10 @@ use crate::types::callable::Args;
 use crate::types::callable::Callable;
 use crate::types::callable::Required;
 use crate::types::literal::Lit;
+use crate::types::module::Module;
 use crate::types::param_spec::ParamSpec;
-use crate::types::simplify::as_class_attribute_base;
-use crate::types::simplify::ClassAttributeBase;
+use crate::types::simplify::as_attribute_base;
+use crate::types::simplify::AttributeBase;
 use crate::types::special_form::SpecialForm;
 use crate::types::tuple::Tuple;
 use crate::types::type_var::Restriction;
@@ -46,7 +47,7 @@ use crate::types::types::Type;
 use crate::util::prelude::SliceExt;
 
 enum CallStyle<'a> {
-    ClassAndMethod(&'a Identifier, &'a Name),
+    Method(&'a Name),
     BinaryOp(Operator),
     FreeForm,
 }
@@ -136,13 +137,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Type::Any(style) => Some(style.propagate_callable()),
-            Type::TypeAlias(ta) => {
-                if let Some(t) = ta.as_value() {
-                    self.as_callable(t)
-                } else {
-                    None
-                }
-            }
+            Type::TypeAlias(ta) => self.as_callable(ta.as_value(self.stdlib)),
             _ => None,
         }
     }
@@ -152,8 +147,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Some(callable) => callable,
             None => {
                 let expect_message = match call_style {
-                    CallStyle::ClassAndMethod(class, method) => {
-                        format!("Expected `{}.{}` to be a callable", class, method)
+                    CallStyle::Method(method) => {
+                        format!("Expected `{}` to be a callable", method)
                     }
                     CallStyle::BinaryOp(op) => {
                         format!("Expected `{}` to be a callable", op.dunder())
@@ -179,17 +174,35 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         check_arg: &dyn Fn(&T, Option<&Type>),
     ) -> Type {
         self.distribute_over_union(ty, |ty| {
-            let callable = match as_class_attribute_base(ty.clone(), self.stdlib) {
-                Some(ClassAttributeBase::ClassType(class)) => {
+            let callable = match as_attribute_base(ty.clone(), self.stdlib) {
+                Some(AttributeBase::ClassInstance(class)) => {
                     let method_type =
                         self.get_instance_attribute_or_error(&class, method_name, range);
-                    self.as_callable_or_error(
-                        method_type,
-                        CallStyle::ClassAndMethod(class.name(), method_name),
-                        range,
-                    )
+                    self.as_callable_or_error(method_type, CallStyle::Method(method_name), range)
                 }
-                Some(ClassAttributeBase::Any(style)) => style.propagate_callable(),
+                Some(AttributeBase::ClassObject(class)) => {
+                    let method_type = self.get_class_attribute_or_error(&class, method_name, range);
+                    self.as_callable_or_error(method_type, CallStyle::Method(method_name), range)
+                }
+                Some(AttributeBase::Module(module)) => {
+                    let method_type = self.lookup_module_attr(&module, method_name, range);
+                    self.as_callable_or_error(method_type, CallStyle::Method(method_name), range)
+                }
+                Some(AttributeBase::Quantified(q)) => {
+                    let method_type = q.as_value(self.stdlib).to_type();
+                    self.as_callable_or_error(method_type, CallStyle::Method(method_name), range)
+                }
+                Some(AttributeBase::TypeAny(style)) => {
+                    match self.get_instance_attribute(&self.stdlib.builtins_type(), method_name) {
+                        None => style.propagate_callable(),
+                        Some(method_type) => self.as_callable_or_error(
+                            method_type,
+                            CallStyle::Method(method_name),
+                            range,
+                        ),
+                    }
+                }
+                Some(AttributeBase::Any(style)) => style.propagate_callable(),
                 None => self.error_callable(
                     range,
                     format!(
@@ -388,53 +401,50 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    fn lookup_module_attr(&self, module: &Module, attr_name: &Name, range: TextRange) -> Type {
+        match module.as_single_module() {
+            Some(module_name) => self.get_import(attr_name, module_name, range),
+            None => module.push_path(attr_name.clone()).to_type(),
+        }
+    }
+
     fn attr_infer(&self, obj: &Type, attr_name: &Name, range: TextRange) -> Type {
         self.distribute_over_union(obj, |obj| {
-            match as_class_attribute_base(obj.clone(), self.stdlib) {
-                Some(ClassAttributeBase::ClassType(class)) => {
+            match as_attribute_base(obj.clone(), self.stdlib) {
+                Some(AttributeBase::ClassInstance(class)) => {
                     self.get_instance_attribute_or_error(&class, attr_name, range)
                 }
-                Some(ClassAttributeBase::Any(style)) => style.propagate(),
-                None => match obj {
-                    Type::Module(module) => match module.as_single_module() {
-                        Some(module_name) => self.get_import(attr_name, module_name, range),
-                        None => module.push_path(attr_name.clone()).to_type(),
-                    },
-                    Type::Type(box Type::Quantified(q))
-                        if q.is_param_spec() && attr_name == "args" =>
-                    {
+                Some(AttributeBase::ClassObject(class)) => {
+                    self.get_class_attribute_or_error(&class, attr_name, range)
+                }
+                Some(AttributeBase::Module(module)) => {
+                    self.lookup_module_attr(&module, attr_name, range)
+                }
+                Some(AttributeBase::Quantified(q)) => {
+                    if q.is_param_spec() && attr_name == "args" {
                         Type::type_form(Type::Args(q.id()))
-                    }
-                    Type::Type(box Type::Quantified(q))
-                        if q.is_param_spec() && attr_name == "kwargs" =>
-                    {
+                    } else if q.is_param_spec() && attr_name == "kwargs" {
                         Type::type_form(Type::Kwargs(q.id()))
-                    }
-                    Type::ClassDef(cls) => self.get_class_attribute_or_error(cls, attr_name, range),
-                    Type::Type(box Type::ClassType(class)) => {
-                        self.get_class_attribute_or_error(class.class_object(), attr_name, range)
-                    }
-                    Type::Type(box Type::Any(style)) => style.propagate(),
-                    Type::TypeAlias(ta) => {
-                        if let Some(t) = ta.as_value() {
-                            self.attr_infer(&t, attr_name, range)
-                        } else {
-                            self.error(
-                                range,
-                                format!("Cannot use type alias `{}` as a value", ta.name),
-                            )
-                        }
-                    }
-                    // Class and Any case already handled before
-                    _ => self.error(
-                        range,
-                        format!(
-                            "TODO: Answers::expr_infer attribute: `{}`.{}",
-                            obj.clone().deterministic_printing(),
+                    } else {
+                        self.get_instance_attribute_or_error(
+                            &q.as_value(self.stdlib),
                             attr_name,
-                        ),
+                            range,
+                        )
+                    }
+                }
+                Some(AttributeBase::TypeAny(style)) => self
+                    .get_instance_attribute(&self.stdlib.builtins_type(), attr_name)
+                    .unwrap_or_else(|| style.propagate()),
+                Some(AttributeBase::Any(style)) => style.propagate(),
+                None => self.error(
+                    range,
+                    format!(
+                        "TODO: Answers::expr_infer attribute: `{}`.{}",
+                        obj.clone().deterministic_printing(),
+                        attr_name,
                     ),
-                },
+                ),
             }
         })
     }

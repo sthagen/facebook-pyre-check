@@ -13,7 +13,6 @@ use std::sync::Arc;
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
-use ruff_python_ast::TypeParam;
 use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
@@ -227,7 +226,7 @@ impl SolveRecursive for KeyAnnotation {
 }
 impl SolveRecursive for KeyClassMetadata {
     fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        ClassMetadata::cyclic()
+        ClassMetadata::recursive()
     }
     fn visit_type_mut(v: &mut ClassMetadata, f: &mut dyn FnMut(&mut Type)) {
         v.visit_mut(f);
@@ -876,20 +875,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     pub fn scoped_type_params(&self, x: &Option<Box<TypeParams>>) -> Vec<Quantified> {
-        let mut names = Vec::new();
-        match x {
-            Some(box x) => {
-                for x in &x.type_params {
-                    let name = match x {
-                        TypeParam::TypeVar(x) => &x.name,
-                        TypeParam::ParamSpec(x) => &x.name,
-                        TypeParam::TypeVarTuple(x) => &x.name,
-                    };
-                    names.push(name);
-                }
-            }
-            None => {}
-        }
+        let names = match x {
+            Some(box x) => x.type_params.iter().map(Ast::type_param_id).collect(),
+            None => Vec::new(),
+        };
 
         fn get_quantified(t: &Type) -> &Quantified {
             match t {

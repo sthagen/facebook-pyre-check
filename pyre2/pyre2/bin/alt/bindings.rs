@@ -837,21 +837,15 @@ impl<'a> BindingsBuilder<'a> {
     fn type_params(&mut self, x: &TypeParams) -> Vec<Quantified> {
         let mut qs = Vec::new();
         for x in x.iter() {
-            let (q, name) = match x {
-                TypeParam::TypeVar(x) => {
-                    let q = Quantified::type_var(self.uniques, x.name.id.clone());
-                    (q, &x.name)
-                }
-                TypeParam::ParamSpec(x) => {
-                    let q = Quantified::param_spec(self.uniques, x.name.id.clone());
-                    (q, &x.name)
-                }
+            let q = match x {
+                TypeParam::TypeVar(x) => Quantified::type_var(self.uniques, x.name.id.clone()),
+                TypeParam::ParamSpec(x) => Quantified::param_spec(self.uniques, x.name.id.clone()),
                 TypeParam::TypeVarTuple(x) => {
-                    let q = Quantified::type_var_tuple(self.uniques, x.name.id.clone());
-                    (q, &x.name)
+                    Quantified::type_var_tuple(self.uniques, x.name.id.clone())
                 }
             };
             qs.push(q.clone());
+            let name = Ast::type_param_id(x);
             self.scopes.last_mut().stat.add(name.id.clone(), name.range);
             self.bind_definition(name, Binding::TypeParameter(q), None);
         }
@@ -1059,11 +1053,12 @@ impl<'a> BindingsBuilder<'a> {
                     .insert(name.id.clone(), keyword.value.clone())
                     .is_some()
                 {
-                    self.errors.add(
-                        &self.module_info,
-                        keyword.range(),
-                        format!("Duplicate keyword in class header of `{}`", x.name),
-                    )
+                    // TODO(stroxler) We should use a Vec rather than a Map in the binding
+                    // so that we can still type check the values associated with
+                    // duplicate keywords.
+                    //
+                    // For now, we get a type error from the parser but never
+                    // check the expression.
                 }
             } else {
                 self.errors.add(
@@ -1397,15 +1392,17 @@ impl<'a> BindingsBuilder<'a> {
                 self.stmts(x.body.clone());
             }
             Stmt::Match(x) => {
-                self.todo("Bindings::stmt", &x);
-
-                // Very bad version that binds the right things
                 self.ensure_expr(&x.subject);
                 self.table.insert(
                     Key::Anon(x.subject.range()),
                     Binding::Expr(None, *x.subject),
                 );
+                let mut exhaustive = false;
+                let range = x.range;
+                let mut branches = Vec::new();
                 for case in x.cases {
+                    let mut base = self.scopes.last().flow.clone();
+                    // TODO: don't use Any here
                     Ast::pattern_lvalue(&case.pattern, &mut |x| match x {
                         Either::Left(x) => {
                             self.bind_definition(x, Binding::AnyType(AnyStyle::Error), None);
@@ -1420,7 +1417,17 @@ impl<'a> BindingsBuilder<'a> {
                             .insert(Key::Anon(guard.range()), Binding::Expr(None, *guard));
                     }
                     self.stmts(case.body);
+                    mem::swap(&mut self.scopes.last_mut().flow, &mut base);
+                    branches.push(base);
+                    if case.pattern.is_wildcard() || case.pattern.is_irrefutable() {
+                        exhaustive = true;
+                        break;
+                    }
                 }
+                if !exhaustive {
+                    branches.push(self.scopes.last().flow.clone());
+                }
+                self.scopes.last_mut().flow = self.merge_flow(branches, range, false);
             }
             Stmt::Raise(x) => {
                 if let Some(exc) = x.exc {

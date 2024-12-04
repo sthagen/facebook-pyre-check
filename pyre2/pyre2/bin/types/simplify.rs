@@ -5,10 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use dupe::Dupe;
+
+use crate::types::class::Class;
 use crate::types::class::ClassType;
+use crate::types::module::Module;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
 use crate::types::types::AnyStyle;
+use crate::types::types::Quantified;
 use crate::types::types::Type;
 
 pub fn unions(xs: Vec<Type>) -> Type {
@@ -35,52 +40,55 @@ pub fn unions(xs: Vec<Type>) -> Type {
     }
 }
 
-pub enum ClassAttributeBase {
-    ClassType(ClassType),
+pub enum AttributeBase {
+    ClassInstance(ClassType),
+    ClassObject(Class),
+    Module(Module),
+    Quantified(Quantified),
     Any(AnyStyle),
+    /// type[Any] is a special case where attribute lookups first check the
+    /// builtin `type` class before falling back to `Any`.
+    TypeAny(AnyStyle),
 }
 
-pub fn as_class_attribute_base(ty: Type, stdlib: &Stdlib) -> Option<ClassAttributeBase> {
+pub fn as_attribute_base(ty: Type, stdlib: &Stdlib) -> Option<AttributeBase> {
     match ty {
-        Type::ClassType(class_type) => Some(ClassAttributeBase::ClassType(class_type)),
+        Type::ClassType(class_type) => Some(AttributeBase::ClassInstance(class_type)),
         Type::Tuple(Tuple::Unbounded(box element)) => {
-            Some(ClassAttributeBase::ClassType(stdlib.tuple(element)))
+            Some(AttributeBase::ClassInstance(stdlib.tuple(element)))
         }
-        Type::Tuple(Tuple::Concrete(elements)) => Some(ClassAttributeBase::ClassType(
-            stdlib.tuple(unions(elements)),
-        )),
-        Type::LiteralString => Some(ClassAttributeBase::ClassType(stdlib.str())),
-        Type::Literal(lit) => Some(ClassAttributeBase::ClassType(
-            lit.general_class_type(stdlib),
-        )),
-        Type::TypeGuard(_) | Type::TypeIs(_) => Some(ClassAttributeBase::ClassType(stdlib.bool())),
-        Type::Any(style) => Some(ClassAttributeBase::Any(style)),
-        Type::TypeAlias(ta) => {
-            if let Some(t) = ta.as_value() {
-                as_class_attribute_base(t, stdlib)
-            } else {
-                None
-            }
+        Type::Tuple(Tuple::Concrete(elements)) => {
+            Some(AttributeBase::ClassInstance(stdlib.tuple(unions(elements))))
         }
+        Type::LiteralString => Some(AttributeBase::ClassInstance(stdlib.str())),
+        Type::Literal(lit) => Some(AttributeBase::ClassInstance(lit.general_class_type(stdlib))),
+        Type::TypeGuard(_) | Type::TypeIs(_) => Some(AttributeBase::ClassInstance(stdlib.bool())),
+        Type::Any(style) => Some(AttributeBase::Any(style)),
+        Type::TypeAlias(ta) => as_attribute_base(ta.as_value(stdlib), stdlib),
+        Type::ClassDef(cls) => Some(AttributeBase::ClassObject(cls)),
+        Type::Type(box Type::ClassType(class)) => {
+            Some(AttributeBase::ClassObject(class.class_object().dupe()))
+        }
+        Type::Type(box Type::Quantified(q)) => Some(AttributeBase::Quantified(q)),
+        Type::Type(box Type::Any(style)) => Some(AttributeBase::TypeAny(style)),
+        Type::Module(module) => Some(AttributeBase::Module(module)),
+        Type::TypeVar(_) => Some(AttributeBase::ClassInstance(stdlib.type_var())),
+        Type::ParamSpec(_) => Some(AttributeBase::ClassInstance(stdlib.param_spec())),
+        Type::TypeVarTuple(_) => Some(AttributeBase::ClassInstance(stdlib.type_var_tuple())),
+        Type::Args(_) => Some(AttributeBase::ClassInstance(stdlib.param_spec_args())),
+        Type::Kwargs(_) => Some(AttributeBase::ClassInstance(stdlib.param_spec_kwargs())),
+        Type::None => Some(AttributeBase::ClassInstance(stdlib.none_type())),
         // TODO: check to see which ones should have class representations
         Type::Union(_)
         | Type::Never(_)
         | Type::Callable(_)
         | Type::Ellipsis
-        | Type::None
         | Type::SpecialForm(_)
         | Type::Type(_)
         | Type::Intersect(_)
         | Type::Forall(_, _)
         | Type::Unpack(_)
         | Type::Quantified(_)
-        | Type::ClassDef(_)
-        | Type::Var(_)
-        | Type::Module(_)
-        | Type::ParamSpec(_)
-        | Type::TypeVar(_)
-        | Type::Kwargs(_)
-        | Type::Args(_)
-        | Type::TypeVarTuple(_) => None,
+        | Type::Var(_) => None,
     }
 }

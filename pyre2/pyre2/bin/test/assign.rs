@@ -543,7 +543,7 @@ simple_test!(
     r#"
 def expect_str(x: str): ...
 def test(x: None):
-    x += expect_str(0) # E: Expected class, got None # E: EXPECTED Literal[0] <: str
+    x += expect_str(0) # E: Object of class `NoneType` has no attribute `__iadd__` # E: EXPECTED Literal[0] <: str
 "#,
 );
 
@@ -554,6 +554,6 @@ def expect_str(x: str): ...
 class C:
     __iadd__: None = None
 def test(x: C):
-    x += expect_str(0) # E: Expected `C.__iadd__` to be a callable, got None # E: EXPECTED Literal[0] <: str
+    x += expect_str(0) # E: Expected `__iadd__` to be a callable, got None # E: EXPECTED Literal[0] <: str
 "#,
 );

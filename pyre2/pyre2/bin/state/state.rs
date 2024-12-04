@@ -13,6 +13,7 @@ use std::sync::RwLock;
 
 use dupe::Dupe;
 use dupe::OptionDupedExt;
+use enum_iterator::Sequence;
 use parking_lot::FairMutex;
 use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
@@ -157,8 +158,9 @@ impl<'a> State<'a> {
         loop {
             let module_state = self.get_module(module);
             let lock = module_state.steps.read().unwrap();
-            if step.check(&lock) {
-                return;
+            match Step::Solutions.compute_next(&lock) {
+                Some(todo) if todo <= step => {}
+                _ => break,
             }
             drop(lock);
             let _compute_lock = module_state.lock.lock();

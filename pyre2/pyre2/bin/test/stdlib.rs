@@ -81,6 +81,15 @@ class TypeVar:
 class ParamSpec:
     def __init__(self, name: str) -> None: ...
 
+class ParamSpecArgs:
+    def __init__(self, origin: ParamSpec) -> None: ...
+
+class ParamSpecKwargs:
+    def __init__(self, origin: ParamSpec) -> None: ...
+
+class TypeVarTuple:
+    def __init__(self, name: str) -> None: ...
+
 def reveal_type(obj, /):
     return obj
 
@@ -107,6 +116,8 @@ class Coroutine(Awaitable[_ReturnT], Generic[_YieldT, _SendT, _ReturnT]):
 class MutableSet(Iterable[_T]): ...
 
 class MutableMapping[K, V](Iterable[K], Generic[K, V]): ...
+
+class TypeAliasType: ...
 "#;
 
 static TYPES: &str = r#"
