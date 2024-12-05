@@ -5,7 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::any::type_name_of_val;
+// TODO(ndmitchell): I'm working on deleting this module entire, don't hack out random pieces in the meantime.
+#![allow(dead_code)]
+
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -20,31 +22,24 @@ use tracing::info;
 
 use crate::alt::answers::Answers;
 use crate::alt::answers::Solutions;
-use crate::alt::answers::SolutionsEntry;
 use crate::alt::binding::Key;
-use crate::alt::bindings::BindingEntry;
-use crate::alt::bindings::BindingTable;
 use crate::alt::bindings::Bindings;
 use crate::alt::exports::Exports;
 use crate::alt::exports::LookupExport;
-use crate::alt::table::Keyed;
-use crate::alt::table::TableKeyed;
 use crate::ast::Ast;
 use crate::config::Config;
-use crate::debug;
+use crate::debug_info::DebugInfo;
 use crate::error::collector::ErrorCollector;
 use crate::error::error::Error;
 use crate::expectation::Expectation;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::state::loader::Loader;
-use crate::table_for_each;
 #[cfg(test)]
 use crate::types::class_metadata::ClassMetadata;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
 use crate::uniques::UniqueFactory;
-use crate::util::display::DisplayWith;
 use crate::util::memory::MemoryUsage;
 use crate::util::memory::MemoryUsageTrace;
 use crate::util::prelude::SliceExt;
@@ -167,7 +162,7 @@ fn run_phase1(
     modules: &[ModuleName],
     config: &Config,
     quiet_errors: bool,
-    load: &Loader,
+    loader: &Loader,
     parallel: bool,
 ) -> Vec<Phase1> {
     let mut todo = modules.to_owned();
@@ -187,7 +182,7 @@ fn run_phase1(
         transitive_closure
     })(todo, |name: &ModuleName| {
         let mut timers = Timers::new();
-        let (loaded, should_type_check) = load(*name);
+        let (loaded, should_type_check) = loader(*name);
         let components = loaded.components(*name);
         timers.add((*name, Step::Load, components.code.len()));
         let module_info =
@@ -261,7 +256,6 @@ fn run_phase2(
     res
 }
 
-#[derive(Debug, Default)]
 pub struct Driver {
     errors: Vec<Error>,
     expectations: SmallMap<ModuleName, Expectation>,
@@ -272,10 +266,10 @@ pub struct Driver {
 impl Driver {
     pub fn new(
         modules: &[ModuleName],
+        loader: Box<Loader<'static>>,
         config: &Config,
-        timings: Option<usize>,
         parallel: bool,
-        load: &Loader,
+        timings: Option<usize>,
     ) -> Self {
         let mut memory_trace = MemoryUsageTrace::start(Duration::from_secs_f32(0.1));
         let mut timers = Timers::new();
@@ -283,7 +277,14 @@ impl Driver {
         let uniques = UniqueFactory::new();
 
         timers.add((timers_global_module(), Step::Startup, 0));
-        let phase1 = run_phase1(timers, modules, config, timings.is_some(), load, parallel);
+        let phase1 = run_phase1(
+            timers,
+            modules,
+            config,
+            timings.is_some(),
+            &*loader,
+            parallel,
+        );
         let exports: SmallMap<_, _> = phase1
             .iter()
             .map(|v| (v.module_info.name(), v.exports.dupe()))
@@ -465,56 +466,16 @@ impl Driver {
         self.solutions.get(&module)?.types.get(key)
     }
 
-    pub fn debug_info(&self, modules: &[ModuleName]) -> debug::Info {
-        fn f<K: Keyed>(
-            t: &SolutionsEntry<K>,
-            phase1: &Phase1,
-            phase2: &Phase2,
-            bindings: &mut Vec<debug::Binding>,
-        ) where
-            BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
-        {
-            for (key, val) in t.iter() {
-                let idx = phase2.bindings.key_to_idx(key);
-                bindings.push(debug::Binding {
-                    kind: type_name_of_val(key).rsplit_once(':').unwrap().1.to_owned(),
-                    key: phase1.module_info.display(key).to_string(),
-                    location: phase1.module_info.source_range(key.range()).to_string(),
-                    binding: phase2
-                        .bindings
-                        .get(idx)
-                        .display_with(&phase2.bindings)
-                        .to_string(),
-                    result: val.to_string(),
-                })
-            }
-        }
-
-        debug::Info {
-            modules: modules
-                .iter()
-                .map(|x| {
-                    let mut bindings = Vec::new();
-                    let (phase1, phase2) = self.phases.get(x).unwrap();
-                    table_for_each!(self.solutions.get(x).unwrap(), |t| f(
-                        t,
-                        phase1,
-                        phase2,
-                        &mut bindings
-                    ));
-                    let errors = self
-                        .errors
-                        .iter()
-                        .filter(|e| e.module_name() == *x)
-                        .map(|e| debug::Error {
-                            location: e.source_range().to_string(),
-                            message: e.msg.clone(),
-                        })
-                        .collect();
-                    (*x, debug::Module { bindings, errors })
-                })
-                .collect(),
-        }
+    pub fn debug_info(&self, modules: &[ModuleName]) -> DebugInfo {
+        DebugInfo::new(&modules.map(|x| {
+            let (phase1, phase2) = self.phases.get(x).unwrap();
+            (
+                &phase1.module_info,
+                &phase1.errors,
+                &phase2.bindings,
+                self.solutions.get(x).unwrap(),
+            )
+        }))
     }
 }
 

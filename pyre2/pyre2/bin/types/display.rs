@@ -22,6 +22,7 @@ use crate::types::class::TArgs;
 use crate::types::qname::QName;
 use crate::types::types::AnyStyle;
 use crate::types::types::NeverStyle;
+use crate::types::types::Quantified;
 use crate::types::types::Type;
 use crate::types::types::TypeAliasStyle;
 use crate::util::display::append;
@@ -75,6 +76,7 @@ impl ClassInfo {
 #[derive(Debug, Clone, Default)]
 pub struct TypeDisplayContext<'a> {
     classes: SmallMap<&'a Name, ClassInfo>,
+    quantifieds: SmallMap<Quantified, &'a Name>,
 }
 
 impl<'a> TypeDisplayContext<'a> {
@@ -100,6 +102,16 @@ impl<'a> TypeDisplayContext<'a> {
                     Entry::Occupied(mut e) => e.get_mut().update(qname),
                 }
             }
+            let tparams = match t {
+                Type::ClassDef(cls) => Some(cls.tparams()),
+                Type::Forall(tparams, _) => Some(tparams),
+                _ => None,
+            };
+            if let Some(tparams) = tparams {
+                for tparam in tparams.0.iter() {
+                    self.quantifieds.insert(tparam.quantified, &tparam.name);
+                }
+            }
         })
     }
 
@@ -123,6 +135,13 @@ impl<'a> TypeDisplayContext<'a> {
         match self.classes.get(&qname.id()) {
             Some(info) => info.fmt(qname, f),
             None => ClassInfo::qualified().fmt(qname, f), // we should not get here, if we do, be safe
+        }
+    }
+
+    fn fmt_quantified(&self, quantified: &Quantified, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.quantifieds.get(quantified) {
+            Some(name) => write!(f, "{name}"),
+            None => write!(f, "{quantified}"),
         }
     }
 
@@ -195,7 +214,7 @@ impl<'a> TypeDisplayContext<'a> {
                 write!(
                     f,
                     "Forall[{}]",
-                    commas_iter(|| append(uniques, [self.display(ty)]))
+                    commas_iter(|| append(uniques.0.iter(), [self.display(ty)]))
                 )
             }
             Type::Type(ty) => write!(f, "type[{}]", self.display(ty)),
@@ -204,7 +223,7 @@ impl<'a> TypeDisplayContext<'a> {
             Type::Unpack(ty) => write!(f, "Unpack[{}]", self.display(ty)),
             Type::Module(m) => write!(f, "Module[{m}]"),
             Type::Var(var) => write!(f, "{var}"),
-            Type::Quantified(var) => write!(f, "{var}"),
+            Type::Quantified(var) => self.fmt_quantified(var, f),
             Type::Args(id) => write!(f, "Args[{id}]"),
             Type::Kwargs(id) => write!(f, "Kwargs[{id}]"),
             Type::SpecialForm(x) => write!(f, "{x}"),
@@ -254,7 +273,8 @@ mod tests {
     use crate::types::type_var::Variance;
     use crate::types::types::Quantified;
     use crate::types::types::QuantifiedKind;
-    use crate::types::types::QuantifiedVec;
+    use crate::types::types::TParam;
+    use crate::types::types::TParams;
     use crate::uniques::UniqueFactory;
     use crate::util::prelude::SliceExt;
 
@@ -268,7 +288,7 @@ mod tests {
         Class::new(
             Identifier::new(Name::new(name), TextRange::empty(TextSize::new(range))),
             mi,
-            QuantifiedVec(tparams.map(|q| q.clone())),
+            TParams(tparams.map(|q| TParam::new(Name::new(q.id().to_string()), *q))),
             SmallSet::new(),
         )
     }
@@ -299,11 +319,7 @@ mod tests {
             "bar",
             "mod.ule",
             0,
-            &[Quantified::new(
-                &uniques,
-                Name::new("T"),
-                QuantifiedKind::TypeVar,
-            )],
+            &[Quantified::new(&uniques, QuantifiedKind::TypeVar)],
         );
 
         fn class_type(class: &Class, targs: TArgs) -> Type {

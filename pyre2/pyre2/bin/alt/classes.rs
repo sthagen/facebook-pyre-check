@@ -35,8 +35,8 @@ use crate::types::class::TArgs;
 use crate::types::class_metadata::ClassMetadata;
 use crate::types::literal::Lit;
 use crate::types::special_form::SpecialForm;
-use crate::types::types::Quantified;
-use crate::types::types::QuantifiedVec;
+use crate::types::types::TParam;
+use crate::types::types::TParams;
 use crate::types::types::Type;
 use crate::util::prelude::SliceExt;
 
@@ -83,7 +83,14 @@ fn strip_first_argument(ty: &Type) -> Type {
         }
         _ => ty.clone(),
     };
-    Type::forall(gs.to_owned(), ty)
+    Type::forall(
+        if let Some(gs) = gs {
+            gs.to_owned()
+        } else {
+            TParams(Vec::new())
+        },
+        ty,
+    )
 }
 
 fn replace_return_type(ty: Type, ret: Type) -> Type {
@@ -92,7 +99,14 @@ fn replace_return_type(ty: Type, ret: Type) -> Type {
         Type::Callable(c) => Type::callable(c.args.as_list().unwrap().to_owned(), ret),
         _ => ty.clone(),
     };
-    Type::forall(gs.to_owned(), ty)
+    Type::forall(
+        if let Some(gs) = gs {
+            gs.to_owned()
+        } else {
+            TParams(Vec::new())
+        },
+        ty,
+    )
 }
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
@@ -155,14 +169,31 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn class_tparams(
         &self,
         name: &Identifier,
-        scoped_tparams: Vec<Quantified>,
+        scoped_tparams: Vec<TParam>,
         bases: Vec<BaseClass>,
         legacy: &[Idx<KeyLegacyTypeParam>],
-    ) -> QuantifiedVec {
-        let legacy_quantifieds: SmallSet<_> = legacy
+    ) -> TParams {
+        let legacy_tparams = legacy
             .iter()
             .filter_map(|key| self.get_idx(*key).deref().parameter().cloned())
-            .collect();
+            .collect::<SmallSet<_>>();
+        let legacy_map = legacy_tparams
+            .iter()
+            .map(|p| (p.quantified, p))
+            .collect::<SmallMap<_, _>>();
+
+        let lookup_tparam = |t: &Type| {
+            let q = t.as_quantified()?;
+            let p = legacy_map.get(&q);
+            if p.is_none() {
+                self.error(
+                    name.range,
+                    "Redundant type parameter declaration".to_owned(),
+                );
+            }
+            p.map(|x| (*x).clone())
+        };
+
         // TODO(stroxler): There are a lot of checks, such as that `Generic` only appears once
         // and no non-type-vars are used, that we can more easily detect in a dedictated class
         // validation step that validates all the bases. We are deferring these for now.
@@ -171,10 +202,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         for base in bases.iter() {
             match base {
                 BaseClass::Generic(ts) => {
-                    generic_tparams.extend(ts.iter().filter_map(|t| t.as_quantified().cloned()))
+                    for t in ts.iter() {
+                        if let Some(p) = lookup_tparam(t) {
+                            generic_tparams.insert(p);
+                        }
+                    }
                 }
                 BaseClass::Protocol(ts) if !ts.is_empty() => {
-                    protocol_tparams.extend(ts.iter().filter_map(|t| t.as_quantified().cloned()))
+                    for t in ts.iter() {
+                        if let Some(p) = lookup_tparam(t) {
+                            protocol_tparams.insert(p);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -196,8 +235,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         // Handle implicit tparams: if a Quantified was bound at this scope and is not yet
         // in tparams, we add it. These will be added in left-to-right order.
         let implicit_tparams_okay = tparams.is_empty();
-        for q in legacy_quantifieds.into_iter() {
-            if !tparams.contains(&q) {
+        for p in legacy_tparams.iter() {
+            if !tparams.contains(p) {
                 if !implicit_tparams_okay {
                     self.error(
                         name.range,
@@ -207,10 +246,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         ),
                     );
                 }
-                tparams.insert(q);
+                tparams.insert(p.clone());
             }
         }
-        QuantifiedVec(tparams.into_iter().collect())
+        TParams(tparams.into_iter().collect())
     }
 
     pub fn class_metadata_of(
@@ -506,7 +545,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let tparams = cls.tparams();
         let mut qs = SmallSet::new();
         ty.collect_quantifieds(&mut qs);
-        tparams.0.iter().any(|q| qs.contains(q))
+        tparams.quantified().any(|q| qs.contains(q))
     }
 
     pub fn get_class_attribute(&self, cls: &Class, name: &Name) -> Result<Type, NoClassAttribute> {
@@ -566,7 +605,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn get_constructor_for_class_object(&self, cls: &Class) -> Type {
         let init_ty = self.get_init_method(cls);
         let tparams = cls.tparams();
-        Type::forall(tparams.0.clone(), init_ty)
+        Type::forall(tparams.clone(), init_ty)
     }
 
     /// Given an identifier, see whether it is bound to an enum class. If so,

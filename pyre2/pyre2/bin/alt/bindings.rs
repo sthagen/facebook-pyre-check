@@ -838,13 +838,11 @@ impl<'a> BindingsBuilder<'a> {
         let mut qs = Vec::new();
         for x in x.iter() {
             let q = match x {
-                TypeParam::TypeVar(x) => Quantified::type_var(self.uniques, x.name.id.clone()),
-                TypeParam::ParamSpec(x) => Quantified::param_spec(self.uniques, x.name.id.clone()),
-                TypeParam::TypeVarTuple(x) => {
-                    Quantified::type_var_tuple(self.uniques, x.name.id.clone())
-                }
+                TypeParam::TypeVar(_) => Quantified::type_var(self.uniques),
+                TypeParam::ParamSpec(_) => Quantified::param_spec(self.uniques),
+                TypeParam::TypeVarTuple(_) => Quantified::type_var_tuple(self.uniques),
             };
-            qs.push(q.clone());
+            qs.push(q);
             let name = Ast::type_param_id(x);
             self.scopes.last_mut().stat.add(name.id.clone(), name.range);
             self.bind_definition(name, Binding::TypeParameter(q), None);
@@ -1310,16 +1308,14 @@ impl<'a> BindingsBuilder<'a> {
             },
             Stmt::TypeAlias(mut x) => {
                 if let Expr::Name(name) = *x.name {
-                    let qs = if let Some(params) = x.type_params {
-                        self.type_params(&params)
-                    } else {
-                        Vec::new()
-                    };
+                    if let Some(ref params) = x.type_params {
+                        self.type_params(params);
+                    }
                     self.ensure_type(&mut x.value, &mut BindingsBuilder::forward_lookup);
                     let expr_binding = Binding::Expr(None, *x.value);
                     let binding = Binding::ScopedTypeAlias(
                         name.id.clone(),
-                        qs,
+                        x.type_params.map(Box::new),
                         Box::new(expr_binding),
                         x.range,
                     );

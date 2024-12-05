@@ -57,12 +57,10 @@ impl Var {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Quantified {
     /// Unique identifier
     unique: Unique,
-    /// Display name
-    name: Box<Name>,
     kind: QuantifiedKind,
 }
 
@@ -75,29 +73,28 @@ pub enum QuantifiedKind {
 
 impl Display for Quantified {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)
+        write!(f, "?_")
     }
 }
 
 impl Quantified {
-    pub fn new(uniques: &UniqueFactory, name: Name, kind: QuantifiedKind) -> Self {
+    pub fn new(uniques: &UniqueFactory, kind: QuantifiedKind) -> Self {
         Quantified {
             unique: uniques.fresh(),
-            name: Box::new(name),
             kind,
         }
     }
 
-    pub fn type_var(uniques: &UniqueFactory, name: Name) -> Self {
-        Quantified::new(uniques, name, QuantifiedKind::TypeVar)
+    pub fn type_var(uniques: &UniqueFactory) -> Self {
+        Quantified::new(uniques, QuantifiedKind::TypeVar)
     }
 
-    pub fn param_spec(uniques: &UniqueFactory, name: Name) -> Self {
-        Quantified::new(uniques, name, QuantifiedKind::ParamSpec)
+    pub fn param_spec(uniques: &UniqueFactory) -> Self {
+        Quantified::new(uniques, QuantifiedKind::ParamSpec)
     }
 
-    pub fn type_var_tuple(uniques: &UniqueFactory, name: Name) -> Self {
-        Quantified::new(uniques, name, QuantifiedKind::TypeVarTuple)
+    pub fn type_var_tuple(uniques: &UniqueFactory) -> Self {
+        Quantified::new(uniques, QuantifiedKind::TypeVarTuple)
     }
 
     pub fn to_type(self) -> Type {
@@ -121,23 +118,42 @@ impl Quantified {
     }
 }
 
-/// We sometimes need a vector of these - mostly done to give them a nice Display.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct QuantifiedVec(pub Vec<Quantified>);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TParam {
+    /// Display name
+    pub name: Name,
+    pub quantified: Quantified,
+}
 
-impl Display for QuantifiedVec {
+impl Display for TParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl TParam {
+    pub fn new(name: Name, quantified: Quantified) -> Self {
+        Self { name, quantified }
+    }
+}
+
+/// Wraps a vector of type parameters to give them a nice Display and convenient access methods.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TParams(pub Vec<TParam>);
+
+impl Display for TParams {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}]", commas_iter(|| self.0.iter()))
     }
 }
 
-impl QuantifiedVec {
+impl TParams {
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    pub fn as_slice(&self) -> &[Quantified] {
-        &self.0
+    pub fn quantified(&self) -> impl Iterator<Item = &Quantified> {
+        self.0.iter().map(|x| &x.quantified)
     }
 }
 
@@ -151,23 +167,23 @@ impl QuantifiedVec {
 // represents that variable as a type parameter.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LegacyTypeParameterLookup {
-    Parameter(Quantified),
+    Parameter(TParam),
     NotParameter(Type),
 }
 
 impl Display for LegacyTypeParameterLookup {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Parameter(q) => write!(f, "{q}"),
+            Self::Parameter(p) => write!(f, "{}", p.name),
             Self::NotParameter(ty) => write!(f, "{ty}"),
         }
     }
 }
 
 impl LegacyTypeParameterLookup {
-    pub fn parameter(&self) -> Option<&Quantified> {
+    pub fn parameter(&self) -> Option<&TParam> {
         match self {
-            Self::Parameter(q) => Some(q),
+            Self::Parameter(p) => Some(p),
             Self::NotParameter(_) => None,
         }
     }
@@ -285,7 +301,7 @@ pub enum Type {
     ClassType(ClassType),
     Tuple(Tuple),
     Module(Module),
-    Forall(Vec<Quantified>, Box<Type>),
+    Forall(TParams, Box<Type>),
     Var(Var),
     Quantified(Quantified),
     TypeGuard(Box<Type>),
@@ -361,22 +377,22 @@ impl Type {
         }
     }
 
-    pub fn as_forall(&self) -> (&[Quantified], &Type) {
+    pub fn as_forall(&self) -> (Option<&TParams>, &Type) {
         match self {
-            Type::Forall(uniques, ty) => (uniques, ty),
-            _ => (&[], self),
+            Type::Forall(uniques, ty) => (Some(uniques), ty),
+            _ => (None, self),
         }
     }
 
-    pub fn forall(mut uniques: Vec<Quantified>, ty: Type) -> Self {
+    pub fn forall(mut uniques: TParams, ty: Type) -> Self {
         let ty = match ty {
             Type::Forall(vars2, ty) => {
-                uniques.extend(vars2);
+                uniques.0.extend(vars2.0);
                 *ty
             }
             _ => ty,
         };
-        if uniques.is_empty() {
+        if uniques.0.is_empty() {
             ty
         } else {
             Type::Forall(uniques, Box::new(ty))
@@ -449,23 +465,23 @@ impl Type {
     ) -> (Vec<Var>, Self) {
         let mp: SmallMap<Quantified, Type> = gargs
             .iter()
-            .map(|x| (x.clone(), Var::new(uniques).to_type()))
+            .map(|x| (*x, Var::new(uniques).to_type()))
             .collect();
         let res = self.subst(&mp);
         (mp.into_values().map(|x| x.as_var().unwrap()).collect(), res)
     }
 
-    pub fn for_each_quantified(&self, f: &mut impl FnMut(&Quantified)) {
+    pub fn for_each_quantified(&self, f: &mut impl FnMut(Quantified)) {
         self.universe(|x| {
             if let Type::Quantified(x) = x {
-                f(x);
+                f(*x);
             }
         })
     }
 
     pub fn collect_quantifieds(&self, acc: &mut SmallSet<Quantified>) {
         self.for_each_quantified(&mut |q| {
-            acc.insert(q.clone());
+            acc.insert(q);
         });
     }
 
@@ -611,9 +627,9 @@ impl Type {
         self
     }
 
-    pub fn as_quantified(&self) -> Option<&Quantified> {
+    pub fn as_quantified(&self) -> Option<Quantified> {
         match self {
-            Type::Quantified(q) => Some(q),
+            Type::Quantified(q) => Some(*q),
             _ => None,
         }
     }

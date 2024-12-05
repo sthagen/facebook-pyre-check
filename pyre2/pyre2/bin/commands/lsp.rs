@@ -8,6 +8,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::anyhow;
 use clap::Parser;
 use lsp_server::Connection;
 use lsp_server::Message;
@@ -194,7 +195,18 @@ impl<'a> Server<'a> {
             send,
             initialize_params,
             include,
-            driver: Driver::default(),
+            driver: Driver::new(
+                &[],
+                Box::new(|_| {
+                    (
+                        LoadResult::FailedToFind(anyhow!("Failed during init")),
+                        false,
+                    )
+                }),
+                &Config::default(),
+                true,
+                None,
+            ),
             open_files: Default::default(),
         }
     }
@@ -217,25 +229,26 @@ impl<'a> Server<'a> {
         let modules = self
             .open_files
             .keys()
-            .map(|x| (module_from_path(x), x))
+            .map(|x| (module_from_path(x), x.clone()))
             .collect::<SmallMap<_, _>>();
-        let load = |name: ModuleName| {
+        let module_names = modules.keys().copied().collect::<Vec<_>>();
+
+        let open_files = self.open_files.clone(); // Not good, but all of this is a hack
+        let include = self.include.clone();
+        let loader = move |name: ModuleName| {
             let loaded = if let Some(path) = modules.get(&name) {
-                LoadResult::Loaded(
-                    (*path).clone(),
-                    self.open_files.get(*path).unwrap().1.clone(),
-                )
+                LoadResult::Loaded((*path).clone(), open_files.get(path).unwrap().1.clone())
             } else {
-                LoadResult::from_path_result(find_module(name, &self.include))
+                LoadResult::from_path_result(find_module(name, &include))
             };
             (loaded, modules.contains_key(&name))
         };
         self.driver = Driver::new(
-            &modules.keys().copied().collect::<Vec<_>>(),
+            &module_names,
+            Box::new(loader),
             &Config::default(),
-            None,
             true,
-            &load,
+            None,
         );
         let mut diags: SmallMap<&Path, Vec<Diagnostic>> = SmallMap::new();
         for x in self.open_files.keys() {

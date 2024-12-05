@@ -81,7 +81,7 @@ pub fn simple_test_driver(stdlib: Stdlib, env: TestEnv) -> Driver {
         .copied()
         .chain(env.0.keys().copied())
         .collect::<Vec<_>>();
-    let lookup = |name: ModuleName| {
+    let loader = move |name: ModuleName| {
         let loaded = if let Some((path, contents)) = env.0.get(&name) {
             LoadResult::Loaded(path.to_owned(), contents.to_owned())
         } else if let Some(contents) = stdlib.lookup_content(name) {
@@ -92,7 +92,7 @@ pub fn simple_test_driver(stdlib: Stdlib, env: TestEnv) -> Driver {
         (loaded, true)
     };
     let config = Config::default();
-    Driver::new(&modules, &config, None, true, &lookup)
+    Driver::new(&modules, Box::new(loader), &config, true, None)
 }
 
 /// Should only be used from the `simple_test!` macro.
@@ -103,9 +103,13 @@ pub fn simple_test_for_macro(
     line: u32,
 ) -> anyhow::Result<()> {
     init_tracing(true, true);
+    let mut start_line = line as usize + 1;
+    if !env.0.is_empty() {
+        start_line += 1;
+    }
     env.add_with_path(
         "main",
-        &format!("{}{}", "\n".repeat(line as usize + 1), contents),
+        &format!("{}{}", "\n".repeat(start_line), contents),
         file,
     );
     simple_test_driver(Stdlib::new(), env).check_against_expectations()
