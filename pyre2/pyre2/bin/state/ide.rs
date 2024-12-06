@@ -17,13 +17,17 @@ use crate::alt::binding::KeyExported;
 use crate::ast::Ast;
 use crate::module::module_name::ModuleName;
 use crate::module::short_identifier::ShortIdentifier;
-use crate::state::driver::Driver;
+use crate::state::state::State;
 use crate::types::types::Type;
 use crate::visitors::Visitors;
 
-impl Driver {
+impl<'a> State<'a> {
+    pub fn get_type(&self, module: ModuleName, key: &Key) -> Option<Type> {
+        self.get_solutions(module)?.types.get(key).cloned()
+    }
+
     fn identifier_at(&self, module: ModuleName, position: TextSize) -> Option<Identifier> {
-        let mod_module = self.get_mod_module(module)?;
+        let mod_module = self.get_ast(module)?;
         fn f(x: &Expr, find: TextSize, res: &mut Option<Identifier>) {
             if let Expr::Name(x) = x
                 && x.range.contains_inclusive(find)
@@ -34,14 +38,13 @@ impl Driver {
             }
         }
         let mut res = None;
-        Visitors::visit_mod_expr(mod_module, |x| f(x, position, &mut res));
+        Visitors::visit_mod_expr(&mod_module, |x| f(x, position, &mut res));
         res
     }
 
     pub fn hover(&self, module: ModuleName, position: TextSize) -> Option<Type> {
         let id = self.identifier_at(module, position)?;
         self.get_type(module, &Key::Usage(ShortIdentifier::new(&id)))
-            .cloned()
     }
 
     fn key_to_definition(
@@ -118,7 +121,7 @@ impl Driver {
                             if !matches!(bindings.get(idx), &Binding::AnnotatedType(..)) =>
                         {
                             if let Some(ty) = self.get_type(module, key)
-                                && is_interesting_type(ty)
+                                && is_interesting_type(&ty)
                             {
                                 res.push((x.parameters.range.end(), format!(" -> {ty}")));
                             }
@@ -133,7 +136,7 @@ impl Driver {
                     };
                     if let Binding::Expr(None, e) = idx_binding
                         && is_interesting_expr(e)
-                        && is_interesting_type(ty)
+                        && is_interesting_type(&ty)
                     {
                         let ty = format!(": {}", ty);
                         res.push((key.range().end(), ty));

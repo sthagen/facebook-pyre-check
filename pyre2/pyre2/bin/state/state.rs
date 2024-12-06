@@ -16,7 +16,6 @@ use parking_lot::FairMutex;
 use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
-use tracing::info;
 
 use crate::alt::answers::AnswerEntry;
 use crate::alt::answers::AnswerTable;
@@ -37,6 +36,7 @@ use crate::debug_info::DebugInfo;
 use crate::error::collector::ErrorCollector;
 use crate::error::error::Error;
 use crate::expectation::Expectation;
+use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::state::loader::Loader;
 use crate::state::steps::Context;
@@ -54,7 +54,6 @@ pub struct State<'a> {
     loader: Box<Loader<'a>>,
     uniques: UniqueFactory,
     parallel: bool,
-    print_errors_immediately: bool,
     stdlib: RwLock<Arc<Stdlib>>,
     modules: RwLock<SmallMap<ModuleName, Arc<ModuleState>>>,
     /// Items we still need to process. Stored in a max heap, so that
@@ -66,6 +65,7 @@ pub struct State<'a> {
     retain_memory: bool,
 }
 
+#[derive(Default)]
 struct ModuleState {
     // BIG WARNING: This must be a FairMutex or you run into deadlocks.
     // Imagine module Foo is having demand Solutions in one thread, and demand Exports in another.
@@ -74,59 +74,25 @@ struct ModuleState {
     // asked for the Exports of Foo, then you get a deadlock.
     // A fair mutex means that everyone asking for Exports will be released before you move to the next step.
     lock: FairMutex<()>,
-    errors: ErrorCollector,
     steps: RwLock<ModuleSteps>,
 }
 
 impl ModuleState {
-    fn new(print_errors_immediately: bool) -> Self {
-        Self {
-            lock: FairMutex::new(()),
-            errors: if print_errors_immediately {
-                ErrorCollector::new()
-            } else {
-                ErrorCollector::new_quiet()
-            },
-            steps: RwLock::new(ModuleSteps::default()),
-        }
-    }
-
     fn clear(&self) {
-        self.errors.clear();
         self.steps.write().unwrap().clear();
     }
 }
 
 impl<'a> State<'a> {
-    pub fn new(
-        modules: &[ModuleName],
-        loader: Box<Loader<'a>>,
-        config: Config,
-        parallel: bool,
-        print_errors_immediately: bool,
-    ) -> Self {
-        let stdlib_modules = Stdlib::required();
+    pub fn new(loader: Box<Loader<'a>>, config: Config, parallel: bool) -> Self {
         Self {
             config,
             loader,
             uniques: UniqueFactory::new(),
             parallel,
-            print_errors_immediately,
             stdlib: RwLock::new(Arc::new(Stdlib::for_bootstrapping())),
-            modules: RwLock::new(
-                modules
-                    .iter()
-                    .chain(&stdlib_modules)
-                    .map(|x| (*x, Arc::new(ModuleState::new(print_errors_immediately))))
-                    .collect(),
-            ),
-            todo: Mutex::new(
-                modules
-                    .iter()
-                    .chain(&stdlib_modules)
-                    .map(|x| (Step::first(), *x))
-                    .collect(),
-            ),
+            modules: Default::default(),
+            todo: Default::default(),
             retain_memory: true, // Will always be overwritten by entry points
         }
     }
@@ -153,6 +119,14 @@ impl<'a> State<'a> {
                 Some(todo) if todo <= step => todo,
                 _ => break,
             };
+            let imports = if todo == Step::Solutions {
+                Some((
+                    lock.load.get().unwrap().dupe(),
+                    lock.exports.get().unwrap().dupe(),
+                ))
+            } else {
+                None
+            };
             computed = true;
             let compute = todo.compute().0(&lock);
             drop(lock);
@@ -161,6 +135,30 @@ impl<'a> State<'a> {
                 // so won't need the Ast again.
                 module_state.steps.write().unwrap().ast.clear();
             }
+
+            if let Some((load, imports)) = imports {
+                // We need a single spot to inject "I could not find import", but we want to do that
+                // after we can be sure our dependencies have been loaded (we don't want to demand them for an error),
+                // so we do it right at the end.
+                for (importing, range) in imports.0.imports.iter() {
+                    if let Some(err) = self
+                        .get_module(*importing)
+                        .steps
+                        .read()
+                        .unwrap()
+                        .load
+                        .get()
+                        .and_then(|x| x.import_error.as_deref())
+                    {
+                        load.errors.add(
+                            &load.module_info,
+                            *range,
+                            format!("Could not find import of `{}`, {err:#}", importing),
+                        );
+                    }
+                }
+            }
+
             let stdlib = self.stdlib.read().unwrap().dupe();
             let set = compute(&Context {
                 name: module,
@@ -168,7 +166,6 @@ impl<'a> State<'a> {
                 loader: &*self.loader,
                 uniques: &self.uniques,
                 stdlib: &stdlib,
-                errors: &module_state.errors,
                 lookup: self,
                 retain_memory: self.retain_memory,
             });
@@ -201,18 +198,39 @@ impl<'a> State<'a> {
             .write()
             .unwrap()
             .entry(module)
-            .or_insert_with(|| Arc::new(ModuleState::new(self.print_errors_immediately)))
+            .or_default()
             .dupe()
     }
 
+    fn add_error(&self, module: ModuleName, range: TextRange, msg: String) {
+        let load = self
+            .get_module(module)
+            .steps
+            .read()
+            .unwrap()
+            .load
+            .get()
+            .unwrap()
+            .dupe();
+        load.errors.add(&load.module_info, range, msg);
+    }
+
     fn lookup_stdlib(&self, module: ModuleName, name: &Name) -> Option<Class> {
+        if !self.lookup_export(module).unwrap().contains(name, self) {
+            self.add_error(
+                module,
+                TextRange::default(),
+                format!("Stdlib import failure, was expecting {module} to contain {name}"),
+            );
+            return None;
+        }
+
         let t = self.lookup_answer(module, &KeyExported::Export(name.clone()));
         match t.arc_clone() {
             Type::ClassDef(cls) => Some(cls),
             ty => {
-                let m = self.get_module(module);
-                m.errors.add(
-                    &m.steps.read().unwrap().module_info.get().unwrap().0,
+                self.add_error(
+                    module,
                     TextRange::default(),
                     format!(
                         "Did not expect non-class type `{ty}` for stdlib import `{module}.{name}`"
@@ -231,7 +249,7 @@ impl<'a> State<'a> {
             .unwrap()
             .exports
             .get()
-            .duped()
+            .map(|x| x.1.dupe())
     }
 
     fn lookup_answer<'b, K: Solve<Self> + Keyed<EXPORTED = true>>(
@@ -253,30 +271,35 @@ impl<'a> State<'a> {
         }
 
         self.demand(module, Step::Answers);
-        let answers = {
+        let (load, answers) = {
             let steps = module_state.steps.read().unwrap();
             if let Some(solutions) = steps.solutions.get() {
                 return Arc::new(TableKeyed::<K>::get(&**solutions).get(key).unwrap().clone());
             }
-            steps.answers.get().unwrap().dupe()
+            (
+                steps.load.get().unwrap().dupe(),
+                steps.answers.get().unwrap().dupe(),
+            )
         };
         let stdlib = self.stdlib.read().unwrap().dupe();
         answers.1.solve_key(
             self,
             self,
             &answers.0,
-            &module_state.errors,
+            &load.errors,
             &stdlib,
             &self.uniques,
             key,
         )
     }
 
-    #[expect(dead_code)] // I expect this will be used later
     pub fn collect_errors(&self) -> Vec<Error> {
         let mut errors = Vec::new();
         for module in self.modules.read().unwrap().values() {
-            errors.extend(module.errors.collect());
+            let steps = module.steps.read().unwrap();
+            if let Some(load) = steps.load.get() {
+                errors.extend(load.errors.collect());
+            }
         }
         errors
     }
@@ -286,20 +309,38 @@ impl<'a> State<'a> {
             .read()
             .unwrap()
             .values()
-            .map(|x| x.errors.len())
+            .map(|x| {
+                x.steps
+                    .read()
+                    .unwrap()
+                    .load
+                    .get()
+                    .map_or(0, |x| x.errors.len())
+            })
             .sum()
     }
 
     pub fn print_errors(&self) {
         for module in self.modules.read().unwrap().values() {
-            module.errors.print();
+            let steps = module.steps.read().unwrap();
+            if let Some(load) = steps.load.get() {
+                load.errors.print();
+            }
         }
     }
 
-    pub fn print_error_summary(&self) {
-        for (error, count) in
-            ErrorCollector::summarise(self.modules.read().unwrap().values().map(|x| &x.errors))
-        {
+    pub fn print_error_summary(&self, limit: usize) {
+        let loads = self
+            .modules
+            .read()
+            .unwrap()
+            .values()
+            .filter_map(|x| x.steps.read().unwrap().load.get().duped())
+            .collect::<Vec<_>>();
+        let mut items = ErrorCollector::summarise(loads.iter().map(|x| &x.errors));
+        items.reverse();
+        items.truncate(limit);
+        for (error, count) in items.iter().rev() {
             eprintln!("{count} instances of {error}");
         }
     }
@@ -322,7 +363,14 @@ impl<'a> State<'a> {
         }
     }
 
-    fn run_internal(&mut self) {
+    fn run_internal(&mut self, modules: &[ModuleName]) {
+        {
+            let mut lock = self.todo.lock().unwrap();
+            for m in modules {
+                lock.push_fifo(Step::first(), *m);
+            }
+        }
+
         self.compute_stdlib();
 
         if self.parallel {
@@ -341,14 +389,14 @@ impl<'a> State<'a> {
     /// The state afterwards will be useful for timing queries.
     /// Note we grab the `mut` only to stop other people accessing us simultaneously,
     /// we don't actually need it.
-    pub fn run_one_shot(&mut self) {
+    pub fn run_one_shot(&mut self, modules: &[ModuleName]) {
         self.retain_memory = false;
-        self.run_internal()
+        self.run_internal(modules)
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&mut self, modules: &[ModuleName]) {
         self.retain_memory = true;
-        self.run_internal()
+        self.run_internal(modules)
     }
 
     #[expect(dead_code)]
@@ -376,36 +424,64 @@ impl<'a> State<'a> {
             .map(|x| x.0.dupe())
     }
 
+    pub fn get_module_info(&self, module: ModuleName) -> Option<ModuleInfo> {
+        self.modules
+            .read()
+            .unwrap()
+            .get(&module)?
+            .steps
+            .read()
+            .unwrap()
+            .load
+            .get()
+            .map(|x| x.module_info.dupe())
+    }
+
+    pub fn get_ast(&self, module: ModuleName) -> Option<Arc<ruff_python_ast::ModModule>> {
+        self.modules
+            .read()
+            .unwrap()
+            .get(&module)?
+            .steps
+            .read()
+            .unwrap()
+            .ast
+            .get()
+            .duped()
+    }
+
+    pub fn get_solutions(&self, module: ModuleName) -> Option<Arc<Solutions>> {
+        self.modules
+            .read()
+            .unwrap()
+            .get(&module)?
+            .steps
+            .read()
+            .unwrap()
+            .solutions
+            .get()
+            .duped()
+    }
+
     pub fn debug_info(&self, modules: &[ModuleName]) -> DebugInfo {
         let owned = modules.map(|x| {
             let module = self.get_module(*x);
             let steps = module.steps.read().unwrap();
             (
-                steps.module_info.get().unwrap().0.dupe(),
-                module.dupe(),
+                steps.load.get().unwrap().dupe(),
                 steps.answers.get().unwrap().dupe(),
                 steps.solutions.get().unwrap().dupe(),
             )
         });
-        DebugInfo::new(&owned.map(|x| (&x.0, &x.1.errors, &x.2.0, &*x.3)))
-    }
-
-    pub fn collect_checked_errors(&self) -> Vec<Error> {
-        self.modules
-            .read()
-            .unwrap()
-            .values()
-            .flat_map(|x| x.errors.collect())
-            .filter(|x| x.is_in_checked_module())
-            .collect()
+        DebugInfo::new(&owned.map(|x| (&x.0.module_info, &x.0.errors, &x.1.0, &*x.2)))
     }
 
     pub fn check_against_expectations(&self) -> anyhow::Result<()> {
-        for (name, module) in self.modules.read().unwrap().iter() {
-            info!("Check for {name}");
+        for module in self.modules.read().unwrap().values() {
             let steps = module.steps.read().unwrap();
-            Expectation::parse(steps.module_info.get().unwrap().0.contents())
-                .check(&module.errors.collect())?;
+            let load = steps.load.get().unwrap();
+            Expectation::parse(load.module_info.dupe(), load.module_info.contents())
+                .check(&load.errors.collect())?;
         }
         Ok(())
     }

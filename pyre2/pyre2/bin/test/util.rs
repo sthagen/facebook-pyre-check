@@ -7,18 +7,21 @@
 
 use std::path::PathBuf;
 
+use anyhow::anyhow;
 use starlark_map::small_map::SmallMap;
 
 use crate::config::Config;
+use crate::error::style::ErrorStyle;
 use crate::module::module_name::ModuleName;
-use crate::state::driver::Driver;
 use crate::state::loader::LoadResult;
-use crate::test::stdlib::Stdlib;
+use crate::state::loader::Loader;
+use crate::state::state::State;
+use crate::test::stdlib::lookup_test_stdlib;
 use crate::util::trace::init_tracing;
 
 #[macro_export]
 macro_rules! simple_test {
-    ($name:ident, $imports:expr, $contents:expr, ) => {
+    ($name:ident, $imports:expr, $contents:expr,) => {
         #[test]
         fn $name() -> anyhow::Result<()> {
             $crate::test::util::simple_test_for_macro($imports, $contents, file!(), line!())
@@ -41,8 +44,8 @@ fn default_path(name: ModuleName) -> PathBuf {
     PathBuf::from(format!("{}.py", name.as_str().replace('.', "/")))
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct TestEnv(SmallMap<ModuleName, (PathBuf, String)>);
+#[derive(Debug, Default)]
+pub struct TestEnv(SmallMap<ModuleName, (PathBuf, Result<String, String>)>);
 
 impl TestEnv {
     pub fn new() -> Self {
@@ -52,14 +55,15 @@ impl TestEnv {
     pub fn add_with_path(&mut self, name: &str, code: &str, path: &str) {
         self.0.insert(
             ModuleName::from_str(name),
-            (PathBuf::from(path), code.to_owned()),
+            (PathBuf::from(path), Ok(code.to_owned())),
         );
     }
 
     pub fn add(&mut self, name: &str, code: &str) {
         let module_name = ModuleName::from_str(name);
         let relative_path = default_path(module_name);
-        self.0.insert(module_name, (relative_path, code.to_owned()));
+        self.0
+            .insert(module_name, (relative_path, Ok(code.to_owned())));
     }
 
     pub fn one(name: &str, code: &str) -> Self {
@@ -73,26 +77,37 @@ impl TestEnv {
         res.add_with_path(name, code, path);
         res
     }
+
+    pub fn add_error(&mut self, name: &str, err: &str) {
+        let module_name = ModuleName::from_str(name);
+        self.0.insert(
+            module_name,
+            (default_path(module_name), Err(err.to_owned())),
+        );
+    }
+
+    pub fn to_loader(self) -> Box<Loader<'static>> {
+        Box::new(move |name: ModuleName| {
+            let loaded = if let Some((path, contents)) = self.0.get(&name) {
+                match contents {
+                    Ok(contents) => LoadResult::Loaded(path.to_owned(), contents.to_owned()),
+                    Err(err) => LoadResult::FailedToLoad(path.to_owned(), anyhow!(err.to_owned())),
+                }
+            } else if let Some(contents) = lookup_test_stdlib(name) {
+                LoadResult::Loaded(default_path(name), contents.to_owned())
+            } else {
+                LoadResult::FailedToFind(anyhow!("Module not given in test suite"))
+            };
+            (loaded, ErrorStyle::Immediate)
+        })
+    }
 }
 
-pub fn simple_test_driver(stdlib: Stdlib, env: TestEnv) -> Driver {
-    let modules = stdlib
-        .modules()
-        .copied()
-        .chain(env.0.keys().copied())
-        .collect::<Vec<_>>();
-    let loader = move |name: ModuleName| {
-        let loaded = if let Some((path, contents)) = env.0.get(&name) {
-            LoadResult::Loaded(path.to_owned(), contents.to_owned())
-        } else if let Some(contents) = stdlib.lookup_content(name) {
-            LoadResult::Loaded(default_path(name), contents.to_owned())
-        } else {
-            LoadResult::FailedToFind(anyhow::anyhow!("Module not given in test suite"))
-        };
-        (loaded, true)
-    };
-    let config = Config::default();
-    Driver::new(&modules, Box::new(loader), &config, true, None)
+pub fn simple_test_driver(env: TestEnv) -> State<'static> {
+    let modules = env.0.keys().copied().collect::<Vec<_>>();
+    let mut state = State::new(env.to_loader(), Config::default(), true);
+    state.run(&modules);
+    state
 }
 
 /// Should only be used from the `simple_test!` macro.
@@ -112,5 +127,6 @@ pub fn simple_test_for_macro(
         &format!("{}{}", "\n".repeat(start_line), contents),
         file,
     );
-    simple_test_driver(Stdlib::new(), env).check_against_expectations()
+    let state = simple_test_driver(env);
+    state.check_against_expectations()
 }

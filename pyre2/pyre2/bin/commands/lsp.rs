@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::anyhow;
@@ -63,11 +62,12 @@ use crate::commands::util::default_include;
 use crate::commands::util::find_module;
 use crate::commands::util::module_from_path;
 use crate::config::Config;
+use crate::error::style::ErrorStyle;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_info::SourceRange;
 use crate::module::module_name::ModuleName;
-use crate::state::driver::Driver;
 use crate::state::loader::LoadResult;
+use crate::state::state::State;
 use crate::util::prelude::VecExt;
 
 #[derive(Debug, Parser, Clone)]
@@ -81,7 +81,7 @@ struct Server<'a> {
     #[expect(dead_code)] // we'll use it later on
     initialize_params: InitializeParams,
     include: Vec<PathBuf>,
-    driver: Driver,
+    state: State<'static>,
     open_files: SmallMap<PathBuf, (i32, String)>,
 }
 
@@ -195,17 +195,15 @@ impl<'a> Server<'a> {
             send,
             initialize_params,
             include,
-            driver: Driver::new(
-                &[],
+            state: State::new(
                 Box::new(|_| {
                     (
                         LoadResult::FailedToFind(anyhow!("Failed during init")),
-                        false,
+                        ErrorStyle::Never,
                     )
                 }),
-                &Config::default(),
+                Config::default(),
                 true,
-                None,
             ),
             open_files: Default::default(),
         }
@@ -241,29 +239,34 @@ impl<'a> Server<'a> {
             } else {
                 LoadResult::from_path_result(find_module(name, &include))
             };
-            (loaded, modules.contains_key(&name))
+            (
+                loaded,
+                if modules.contains_key(&name) {
+                    ErrorStyle::Delayed
+                } else {
+                    ErrorStyle::Never
+                },
+            )
         };
-        self.driver = Driver::new(
-            &module_names,
-            Box::new(loader),
-            &Config::default(),
-            true,
-            None,
-        );
-        let mut diags: SmallMap<&Path, Vec<Diagnostic>> = SmallMap::new();
+        self.state = State::new(Box::new(loader), Config::default(), true);
+        self.state.run(&module_names);
+        let mut diags: SmallMap<PathBuf, Vec<Diagnostic>> = SmallMap::new();
         for x in self.open_files.keys() {
-            diags.insert(x.as_path(), Vec::new());
+            diags.insert(x.as_path().to_owned(), Vec::new());
         }
-        for e in self.driver.errors() {
-            diags.entry(e.path()).or_default().push(Diagnostic {
-                range: source_range_to_range(e.source_range()),
-                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-                message: e.msg().to_owned(),
-                ..Default::default()
-            });
+        for e in self.state.collect_errors() {
+            diags
+                .entry(e.path().to_owned())
+                .or_default()
+                .push(Diagnostic {
+                    range: source_range_to_range(e.source_range()),
+                    severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                    message: e.msg().to_owned(),
+                    ..Default::default()
+                });
         }
         for (path, diags) in diags {
-            let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+            let path = std::fs::canonicalize(&path).unwrap_or(path);
             match Url::from_file_path(&path) {
                 Ok(uri) => self.publish_diagnostics(uri, diags, None),
                 Err(_) => eprint!("Unable to convert path to uri: {path:?}"),
@@ -299,11 +302,11 @@ impl<'a> Server<'a> {
 
     fn goto_definition(&self, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
         let module = url_to_module(&params.text_document_position_params.text_document.uri);
-        let info = self.driver.module_info(module)?;
+        let info = self.state.get_module_info(module)?;
         let range = position_to_text_size(&info, params.text_document_position_params.position);
-        let (module, range) = self.driver.goto_definition(module, range)?;
+        let (module, range) = self.state.goto_definition(module, range)?;
         let path = find_module(module, &self.include).ok()?;
-        let info = self.driver.module_info(module)?;
+        let info = self.state.get_module_info(module)?;
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         Some(GotoDefinitionResponse::Scalar(Location {
             uri: Url::from_file_path(path).unwrap(),
@@ -320,9 +323,9 @@ impl<'a> Server<'a> {
 
     fn hover(&self, params: HoverParams) -> Option<Hover> {
         let module = url_to_module(&params.text_document_position_params.text_document.uri);
-        let info = self.driver.module_info(module)?;
+        let info = self.state.get_module_info(module)?;
         let range = position_to_text_size(&info, params.text_document_position_params.position);
-        let t = self.driver.hover(module, range)?;
+        let t = self.state.hover(module, range)?;
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::PlainText,
@@ -334,8 +337,8 @@ impl<'a> Server<'a> {
 
     fn inlay_hints(&self, params: InlayHintParams) -> Option<Vec<InlayHint>> {
         let module = url_to_module(&params.text_document.uri);
-        let info = self.driver.module_info(module)?;
-        let t = self.driver.inlay_hints(module)?;
+        let info = self.state.get_module_info(module)?;
+        let t = self.state.inlay_hints(module)?;
         Some(t.into_map(|x| {
             let position = text_size_to_position(&info, x.0);
             InlayHint {

@@ -307,7 +307,7 @@ pub enum Binding {
     /// A name that might be a legacy type parameter. Solving this gives the Quantified type if so.
     /// The TextRange is optional and should be set at most once per identifier
     /// to avoid duplicate type errors (this is not type safe, because we might
-    /// produce multpiple `CheckLegacyTypeParam` bindings for the same
+    /// produce multiple `CheckLegacyTypeParam` bindings for the same
     /// identifier).
     /// It controls whether to produce an error saying there are scoped type parameters for this
     /// function / class, and therefore the use of legacy type parameters is invalid.
@@ -467,7 +467,7 @@ impl DisplayWith<Bindings> for Binding {
     }
 }
 
-/// Values that reutrn an annotation.
+/// Values that return an annotation.
 #[derive(Clone, Debug)]
 pub enum BindingAnnotation {
     /// The type is annotated to be this key, will have the outer type removed.
@@ -500,9 +500,6 @@ impl DisplayWith<Bindings> for BindingAnnotation {
     }
 }
 
-// TODO(stroxler) Rename this; I'm deferring it for now because it would lead to difficult
-// merge conflicts with outstanding diffs.
-//
 /// Binding for the class's metadata (type level information derived from the class header - this
 /// includes the MRO, the class keywords, and the metaclass).
 ///

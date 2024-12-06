@@ -108,7 +108,7 @@ impl<'a> TypeDisplayContext<'a> {
                 _ => None,
             };
             if let Some(tparams) = tparams {
-                for tparam in tparams.0.iter() {
+                for tparam in tparams.iter() {
                     self.quantifieds.insert(tparam.quantified, &tparam.name);
                 }
             }
@@ -214,7 +214,7 @@ impl<'a> TypeDisplayContext<'a> {
                 write!(
                     f,
                     "Forall[{}]",
-                    commas_iter(|| append(uniques.0.iter(), [self.display(ty)]))
+                    commas_iter(|| append(uniques.iter(), [self.display(ty)]))
                 )
             }
             Type::Type(ty) => write!(f, "type[{}]", self.display(ty)),
@@ -283,12 +283,11 @@ mod tests {
             ModuleName::from_str(module),
             PathBuf::from(module),
             "1234567890".to_owned(),
-            false,
         );
         Class::new(
             Identifier::new(Name::new(name), TextRange::empty(TextSize::new(range))),
             mi,
-            TParams(tparams.map(|q| TParam::new(Name::new(q.id().to_string()), *q))),
+            TParams::new(tparams.map(|q| TParam::new(Name::new(q.id().to_string()), *q))),
             SmallSet::new(),
         )
     }
@@ -298,7 +297,6 @@ mod tests {
             ModuleName::from_str(module),
             PathBuf::from(module),
             "1234567890".to_owned(),
-            false,
         );
         TypeVar::new(
             Identifier::new(Name::new(name), TextRange::empty(TextSize::new(range))),

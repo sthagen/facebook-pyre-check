@@ -6,6 +6,7 @@
  */
 
 use crate::simple_test;
+use crate::test::util::simple_test_driver;
 use crate::test::util::TestEnv;
 
 fn env_class_x() -> TestEnv {
@@ -271,15 +272,13 @@ assert_type(foo.x, int)
 );
 
 fn env_export_all_wrongly() -> TestEnv {
-    let mut t = TestEnv::new();
-    t.add(
+    TestEnv::one(
         "foo",
         r#"
 __all__ = ['bad_definition']
 __all__.extend(bad_module.__all__)  # E: Could not find name `bad_module`
 "#,
-    );
-    t
+    )
 }
 
 simple_test!(
@@ -299,9 +298,7 @@ from foo import *  # E: Could not import `bad_definition` from `foo`
 );
 
 fn env_blank() -> TestEnv {
-    let mut t = TestEnv::new();
-    t.add("foo", "");
-    t
+    TestEnv::one("foo", "")
 }
 
 simple_test!(
@@ -346,3 +343,18 @@ def foo():
     typing.assert_type(None, None)
 "#,
 );
+
+#[test]
+fn test_import_fail_to_load() {
+    let mut env = TestEnv::new();
+    env.add_error("foo", "Disk go urk");
+    env.add("main", "import foo");
+    let state = simple_test_driver(env);
+    let errs = state.collect_errors();
+    assert_eq!(errs.len(), 1);
+    assert!(
+        errs[0]
+            .to_string()
+            .contains("foo.py:1:1: Failed to load foo from foo.py, got Disk go urk")
+    );
+}

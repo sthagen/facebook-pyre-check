@@ -22,6 +22,7 @@ use starlark_map::small_map::SmallMap;
 use tracing::error;
 
 use crate::error::error::Error;
+use crate::error::style::ErrorStyle;
 use crate::module::module_info::ModuleInfo;
 
 /// Wrapped to provide custom Ord/Eq etc.
@@ -95,7 +96,7 @@ impl ModuleErrors {
 // Deliberately don't implement Clone,
 #[derive(Debug, Default)]
 pub struct ErrorCollector {
-    quiet: bool,
+    style: ErrorStyle,
     errors: Mutex<ModuleErrors>,
 }
 
@@ -109,29 +110,24 @@ impl Display for ErrorCollector {
 }
 
 impl ErrorCollector {
-    pub fn new() -> Self {
+    pub fn new(style: ErrorStyle) -> Self {
         Self {
-            quiet: false,
-            errors: Mutex::new(Default::default()),
-        }
-    }
-
-    pub fn new_quiet() -> Self {
-        Self {
-            quiet: true,
+            style,
             errors: Mutex::new(Default::default()),
         }
     }
 
     pub fn add_error(&self, err: Error) {
-        if !self.quiet {
-            error!("{err}");
-        }
         if err.is_ignored() {
-            // We might want to do something with this later, but for now just ignore it.
+            // Should we record these anyway? Not clear.
             return;
         }
-        self.errors.lock().unwrap().push(err);
+        if self.style == ErrorStyle::Immediate {
+            error!("{err}");
+        }
+        if self.style != ErrorStyle::Never {
+            self.errors.lock().unwrap().push(err);
+        }
     }
 
     pub fn add(&self, module_info: &ModuleInfo, range: TextRange, msg: String) {
@@ -140,10 +136,6 @@ impl ErrorCollector {
 
     pub fn len(&self) -> usize {
         self.errors.lock().unwrap().len()
-    }
-
-    pub fn clear(&self) {
-        self.errors.lock().unwrap().items.clear();
     }
 
     pub fn collect(&self) -> Vec<Error> {
@@ -206,12 +198,11 @@ mod tests {
 
     #[test]
     fn test_error_collector() {
-        let errors = ErrorCollector::new();
+        let errors = ErrorCollector::default();
         let mi = ModuleInfo::new(
             ModuleName::from_name(&Name::new("main")),
             Path::new("main.py").to_owned(),
             "contents".to_owned(),
-            true,
         );
         errors.add(
             &mi,
