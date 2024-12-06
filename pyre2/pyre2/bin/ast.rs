@@ -198,6 +198,11 @@ impl Ast {
                     f(x);
                 }
             }
+            Pattern::MatchMapping(x) => {
+                if let Some(x) = &x.rest {
+                    f(x);
+                }
+            }
             _ => {}
         }
         Visitors::visit_pattern(x, |x| Ast::pattern_lvalue(x, f));
@@ -208,6 +213,14 @@ impl Ast {
             TypeParam::TypeVar(x) => &x.name,
             TypeParam::ParamSpec(x) => &x.name,
             TypeParam::TypeVarTuple(x) => &x.name,
+        }
+    }
+
+    pub fn type_param_default(x: &TypeParam) -> Option<&Expr> {
+        match x {
+            TypeParam::TypeVar(x) => x.default.as_deref(),
+            TypeParam::ParamSpec(x) => x.default.as_deref(),
+            TypeParam::TypeVarTuple(x) => x.default.as_deref(),
         }
     }
 }
