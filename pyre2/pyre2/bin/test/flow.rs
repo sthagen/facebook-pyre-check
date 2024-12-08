@@ -554,3 +554,143 @@ match x:
         assert_type(c, dict[str, int])
 "#,
 );
+
+simple_test!(
+    test_empty_loop,
+    r#"
+# These generate syntax that is illegal, but reachable with parser error recovery
+
+for x in []:
+pass  # E: Expected an indented block
+
+while True:
+pass  # E: Expected an indented block
+"#,
+);
+
+simple_test!(
+    test_match_class,
+    r#"
+from typing import assert_type
+
+class Foo:
+    x: int
+    y: str
+    __match_args__ = ("x", "y")
+
+class Bar:
+    x: int
+    y: str
+
+class Baz:
+    x: int
+    y: str
+    __match_args__ = (1, 2)
+
+def fun(foo: Foo, bar: Bar, baz: Baz) -> None:
+    match foo:
+        case Foo(1, "a"):
+            pass
+        case Foo(a, b):
+            assert_type(a, int)
+            assert_type(b, str)
+        case Foo(x = b, y = a):
+            assert_type(a, str)
+            assert_type(b, int)
+        case Foo(a, b, c):  # E: Index 2 out of range for `__match_args__`
+            pass
+    match bar:
+        case Bar(1):  # E: Object of class `Bar` has no attribute `__match_args__`
+            pass
+        case Bar(a):  # E: Object of class `Bar` has no attribute `__match_args__`
+            pass
+        case Bar(x = a):
+            assert_type(a, int)
+    match baz:
+        case Baz(1):  # E: Expected literal string in `__match_args__`
+            pass
+"#,
+);
+
+simple_test!(
+    test_match_sequence_concrete,
+    r#"
+from typing import assert_type, Never
+
+def foo(x: tuple[int, str, bool, int]) -> None:
+    match x:
+        case [a, b, c, d]:
+            assert_type(a, int)
+            assert_type(b, str)
+            assert_type(c, bool)
+            assert_type(d, int)
+        case [a, *rest]:
+            assert_type(a, int)
+            assert_type(rest, list[str | bool | int])
+        case [a, *middle, b]:
+            assert_type(a, int)
+            assert_type(b, int)
+            assert_type(middle, list[str | bool])
+        case [a, b, c, d, e]:  # E: Cannot unpack tuple[int, str, bool, int] (of size 4) into 5 values
+            pass
+        case [a, b, *middle, c, d]:
+            assert_type(a, int)
+            assert_type(b, str)
+            assert_type(c, bool)
+            assert_type(d, int)
+            assert_type(middle, list[Never])
+        case [*first, c, d]:
+            assert_type(first, list[int | str])
+            assert_type(c, bool)
+            assert_type(d, int)
+"#,
+);
+
+simple_test!(
+    test_match_sequence_unbounded,
+    r#"
+from typing import assert_type, Never
+
+def foo(x: list[int]) -> None:
+    match x:
+        case []:
+            pass
+        case [a]:
+            assert_type(a, int)
+        case [a, b, c]:
+            assert_type(a, int)
+            assert_type(b, int)
+            assert_type(c, int)
+        case [a, *rest]:
+            assert_type(a, int)
+            assert_type(rest, list[int])
+        case [a, *middle, b]:
+            assert_type(a, int)
+            assert_type(b, int)
+            assert_type(middle, list[int])
+        case [*first, a]:
+            assert_type(first, list[int])
+            assert_type(a, int)
+        case [*all]:
+            assert_type(all, list[int])
+"#,
+);
+
+simple_test!(
+    test_match_or,
+    r#"
+from typing import assert_type
+
+x: list[int] = [1, 2, 3]
+
+match x:
+    case [a] | a:
+        assert_type(a, list[int] | int)
+    case [b] | _:  # E: Could not find flow binding for `b`
+        assert_type(b, list[int] | int)
+
+match x:
+    case _ | _:  # E: Only the last subpattern in MatchOr may be irrefutable
+        pass
+"#,
+);

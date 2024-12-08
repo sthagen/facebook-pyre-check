@@ -13,6 +13,7 @@ use std::sync::Arc;
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
+use ruff_python_ast::TypeParam;
 use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
@@ -64,14 +65,16 @@ use crate::types::callable::Callable;
 use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class_metadata::ClassMetadata;
+use crate::types::literal::Lit;
 use crate::types::module::Module;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
+use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
+use crate::types::type_var::Variance;
 use crate::types::types::AnyStyle;
 use crate::types::types::LegacyTypeParameterLookup;
 use crate::types::types::Quantified;
-use crate::types::types::TParam;
 use crate::types::types::TParamInfo;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -80,6 +83,7 @@ use crate::types::types::TypeAliasStyle;
 use crate::types::types::Var;
 use crate::uniques::UniqueFactory;
 use crate::util::display::DisplayWith;
+use crate::util::prelude::SliceExt;
 use crate::util::recurser::Recurser;
 
 /// Invariants:
@@ -553,7 +557,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Arc::new(LegacyTypeParameterLookup::Parameter(TParamInfo {
                     name: x.qname().id().clone(),
                     quantified: q,
+                    restriction: x.restriction().clone(),
                     default: x.default().cloned(),
+                    variance: x.variance(),
                 }))
             }
             Type::Type(box Type::TypeVarTuple(x)) => {
@@ -561,7 +567,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Arc::new(LegacyTypeParameterLookup::Parameter(TParamInfo {
                     name: x.qname().id().clone(),
                     quantified: q,
+                    restriction: Restriction::Unrestricted,
                     default: None,
+                    variance: Some(Variance::Invariant),
                 }))
             }
             Type::Type(box Type::ParamSpec(x)) => {
@@ -569,7 +577,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Arc::new(LegacyTypeParameterLookup::Parameter(TParamInfo {
                     name: x.qname().id().clone(),
                     quantified: q,
+                    restriction: Restriction::Unrestricted,
                     default: None,
+                    variance: Some(Variance::Invariant),
                 }))
             }
             ty => Arc::new(LegacyTypeParameterLookup::NotParameter(ty.clone())),
@@ -731,7 +741,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         tparams.push(TParamInfo {
                             name: ty_var.qname().id().clone(),
                             quantified: q,
+                            restriction: Restriction::Unrestricted,
                             default: ty_var.default().cloned(),
+                            variance: ty_var.variance(),
                         });
                         q
                     }
@@ -778,10 +790,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         if tparams.is_empty() {
             ta
         } else {
-            Type::Forall(
-                TParams::new(tparams.into_iter().map(TParam::new).collect()),
-                Box::new(ta),
-            )
+            Type::Forall(self.type_params(range, tparams), Box::new(ta))
         }
     }
 
@@ -795,10 +804,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             ContextManagerKind::Sync => {
                 self.call_method_with_types(context_manager_type, &dunder::ENTER, range, &[])
             }
-            ContextManagerKind::Async => self.unwrap_awaitable(
-                self.call_method_with_types(context_manager_type, &dunder::AENTER, range, &[]),
-                None,
-            ),
+            ContextManagerKind::Async => match self.unwrap_awaitable(&self.call_method_with_types(
+                context_manager_type,
+                &dunder::AENTER,
+                range,
+                &[],
+            )) {
+                Some(ty) => ty,
+                None => self.error(range, format!("Expected `{}` to be async", dunder::AENTER)),
+            },
         }
     }
 
@@ -830,15 +844,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 range,
                 &exit_arg_types,
             ),
-            ContextManagerKind::Async => self.unwrap_awaitable(
-                self.call_method_with_types(
-                    context_manager_type,
-                    &dunder::AEXIT,
-                    range,
-                    &exit_arg_types,
-                ),
-                None,
-            ),
+            ContextManagerKind::Async => match self.unwrap_awaitable(&self.call_method_with_types(
+                context_manager_type,
+                &dunder::AEXIT,
+                range,
+                &exit_arg_types,
+            )) {
+                Some(ty) => ty,
+                None => self.error(range, format!("Expected `{}` to be async", dunder::AEXIT)),
+            },
         }
     }
 
@@ -872,18 +886,44 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let mut params = Vec::new();
                 for raw_param in x.type_params.iter() {
                     let name = Ast::type_param_id(raw_param);
+                    let restriction = match raw_param {
+                        TypeParam::TypeVar(tv) => match &tv.bound {
+                            Some(box Expr::Tuple(tup)) => {
+                                Restriction::Constraints(tup.elts.map(|e| self.expr_untype(e)))
+                            }
+                            Some(e) => Restriction::Bound(self.expr_untype(e)),
+                            None => Restriction::Unrestricted,
+                        },
+                        _ => Restriction::Unrestricted,
+                    };
                     let default = Ast::type_param_default(raw_param).map(|e| self.expr_untype(e));
                     params.push(TParamInfo {
                         name: name.id.clone(),
                         quantified: get_quantified(
                             &self.get(&Key::Definition(ShortIdentifier::new(name))),
                         ),
+                        restriction,
                         default,
+                        variance: None,
                     });
                 }
                 params
             }
             None => Vec::new(),
+        }
+    }
+
+    pub fn type_params(&self, range: TextRange, info: Vec<TParamInfo>) -> TParams {
+        match TParams::new(info) {
+            Ok(validated_tparams) => validated_tparams,
+            Err(fixed_tparams) => {
+                self.error(
+                    range,
+                    "A type parameter without a default cannot follow one with a default"
+                        .to_owned(),
+                );
+                fixed_tparams
+            }
         }
     }
 
@@ -1092,10 +1132,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .iter()
                     .filter_map(|key| self.get_idx(*key).deref().parameter().cloned());
                 tparams.extend(legacy_tparams);
-                Type::forall(
-                    TParams::new(tparams.into_iter().map(TParam::new).collect()),
-                    Type::callable(args, ret),
-                )
+                let callable = Type::callable(args, ret);
+                if tparams.is_empty() {
+                    callable
+                } else {
+                    Type::Forall(self.type_params(x.range, tparams), Box::new(callable))
+                }
             }
             Binding::Import(m, name) => self
                 .get_from_module(*m, &KeyExported::Export(name.clone()))
@@ -1212,26 +1254,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let ty = self.solve_binding_inner(binding);
                 let ta = self.as_type_alias(name, TypeAliasStyle::Scoped, ty, *range);
                 match ta {
-                    Type::Forall(other_params, inner_ta) => {
-                        self.error(
-                            *range,
-                            format!("Type parameters used in `{name}` but not declared"),
-                        );
-                        let mut all_params = self
-                            .scoped_type_params(params)
-                            .into_iter()
-                            .map(TParam::new)
-                            .collect::<Vec<_>>();
-                        all_params.extend(other_params.iter().cloned());
-                        Type::Forall(TParams::new(all_params), inner_ta)
-                    }
+                    Type::Forall(..) => self.error(
+                        *range,
+                        format!("Type parameters used in `{name}` but not declared"),
+                    ),
                     Type::TypeAlias(_) if params.is_some() => Type::Forall(
-                        TParams::new(
-                            self.scoped_type_params(params)
-                                .into_iter()
-                                .map(TParam::new)
-                                .collect(),
-                        ),
+                        self.type_params(*range, self.scoped_type_params(params)),
                         Box::new(ta),
                     ),
                     _ => ta,
@@ -1239,6 +1267,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Binding::PatternMatchMapping(mapping_key, binding_key) => {
                 // TODO: check that value is a mapping
+                // TODO: check against duplicate keys (optional)
                 let key_ty = self.expr(mapping_key, None);
                 let binding_ty = self.get_idx(*binding_key).arc_clone();
                 let arg = TypeCallArg::new(key_ty, mapping_key.range());
@@ -1248,6 +1277,49 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     mapping_key.range(),
                     &[arg],
                 )
+            }
+            Binding::PatternMatchClassPositional(_, idx, key, range) => {
+                // TODO: check that value matches class
+                // TODO: check against duplicate keys (optional)
+                let binding_ty = self.get_idx(*key).arc_clone();
+                let match_args =
+                    self.attr_infer(&binding_ty, &Name::new_static("__match_args__"), *range);
+                match match_args {
+                    Type::Tuple(Tuple::Concrete(ts)) => {
+                        if *idx < ts.len() {
+                            if let Some(Type::Literal(Lit::String(box attr_name))) = ts.get(*idx) {
+                                self.attr_infer(&binding_ty, &Name::new(attr_name), *range)
+                            } else {
+                                self.error(
+                                    *range,
+                                    format!(
+                                        "Expected literal string in `__match_args__`, got {}",
+                                        ts[*idx]
+                                    ),
+                                )
+                            }
+                        } else {
+                            self.error(
+                                *range,
+                                format!("Index {idx} out of range for `__match_args__`"),
+                            )
+                        }
+                    }
+                    Type::Any(AnyStyle::Error) => match_args,
+                    _ => self.error(
+                        *range,
+                        format!(
+                            "Expected concrete tuple for __match_args__, got {}",
+                            match_args
+                        ),
+                    ),
+                }
+            }
+            Binding::PatternMatchClassKeyword(_, attr, key) => {
+                // TODO: check that value matches class
+                // TODO: check against duplicate keys (optional)
+                let binding_ty = self.get_idx(*key).arc_clone();
+                self.attr_infer(&binding_ty, &attr.id, attr.range)
             }
         }
     }

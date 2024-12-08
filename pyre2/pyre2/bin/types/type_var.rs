@@ -5,11 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::fmt;
 use std::fmt::Display;
-use std::fmt::{self};
 
 use dupe::Dupe;
+use ruff_python_ast::Arguments;
+use ruff_python_ast::Expr;
 use ruff_python_ast::Identifier;
+use ruff_python_ast::Keyword;
+use starlark_map::small_set::SmallSet;
 
 use crate::module::module_info::ModuleInfo;
 use crate::types::qname::QName;
@@ -26,19 +30,18 @@ impl Display for TypeVar {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub enum Restriction {
     Constraints(Vec<Type>),
     Bound(Type),
     Unrestricted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub enum Variance {
     Covariant,
     Contravariant,
     Invariant,
-    Inferred,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
@@ -46,7 +49,8 @@ struct TypeVarInner {
     qname: QName,
     restriction: Restriction,
     default: Option<Type>,
-    variance: Variance,
+    /// The variance if known, or None for infer_variance=True
+    variance: Option<Variance>,
 }
 
 impl TypeVar {
@@ -55,7 +59,7 @@ impl TypeVar {
         module: ModuleInfo,
         restriction: Restriction,
         default: Option<Type>,
-        variance: Variance,
+        variance: Option<Variance>,
     ) -> Self {
         Self(ArcId::new(TypeVarInner {
             qname: QName::new(name, module),
@@ -69,8 +73,16 @@ impl TypeVar {
         &self.0.qname
     }
 
+    pub fn restriction(&self) -> &Restriction {
+        &self.0.restriction
+    }
+
     pub fn default(&self) -> Option<&Type> {
         self.0.default.as_ref()
+    }
+
+    pub fn variance(&self) -> Option<Variance> {
+        self.0.variance
     }
 
     pub fn to_type(&self) -> Type {
@@ -81,5 +93,52 @@ impl TypeVar {
         matches!(
             x, Type::ClassDef(cls)
             if cls.name() == "TypeVar" && matches!(cls.module_info().name().as_str(), "typing" | "typing_extensions"))
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct TypeVarArgs<'a> {
+    pub name: Option<&'a Expr>,
+    pub constraints: Vec<&'a Expr>,
+    pub bound: Option<&'a Expr>,
+    pub default: Option<&'a Expr>,
+    pub covariant: Option<&'a Expr>,
+    pub contravariant: Option<&'a Expr>,
+    pub infer_variance: Option<&'a Expr>,
+    pub unknown: Vec<&'a Keyword>,
+}
+
+impl<'a> TypeVarArgs<'a> {
+    pub fn from_arguments(arguments: &'a Arguments) -> Self {
+        let mut res = Self::default();
+        let mut seen = SmallSet::new();
+        for kw in &arguments.keywords {
+            match &kw.arg {
+                Some(id) => {
+                    if !seen.insert(id) {
+                        res.unknown.push(kw);
+                        continue;
+                    }
+                    match id.id.as_str() {
+                        "bound" => res.bound = Some(&kw.value),
+                        "default" => res.default = Some(&kw.value),
+                        "covariant" => res.covariant = Some(&kw.value),
+                        "contravariant" => res.contravariant = Some(&kw.value),
+                        "infer_variance" => res.infer_variance = Some(&kw.value),
+                        "name" => res.name = Some(&kw.value),
+                        _ => res.unknown.push(kw),
+                    }
+                }
+                _ => res.unknown.push(kw),
+            }
+        }
+        for x in &arguments.args {
+            if res.name.is_none() {
+                res.name = Some(x)
+            } else {
+                res.constraints.push(x)
+            }
+        }
+        res
     }
 }

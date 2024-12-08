@@ -630,11 +630,9 @@
   ],
   "enums_expansion.py": [
     "Line 23: Unexpected errors [\"Missing argument 'flush'\"]",
-    "Line 30: Unexpected errors ['TODO: MatchOr']",
     "Line 31: Unexpected errors [\"Missing argument 'flush'\"]",
     "Line 33: Unexpected errors [\"Missing argument 'flush'\"]",
     "Line 50: Unexpected errors [\"Missing argument 'flush'\"]",
-    "Line 58: Unexpected errors ['TODO: MatchOr']",
     "Line 78: Unexpected errors ['EXPECTED list[object] <: list[Answer]']"
   ],
   "enums_member_names.py": [],
@@ -695,22 +693,10 @@
     "Line 182: Unexpected errors ['Expected 1 more positional argument(s)', 'EXPECTED MyIterableAny <: Callable[[], @_]']"
   ],
   "generics_defaults.py": [
-    "Line 24: Expected 1 errors",
     "Line 104: Expected 1 errors",
     "Line 111: Expected 1 errors",
     "Line 30: Unexpected errors ['assert_type(type[NoNonDefaults], type[NoNonDefaults[str, int]]) failed']",
-    "Line 31: Unexpected errors ['assert_type(type[NoNonDefaults[Any, Any]], type[NoNonDefaults[str, int]]) failed', 'Expected 2 type arguments for class `NoNonDefaults`, got 1.']",
-    "Line 38: Unexpected errors ['assert_type(type[OneDefault[Any, Any]], type[OneDefault[float, bool]]) failed', 'Expected 2 type arguments for class `OneDefault`, got 1.']",
-    "Line 39: Unexpected errors ['assert_type(OneDefault[Any, Any], OneDefault[float, bool]) failed', 'Expected 2 type arguments for class `OneDefault`, got 1.']",
     "Line 45: Unexpected errors ['assert_type(type[AllTheDefaults], type[AllTheDefaults[Any, Any, str, int, bool]]) failed']",
-    "Line 46: Unexpected errors ['assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed']",
-    "Line 47: Unexpected errors ['Expected 5 type arguments for class `AllTheDefaults`, got 2.']",
-    "Line 52: Unexpected errors ['assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed']",
-    "Line 53: Unexpected errors ['Expected 5 type arguments for class `AllTheDefaults`, got 2.']",
-    "Line 55: Unexpected errors ['assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed']",
-    "Line 56: Unexpected errors ['Expected 5 type arguments for class `AllTheDefaults`, got 3.']",
-    "Line 59: Unexpected errors ['assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed']",
-    "Line 60: Unexpected errors ['Expected 5 type arguments for class `AllTheDefaults`, got 4.']",
     "Line 76: Unexpected errors ['untype, got ParamSpec']",
     "Line 79: Unexpected errors ['assert_type(type[Class_ParamSpec], type[Class_ParamSpec]) failed', 'Expected 0 type arguments for class `Class_ParamSpec`, got 2.']",
     "Line 80: Unexpected errors ['Expected 0 type arguments for class `Class_ParamSpec`, got 2.']",
@@ -734,19 +720,17 @@
     "Line 78: Expected 1 errors",
     "Line 23: Unexpected errors ['assert_type(type[slice], type[slice[int, int, int | None]]) failed']",
     "Line 24: Unexpected errors ['assert_type(slice[Any, Any, Any], slice[int, int, int | None]) failed']",
-    "Line 25: Unexpected errors ['assert_type(slice[Any, Any, Any], slice[str, str, int | None]) failed', 'Expected 3 type arguments for class `slice`, got 1.']",
+    "Line 25: Unexpected errors ['assert_type(slice[str, TypeVar[StartT], int | None], slice[str, str, int | None]) failed']",
     "Line 94: Unexpected errors ['assert_type(type[Bar], type[Bar[Any, list[Any]]]) failed']",
-    "Line 95: Unexpected errors ['assert_type(type[Bar[Any, Any]], type[Bar[int, list[int]]]) failed', 'Expected 2 type arguments for class `Bar`, got 1.']",
-    "Line 96: Unexpected errors ['assert_type(Bar[Any, Any], Bar[int, list[int]]) failed', 'Expected 2 type arguments for class `Bar`, got 1.']"
+    "Line 95: Unexpected errors ['assert_type(type[Bar[int, list[TypeVar[Z1]]]], type[Bar[int, list[int]]]) failed']",
+    "Line 96: Unexpected errors ['assert_type(Bar[int, list[TypeVar[Z1]]], Bar[int, list[int]]) failed']"
   ],
   "generics_defaults_specialization.py": [
     "Line 30: Expected 1 errors",
     "Line 25: Unexpected errors ['untype, got Forall[DefaultStrT, LegacyExplicitTypeAlias[MyAlias, type[SomethingWithNoDefaults[int, DefaultStrT]]]]']",
     "Line 26: Unexpected errors ['assert_type(Any, SomethingWithNoDefaults[int, str]) failed']",
     "Line 45: Unexpected errors ['assert_type(type[Bar], type[Bar[str]]) failed']",
-    "Line 46: Unexpected errors ['assert_type(Bar[Any], Bar[str]) failed']",
-    "Line 50: Unexpected errors ['Expected 2 type arguments for class `SubclassMe`, got 1.']",
-    "Line 53: Unexpected errors ['assert_type(Any, str) failed']"
+    "Line 46: Unexpected errors ['assert_type(Bar[Any], Bar[str]) failed']"
   ],
   "generics_paramspec_basic.py": [
     "Line 10: Expected 1 errors",
@@ -884,12 +868,8 @@
   "generics_syntax_compatibility.py": [],
   "generics_syntax_declarations.py": [
     "Line 46: Expected 1 errors",
-    "Line 50: Expected 1 errors",
     "Line 62: Expected 1 errors",
     "Line 66: Expected 1 errors",
-    "Line 73: Expected 1 errors",
-    "Line 77: Expected 1 errors",
-    "Line 81: Expected 1 errors",
     "Line 14: Unexpected errors ['assert_type(type[?_], TypeVar) failed']",
     "Line 15: Unexpected errors ['assert_type(type[?_], TypeVarTuple) failed']",
     "Line 16: Unexpected errors ['assert_type(type[?_], ParamSpec) failed']",
@@ -906,7 +886,6 @@
   ],
   "generics_syntax_scoping.py": [
     "Line 14: Expected 1 errors",
-    "Line 18: Expected 1 errors",
     "Line 44: Expected 1 errors",
     "Line 92: Expected 1 errors",
     "Line 95: Expected 1 errors",
@@ -1000,8 +979,8 @@
     "Line 18: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'Expected 1 type argument for class `Array`, got 2.']",
     "Line 22: Unexpected errors ['Expected 1 type argument for class `Array`, got 3.', 'Expected 1 type argument for class `Array`, got 3.']",
     "Line 29: Unexpected errors ['Expected 1 type argument for class `Array`, got 2.', 'Expected 1 type argument for class `Array`, got 3.']",
-    "Line 30: Unexpected errors ['assert_type(Array[Any] | Any, Array[Any]) failed', \"Missing argument 'self'\", 'Expected 1 type argument for class `Array`, got 2.']",
-    "Line 31: Unexpected errors ['assert_type(Array[Any] | Any, Array[Any]) failed', \"Missing argument 'self'\", 'Expected 1 type argument for class `Array`, got 3.']"
+    "Line 30: Unexpected errors ['assert_type(Array[TypeVar[Axis2]] | Array[TypeVar[Axis3]] | Any, Array[?_]) failed', \"Missing argument 'self'\", 'Expected 1 type argument for class `Array`, got 2.']",
+    "Line 31: Unexpected errors ['assert_type(Array[TypeVar[Axis2]] | Array[TypeVar[Axis3]] | Any, Array[?_]) failed', \"Missing argument 'self'\", 'Expected 1 type argument for class `Array`, got 3.']"
   ],
   "generics_typevartuple_specialization.py": [
     "Line 16: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
@@ -1081,8 +1060,7 @@
     "Lines 125, 126: Expected error (tag 'CoContra_Child2')",
     "Lines 131, 132: Expected error (tag 'CoContra_Child3')",
     "Lines 141, 142: Expected error (tag 'CoContra_Child5')",
-    "Lines 195, 196: Expected error (tag 'ContraToContraToContra_WithTA')",
-    "Line 39: Unexpected errors ['EXPECTED ImmutableList[Manager] <: ImmutableList[Employee]']"
+    "Lines 195, 196: Expected error (tag 'ContraToContraToContra_WithTA')"
   ],
   "generics_variance_inference.py": [
     "Line 26: Unexpected errors ['EXPECTED ClassA[float, int, int] <: ClassA[float, int, float]']",
@@ -1129,8 +1107,7 @@
     "Line 130: Unexpected errors ['EXPECTED Container[str] <: Container[LiteralString]']",
     "Line 165: Unexpected errors ['assert_type(Any, C) failed']",
     "Line 166: Unexpected errors ['assert_type(Any, B) failed']",
-    "Line 167: Unexpected errors ['assert_type(Any, A) failed', 'Expected 0 positional argument(s)']",
-    "Line 175: Unexpected errors ['EXPECTED Sequence[LiteralString] <: Sequence[str]']"
+    "Line 167: Unexpected errors ['assert_type(Any, A) failed', 'Expected 0 positional argument(s)']"
   ],
   "literals_parameterizations.py": [
     "Line 46: Expected 1 errors",
@@ -1174,7 +1151,6 @@
     "Line 43: Expected 1 errors",
     "Line 14: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point1, type[tuple[Any, ...]]]']",
     "Line 15: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point1, type[tuple[Any, ...]]]']",
-    "Line 18: Unexpected errors [\"EXPECTED tuple[Literal['x'], Literal['y']] <: Iterable[str] | str\"]",
     "Line 19: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point2, type[tuple[Any, ...]]]']",
     "Line 20: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point2, type[tuple[Any, ...]]]']",
     "Line 24: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point3, type[tuple[Any, ...]]]']",
@@ -1214,8 +1190,8 @@
     "Line 13: Unexpected errors ['EXPECTED bool <: TypeGuard[tuple[?_, ?_]]', 'EXPECTED tuple[?_, ...] <: _PyreReadOnly_[Sized]']",
     "Line 17: Unexpected errors ['assert_type(tuple[str, ...], tuple[str, str]) failed']",
     "Line 24: Unexpected errors ['EXPECTED bool <: TypeGuard[list[str]]']",
-    "Line 25: Unexpected errors ['EXPECTED bool <: TypeGuard[list[str]]', 'EXPECTED Generator[bool, None, None] <: Iterable[object]', 'EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]', 'Expected `__iter__` to be a callable, got Callable[[_PyreReadOnly_[list[object]]], Iterator[_PyreReadOnly_[object]]] | Callable[[list[object]], Iterator[object]]']",
-    "Line 28: Unexpected errors ['EXPECTED bool <: TypeGuard[set[?_]]', 'EXPECTED Generator[bool, None, None] <: Iterable[object]']",
+    "Line 25: Unexpected errors ['EXPECTED bool <: TypeGuard[list[str]]', 'EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]', 'Expected `__iter__` to be a callable, got Callable[[_PyreReadOnly_[list[object]]], Iterator[_PyreReadOnly_[object]]] | Callable[[list[object]], Iterator[object]]']",
+    "Line 28: Unexpected errors ['EXPECTED bool <: TypeGuard[set[?_]]']",
     "Line 32: Unexpected errors ['assert_type(set[object], set[int]) failed']",
     "Line 41: Unexpected errors ['EXPECTED bool <: TypeGuard[int]', 'EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]']",
     "Line 45: Unexpected errors ['EXPECTED bool <: TypeGuard[int]', 'EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]']",
@@ -1267,7 +1243,7 @@
     "Line 183: Unexpected errors ['EXPECTED bool <: TypeIs[int]', 'EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]']",
     "Line 187: Unexpected errors ['EXPECTED bool <: TypeIs[bool]', 'EXPECTED type[bool] <: UnionType | type | tuple[Unknown, ...]']",
     "Line 196: Unexpected errors ['EXPECTED bool <: TypeIs[str]', 'EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]']",
-    "Line 200: Unexpected errors ['EXPECTED bool <: TypeIs[list[int]]', 'EXPECTED Generator[bool, None, None] <: Iterable[object]', 'EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]']"
+    "Line 200: Unexpected errors ['EXPECTED bool <: TypeIs[list[int]]', 'EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]']"
   ],
   "overloads_basic.py": [
     "Lines 62, 63: Expected error (tag 'func1')",
@@ -1462,8 +1438,7 @@
     "Line 16: Unexpected errors ['EXPECTED None <: NoReturn', 'Expected 0 positional argument(s)']",
     "Line 21: Unexpected errors ['EXPECTED None <: NoReturn']",
     "Line 32: Unexpected errors [\"EXPECTED Literal['whatever works'] <: int\"]",
-    "Line 77: Unexpected errors ['EXPECTED None <: Never']",
-    "Line 96: Unexpected errors ['EXPECTED ClassB[Never] <: ClassB[?_]']"
+    "Line 77: Unexpected errors ['EXPECTED None <: Never']"
   ],
   "specialtypes_none.py": [
     "Line 24: Unexpected errors ['EXPECTED None <: Hashable']",
@@ -1524,13 +1499,12 @@
     "Line 78: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, int] | tuple[str, str]) failed']",
     "Line 82: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, str, int]) failed']",
     "Line 91: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 93: Unexpected errors ['TODO: MatchSequence']",
+    "Line 93: Unexpected errors ['TODO: Answers::solve_binding - Binding::IterableValue', 'TODO: Answers::solve_binding - Binding::IterableValue']",
     "Line 95: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int]) failed']",
-    "Line 97: Unexpected errors ['TODO: MatchSequence']",
+    "Line 97: Unexpected errors ['TODO: Answers::solve_binding - Binding::IterableValue', 'TODO: Answers::solve_binding - Binding::IterableValue', 'TODO: Answers::solve_binding - Binding::IterableValue']",
     "Line 99: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, int] | tuple[str, str]) failed']",
-    "Line 101: Unexpected errors ['TODO: MatchSequence']",
+    "Line 101: Unexpected errors ['TODO: Answers::solve_binding - Binding::IterableValue', 'TODO: Answers::solve_binding - Binding::IterableValue', 'TODO: Answers::solve_binding - Binding::IterableValue', 'TODO: Answers::solve_binding - Binding::IterableValue']",
     "Line 103: Unexpected errors ['assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, str, int]) failed']",
-    "Line 114: Unexpected errors ['TODO: MatchSequence', 'TODO: MatchClass']",
     "Line 115: Unexpected errors ['assert_type(tuple[int | str, int | str], tuple[int | str, str]) failed']",
     "Line 117: Unexpected errors ['assert_type(tuple[int | str, int | str], tuple[int | str, int]) failed']",
     "Line 134: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",

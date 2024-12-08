@@ -27,6 +27,7 @@ use ruff_python_ast::ExprSubscript;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Parameters;
 use ruff_python_ast::Pattern;
+use ruff_python_ast::PatternKeyword;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
@@ -412,8 +413,10 @@ impl Bindings {
             builder.inject_implicit();
         }
         builder.stmts(x);
-        for (k, static_info) in builder.scopes.last().stat.0.iter() {
-            let info = builder.scopes.last().flow.info.get(k);
+        assert_eq!(builder.scopes.len(), 1);
+        let last_scope = builder.scopes.to_vec().pop().unwrap();
+        for (k, static_info) in last_scope.stat.0 {
+            let info = last_scope.flow.info.get(&k);
             let val = match info {
                 Some(FlowInfo {
                     key,
@@ -432,7 +435,7 @@ impl Bindings {
                     Binding::AnyType(AnyStyle::Error)
                 }
             };
-            builder.table.insert(KeyExported::Export(k.clone()), val);
+            builder.table.insert(KeyExported::Export(k), val);
         }
         Self(Arc::new(BindingsInner {
             module_info,
@@ -713,7 +716,7 @@ impl<'a> BindingsBuilder<'a> {
                         UnpackedPosition::Index(i)
                     };
                     let make_nested_binding = |ann: Option<Idx<KeyAnnotation>>| {
-                        Binding::UnpackedValue(Box::new(make_binding(ann)), range, idx.clone())
+                        Binding::UnpackedValue(Box::new(make_binding(ann)), range, idx)
                     };
                     self.bind_target(e, &make_nested_binding, should_ensure_expr);
                 }
@@ -841,11 +844,16 @@ impl<'a> BindingsBuilder<'a> {
         annotation
     }
 
-    fn type_params(&mut self, x: &TypeParams) -> Vec<Quantified> {
+    fn type_params(&mut self, x: &mut TypeParams) -> Vec<Quantified> {
         let mut qs = Vec::new();
-        for x in x.iter() {
+        for x in x.type_params.iter_mut() {
             let q = match x {
-                TypeParam::TypeVar(_) => Quantified::type_var(self.uniques),
+                TypeParam::TypeVar(x) => {
+                    if let Some(bound) = &mut x.bound {
+                        self.ensure_type(bound, &mut BindingsBuilder::forward_lookup);
+                    }
+                    Quantified::type_var(self.uniques)
+                }
                 TypeParam::ParamSpec(_) => Quantified::param_spec(self.uniques),
                 TypeParam::TypeVarTuple(_) => Quantified::type_var_tuple(self.uniques),
             };
@@ -928,7 +936,7 @@ impl<'a> BindingsBuilder<'a> {
 
         let tparams = x
             .type_params
-            .as_ref()
+            .as_mut()
             .map(|tparams| self.type_params(tparams));
 
         let mut legacy_tparam_builder = LegacyTParamBuilder::new(tparams.is_some());
@@ -979,7 +987,7 @@ impl<'a> BindingsBuilder<'a> {
         }
 
         self.bind_definition(
-            &x.name.clone(),
+            &func_name,
             Binding::Function(Box::new(x), kind, legacy_tparams.into_boxed_slice()),
             None,
         );
@@ -989,9 +997,10 @@ impl<'a> BindingsBuilder<'a> {
             return_exprs.push(self.returns.pop().unwrap());
         }
         let return_ann = return_annotation.map(|x| {
-            let key = KeyAnnotation::ReturnAnnotation(ShortIdentifier::new(&func_name));
-            self.table
-                .insert(key.clone(), BindingAnnotation::AnnotateExpr(*x, self_type))
+            self.table.insert(
+                KeyAnnotation::ReturnAnnotation(ShortIdentifier::new(&func_name)),
+                BindingAnnotation::AnnotateExpr(*x, self_type),
+            )
         });
         let mut return_expr_keys = SmallSet::with_capacity(return_exprs.len());
         for x in return_exprs {
@@ -1022,7 +1031,7 @@ impl<'a> BindingsBuilder<'a> {
             .0
             .insert(Key::Definition(ShortIdentifier::new(&x.name)));
 
-        x.type_params.iter().for_each(|x| {
+        x.type_params.iter_mut().for_each(|x| {
             self.type_params(x);
         });
 
@@ -1165,12 +1174,6 @@ impl<'a> BindingsBuilder<'a> {
             Pattern::MatchValue(p) => {
                 self.ensure_expr(&p.value);
             }
-            Pattern::MatchStar(p) => {
-                if let Some(name) = &p.name {
-                    self.todo("MatchStar", p.range);
-                    self.bind_definition(name, Binding::AnyType(AnyStyle::Error), None);
-                }
-            }
             Pattern::MatchAs(p) => {
                 if let Some(name) = &p.name {
                     self.bind_definition(name, Binding::Forward(key), None);
@@ -1180,10 +1183,52 @@ impl<'a> BindingsBuilder<'a> {
                 }
             }
             Pattern::MatchSequence(x) => {
-                self.todo("MatchSequence", x.range);
-                x.patterns
-                    .into_iter()
-                    .for_each(|x| self.bind_pattern(x, key))
+                let num_patterns = x.patterns.len();
+                let mut unbounded = false;
+                for (idx, x) in x.patterns.into_iter().enumerate() {
+                    match x {
+                        Pattern::MatchStar(p) => {
+                            if let Some(name) = &p.name {
+                                let position = UnpackedPosition::Slice(idx, num_patterns - idx - 1);
+                                self.bind_definition(
+                                    name,
+                                    Binding::UnpackedValue(
+                                        Box::new(Binding::Forward(key)),
+                                        p.range,
+                                        position,
+                                    ),
+                                    None,
+                                );
+                            }
+                            unbounded = true;
+                        }
+                        _ => {
+                            let position = if unbounded {
+                                UnpackedPosition::ReverseIndex(num_patterns - idx)
+                            } else {
+                                UnpackedPosition::Index(idx)
+                            };
+                            let key = self.table.insert(
+                                Key::Anon(x.range()),
+                                Binding::UnpackedValue(
+                                    Box::new(Binding::Forward(key)),
+                                    x.range(),
+                                    position,
+                                ),
+                            );
+                            self.bind_pattern(x, key);
+                        }
+                    }
+                }
+                let expect = if unbounded {
+                    SizeExpectation::Ge(num_patterns - 1)
+                } else {
+                    SizeExpectation::Eq(num_patterns)
+                };
+                self.table.insert(
+                    Key::Anon(x.range),
+                    Binding::UnpackedLength(Box::new(Binding::Forward(key)), x.range, expect),
+                );
             }
             Pattern::MatchMapping(x) => {
                 x.keys
@@ -1201,18 +1246,54 @@ impl<'a> BindingsBuilder<'a> {
                 }
             }
             Pattern::MatchClass(x) => {
-                self.todo("MatchClass", x.range);
                 x.arguments
                     .patterns
                     .into_iter()
-                    .chain(x.arguments.keywords.into_iter().map(|x| x.pattern))
-                    .for_each(|x| self.bind_pattern(x, key))
+                    .enumerate()
+                    .for_each(|(idx, pattern)| {
+                        let attr_key = self.table.insert(
+                            Key::Anon(pattern.range()),
+                            Binding::PatternMatchClassPositional(
+                                x.cls.clone(),
+                                idx,
+                                key,
+                                pattern.range(),
+                            ),
+                        );
+                        self.bind_pattern(pattern.clone(), attr_key)
+                    });
+                x.arguments.keywords.into_iter().for_each(
+                    |PatternKeyword {
+                         range: _,
+                         attr,
+                         pattern,
+                     }| {
+                        let attr_key = self.table.insert(
+                            Key::Anon(attr.range()),
+                            Binding::PatternMatchClassKeyword(x.cls.clone(), attr, key),
+                        );
+                        self.bind_pattern(pattern, attr_key)
+                    },
+                )
             }
             Pattern::MatchOr(x) => {
-                self.todo("MatchOr", x.range);
-                x.patterns
-                    .into_iter()
-                    .for_each(|x| self.bind_pattern(x, key))
+                let range = x.range;
+                let mut branches = Vec::new();
+                let n_subpatterns = x.patterns.len();
+                for (idx, pattern) in x.patterns.into_iter().enumerate() {
+                    if pattern.is_irrefutable() && idx != n_subpatterns - 1 {
+                        self.errors.add(
+                            &self.module_info,
+                            pattern.range(),
+                            "Only the last subpattern in MatchOr may be irrefutable".to_string(),
+                        )
+                    }
+                    let mut base = self.scopes.last().flow.clone();
+                    self.bind_pattern(pattern, key);
+                    mem::swap(&mut self.scopes.last_mut().flow, &mut base);
+                    branches.push(base);
+                }
+                self.scopes.last_mut().flow = self.merge_flow(branches, range, false);
             }
             _ => {}
         }
@@ -1249,7 +1330,7 @@ impl<'a> BindingsBuilder<'a> {
                         self.ensure_expr(&Expr::Name(name.clone()));
                         // The constraints (i.e., any positional arguments after the first)
                         // and some keyword arguments are types.
-                        for arg in arguments.args[1..].iter_mut() {
+                        for arg in arguments.args.iter_mut().skip(1) {
                             self.ensure_type(arg, &mut BindingsBuilder::forward_lookup);
                         }
                         for kw in arguments.keywords.iter_mut() {
@@ -1267,7 +1348,7 @@ impl<'a> BindingsBuilder<'a> {
                     }
                     _ => self.ensure_expr(&value),
                 }
-                for target in x.targets.iter() {
+                for target in x.targets {
                     let make_binding = |k: Option<Idx<KeyAnnotation>>| {
                         let b = Binding::Expr(k, value.clone());
                         if let Some(name) = &name {
@@ -1276,7 +1357,7 @@ impl<'a> BindingsBuilder<'a> {
                             b
                         }
                     };
-                    self.bind_target(target, &make_binding, true)
+                    self.bind_target(&target, &make_binding, true)
                 }
             }
             Stmt::AugAssign(x) => {
@@ -1362,19 +1443,17 @@ impl<'a> BindingsBuilder<'a> {
                         Key::Anon(attr.range),
                         Binding::Eq(ann_key, attr_key, attr.attr.id),
                     );
-                    if let Some(v) = &x.value {
-                        self.ensure_expr(v);
-                        self.table.insert(
-                            Key::Anon(v.range()),
-                            Binding::Expr(Some(ann_key), *v.clone()),
-                        );
+                    if let Some(v) = x.value {
+                        self.ensure_expr(&v);
+                        self.table
+                            .insert(Key::Anon(v.range()), Binding::Expr(Some(ann_key), *v));
                     }
                 }
                 _ => self.todo("Bindings::stmt AnnAssign", &x),
             },
             Stmt::TypeAlias(mut x) => {
                 if let Expr::Name(name) = *x.name {
-                    if let Some(ref params) = x.type_params {
+                    if let Some(params) = &mut x.type_params {
                         self.type_params(params);
                     }
                     self.ensure_type(&mut x.value, &mut BindingsBuilder::forward_lookup);
@@ -1391,20 +1470,18 @@ impl<'a> BindingsBuilder<'a> {
                 }
             }
             Stmt::For(x) => {
-                let range = TextRange::new(x.range.start(), x.body.last().unwrap().range().end());
-                self.setup_loop(range);
+                self.setup_loop(x.range);
                 self.ensure_expr(&x.iter);
                 let make_binding = |k| Binding::IterableValue(k, *x.iter.clone());
                 self.bind_target(&x.target, &make_binding, true);
-                self.stmts(x.body.clone());
-                self.teardown_loop(range, x.orelse);
+                self.stmts(x.body);
+                self.teardown_loop(x.range, x.orelse);
             }
             Stmt::While(x) => {
-                let range = TextRange::new(x.range.start(), x.body.last().unwrap().range().end());
-                self.setup_loop(range);
+                self.setup_loop(x.range);
                 self.ensure_expr(&x.test);
-                self.stmts(x.body.clone());
-                self.teardown_loop(range, x.orelse);
+                self.stmts(x.body);
+                self.teardown_loop(x.range, x.orelse);
             }
             Stmt::If(x) => {
                 // Need to deal with type guards in future.
@@ -1437,27 +1514,27 @@ impl<'a> BindingsBuilder<'a> {
                 } else {
                     ContextManagerKind::Sync
                 };
-                for item in x.items.iter() {
+                for item in x.items {
                     self.ensure_expr(&item.context_expr);
-                    if let Some(opts) = &item.optional_vars {
+                    if let Some(opts) = item.optional_vars {
                         let make_binding = |k: Option<Idx<KeyAnnotation>>| {
                             Binding::ContextValue(k, item.context_expr.clone(), kind)
                         };
-                        self.bind_target(opts, &make_binding, true);
+                        self.bind_target(&opts, &make_binding, true);
                     } else {
                         self.table.insert(
                             Key::Anon(item.range()),
-                            Binding::ContextValue(None, item.context_expr.clone(), kind),
+                            Binding::ContextValue(None, item.context_expr, kind),
                         );
                     }
                 }
-                self.stmts(x.body.clone());
+                self.stmts(x.body);
             }
             Stmt::Match(x) => {
                 self.ensure_expr(&x.subject);
                 let key = self.table.insert(
                     Key::Anon(x.subject.range()),
-                    Binding::Expr(None, *x.subject.clone()),
+                    Binding::Expr(None, *x.subject),
                 );
                 let mut exhaustive = false;
                 let range = x.range;

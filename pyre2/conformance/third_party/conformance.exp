@@ -8722,16 +8722,6 @@
     },
     {
       "code": -2,
-      "column": 14,
-      "concise_description": "TODO: MatchOr",
-      "description": "TODO: MatchOr",
-      "line": 30,
-      "name": "PyreError",
-      "stop_column": 36,
-      "stop_line": 30
-    },
-    {
-      "code": -2,
       "column": 13,
       "concise_description": "Missing argument 'flush'",
       "description": "Missing argument 'flush'",
@@ -8779,16 +8769,6 @@
       "name": "PyreError",
       "stop_column": 51,
       "stop_line": 53
-    },
-    {
-      "code": -2,
-      "column": 14,
-      "concise_description": "TODO: MatchOr",
-      "description": "TODO: MatchOr",
-      "line": 58,
-      "name": "PyreError",
-      "stop_column": 51,
-      "stop_line": 58
     },
     {
       "code": -2,
@@ -9566,6 +9546,16 @@
   "generics_defaults.py": [
     {
       "code": -2,
+      "column": 7,
+      "concise_description": "A type parameter without a default cannot follow one with a default",
+      "description": "A type parameter without a default cannot follow one with a default",
+      "line": 24,
+      "name": "PyreError",
+      "stop_column": 31,
+      "stop_line": 24
+    },
+    {
+      "code": -2,
       "column": 1,
       "concise_description": "assert_type(type[NoNonDefaults], type[NoNonDefaults[str, int]]) failed",
       "description": "assert_type(type[NoNonDefaults], type[NoNonDefaults[str, int]]) failed",
@@ -9573,66 +9563,6 @@
       "name": "PyreError",
       "stop_column": 58,
       "stop_line": 30
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(type[NoNonDefaults[Any, Any]], type[NoNonDefaults[str, int]]) failed",
-      "description": "assert_type(type[NoNonDefaults[Any, Any]], type[NoNonDefaults[str, int]]) failed",
-      "line": 31,
-      "name": "PyreError",
-      "stop_column": 63,
-      "stop_line": 31
-    },
-    {
-      "code": -2,
-      "column": 13,
-      "concise_description": "Expected 2 type arguments for class `NoNonDefaults`, got 1.",
-      "description": "Expected 2 type arguments for class `NoNonDefaults`, got 1.",
-      "line": 31,
-      "name": "PyreError",
-      "stop_column": 31,
-      "stop_line": 31
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(type[OneDefault[Any, Any]], type[OneDefault[float, bool]]) failed",
-      "description": "assert_type(type[OneDefault[Any, Any]], type[OneDefault[float, bool]]) failed",
-      "line": 38,
-      "name": "PyreError",
-      "stop_column": 62,
-      "stop_line": 38
-    },
-    {
-      "code": -2,
-      "column": 13,
-      "concise_description": "Expected 2 type arguments for class `OneDefault`, got 1.",
-      "description": "Expected 2 type arguments for class `OneDefault`, got 1.",
-      "line": 38,
-      "name": "PyreError",
-      "stop_column": 30,
-      "stop_line": 38
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(OneDefault[Any, Any], OneDefault[float, bool]) failed",
-      "description": "assert_type(OneDefault[Any, Any], OneDefault[float, bool]) failed",
-      "line": 39,
-      "name": "PyreError",
-      "stop_column": 58,
-      "stop_line": 39
-    },
-    {
-      "code": -2,
-      "column": 13,
-      "concise_description": "Expected 2 type arguments for class `OneDefault`, got 1.",
-      "description": "Expected 2 type arguments for class `OneDefault`, got 1.",
-      "line": 39,
-      "name": "PyreError",
-      "stop_column": 30,
-      "stop_line": 39
     },
     {
       "code": -2,
@@ -9647,92 +9577,12 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed",
-      "description": "assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed",
-      "line": 46,
-      "name": "PyreError",
-      "stop_column": 2,
-      "stop_line": 48
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "Expected 5 type arguments for class `AllTheDefaults`, got 2.",
-      "description": "Expected 5 type arguments for class `AllTheDefaults`, got 2.",
-      "line": 47,
-      "name": "PyreError",
-      "stop_column": 33,
-      "stop_line": 47
-    },
-    {
-      "code": -2,
-      "column": 1,
       "concise_description": "Expected 5 type arguments for class `AllTheDefaults`, got 1.",
       "description": "Expected 5 type arguments for class `AllTheDefaults`, got 1.",
       "line": 50,
       "name": "PyreError",
       "stop_column": 20,
       "stop_line": 50
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed",
-      "description": "assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed",
-      "line": 52,
-      "name": "PyreError",
-      "stop_column": 2,
-      "stop_line": 54
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "Expected 5 type arguments for class `AllTheDefaults`, got 2.",
-      "description": "Expected 5 type arguments for class `AllTheDefaults`, got 2.",
-      "line": 53,
-      "name": "PyreError",
-      "stop_column": 33,
-      "stop_line": 53
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed",
-      "description": "assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed",
-      "line": 55,
-      "name": "PyreError",
-      "stop_column": 2,
-      "stop_line": 58
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "Expected 5 type arguments for class `AllTheDefaults`, got 3.",
-      "description": "Expected 5 type arguments for class `AllTheDefaults`, got 3.",
-      "line": 56,
-      "name": "PyreError",
-      "stop_column": 38,
-      "stop_line": 56
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed",
-      "description": "assert_type(type[AllTheDefaults[Any, Any, Any, Any, Any]], type[AllTheDefaults[int, complex, str, int, bool]]) failed",
-      "line": 59,
-      "name": "PyreError",
-      "stop_column": 2,
-      "stop_line": 62
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "Expected 5 type arguments for class `AllTheDefaults`, got 4.",
-      "description": "Expected 5 type arguments for class `AllTheDefaults`, got 4.",
-      "line": 60,
-      "name": "PyreError",
-      "stop_column": 43,
-      "stop_line": 60
     },
     {
       "code": -2,
@@ -9883,6 +9733,16 @@
       "name": "PyreError",
       "stop_column": 27,
       "stop_line": 127
+    },
+    {
+      "code": -2,
+      "column": 7,
+      "concise_description": "A type parameter without a default cannot follow one with a default",
+      "description": "A type parameter without a default cannot follow one with a default",
+      "line": 138,
+      "name": "PyreError",
+      "stop_column": 11,
+      "stop_line": 138
     },
     {
       "code": -2,
@@ -10059,8 +9919,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(slice[Any, Any, Any], slice[str, str, int | None]) failed",
-      "description": "assert_type(slice[Any, Any, Any], slice[str, str, int | None]) failed",
+      "concise_description": "assert_type(slice[str, TypeVar[StartT], int | None], slice[str, str, int | None]) failed",
+      "description": "assert_type(slice[str, TypeVar[StartT], int | None], slice[str, str, int | None]) failed",
       "line": 25,
       "name": "PyreError",
       "stop_column": 55,
@@ -10069,31 +9929,31 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Expected 3 type arguments for class `slice`, got 1.",
-      "description": "Expected 3 type arguments for class `slice`, got 1.",
-      "line": 25,
-      "name": "PyreError",
-      "stop_column": 23,
-      "stop_line": 25
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "Expected 2 type arguments for class `Foo`, got 1.",
-      "description": "Expected 2 type arguments for class `Foo`, got 1.",
+      "concise_description": "EXPECTED Literal[''] <: TypeVar[DefaultStrT]",
+      "description": "EXPECTED Literal[''] <: TypeVar[DefaultStrT]",
       "line": 36,
       "name": "PyreError",
-      "stop_column": 9,
+      "stop_column": 15,
       "stop_line": 36
     },
     {
       "code": -2,
-      "column": 1,
-      "concise_description": "Expected 2 type arguments for class `Foo`, got 1.",
-      "description": "Expected 2 type arguments for class `Foo`, got 1.",
+      "column": 10,
+      "concise_description": "EXPECTED Literal[''] <: int",
+      "description": "EXPECTED Literal[''] <: int",
       "line": 37,
       "name": "PyreError",
-      "stop_column": 9,
+      "stop_column": 12,
+      "stop_line": 37
+    },
+    {
+      "code": -2,
+      "column": 14,
+      "concise_description": "EXPECTED Literal[1] <: TypeVar[DefaultStrT]",
+      "description": "EXPECTED Literal[1] <: TypeVar[DefaultStrT]",
+      "line": 37,
+      "name": "PyreError",
+      "stop_column": 15,
       "stop_line": 37
     },
     {
@@ -10109,8 +9969,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[Bar[Any, Any]], type[Bar[int, list[int]]]) failed",
-      "description": "assert_type(type[Bar[Any, Any]], type[Bar[int, list[int]]]) failed",
+      "concise_description": "assert_type(type[Bar[int, list[TypeVar[Z1]]]], type[Bar[int, list[int]]]) failed",
+      "description": "assert_type(type[Bar[int, list[TypeVar[Z1]]]], type[Bar[int, list[int]]]) failed",
       "line": 95,
       "name": "PyreError",
       "stop_column": 49,
@@ -10118,32 +9978,12 @@
     },
     {
       "code": -2,
-      "column": 13,
-      "concise_description": "Expected 2 type arguments for class `Bar`, got 1.",
-      "description": "Expected 2 type arguments for class `Bar`, got 1.",
-      "line": 95,
-      "name": "PyreError",
-      "stop_column": 21,
-      "stop_line": 95
-    },
-    {
-      "code": -2,
       "column": 1,
-      "concise_description": "assert_type(Bar[Any, Any], Bar[int, list[int]]) failed",
-      "description": "assert_type(Bar[Any, Any], Bar[int, list[int]]) failed",
+      "concise_description": "assert_type(Bar[int, list[TypeVar[Z1]]], Bar[int, list[int]]) failed",
+      "description": "assert_type(Bar[int, list[TypeVar[Z1]]], Bar[int, list[int]]) failed",
       "line": 96,
       "name": "PyreError",
       "stop_column": 50,
-      "stop_line": 96
-    },
-    {
-      "code": -2,
-      "column": 13,
-      "concise_description": "Expected 2 type arguments for class `Bar`, got 1.",
-      "description": "Expected 2 type arguments for class `Bar`, got 1.",
-      "line": 96,
-      "name": "PyreError",
-      "stop_column": 21,
       "stop_line": 96
     }
   ],
@@ -10187,26 +10027,6 @@
       "name": "PyreError",
       "stop_column": 29,
       "stop_line": 46
-    },
-    {
-      "code": -2,
-      "column": 11,
-      "concise_description": "Expected 2 type arguments for class `SubclassMe`, got 1.",
-      "description": "Expected 2 type arguments for class `SubclassMe`, got 1.",
-      "line": 50,
-      "name": "PyreError",
-      "stop_column": 28,
-      "stop_line": 50
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(Any, str) failed",
-      "description": "assert_type(Any, str) failed",
-      "line": 53,
-      "name": "PyreError",
-      "stop_column": 26,
-      "stop_line": 53
     },
     {
       "code": -2,
@@ -11611,6 +11431,46 @@
       "name": "PyreError",
       "stop_column": 21,
       "stop_line": 34
+    },
+    {
+      "code": -2,
+      "column": 17,
+      "concise_description": "untype, got list[type[int] | type[str]]",
+      "description": "untype, got list[type[int] | type[str]]",
+      "line": 50,
+      "name": "PyreError",
+      "stop_column": 27,
+      "stop_line": 50
+    },
+    {
+      "code": -2,
+      "column": 17,
+      "concise_description": "untype, got tuple[type[bytes], type[str]]",
+      "description": "untype, got tuple[type[bytes], type[str]]",
+      "line": 73,
+      "name": "PyreError",
+      "stop_column": 19,
+      "stop_line": 73
+    },
+    {
+      "code": -2,
+      "column": 18,
+      "concise_description": "untype, got Literal[3]",
+      "description": "untype, got Literal[3]",
+      "line": 77,
+      "name": "PyreError",
+      "stop_column": 19,
+      "stop_line": 77
+    },
+    {
+      "code": -2,
+      "column": 23,
+      "concise_description": "Could not find name `S`",
+      "description": "Could not find name `S`",
+      "line": 81,
+      "name": "PyreError",
+      "stop_column": 24,
+      "stop_line": 81
     }
   ],
   "generics_syntax_infer_variance.py": [
@@ -11906,6 +11766,16 @@
     }
   ],
   "generics_syntax_scoping.py": [
+    {
+      "code": -2,
+      "column": 26,
+      "concise_description": "untype, got int",
+      "description": "untype, got int",
+      "line": 18,
+      "name": "PyreError",
+      "stop_column": 27,
+      "stop_line": 18
+    },
     {
       "code": -2,
       "column": 1,
@@ -13561,8 +13431,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "assert_type(Array[Any] | Any, Array[Any]) failed",
-      "description": "assert_type(Array[Any] | Any, Array[Any]) failed",
+      "concise_description": "assert_type(Array[TypeVar[Axis2]] | Array[TypeVar[Axis3]] | Any, Array[?_]) failed",
+      "description": "assert_type(Array[TypeVar[Axis2]] | Array[TypeVar[Axis3]] | Any, Array[?_]) failed",
       "line": 30,
       "name": "PyreError",
       "stop_column": 52,
@@ -13591,8 +13461,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "assert_type(Array[Any] | Any, Array[Any]) failed",
-      "description": "assert_type(Array[Any] | Any, Array[Any]) failed",
+      "concise_description": "assert_type(Array[TypeVar[Axis2]] | Array[TypeVar[Axis3]] | Any, Array[?_]) failed",
+      "description": "assert_type(Array[TypeVar[Axis2]] | Array[TypeVar[Axis3]] | Any, Array[?_]) failed",
       "line": 31,
       "name": "PyreError",
       "stop_column": 59,
@@ -14695,16 +14565,6 @@
       "name": "PyreError",
       "stop_column": 55,
       "stop_line": 14
-    },
-    {
-      "code": -2,
-      "column": 38,
-      "concise_description": "EXPECTED ImmutableList[Manager] <: ImmutableList[Employee]",
-      "description": "EXPECTED ImmutableList[Manager] <: ImmutableList[Employee]",
-      "line": 39,
-      "name": "PyreError",
-      "stop_column": 46,
-      "stop_line": 39
     }
   ],
   "generics_variance_inference.py": [
@@ -15542,16 +15402,6 @@
       "name": "PyreError",
       "stop_column": 24,
       "stop_line": 171
-    },
-    {
-      "code": -2,
-      "column": 25,
-      "concise_description": "EXPECTED Sequence[LiteralString] <: Sequence[str]",
-      "description": "EXPECTED Sequence[LiteralString] <: Sequence[str]",
-      "line": 175,
-      "name": "PyreError",
-      "stop_column": 28,
-      "stop_line": 175
     }
   ],
   "literals_parameterizations.py": [
@@ -16323,16 +16173,6 @@
     },
     {
       "code": -2,
-      "column": 31,
-      "concise_description": "EXPECTED tuple[Literal['x'], Literal['y']] <: Iterable[str] | str",
-      "description": "EXPECTED tuple[Literal['x'], Literal['y']] <: Iterable[str] | str",
-      "line": 18,
-      "name": "PyreError",
-      "stop_column": 41,
-      "stop_line": 18
-    },
-    {
-      "code": -2,
       "column": 8,
       "concise_description": "Expected a callable, got LegacyImplicitTypeAlias[Point2, type[tuple[Any, ...]]]",
       "description": "Expected a callable, got LegacyImplicitTypeAlias[Point2, type[tuple[Any, ...]]]",
@@ -16889,16 +16729,6 @@
     },
     {
       "code": -2,
-      "column": 16,
-      "concise_description": "EXPECTED Generator[bool, None, None] <: Iterable[object]",
-      "description": "EXPECTED Generator[bool, None, None] <: Iterable[object]",
-      "line": 25,
-      "name": "PyreError",
-      "stop_column": 47,
-      "stop_line": 25
-    },
-    {
-      "code": -2,
       "column": 30,
       "concise_description": "EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]",
       "description": "EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]",
@@ -16925,16 +16755,6 @@
       "line": 28,
       "name": "PyreError",
       "stop_column": 49,
-      "stop_line": 28
-    },
-    {
-      "code": -2,
-      "column": 16,
-      "concise_description": "EXPECTED Generator[bool, None, None] <: Iterable[object]",
-      "description": "EXPECTED Generator[bool, None, None] <: Iterable[object]",
-      "line": 28,
-      "name": "PyreError",
-      "stop_column": 48,
       "stop_line": 28
     },
     {
@@ -17677,16 +17497,6 @@
       "line": 200,
       "name": "PyreError",
       "stop_column": 46,
-      "stop_line": 200
-    },
-    {
-      "code": -2,
-      "column": 16,
-      "concise_description": "EXPECTED Generator[bool, None, None] <: Iterable[object]",
-      "description": "EXPECTED Generator[bool, None, None] <: Iterable[object]",
-      "line": 200,
-      "name": "PyreError",
-      "stop_column": 45,
       "stop_line": 200
     },
     {
@@ -19634,16 +19444,6 @@
     {
       "code": -2,
       "column": 12,
-      "concise_description": "EXPECTED ClassB[Never] <: ClassB[?_]",
-      "description": "EXPECTED ClassB[Never] <: ClassB[?_]",
-      "line": 96,
-      "name": "PyreError",
-      "stop_column": 27,
-      "stop_line": 96
-    },
-    {
-      "code": -2,
-      "column": 12,
       "concise_description": "EXPECTED ClassC[Never] <: ClassC[?_]",
       "description": "EXPECTED ClassC[Never] <: ClassC[?_]",
       "line": 105,
@@ -20402,11 +20202,21 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "TODO: MatchSequence",
-      "description": "TODO: MatchSequence",
+      "concise_description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "description": "TODO: Answers::solve_binding - Binding::IterableValue",
       "line": 93,
       "name": "PyreError",
       "stop_column": 18,
+      "stop_line": 93
+    },
+    {
+      "code": -2,
+      "column": 15,
+      "concise_description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "line": 93,
+      "name": "PyreError",
+      "stop_column": 16,
       "stop_line": 93
     },
     {
@@ -20422,11 +20232,31 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "TODO: MatchSequence",
-      "description": "TODO: MatchSequence",
+      "concise_description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "description": "TODO: Answers::solve_binding - Binding::IterableValue",
       "line": 97,
       "name": "PyreError",
       "stop_column": 20,
+      "stop_line": 97
+    },
+    {
+      "code": -2,
+      "column": 15,
+      "concise_description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "line": 97,
+      "name": "PyreError",
+      "stop_column": 16,
+      "stop_line": 97
+    },
+    {
+      "code": -2,
+      "column": 18,
+      "concise_description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "line": 97,
+      "name": "PyreError",
+      "stop_column": 19,
       "stop_line": 97
     },
     {
@@ -20442,11 +20272,41 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "TODO: MatchSequence",
-      "description": "TODO: MatchSequence",
+      "concise_description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "description": "TODO: Answers::solve_binding - Binding::IterableValue",
       "line": 101,
       "name": "PyreError",
       "stop_column": 23,
+      "stop_line": 101
+    },
+    {
+      "code": -2,
+      "column": 15,
+      "concise_description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "line": 101,
+      "name": "PyreError",
+      "stop_column": 16,
+      "stop_line": 101
+    },
+    {
+      "code": -2,
+      "column": 18,
+      "concise_description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "line": 101,
+      "name": "PyreError",
+      "stop_column": 19,
+      "stop_line": 101
+    },
+    {
+      "code": -2,
+      "column": 21,
+      "concise_description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "description": "TODO: Answers::solve_binding - Binding::IterableValue",
+      "line": 101,
+      "name": "PyreError",
+      "stop_column": 22,
       "stop_line": 101
     },
     {
@@ -20458,26 +20318,6 @@
       "name": "PyreError",
       "stop_column": 51,
       "stop_line": 103
-    },
-    {
-      "code": -2,
-      "column": 14,
-      "concise_description": "TODO: MatchSequence",
-      "description": "TODO: MatchSequence",
-      "line": 114,
-      "name": "PyreError",
-      "stop_column": 22,
-      "stop_line": 114
-    },
-    {
-      "code": -2,
-      "column": 17,
-      "concise_description": "TODO: MatchClass",
-      "description": "TODO: MatchClass",
-      "line": 114,
-      "name": "PyreError",
-      "stop_column": 22,
-      "stop_line": 114
     },
     {
       "code": -2,

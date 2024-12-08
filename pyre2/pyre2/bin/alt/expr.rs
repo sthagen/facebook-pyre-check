@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::slice;
+
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Arguments;
@@ -25,6 +27,7 @@ use starlark_map::small_set::SmallSet;
 use super::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::binding::Key;
+use crate::alt::unwrap::UnwrappedDict;
 use crate::ast::Ast;
 use crate::dunder;
 use crate::module::short_identifier::ShortIdentifier;
@@ -41,6 +44,7 @@ use crate::types::special_form::SpecialForm;
 use crate::types::tuple::Tuple;
 use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
+use crate::types::type_var::TypeVarArgs;
 use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
 use crate::types::types::Type;
@@ -86,7 +90,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         for (i, value) in values.iter().enumerate() {
             let t = self.expr_infer(value);
             if should_shortcircuit(&t) {
-                types.push(t.clone());
+                types.push(t);
                 break;
             }
             // If we reach the last value, we should always keep it.
@@ -101,7 +105,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         }
                     }
                 }
-                _ => types.push(t.clone()),
+                _ => types.push(t),
             }
         }
         self.unions(&types)
@@ -412,7 +416,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn attr_infer(&self, obj: &Type, attr_name: &Name, range: TextRange) -> Type {
+    pub fn attr_infer(&self, obj: &Type, attr_name: &Name, range: TextRange) -> Type {
         self.distribute_over_union(obj, |obj| {
             match as_attribute_base(obj.clone(), self.stdlib) {
                 Some(AttributeBase::ClassInstance(class)) => {
@@ -499,20 +503,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         })
     }
 
-    // If `error_range` is None, do not report errors
-    pub fn unwrap_awaitable(&self, ty: Type, error_range: Option<TextRange>) -> Type {
-        let var = self.solver().fresh_contained(self.uniques);
-        let awaitable_ty = self.stdlib.awaitable(Type::Var(var)).to_type();
-        let is_awaitable = self
-            .solver()
-            .is_subset_eq(&ty, &awaitable_ty, self.type_order());
-        if !is_awaitable && let Some(range) = error_range {
-            self.error(range, "Expression is not awaitable".to_owned())
-        } else {
-            self.solver().force_var(var)
-        }
-    }
-
     fn literal_bool_infer(&self, x: &Expr) -> bool {
         let ty = self.expr_infer(x);
         match ty {
@@ -528,10 +518,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     fn tyvar_from_arguments(&self, arguments: &Arguments) -> TypeVar {
-        let name = match arguments.args.first() {
+        let args = TypeVarArgs::from_arguments(arguments);
+
+        let name = match args.name {
             Some(Expr::StringLiteral(x)) => Identifier::new(Name::new(x.value.to_str()), x.range),
             _ => {
-                let msg = if arguments.args.is_empty() {
+                let msg = if args.name.is_none() {
                     "Missing `name` argument to TypeVar"
                 } else {
                     "Expected first argument of TypeVar to be a string literal"
@@ -541,46 +533,25 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Identifier::new(Name::new("unknown"), arguments.range)
             }
         };
-        let constraints = if arguments.args.len() > 1 {
-            arguments.args[1..].map(|arg| self.expr_untype(arg))
-        } else {
-            Vec::new()
-        };
-        let mut bound = None;
-        let mut default = None;
-        let mut covariant = false;
-        let mut contravariant = false;
-        let mut infer_variance = false;
-        for kw in arguments.keywords.iter() {
-            match &kw.arg {
-                Some(id) if id.id == "bound" => {
-                    bound = Some(self.expr_untype(&kw.value.clone()));
-                }
-                Some(id) if id.id == "default" => {
-                    default = Some(self.expr_untype(&kw.value.clone()));
-                }
-                Some(id) if id.id == "covariant" => {
-                    covariant = self.literal_bool_infer(&kw.value.clone());
-                }
-                Some(id) if id.id == "contravariant" => {
-                    contravariant = self.literal_bool_infer(&kw.value.clone());
-                }
-                Some(id) if id.id == "infer_variance" => {
-                    infer_variance = self.literal_bool_infer(&kw.value.clone());
-                }
-                Some(id) => {
-                    self.error(
-                        kw.range,
-                        format!("Unexpected keyword argument `{}` to TypeVar", id.id),
-                    );
-                }
-                None => {
-                    self.error(
-                        kw.range,
-                        "Unexpected anonymous keyword to TypeVar".to_owned(),
-                    );
-                }
-            }
+        let constraints = args.constraints.map(|x| self.expr_untype(x));
+        let bound = args.bound.map(|x| self.expr_untype(x));
+        let default = args.default.map(|x| self.expr_untype(x));
+        let covariant = args.covariant.map_or(false, |x| self.literal_bool_infer(x));
+        let contravariant = args
+            .contravariant
+            .map_or(false, |x| self.literal_bool_infer(x));
+        let infer_variance = args
+            .infer_variance
+            .map_or(false, |x| self.literal_bool_infer(x));
+
+        for kw in args.unknown {
+            self.error(
+                kw.range,
+                match &kw.arg {
+                    Some(id) => format!("Unexpected keyword argument `{}` to TypeVar", id.id),
+                    None => "Unexpected anonymous keyword to TypeVar".to_owned(),
+                },
+            );
         }
         let restriction = if let Some(bound) = bound {
             if !constraints.is_empty() {
@@ -603,17 +574,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         {
             self.error(
                 arguments.range,
-                "Contradictory variance specifications".to_string(),
+                "Contradictory variance specifications".to_owned(),
             );
         }
         let variance = if covariant {
-            Variance::Covariant
+            Some(Variance::Covariant)
         } else if contravariant {
-            Variance::Contravariant
+            Some(Variance::Contravariant)
         } else if infer_variance {
-            Variance::Inferred
+            None
         } else {
-            Variance::Invariant
+            Some(Variance::Invariant)
         };
         TypeVar::new(
             name,
@@ -662,31 +633,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Expr::Dict(x) => {
-                let key_value_ty = hint.and_then(|ty| {
-                    // We check `dict[key_var, value_var]` against the hint to make sure it's a
-                    // superclass of dict, then check the dict elements against the vars, which
-                    // have been solved to the hint's contained types.
-                    let key_var = self.solver().fresh_contained(self.uniques);
-                    let value_var = self.solver().fresh_contained(self.uniques);
-                    let dict_type = self
-                        .stdlib
-                        .dict(Type::Var(key_var), Type::Var(value_var))
-                        .to_type();
-                    if self
-                        .solver()
-                        .is_subset_eq(&dict_type, ty, self.type_order())
-                    {
-                        Some((
-                            self.solver().force_var(key_var),
-                            self.solver().force_var(value_var),
-                        ))
-                    } else {
-                        None
-                    }
-                });
+                let hint = hint.and_then(|ty| self.unwrap_dict(ty));
                 if x.is_empty() {
-                    match key_value_ty {
-                        Some((key_ty, value_ty)) => self.stdlib.dict(key_ty, value_ty).to_type(),
+                    match hint {
+                        Some(x) => x.to_type(self.stdlib),
                         None => self
                             .stdlib
                             .dict(
@@ -696,8 +646,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             .to_type(),
                     }
                 } else {
-                    let (key_hint, value_hint) = match key_value_ty {
-                        Some((key_ty, value_ty)) => (Some(key_ty), Some(value_ty)),
+                    let (key_hint, value_hint) = match hint {
+                        Some(UnwrappedDict { key, value }) => (Some(key), Some(value)),
                         None => (None, None),
                     };
                     let key_tys: Vec<Type> = x
@@ -734,29 +684,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Expr::Set(x) => {
-                let elem_ty = hint.and_then(|ty| {
-                    // We check `set[var]` against the hint to make sure it's a superclass of set,
-                    // then check the set elements against `var`, which has been solved to the
-                    // hint's contained type.
-                    let var = self.solver().fresh_contained(self.uniques);
-                    let set_type = self.stdlib.set(Type::Var(var)).to_type();
-                    if self.solver().is_subset_eq(&set_type, ty, self.type_order()) {
-                        Some(self.solver().force_var(var))
-                    } else {
-                        None
-                    }
-                });
-
+                let hint = hint.and_then(|ty| self.unwrap_set(ty));
                 if x.is_empty() {
-                    let elem_ty = match elem_ty {
+                    let elem_ty = match hint {
                         None => self.solver().fresh_contained(self.uniques).to_type(),
-                        Some(elem_ty) => elem_ty.clone(),
+                        Some(elem_ty) => elem_ty,
                     };
                     self.stdlib.set(elem_ty).to_type()
                 } else {
                     let tys = x.elts.map(|x| {
-                        let t = self.expr(x, elem_ty.as_ref());
-                        self.promote(t, elem_ty.as_ref())
+                        let t = self.expr(x, hint.as_ref());
+                        self.promote(t, hint.as_ref())
                     });
                     self.stdlib.set(self.unions(&tys)).to_type()
                 }
@@ -786,7 +724,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Expr::Await(x) => {
                 let awaiting_ty = self.expr_infer(&x.value);
-                self.unwrap_awaitable(awaiting_ty, Some(x.range()))
+                match self.unwrap_awaitable(&awaiting_ty) {
+                    Some(ty) => ty,
+                    None => self.error(x.range, "Expression is not awaitable".to_owned()),
+                }
             }
             Expr::Yield(x) => self.error_todo("Answers::expr_infer", x),
             Expr::YieldFrom(_) => self.error_todo("Answers::expr_infer", x),
@@ -1012,7 +953,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     &Type::Tuple(Tuple::Concrete(elts)),
                                     &dunder::GETITEM,
                                     x.range,
-                                    &[*x.slice.clone()],
+                                    slice::from_ref(&x.slice),
                                     &[],
                                 ),
                             }
@@ -1022,13 +963,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         &Type::Tuple(Tuple::Unbounded(elt)),
                         &dunder::GETITEM,
                         x.range,
-                        &[*x.slice.clone()],
+                        slice::from_ref(&x.slice),
                         &[],
                     ),
                     Type::Any(style) => style.propagate(),
-                    Type::ClassType(_) => {
-                        self.call_method(&fun, &dunder::GETITEM, x.range, &[*x.slice.clone()], &[])
-                    }
+                    Type::ClassType(_) => self.call_method(
+                        &fun,
+                        &dunder::GETITEM,
+                        x.range,
+                        slice::from_ref(&x.slice),
+                        &[],
+                    ),
                     t => self.error(
                         x.range,
                         format!(
@@ -1046,31 +991,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .arc_clone(),
             },
             Expr::List(x) => {
-                let elem_ty = hint.and_then(|ty| {
-                    // We check `list[var]` against the hint to make sure it's a superclass of list,
-                    // then check the list elements against `var`, which has been solved to the
-                    // hint's contained type.
-                    let var = self.solver().fresh_contained(self.uniques);
-                    let list_type = self.stdlib.list(Type::Var(var)).to_type();
-                    if self
-                        .solver()
-                        .is_subset_eq(&list_type, ty, self.type_order())
-                    {
-                        Some(self.solver().force_var(var))
-                    } else {
-                        None
-                    }
-                });
+                let hint = hint.and_then(|ty| self.unwrap_list(ty));
                 if x.is_empty() {
-                    let elem_ty = match elem_ty {
+                    let elem_ty = match hint {
                         None => self.solver().fresh_contained(self.uniques).to_type(),
-                        Some(elem_ty) => elem_ty.clone(),
+                        Some(elem_ty) => elem_ty,
                     };
                     self.stdlib.list(elem_ty).to_type()
                 } else {
                     let tys = x.elts.map(|x| {
-                        let t = self.expr(x, elem_ty.as_ref());
-                        self.promote(t, elem_ty.as_ref())
+                        let t = self.expr(x, hint.as_ref());
+                        self.promote(t, hint.as_ref())
                     });
                     self.stdlib.list(self.unions(&tys)).to_type()
                 }
@@ -1078,22 +1009,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::Tuple(x) => {
                 let ts = match hint {
                     Some(Type::Tuple(Tuple::Concrete(elts))) if elts.len() == x.elts.len() => elts,
-                    Some(ty) => {
-                        // We check `tuple[var, ...]` against the hint to make sure it's a superclass of tuple,
-                        // then check the tuple elements against `var`, which has been solved to the
-                        // hint's contained type.
-                        let var = self.solver().fresh_contained(self.uniques);
-                        let tuple_type = self.stdlib.tuple(Type::Var(var)).to_type();
-                        if self
-                            .solver()
-                            .is_subset_eq(&tuple_type, ty, self.type_order())
-                        {
-                            let elem_ty = self.solver().force_var(var);
-                            &vec![elem_ty; x.elts.len()]
-                        } else {
-                            &Vec::new()
-                        }
-                    }
+                    Some(ty) => match self.unwrap_tuple(ty) {
+                        Some(elem_ty) => &vec![elem_ty; x.elts.len()],
+                        None => &Vec::new(),
+                    },
                     None => &Vec::new(),
                 };
                 Type::tuple(

@@ -27,7 +27,9 @@ use crate::types::param_spec::ParamSpec;
 use crate::types::special_form::SpecialForm;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
+use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
+use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
 use crate::uniques::Unique;
 use crate::uniques::UniqueFactory;
@@ -123,7 +125,10 @@ impl Quantified {
 pub struct TParamInfo {
     pub name: Name,
     pub quantified: Quantified,
+    pub restriction: Restriction,
     pub default: Option<Type>,
+    /// The variance if known, or None for infer_variance=True or a scoped type parameter
+    pub variance: Option<Variance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -131,6 +136,9 @@ pub struct TParam {
     /// Display name
     pub name: Name,
     pub quantified: Quantified,
+    pub restriction: Restriction,
+    pub default: Option<Type>,
+    pub variance: Variance,
 }
 
 impl Display for TParam {
@@ -139,16 +147,8 @@ impl Display for TParam {
     }
 }
 
-impl TParam {
-    pub fn new(info: TParamInfo) -> Self {
-        Self {
-            name: info.name,
-            quantified: info.quantified,
-        }
-    }
-}
-
-/// Wraps a vector of type parameters to give them a nice Display and convenient access methods.
+/// Wraps a vector of type parameters. The constructor ensures that
+/// type parameters without defaults never follow ones with defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TParams(Vec<TParam>);
 
@@ -159,8 +159,34 @@ impl Display for TParams {
 }
 
 impl TParams {
-    pub fn new(tparams: Vec<TParam>) -> Self {
-        Self(tparams)
+    pub fn new(info: Vec<TParamInfo>) -> Result<Self, Self> {
+        let mut error = false;
+        let mut tparams: Vec<TParam> = Vec::with_capacity(info.len());
+        for tparam in info {
+            let default = if tparam.default.is_none()
+                && tparams.last().map_or(false, |p| p.default.is_some())
+            {
+                // Missing default.
+                error = true;
+                Some(Type::any_error())
+            } else {
+                tparam.default
+            };
+            tparams.push(TParam {
+                name: tparam.name,
+                quantified: tparam.quantified,
+                restriction: tparam.restriction,
+                default,
+                // Classes set the variance before getting here. For functions and aliases, the variance isn't meaningful;
+                // it doesn't matter what we set it to as long as we make it non-None to indicate that it's not missing.
+                variance: tparam.variance.unwrap_or(Variance::Invariant),
+            });
+        }
+        if error {
+            Err(Self(tparams))
+        } else {
+            Ok(Self(tparams))
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -400,28 +426,6 @@ impl Type {
         }
     }
 
-    pub fn as_forall(&self) -> (Option<&TParams>, &Type) {
-        match self {
-            Type::Forall(uniques, ty) => (Some(uniques), ty),
-            _ => (None, self),
-        }
-    }
-
-    pub fn forall(mut uniques: TParams, ty: Type) -> Self {
-        let ty = match ty {
-            Type::Forall(vars2, ty) => {
-                uniques.0.extend(vars2.0);
-                *ty
-            }
-            _ => ty,
-        };
-        if uniques.0.is_empty() {
-            ty
-        } else {
-            Type::Forall(uniques, Box::new(ty))
-        }
-    }
-
     pub fn callable(args: Vec<Arg>, ret: Type) -> Self {
         Type::Callable(Box::new(Callable::list(args, ret)))
     }
@@ -432,6 +436,13 @@ impl Type {
 
     pub fn callable_param_spec(p: Type, ret: Type) -> Self {
         Type::Callable(Box::new(Callable::param_spec(p, ret)))
+    }
+
+    pub fn apply_under_forall(&self, f: impl Fn(&Type) -> Type) -> Self {
+        match self {
+            Type::Forall(gs, ty) => Type::Forall(gs.clone(), Box::new(ty.apply_under_forall(f))),
+            _ => f(self),
+        }
     }
 
     pub fn type_form(inner: Type) -> Self {

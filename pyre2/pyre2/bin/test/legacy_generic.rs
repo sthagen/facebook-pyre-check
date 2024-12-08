@@ -158,6 +158,40 @@ T = TypeVar()  # E: Missing `name` argument
     "#,
 );
 
+// TODO: This should be an error
+simple_test!(
+    test_tvar_wrong_name,
+    r#"
+from typing import TypeVar
+T = TypeVar("Z")
+    "#,
+);
+
+simple_test!(
+    test_tvar_wrong_name_expr,
+    r#"
+from typing import TypeVar
+T = TypeVar(17)  # E: Expected first argument of TypeVar to be a string literal
+    "#,
+);
+
+simple_test!(
+    test_tvar_wrong_name_bind,
+    r#"
+from typing import TypeVar
+x = "test"
+T = TypeVar(x)  # E: Expected first argument of TypeVar to be a string literal
+    "#,
+);
+
+simple_test!(
+    test_tvar_keyword_name,
+    r#"
+from typing import TypeVar
+T = TypeVar(name = "T")
+    "#,
+);
+
 simple_test!(
     test_tvar_unexpected_keyword,
     r#"
@@ -292,7 +326,6 @@ def f(c: C[int, str]):
     "#,
 );
 
-// TODO: support TypeVar defaults
 simple_test!(
     test_default,
     r#"
@@ -301,13 +334,23 @@ T1 = TypeVar('T1')
 T2 = TypeVar('T2', default=int)
 class C(Generic[T1, T2]):
     pass
-def f9(c1: C[int, str], c2: C[str]):  # E: Expected 2 type arguments
+def f9(c1: C[int, str], c2: C[str]):
     assert_type(c1, C[int, str])
-    assert_type(c2, C[str, int])  # E: assert_type
+    assert_type(c2, C[str, int])
     "#,
 );
 
-// TODO: support declared variance
+simple_test!(
+    test_bad_default_order,
+    r#"
+from typing import Generic, TypeVar
+T1 = TypeVar('T1', default=int)
+T2 = TypeVar('T2')
+class C(Generic[T1, T2]):  # E: A type parameter without a default cannot follow one with a default
+    pass
+    "#,
+);
+
 simple_test!(
     test_variance,
     r#"
@@ -323,7 +366,7 @@ class Child(Parent):
 def f1(c: C[Parent, Child]):
     f2(c)  # E: EXPECTED
 def f2(c: C[Child, Parent]):
-    f1(c)  # E: EXPECTED
+    f1(c)
     "#,
 );
 

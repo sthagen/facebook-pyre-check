@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use dupe::Dupe;
 use itertools::Either;
+use itertools::EitherOrBoth;
 use itertools::Itertools;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
@@ -35,7 +36,7 @@ use crate::types::class::TArgs;
 use crate::types::class_metadata::ClassMetadata;
 use crate::types::literal::Lit;
 use crate::types::special_form::SpecialForm;
-use crate::types::types::TParam;
+use crate::types::type_var::Variance;
 use crate::types::types::TParamInfo;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -77,37 +78,19 @@ impl BaseClass {
 }
 
 fn strip_first_argument(ty: &Type) -> Type {
-    let (gs, ty) = ty.as_forall();
-    let ty = match ty {
+    ty.apply_under_forall(|t| match t {
         Type::Callable(c) if c.args_len() >= Some(1) => {
             Type::callable(c.args.as_list().unwrap()[1..].to_owned(), c.ret.clone())
         }
-        _ => ty.clone(),
-    };
-    Type::forall(
-        if let Some(gs) = gs {
-            gs.to_owned()
-        } else {
-            TParams::new(Vec::new())
-        },
-        ty,
-    )
+        _ => t.clone(),
+    })
 }
 
 fn replace_return_type(ty: Type, ret: Type) -> Type {
-    let (gs, ty) = ty.as_forall();
-    let ty = match ty {
-        Type::Callable(c) => Type::callable(c.args.as_list().unwrap().to_owned(), ret),
-        _ => ty.clone(),
-    };
-    Type::forall(
-        if let Some(gs) = gs {
-            gs.to_owned()
-        } else {
-            TParams::new(Vec::new())
-        },
-        ty,
-    )
+    ty.apply_under_forall(|t| match t {
+        Type::Callable(c) => Type::callable(c.args.as_list().unwrap().to_owned(), ret.clone()),
+        _ => t.clone(),
+    })
 }
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
@@ -250,7 +233,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 tparams.insert(p.clone());
             }
         }
-        TParams::new(tparams.into_iter().map(TParam::new).collect())
+        // TODO: This is a very bad variance inference algorithm.
+        for tparam in tparams.iter_mut_unchecked() {
+            if tparam.variance.is_none() {
+                tparam.variance = Some(Variance::Invariant);
+            }
+        }
+        self.type_params(name.range, tparams.into_iter().collect())
     }
 
     pub fn class_metadata_of(
@@ -382,21 +371,36 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     fn check_and_create_targs(&self, cls: &Class, targs: Vec<Type>, range: TextRange) -> TArgs {
         let tparams = cls.tparams();
-        if targs.len() == tparams.len() {
-            TArgs::new(targs)
-        } else {
-            self.error(
-                range,
-                format!(
-                    "Expected {} type argument{} for class `{}`, got {}.",
-                    tparams.len(),
-                    if tparams.len() == 1 { "" } else { "s" },
-                    cls.name(),
-                    targs.len()
-                ),
-            );
-            TArgs::new(vec![Type::any_error(); tparams.len()])
+        let nargs = targs.len();
+        let mut checked_targs = Vec::new();
+        for pair in tparams.iter().zip_longest(targs) {
+            match pair {
+                EitherOrBoth::Both(_, arg) => {
+                    checked_targs.push(arg);
+                }
+                EitherOrBoth::Left(param) if let Some(default) = &param.default => {
+                    checked_targs.push(default.clone());
+                }
+                _ => {
+                    self.error(
+                        range,
+                        format!(
+                            "Expected {} type argument{} for class `{}`, got {}.",
+                            tparams.len(),
+                            if tparams.len() == 1 { "" } else { "s" },
+                            cls.name(),
+                            nargs
+                        ),
+                    );
+                    // We have either too few or too many targs. If too few, pad out with Any.
+                    // If there are too many, the extra are ignored.
+                    checked_targs
+                        .extend(vec![Type::any_error(); tparams.len().saturating_sub(nargs)]);
+                    break;
+                }
+            }
         }
+        TArgs::new(checked_targs)
     }
 
     fn create_default_targs(
@@ -604,7 +608,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn get_constructor_for_class_object(&self, cls: &Class) -> Type {
         let init_ty = self.get_init_method(cls);
         let tparams = cls.tparams();
-        Type::forall(tparams.clone(), init_ty)
+        Type::Forall(tparams.clone(), Box::new(init_ty))
     }
 
     /// Given an identifier, see whether it is bound to an enum class. If so,

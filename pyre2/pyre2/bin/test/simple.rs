@@ -135,6 +135,24 @@ Box[int]("oops")  # E: Literal['oops'] <: int
 );
 
 simple_test!(
+    test_generic_init_in_generic_class,
+    r#"
+from typing import assert_type
+class Box[T]:
+    def __init__[S](self, x: S, y: S):
+        pass
+    def wrap(self, x: bool) -> Box[Box[T]]:
+        if x:
+            return Box(self, self)  # ok
+        else:
+            return Box(self, 42)  # E: EXPECTED Literal[42] <: Box[?_]
+b = Box[int]("hello", "world")
+assert_type(b, Box[int])
+assert_type(b.wrap(True), Box[Box[int]])
+    "#,
+);
+
+simple_test!(
     test_list_class_basic,
     r#"
 from typing import assert_type
@@ -855,9 +873,9 @@ y: Literal[x]  # E: TODO: Name(ExprName - Lit::from_expr
 simple_test!(
     test_invalid_type_arguments,
     r#"
-from typing import assert_type, Any
+from typing import assert_type
 x: list[int, int] = []  # E: Expected 1 type argument for class `list`, got 2
-assert_type(x, list[Any])
+assert_type(x, list[int])
     "#,
 );
 
@@ -914,6 +932,17 @@ async def bar() -> str: ...
 async def test() -> None:
     assert_type(await Foo(), int)
     assert_type(await bar(), str)
+"#,
+);
+
+simple_test!(
+    test_await_literal,
+    r#"
+from typing import Awaitable, Literal
+class Foo(Awaitable[Literal[42]]):
+    pass
+async def test() -> Literal[42]:
+    return await Foo()
 "#,
 );
 
