@@ -65,6 +65,7 @@ use crate::alt::util::is_ellipse;
 use crate::alt::util::is_never;
 use crate::ast::Ast;
 use crate::config::Config;
+use crate::dunder;
 use crate::error::collector::ErrorCollector;
 use crate::graph::index::Idx;
 use crate::graph::index::Index;
@@ -1120,7 +1121,7 @@ impl<'a> BindingsBuilder<'a> {
         }
         if let ScopeKind::ClassBody(body) = last_scope.kind {
             for (method_name, instance_attributes) in body.instance_attributes_by_method {
-                if method_name == "__init__" {
+                if method_name == dunder::INIT {
                     for (name, binding) in instance_attributes {
                         if !fields.contains(&name) {
                             fields.insert(name.clone());
@@ -1225,8 +1226,9 @@ impl<'a> BindingsBuilder<'a> {
                 } else {
                     SizeExpectation::Eq(num_patterns)
                 };
+                // Need to use Anon2, since the inner item may have bound to this location already
                 self.table.insert(
-                    Key::Anon(x.range),
+                    Key::Anon2(x.range),
                     Binding::UnpackedLength(Box::new(Binding::Forward(key)), x.range, expect),
                 );
             }
