@@ -148,14 +148,6 @@ impl<'a> State<'a> {
                 Some(todo) if todo <= step => todo,
                 _ => break,
             };
-            let imports = if todo == Step::Solutions {
-                Some((
-                    lock.load.get().unwrap().dupe(),
-                    lock.exports.get().unwrap().dupe(),
-                ))
-            } else {
-                None
-            };
             computed = true;
             let compute = todo.compute().0(&lock);
             drop(lock);
@@ -163,29 +155,6 @@ impl<'a> State<'a> {
                 // We have captured the Ast, and must have already built Exports (we do it serially),
                 // so won't need the Ast again.
                 module_state.steps.write().unwrap().ast.clear();
-            }
-
-            if let Some((load, imports)) = imports {
-                // We need a single spot to inject "I could not find import", but we want to do that
-                // after we can be sure our dependencies have been loaded (we don't want to demand them for an error),
-                // so we do it right at the end.
-                for (importing, range) in imports.0.imports.iter() {
-                    if let Some(err) = self
-                        .get_module(*importing)
-                        .steps
-                        .read()
-                        .unwrap()
-                        .load
-                        .get()
-                        .and_then(|x| x.import_error.as_deref())
-                    {
-                        load.errors.add(
-                            &load.module_info,
-                            *range,
-                            format!("Could not find import of `{}`, {err:#}", importing),
-                        );
-                    }
-                }
             }
 
             let stdlib = self.stdlib.read().unwrap().dupe();
@@ -245,11 +214,14 @@ impl<'a> State<'a> {
     }
 
     fn lookup_stdlib(&self, module: ModuleName, name: &Name) -> Option<Class> {
-        if !self.lookup_export(module).unwrap().contains(name, self) {
+        if !self
+            .lookup_export(module)
+            .is_ok_and(|x| x.contains(name, self))
+        {
             self.add_error(
                 module,
                 TextRange::default(),
-                format!("Stdlib import failure, was expecting {module} to contain {name}"),
+                format!("Stdlib import failure, was expecting `{module}` to contain `{name}`"),
             );
             return None;
         }
@@ -270,15 +242,15 @@ impl<'a> State<'a> {
         }
     }
 
-    fn lookup_export(&self, module: ModuleName) -> Option<Exports> {
+    fn lookup_export(&self, module: ModuleName) -> Result<Exports, Arc<String>> {
         self.demand(module, Step::Exports);
-        self.get_module(module)
-            .steps
-            .read()
-            .unwrap()
-            .exports
-            .get()
-            .map(|x| x.1.dupe())
+        let m = self.get_module(module);
+        let lock = m.steps.read().unwrap();
+        if let Some(err) = &lock.load.get().unwrap().import_error {
+            Err(err.dupe())
+        } else {
+            Ok(lock.exports.get().unwrap().dupe())
+        }
     }
 
     fn lookup_answer<'b, K: Solve<Self> + Keyed<EXPORTED = true>>(
@@ -538,7 +510,7 @@ impl<'a> State<'a> {
 }
 
 impl LookupExport for State<'_> {
-    fn get_opt(&self, module: ModuleName) -> Option<Exports> {
+    fn get(&self, module: ModuleName) -> Result<Exports, Arc<String>> {
         self.lookup_export(module)
     }
 }

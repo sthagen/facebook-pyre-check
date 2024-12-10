@@ -11,10 +11,8 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use dupe::Dupe;
-use dupe::OptionDupedExt;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Stmt;
-use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
 use super::definitions::DunderAllEntry;
@@ -25,20 +23,7 @@ use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 
 pub trait LookupExport {
-    fn get_opt(&self, module: ModuleName) -> Option<Exports>;
-
-    fn get(&self, module: ModuleName) -> Exports {
-        match self.get_opt(module) {
-            Some(x) => x,
-            None => panic!("Internal error: failed to find `Export` for `{module}`"),
-        }
-    }
-}
-
-impl LookupExport for SmallMap<ModuleName, Exports> {
-    fn get_opt(&self, module: ModuleName) -> Option<Exports> {
-        self.get(&module).duped()
-    }
+    fn get(&self, module: ModuleName) -> Result<Exports, Arc<String>>;
 }
 
 #[derive(Debug, Default, Clone, Dupe)]
@@ -58,9 +43,9 @@ impl Display for Exports {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for x in self.0.definitions.dunder_all.iter() {
             match x {
-                DunderAllEntry::Name(x) => writeln!(f, "export {x}")?,
-                DunderAllEntry::Module(x) => writeln!(f, "from {x} import *")?,
-                DunderAllEntry::Remove(x) => writeln!(f, "unexport {x}")?,
+                DunderAllEntry::Name(_, x) => writeln!(f, "export {x}")?,
+                DunderAllEntry::Module(_, x) => writeln!(f, "from {x} import *")?,
+                DunderAllEntry::Remove(_, x) => writeln!(f, "unexport {x}")?,
             }
         }
         Ok(())
@@ -85,17 +70,16 @@ impl Exports {
             let mut result = SmallSet::new();
             for x in &self.0.definitions.dunder_all {
                 match x {
-                    DunderAllEntry::Name(x) => {
+                    DunderAllEntry::Name(_, x) => {
                         result.insert(x.clone());
                     }
-                    DunderAllEntry::Module(x) => {
+                    DunderAllEntry::Module(_, x) => {
                         // They did `__all__.extend(foo.__all__)``, but didn't import `foo`.
-                        // Let's just ignore, and there will be an error when we check `foo.__all__`.
-                        if let Some(import) = modules.get_opt(*x) {
+                        if let Ok(import) = modules.get(*x) {
                             result.extend(import.wildcard(modules).iter().cloned());
                         }
                     }
-                    DunderAllEntry::Remove(x) => {
+                    DunderAllEntry::Remove(_, x) => {
                         result.shift_remove(x);
                     }
                 }
@@ -110,7 +94,9 @@ impl Exports {
             let mut result = SmallSet::new();
             result.extend(self.0.definitions.definitions.keys().cloned());
             for x in self.0.definitions.import_all.keys() {
-                result.extend(modules.get(*x).wildcard(modules).iter().cloned());
+                if let Ok(exports) = modules.get(*x) {
+                    result.extend(exports.wildcard(modules).iter().cloned());
+                }
             }
             Arc::new(result)
         };
@@ -126,11 +112,21 @@ impl Exports {
 mod tests {
     use std::path::PathBuf;
 
+    use starlark_map::small_map::SmallMap;
     use starlark_map::smallmap;
 
     use super::*;
     use crate::ast::Ast;
     use crate::module::module_info::ModuleStyle;
+
+    impl LookupExport for SmallMap<ModuleName, Exports> {
+        fn get(&self, module: ModuleName) -> Result<Exports, Arc<String>> {
+            match self.get(&module) {
+                Some(x) => Ok(x.dupe()),
+                None => Err(Arc::new("Error".to_owned())),
+            }
+        }
+    }
 
     fn mk_exports(contents: &str, style: ModuleStyle) -> Exports {
         let ast = Ast::parse(contents).0;

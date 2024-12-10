@@ -31,6 +31,7 @@ use ruff_python_ast::PatternKeyword;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
+use ruff_python_ast::StmtImportFrom;
 use ruff_python_ast::StmtReturn;
 use ruff_python_ast::StringFlags;
 use ruff_python_ast::TypeParam;
@@ -183,9 +184,10 @@ impl Static {
                 defn == DefinitionStyle::ImportModule;
         }
         for (m, range) in d.import_all {
-            let extra = modules.get(m).wildcard(modules);
-            for name in extra.iter() {
-                self.add_with_count(name.clone(), range, 1).uses_key_import = true;
+            if let Ok(exports) = modules.get(m) {
+                for name in exports.wildcard(modules).iter() {
+                    self.add_with_count(name.clone(), range, 1).uses_key_import = true;
+                }
             }
         }
     }
@@ -482,18 +484,28 @@ impl<'a> BindingsBuilder<'a> {
 
     fn inject_implicit(&mut self) {
         let builtins_module = ModuleName::builtins();
-        let builtins_export = self.modules.get(builtins_module);
-        for name in builtins_export.wildcard(self.modules).iter() {
-            let key = Key::Import(name.clone(), TextRange::default());
-            let idx = self
-                .table
-                .insert(key, Binding::Import(builtins_module, name.clone()));
-            self.bind_key(name, idx, None, false);
+        match self.modules.get(builtins_module) {
+            Ok(builtins_export) => {
+                for name in builtins_export.wildcard(self.modules).iter() {
+                    let key = Key::Import(name.clone(), TextRange::default());
+                    let idx = self
+                        .table
+                        .insert(key, Binding::Import(builtins_module, name.clone()));
+                    self.bind_key(name, idx, None, false);
+                }
+            }
+            Err(err) => {
+                self.error(TextRange::default(), Arc::unwrap_or_clone(err));
+            }
         }
     }
 
     fn todo(&mut self, msg: &str, x: impl Ranged + Debug) {
         self.errors.todo(&self.module_info, msg, x);
+    }
+
+    fn error(&self, range: TextRange, msg: String) {
+        self.errors.add(&self.module_info, range, msg);
     }
 
     fn lookup_name(&mut self, name: &Identifier) -> Option<Idx<Key>> {
@@ -546,11 +558,7 @@ impl<'a> BindingsBuilder<'a> {
             }
             None => {
                 // Name wasn't found. Record a type error and fall back to `Any`.
-                self.errors.add(
-                    &self.module_info,
-                    name.range,
-                    format!("Could not find name `{name}`"),
-                );
+                self.error(name.range, format!("Could not find name `{name}`"));
                 self.table.insert(key, Binding::AnyType(AnyStyle::Error));
             }
         }
@@ -648,8 +656,7 @@ impl<'a> BindingsBuilder<'a> {
                         self.ensure_expr(x);
                     }
                     Err(e) => {
-                        self.errors.add(
-                            &self.module_info,
+                        self.error(
                             literal.range,
                             format!("Could not parse type string: {s}, got {e}"),
                         );
@@ -737,9 +744,6 @@ impl<'a> BindingsBuilder<'a> {
     /// In methods, we track assignments to `self` attribute targets so that we can
     /// be aware of class fields defined in methods. This is particularly important in
     /// constructors, we currently are applying this logic for all methods.
-    ///
-    /// TODO(stroxler): This logic is consistent with Pyright but unsound, we'll need
-    /// to decide how to handle attributes defined outside of constructors.
     fn bind_attr_if_self(&mut self, x: &ExprAttribute, binding: Binding) {
         for scope in self.scopes.iter_mut().rev() {
             if let ScopeKind::Method(method) = &mut scope.kind
@@ -1043,8 +1047,7 @@ impl<'a> BindingsBuilder<'a> {
             // but outermost class cannot be a forward ref.
             match &base {
                 Expr::StringLiteral(v) => {
-                    self.errors.add(
-                        &self.module_info,
+                    self.error(
                         base.range(),
                         format!(
                             "Cannot use string annotation `{}` as a base class",
@@ -1076,8 +1079,7 @@ impl<'a> BindingsBuilder<'a> {
                     // check the expression.
                 }
             } else {
-                self.errors.add(
-                    &self.module_info,
+                self.error(
                     keyword.range(),
                     format!(
                         "The use of unpacking in class header of `{}` is not supported",
@@ -1161,11 +1163,7 @@ impl<'a> BindingsBuilder<'a> {
             innermost.0.push((exit, flow));
             scope.flow.no_next = true;
         } else {
-            self.errors.add(
-                &self.module_info,
-                range,
-                format!("Cannot `{exit}` outside loop"),
-            );
+            self.error(range, format!("Cannot `{exit}` outside loop"));
         }
     }
 
@@ -1284,10 +1282,9 @@ impl<'a> BindingsBuilder<'a> {
                 let n_subpatterns = x.patterns.len();
                 for (idx, pattern) in x.patterns.into_iter().enumerate() {
                     if pattern.is_irrefutable() && idx != n_subpatterns - 1 {
-                        self.errors.add(
-                            &self.module_info,
+                        self.error(
                             pattern.range(),
-                            "Only the last subpattern in MatchOr may be irrefutable".to_string(),
+                            "Only the last subpattern in MatchOr may be irrefutable".to_owned(),
                         )
                     }
                     let mut base = self.scopes.last().flow.clone();
@@ -1298,6 +1295,15 @@ impl<'a> BindingsBuilder<'a> {
                 self.scopes.last_mut().flow = self.merge_flow(branches, range, false);
             }
             _ => {}
+        }
+    }
+
+    fn bind_unimportable_names(&mut self, x: &StmtImportFrom) {
+        for x in &x.names {
+            if &x.name != "*" {
+                let asname = x.asname.as_ref().unwrap_or(&x.name);
+                self.bind_definition(asname, Binding::AnyType(AnyStyle::Error), None);
+            }
         }
     }
 
@@ -1609,6 +1615,9 @@ impl<'a> BindingsBuilder<'a> {
             Stmt::Import(x) => {
                 for x in x.names {
                     let m = ModuleName::from_name(&x.name.id);
+                    if let Err(err) = self.modules.get(m) {
+                        self.error(x.range, Arc::unwrap_or_clone(err));
+                    }
                     match x.asname {
                         Some(asname) => {
                             self.bind_definition(
@@ -1639,52 +1648,53 @@ impl<'a> BindingsBuilder<'a> {
                     x.level,
                     x.module.as_ref().map(|x| &x.id),
                 ) {
-                    for x in x.names {
-                        if &x.name == "*" {
-                            let module = self.modules.get(m);
-                            for name in module.wildcard(self.modules).iter() {
-                                let key = Key::Import(name.clone(), x.range);
-                                let val = if module.contains(name, self.modules) {
-                                    Binding::Import(m, name.clone())
+                    match self.modules.get(m) {
+                        Ok(module_exports) => {
+                            for x in x.names {
+                                if &x.name == "*" {
+                                    for name in module_exports.wildcard(self.modules).iter() {
+                                        let key = Key::Import(name.clone(), x.range);
+                                        let val = if module_exports.contains(name, self.modules) {
+                                            Binding::Import(m, name.clone())
+                                        } else {
+                                            self.error(
+                                                x.range,
+                                                format!("Could not import `{name}` from `{m}`"),
+                                            );
+                                            Binding::AnyType(AnyStyle::Error)
+                                        };
+                                        let key = self.table.insert(key, val);
+                                        self.bind_key(name, key, None, false);
+                                    }
                                 } else {
-                                    self.errors.add(
-                                        &self.module_info,
-                                        x.range,
-                                        format!("Could not import `{name}` from `{m}`"),
-                                    );
-                                    Binding::AnyType(AnyStyle::Error)
-                                };
-                                let key = self.table.insert(key, val);
-                                self.bind_key(name, key, None, false);
+                                    let asname = x.asname.unwrap_or_else(|| x.name.clone());
+                                    let val = if module_exports.contains(&x.name.id, self.modules) {
+                                        Binding::Import(m, x.name.id)
+                                    } else {
+                                        self.error(
+                                            x.range,
+                                            format!("Could not import `{}` from `{m}`", x.name.id),
+                                        );
+                                        Binding::AnyType(AnyStyle::Error)
+                                    };
+                                    self.bind_definition(&asname, val, None);
+                                }
                             }
-                        } else {
-                            let asname = x.asname.unwrap_or_else(|| x.name.clone());
-                            let val = if self.modules.get(m).contains(&x.name.id, self.modules) {
-                                Binding::Import(m, x.name.id)
-                            } else {
-                                self.errors.add(
-                                    &self.module_info,
-                                    x.range,
-                                    format!("Could not import `{}` from `{m}`", x.name.id),
-                                );
-                                Binding::AnyType(AnyStyle::Error)
-                            };
-                            self.bind_definition(&asname, val, None);
+                        }
+                        Err(err) => {
+                            self.error(x.range, Arc::unwrap_or_clone(err));
+                            self.bind_unimportable_names(&x);
                         }
                     }
                 } else {
-                    self.errors.add(
-                        &self.module_info,
+                    self.error(
                         x.range,
                         format!(
                             "Could not resolve relative import `{}`",
                             ".".repeat(x.level as usize)
                         ),
                     );
-                    for x in x.names {
-                        let asname = x.asname.unwrap_or_else(|| x.name.clone());
-                        self.bind_definition(&asname, Binding::AnyType(AnyStyle::Error), None);
-                    }
+                    self.bind_unimportable_names(&x);
                 }
             }
             Stmt::Global(x) => self.todo("Bindings::stmt", &x),
