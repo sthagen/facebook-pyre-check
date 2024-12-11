@@ -50,6 +50,14 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                                             return false;
                                         }
                                     }
+                                    (
+                                        Some(
+                                            Arg::PosOnly(_, Required::Optional)
+                                            | Arg::Pos(_, _, Required::Optional)
+                                            | Arg::KwOnly(_, _, Required::Optional),
+                                        ),
+                                        None,
+                                    ) => return true,
                                     (Some(Arg::VarArg(_)), None) => return true,
                                     (
                                         Some(Arg::VarArg(l)),
@@ -61,6 +69,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                                             return false;
                                         }
                                     }
+                                    (Some(Arg::Kwargs(_)), None) => return true,
                                     _ => return false,
                                 }
                             }

@@ -95,6 +95,15 @@ test(f5) # OK
 # Lower bound has variadic args of incompatible type
 def f6(*args: str) -> None: ...
 test(f6) # E: EXPECTED Callable[[Var[str]], None] <: Callable[[int, int], None]
+
+# Lower bound has extra kwargs of arbitrary type
+class Arbitrary: pass
+def f7(x: int, y: int, **kwargs: Arbitrary) -> None: ...
+test(f7) # OK
+
+# Lower bound has extra args with defaults
+def f7(x: int, y: int, z: int = 0) -> None: ...
+test(f7) # OK
 "#,
 );
 
