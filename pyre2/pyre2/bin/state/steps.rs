@@ -16,17 +16,17 @@ use ruff_text_size::TextRange;
 use crate::alt::answers::Answers;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::answers::Solutions;
-use crate::alt::bindings::Bindings;
-use crate::alt::exports::Exports;
-use crate::alt::exports::LookupExport;
+use crate::binding::bindings::Bindings;
 use crate::config::Config;
 use crate::error::collector::ErrorCollector;
+use crate::export::exports::Exports;
+use crate::export::exports::LookupExport;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::state::info::Info;
 use crate::state::loader::Loader;
 use crate::types::stdlib::Stdlib;
-use crate::uniques::UniqueFactory;
+use crate::util::uniques::UniqueFactory;
 
 pub struct Context<'a, Lookup> {
     pub name: ModuleName,

@@ -23,11 +23,11 @@ use starlark_map::small_set::SmallSet;
 
 use super::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
-use crate::alt::binding::Key;
-use crate::alt::binding::KeyClassMetadata;
-use crate::alt::binding::KeyExported;
-use crate::alt::binding::KeyLegacyTypeParam;
 use crate::ast::Ast;
+use crate::binding::binding::Key;
+use crate::binding::binding::KeyClassMetadata;
+use crate::binding::binding::KeyExported;
+use crate::binding::binding::KeyLegacyTypeParam;
 use crate::dunder;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
@@ -549,7 +549,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let tparams = cls.tparams();
         let mut qs = SmallSet::new();
         ty.collect_quantifieds(&mut qs);
-        tparams.quantified().any(|q| qs.contains(q))
+        tparams.quantified().any(|q| qs.contains(&q))
     }
 
     pub fn get_class_attribute(&self, cls: &Class, name: &Name) -> Result<Type, NoClassAttribute> {

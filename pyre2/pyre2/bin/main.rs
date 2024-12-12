@@ -27,12 +27,12 @@ use crate::commands::run::run;
 
 mod alt;
 mod ast;
+mod binding;
 mod commands;
 mod config;
-mod debug_info;
 mod dunder;
 mod error;
-mod expectation;
+mod export;
 mod graph;
 mod module;
 mod report;
@@ -42,7 +42,6 @@ mod subset;
 mod test;
 mod type_order;
 mod types;
-mod uniques;
 mod util;
 mod visitors;
 

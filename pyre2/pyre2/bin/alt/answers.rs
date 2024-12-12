@@ -21,31 +21,31 @@ use starlark_map::ordered_set::OrderedSet;
 use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 
-use crate::alt::binding::Binding;
-use crate::alt::binding::BindingAnnotation;
-use crate::alt::binding::BindingClassMetadata;
-use crate::alt::binding::BindingLegacyTypeParam;
-use crate::alt::binding::ContextManagerKind;
-use crate::alt::binding::FunctionKind;
-use crate::alt::binding::Key;
-use crate::alt::binding::KeyAnnotation;
-use crate::alt::binding::KeyClassMetadata;
-use crate::alt::binding::KeyExported;
-use crate::alt::binding::KeyLegacyTypeParam;
-use crate::alt::binding::RaisedException;
-use crate::alt::binding::SizeExpectation;
-use crate::alt::binding::UnpackedPosition;
-use crate::alt::bindings::BindingEntry;
-use crate::alt::bindings::BindingTable;
-use crate::alt::bindings::Bindings;
-use crate::alt::exports::LookupExport;
 use crate::alt::expr::TypeCallArg;
-use crate::alt::table::Keyed;
-use crate::alt::table::TableKeyed;
-use crate::alt::util::inplace_dunder;
 use crate::ast::Ast;
+use crate::binding::binding::Binding;
+use crate::binding::binding::BindingAnnotation;
+use crate::binding::binding::BindingClassMetadata;
+use crate::binding::binding::BindingLegacyTypeParam;
+use crate::binding::binding::ContextManagerKind;
+use crate::binding::binding::FunctionKind;
+use crate::binding::binding::Key;
+use crate::binding::binding::KeyAnnotation;
+use crate::binding::binding::KeyClassMetadata;
+use crate::binding::binding::KeyExported;
+use crate::binding::binding::KeyLegacyTypeParam;
+use crate::binding::binding::Keyed;
+use crate::binding::binding::RaisedException;
+use crate::binding::binding::SizeExpectation;
+use crate::binding::binding::UnpackedPosition;
+use crate::binding::bindings::BindingEntry;
+use crate::binding::bindings::BindingTable;
+use crate::binding::bindings::Bindings;
+use crate::binding::table::TableKeyed;
 use crate::dunder;
+use crate::dunder::inplace_dunder;
 use crate::error::collector::ErrorCollector;
+use crate::export::exports::LookupExport;
 use crate::graph::calculation::Calculation;
 use crate::graph::index::Idx;
 use crate::graph::index_map::IndexMap;
@@ -61,7 +61,6 @@ use crate::type_order::TypeOrder;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
 use crate::types::callable::Arg;
-use crate::types::callable::Callable;
 use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class_metadata::ClassMetadata;
@@ -81,10 +80,10 @@ use crate::types::types::Type;
 use crate::types::types::TypeAlias;
 use crate::types::types::TypeAliasStyle;
 use crate::types::types::Var;
-use crate::uniques::UniqueFactory;
 use crate::util::display::DisplayWith;
 use crate::util::prelude::SliceExt;
 use crate::util::recurser::Recurser;
+use crate::util::uniques::UniqueFactory;
 
 /// Invariants:
 ///
@@ -922,7 +921,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let base = self.expr(&x.target, None);
                 self.call_method(
                     &base,
-                    &Name::new(inplace_dunder(x.op)),
+                    &inplace_dunder(x.op),
                     x.range,
                     &[*x.value.clone()],
                     &[],
@@ -1328,11 +1327,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn error(&self, range: TextRange, msg: String) -> Type {
         self.errors().add(self.module_info(), range, msg);
         Type::any_error()
-    }
-
-    pub fn error_callable(&self, range: TextRange, msg: String) -> Callable {
-        self.errors().add(self.module_info(), range, msg);
-        AnyStyle::Error.propagate_callable()
     }
 
     /// Unwraps a type, originally evaluated as a value, so that it can be used as a type annotation.

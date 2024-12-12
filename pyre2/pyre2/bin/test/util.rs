@@ -21,17 +21,17 @@ use crate::test::stdlib::lookup_test_stdlib;
 use crate::util::trace::init_tracing;
 
 #[macro_export]
-macro_rules! simple_test {
+macro_rules! testcase {
     ($name:ident, $imports:expr, $contents:expr,) => {
         #[test]
         fn $name() -> anyhow::Result<()> {
-            $crate::test::util::simple_test_for_macro($imports, $contents, file!(), line!())
+            $crate::test::util::testcase_for_macro($imports, $contents, file!(), line!())
         }
     };
     ($name:ident, $contents:expr,) => {
         #[test]
         fn $name() -> anyhow::Result<()> {
-            $crate::test::util::simple_test_for_macro(
+            $crate::test::util::testcase_for_macro(
                 $crate::test::util::TestEnv::new(),
                 $contents,
                 file!(),
@@ -42,16 +42,9 @@ macro_rules! simple_test {
 }
 
 #[macro_export]
-macro_rules! testcase {
-    ( $($t:tt)*) =>  {
-        $crate::simple_test!($($t)*);
-    }
-}
-
-#[macro_export]
 macro_rules! testcase_with_bug {
     ( $($t:tt)*) =>  {
-        $crate::simple_test!($($t)*);
+        $crate::testcase!($($t)*);
     }
 }
 
@@ -116,19 +109,19 @@ impl TestEnv {
             (loaded, ErrorStyle::Immediate)
         })
     }
-}
 
-pub fn simple_test_driver(env: TestEnv) -> State<'static> {
-    let modules = env.0.keys().copied().collect::<Vec<_>>();
-    let mut state = State::new(env.to_loader(), Config::default(), true);
-    state.run(&modules);
-    state
+    pub fn to_state(self) -> State<'static> {
+        let modules = self.0.keys().copied().collect::<Vec<_>>();
+        let mut state = State::new(self.to_loader(), Config::default(), true);
+        state.run(&modules);
+        state
+    }
 }
 
 static INIT_TRACING_ONCE: Once = Once::new();
 
-/// Should only be used from the `simple_test!` macro.
-pub fn simple_test_for_macro(
+/// Should only be used from the `testcase!` macro.
+pub fn testcase_for_macro(
     mut env: TestEnv,
     contents: &str,
     file: &str,
@@ -144,6 +137,5 @@ pub fn simple_test_for_macro(
         &format!("{}{}", "\n".repeat(start_line), contents),
         file,
     );
-    let state = simple_test_driver(env);
-    state.check_against_expectations()
+    env.to_state().check_against_expectations()
 }

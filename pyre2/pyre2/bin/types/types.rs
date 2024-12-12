@@ -17,7 +17,6 @@ use starlark_map::small_set::SmallSet;
 use static_assertions::assert_eq_size;
 
 use crate::types::callable::Arg;
-use crate::types::callable::Args;
 use crate::types::callable::Callable;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
@@ -31,9 +30,9 @@ use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
 use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
-use crate::uniques::Unique;
-use crate::uniques::UniqueFactory;
 use crate::util::display::commas_iter;
+use crate::util::uniques::Unique;
+use crate::util::uniques::UniqueFactory;
 
 /// An introduced synthetic variable to range over as yet unknown types.
 #[derive(Debug, Copy, Clone, Dupe, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -201,8 +200,8 @@ impl TParams {
         self.0.iter()
     }
 
-    pub fn quantified(&self) -> impl Iterator<Item = &Quantified> {
-        self.0.iter().map(|x| &x.quantified)
+    pub fn quantified(&self) -> impl Iterator<Item = Quantified> + '_ {
+        self.0.iter().map(|x| x.quantified)
     }
 }
 
@@ -267,13 +266,6 @@ impl AnyStyle {
         match self {
             Self::Implicit | Self::Error => Type::Any(self),
             Self::Explicit => Type::Any(Self::Implicit),
-        }
-    }
-
-    pub fn propagate_callable(self) -> Callable {
-        Callable {
-            args: Args::Ellipsis,
-            ret: self.propagate(),
         }
     }
 }

@@ -43,31 +43,31 @@ use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use vec1::Vec1;
 
-use crate::alt::binding::Binding;
-use crate::alt::binding::BindingAnnotation;
-use crate::alt::binding::BindingClassMetadata;
-use crate::alt::binding::BindingLegacyTypeParam;
-use crate::alt::binding::ContextManagerKind;
-use crate::alt::binding::FunctionKind;
-use crate::alt::binding::Key;
-use crate::alt::binding::KeyAnnotation;
-use crate::alt::binding::KeyClassMetadata;
-use crate::alt::binding::KeyExported;
-use crate::alt::binding::KeyLegacyTypeParam;
-use crate::alt::binding::RaisedException;
-use crate::alt::binding::SizeExpectation;
-use crate::alt::binding::UnpackedPosition;
-use crate::alt::definitions::DefinitionStyle;
-use crate::alt::definitions::Definitions;
-use crate::alt::exports::LookupExport;
-use crate::alt::table::Keyed;
-use crate::alt::table::TableKeyed;
-use crate::alt::util::is_ellipse;
-use crate::alt::util::is_never;
 use crate::ast::Ast;
+use crate::binding::binding::Binding;
+use crate::binding::binding::BindingAnnotation;
+use crate::binding::binding::BindingClassMetadata;
+use crate::binding::binding::BindingLegacyTypeParam;
+use crate::binding::binding::ContextManagerKind;
+use crate::binding::binding::FunctionKind;
+use crate::binding::binding::Key;
+use crate::binding::binding::KeyAnnotation;
+use crate::binding::binding::KeyClassMetadata;
+use crate::binding::binding::KeyExported;
+use crate::binding::binding::KeyLegacyTypeParam;
+use crate::binding::binding::Keyed;
+use crate::binding::binding::RaisedException;
+use crate::binding::binding::SizeExpectation;
+use crate::binding::binding::UnpackedPosition;
+use crate::binding::table::TableKeyed;
+use crate::binding::util::is_ellipse;
+use crate::binding::util::is_never;
 use crate::config::Config;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
+use crate::export::definitions::DefinitionStyle;
+use crate::export::definitions::Definitions;
+use crate::export::exports::LookupExport;
 use crate::graph::index::Idx;
 use crate::graph::index::Index;
 use crate::graph::index_map::IndexMap;
@@ -81,9 +81,9 @@ use crate::types::special_form::SpecialForm;
 use crate::types::types::AnyStyle;
 use crate::types::types::Quantified;
 use crate::types::types::Type;
-use crate::uniques::UniqueFactory;
 use crate::util::display::DisplayWith;
 use crate::util::prelude::SliceExt;
+use crate::util::uniques::UniqueFactory;
 use crate::visitors::Visitors;
 
 #[derive(Clone, Dupe, Debug)]
@@ -541,12 +541,12 @@ impl<'a> BindingsBuilder<'a> {
         self.lookup_name(name).map(Binding::Forward)
     }
 
-    // Given a name appearing in an expression, create a `Usage` key for that
-    // name at the current location. The binding will indicate how to compute
-    // the type if we found that name in scope; if we do not find the name we
-    // record an error and fall back to `Any`.
-    //
-    // This function is the the core scope lookup logic for binding creation.
+    /// Given a name appearing in an expression, create a `Usage` key for that
+    /// name at the current location. The binding will indicate how to compute
+    /// the type if we found that name in scope; if we do not find the name we
+    /// record an error and fall back to `Any`.
+    ///
+    /// This function is the the core scope lookup logic for binding creation.
     fn ensure_name(&mut self, name: &Identifier, value: Option<Binding>) {
         let key = Key::Usage(ShortIdentifier::new(name));
         match value {
@@ -1372,16 +1372,10 @@ impl<'a> BindingsBuilder<'a> {
                 }
             }
             Stmt::AugAssign(x) => {
-                if matches!(&*x.target, Expr::Name(y) if y.id == "__all__") {
-                    // For now, don't raise a todo, since we use it everywhere.
-                    // Fix it later.
-                } else {
-                    self.ensure_expr(&x.target);
-                    self.ensure_expr(&x.value);
-                    let make_binding =
-                        |_: Option<Idx<KeyAnnotation>>| Binding::AugAssign(x.clone());
-                    self.bind_target(&x.target, &make_binding, false);
-                }
+                self.ensure_expr(&x.target);
+                self.ensure_expr(&x.value);
+                let make_binding = |_: Option<Idx<KeyAnnotation>>| Binding::AugAssign(x.clone());
+                self.bind_target(&x.target, &make_binding, false);
             }
             Stmt::AnnAssign(mut x) => match *x.target {
                 Expr::Name(name) => {
