@@ -21,14 +21,13 @@ use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
-use super::answers::AnswersSolver;
+use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::ast::Ast;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyClassMetadata;
 use crate::binding::binding::KeyExported;
 use crate::binding::binding::KeyLegacyTypeParam;
-use crate::dunder;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::class::Class;
@@ -83,13 +82,6 @@ fn strip_first_argument(ty: &Type) -> Type {
         Type::Callable(c) if c.args_len() >= Some(1) => {
             Type::callable(c.args.as_list().unwrap()[1..].to_owned(), c.ret.clone())
         }
-        _ => t.clone(),
-    })
-}
-
-fn replace_return_type(ty: Type, ret: Type) -> Type {
-    ty.apply_under_forall(|t| match t {
-        Type::Callable(c) => Type::callable(c.args.as_list().unwrap().to_owned(), ret.clone()),
         _ => t.clone(),
     })
 }
@@ -458,6 +450,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         ClassType::new(cls.dupe(), targs)
     }
 
+    /// Creates a type from the class with fresh variables for its type parameters.
+    pub fn instantiate_fresh(&self, cls: &Class) -> Type {
+        let qs = cls.tparams().quantified().collect::<Vec<_>>();
+        let promoted_cls = Type::Type(Box::new(Type::ClassType(ClassType::new(
+            cls.dupe(),
+            TArgs::new(qs.map(|q| Type::Quantified(*q))),
+        ))));
+        self.solver()
+            .fresh_quantified(qs.as_slice(), promoted_cls, self.uniques)
+    }
+
     /// Get an ancestor `ClassType`, in terms of the type parameters of `class`.
     fn get_ancestor(&self, class: &Class, want: &Class) -> Option<ClassType> {
         self.get_metadata_for_class(class)
@@ -527,24 +530,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             })
     }
 
-    pub fn get_instance_attribute_or_error(
-        &self,
-        cls: &ClassType,
-        name: &Name,
-        range: TextRange,
-    ) -> Type {
-        self.get_instance_attribute(cls, name).unwrap_or_else(|| {
-            self.error(
-                range,
-                format!(
-                    "Object of class `{}` has no attribute `{}`",
-                    cls.name(),
-                    name
-                ),
-            )
-        })
-    }
-
     fn depends_on_class_type_parameter(&self, cls: &Class, ty: &Type) -> bool {
         let tparams = cls.tparams();
         let mut qs = SmallSet::new();
@@ -571,48 +556,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
         }
-    }
-
-    pub fn get_class_attribute_or_error(&self, cls: &Class, name: &Name, range: TextRange) -> Type {
-        match self.get_class_attribute(cls, name) {
-            Ok(ty) => ty,
-            Err(NoClassAttribute::NoClassMember) => self.error(
-                range,
-                format!("Class `{}` has no class attribute `{}`", cls.name(), name),
-            ),
-            Err(NoClassAttribute::IsGenericMember) => self.error(
-                range,
-                format!(
-                    "Generic attribute `{}` of class `{}` is not visible on the class",
-                    name,
-                    cls.name()
-                ),
-            ),
-        }
-    }
-
-    fn get_init_method(&self, cls: &Class) -> Type {
-        let init_ty = self.get_class_field(cls, &dunder::INIT);
-        let ret = cls.self_type();
-        match init_ty.as_deref() {
-            Some(ty) => replace_return_type(strip_first_argument(ty), ret),
-            None => Type::callable(Vec::new(), ret),
-        }
-    }
-
-    /// Gets the constructor for a class with provided type arguments. For example, this
-    /// function is used when constructing `x = list[int]()`.
-    pub fn get_constructor_for_class_type(&self, cls: &ClassType) -> Type {
-        let init_ty = self.get_init_method(cls.class_object());
-        cls.instantiate_member(init_ty)
-    }
-
-    /// Gets the constructor for a bare class. For example, this function is used when
-    /// constructing `x = list()` (no type arguments provided for `list`).
-    pub fn get_constructor_for_class_object(&self, cls: &Class) -> Type {
-        let init_ty = self.get_init_method(cls);
-        let tparams = cls.tparams();
-        init_ty.forall(tparams.clone())
     }
 
     /// Given an identifier, see whether it is bound to an enum class. If so,

@@ -5,8 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::slice;
-
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Arguments;
@@ -24,7 +22,7 @@ use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
-use super::answers::AnswersSolver;
+use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::unwrap::UnwrappedDict;
 use crate::ast::Ast;
@@ -35,13 +33,9 @@ use crate::types::callable::Arg;
 use crate::types::callable::Args;
 use crate::types::callable::Callable;
 use crate::types::callable::Required;
-use crate::types::class::Class;
 use crate::types::class::ClassType;
 use crate::types::literal::Lit;
-use crate::types::module::Module;
 use crate::types::param_spec::ParamSpec;
-use crate::types::simplify::as_attribute_base;
-use crate::types::simplify::AttributeBase;
 use crate::types::special_form::SpecialForm;
 use crate::types::tuple::Tuple;
 use crate::types::type_var::Restriction;
@@ -59,22 +53,40 @@ enum CallStyle<'a> {
     FreeForm,
 }
 
-/// This struct bundles a `Type` with a `TextRange`, allowing us to typecheck function calls
-/// when we only know the types of the arguments but not the original expressions.
-pub struct TypeCallArg {
-    ty: Type,
-    range: TextRange,
+#[derive(Clone)]
+pub enum CallArg<'a> {
+    /// Bundles a `Type` with a `TextRange`, allowing us to typecheck function calls
+    /// when we only know the types of the arguments but not the original expressions.
+    Type(&'a Type, TextRange),
+    Expr(&'a Expr),
 }
 
-impl Ranged for TypeCallArg {
+impl Ranged for CallArg<'_> {
     fn range(&self) -> TextRange {
-        self.range
+        match self {
+            Self::Type(_, r) => *r,
+            Self::Expr(e) => e.range(),
+        }
     }
 }
 
-impl TypeCallArg {
-    pub fn new(ty: Type, range: TextRange) -> Self {
-        Self { ty, range }
+impl CallArg<'_> {
+    /// Check an argument against the type hint (if any) on the corresponding parameter
+    fn check_against_hint<Ans: LookupAnswer>(
+        &self,
+        answers: &AnswersSolver<Ans>,
+        hint: Option<&Type>,
+    ) {
+        match self {
+            Self::Type(ty, r) => {
+                if let Some(hint) = hint {
+                    answers.check_type(hint, ty, *r);
+                }
+            }
+            Self::Expr(e) => {
+                answers.expr(e, hint);
+            }
+        }
     }
 }
 
@@ -84,8 +96,7 @@ impl TypeCallArg {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum CallTarget {
     Callable(Callable),
-    ClassDef(Class),
-    ClassType(ClassType),
+    Class(ClassType),
 }
 
 impl CallTarget {
@@ -141,8 +152,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn as_call_target(&self, ty: Type) -> Option<CallTarget> {
         match ty {
             Type::Callable(c) => Some(CallTarget::Callable(*c)),
-            Type::ClassDef(cls) => Some(CallTarget::ClassDef(cls)),
-            Type::Type(box Type::ClassType(cls)) => Some(CallTarget::ClassType(cls)),
+            Type::ClassDef(cls) => self.as_call_target(self.instantiate_fresh(&cls)),
+            Type::Type(box Type::ClassType(cls)) => Some(CallTarget::Class(cls)),
             Type::Forall(params, t) => {
                 let t: Type = self.solver().fresh_quantified(
                     params.quantified().collect::<Vec<_>>().as_slice(),
@@ -197,85 +208,24 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn call_method_generic<T: Ranged>(
-        &self,
-        ty: &Type,
-        method_name: &Name,
-        range: TextRange,
-        args: &[T],
-        keywords: &[Keyword],
-        // Function to check an argument against the type hint (if any) on the corresponding parameter
-        check_arg: &dyn Fn(&T, Option<&Type>),
-    ) -> Type {
-        self.distribute_over_union(ty, |ty| {
-            let callable = match as_attribute_base(ty.clone(), self.stdlib) {
-                Some(AttributeBase::ClassInstance(class)) => {
-                    let method_type =
-                        self.get_instance_attribute_or_error(&class, method_name, range);
-                    self.as_call_target_or_error(method_type, CallStyle::Method(method_name), range)
-                }
-                Some(AttributeBase::ClassObject(class)) => {
-                    let method_type = self.get_class_attribute_or_error(&class, method_name, range);
-                    self.as_call_target_or_error(method_type, CallStyle::Method(method_name), range)
-                }
-                Some(AttributeBase::Module(module)) => {
-                    let method_type = self.lookup_module_attr(&module, method_name, range);
-                    self.as_call_target_or_error(method_type, CallStyle::Method(method_name), range)
-                }
-                Some(AttributeBase::Quantified(q)) => {
-                    let method_type = q.as_value(self.stdlib).to_type();
-                    self.as_call_target_or_error(method_type, CallStyle::Method(method_name), range)
-                }
-                Some(AttributeBase::TypeAny(style)) => {
-                    match self.get_instance_attribute(&self.stdlib.builtins_type(), method_name) {
-                        None => CallTarget::any(style),
-                        Some(method_type) => self.as_call_target_or_error(
-                            method_type,
-                            CallStyle::Method(method_name),
-                            range,
-                        ),
-                    }
-                }
-                Some(AttributeBase::Any(style)) => CallTarget::any(style),
-                None => self.error_call_target(
-                    range,
-                    format!(
-                        "Expected class, got {}",
-                        ty.clone().deterministic_printing()
-                    ),
-                ),
-            };
-            self.call_infer(callable, args, keywords, check_arg, range)
-        })
-    }
-
     pub fn call_method(
         &self,
         ty: &Type,
         method_name: &Name,
         range: TextRange,
-        args: &[Expr],
+        args: &[CallArg],
         keywords: &[Keyword],
     ) -> Type {
-        let check_arg = &|arg: &Expr, hint: Option<&Type>| {
-            self.expr(arg, hint);
-        };
-        self.call_method_generic(ty, method_name, range, args, keywords, check_arg)
-    }
-
-    pub fn call_method_with_types(
-        &self,
-        ty: &Type,
-        method_name: &Name,
-        range: TextRange,
-        args: &[TypeCallArg],
-    ) -> Type {
-        let check_arg = &|arg: &TypeCallArg, hint: Option<&Type>| {
-            if let Some(hint) = hint {
-                self.check_type(hint, &arg.ty, arg.range);
-            }
-        };
-        self.call_method_generic(ty, method_name, range, args, &[], check_arg)
+        self.distribute_over_union(ty, |ty| {
+            let callable = match self
+                .lookup_attr(ty.clone(), method_name)
+                .ok_or_conflated_error_msg(method_name, "Expr::call_method_generic")
+            {
+                Ok(ty) => self.as_call_target_or_error(ty, CallStyle::Method(method_name), range),
+                Err(msg) => self.error_call_target(range, msg),
+            };
+            self.call_infer(callable, args, keywords, range)
+        })
     }
 
     pub fn expr(&self, x: &Expr, check: Option<&Type>) -> Type {
@@ -298,37 +248,27 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn call_infer<T: Ranged>(
+    fn call_infer(
         &self,
         call_target: CallTarget,
-        args: &[T],
+        args: &[CallArg],
         keywords: &[Keyword],
-        check_arg: &dyn Fn(&T, Option<&Type>),
         range: TextRange,
     ) -> Type {
         match call_target {
-            CallTarget::ClassDef(cls) => self.call_infer(
-                self.as_call_target_or_error(
-                    self.get_constructor_for_class_object(&cls),
-                    CallStyle::Method(&dunder::INIT),
+            CallTarget::Class(cls) => {
+                self.call_infer(
+                    self.as_call_target_or_error(
+                        self.get_instance_attribute(&cls, &dunder::INIT).unwrap(),
+                        CallStyle::Method(&dunder::INIT),
+                        range,
+                    ),
+                    args,
+                    keywords,
                     range,
-                ),
-                args,
-                keywords,
-                check_arg,
-                range,
-            ),
-            CallTarget::ClassType(cls) => self.call_infer(
-                self.as_call_target_or_error(
-                    self.get_constructor_for_class_type(&cls),
-                    CallStyle::Method(&dunder::INIT),
-                    range,
-                ),
-                args,
-                keywords,
-                check_arg,
-                range,
-            ),
+                );
+                cls.self_type()
+            }
             CallTarget::Callable(callable) => {
                 match callable.args {
                     Args::List(params) => {
@@ -371,7 +311,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 );
                                 num_positional = -1;
                             }
-                            check_arg(arg, hint);
+                            arg.check_against_hint(self, hint);
                         }
                         let mut need_positional = 0;
                         let mut kwparams = SmallMap::new();
@@ -451,7 +391,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     Args::Ellipsis => {
                         // Deal with Callable[..., R]
                         for t in args {
-                            check_arg(t, None);
+                            t.check_against_hint(self, None);
                         }
                         callable.ret
                     }
@@ -464,51 +404,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn lookup_module_attr(&self, module: &Module, attr_name: &Name, range: TextRange) -> Type {
-        match module.as_single_module() {
-            Some(module_name) => self.get_import(attr_name, module_name, range),
-            None => module.push_path(attr_name.clone()).to_type(),
-        }
-    }
-
     pub fn attr_infer(&self, obj: &Type, attr_name: &Name, range: TextRange) -> Type {
         self.distribute_over_union(obj, |obj| {
-            match as_attribute_base(obj.clone(), self.stdlib) {
-                Some(AttributeBase::ClassInstance(class)) => {
-                    self.get_instance_attribute_or_error(&class, attr_name, range)
-                }
-                Some(AttributeBase::ClassObject(class)) => {
-                    self.get_class_attribute_or_error(&class, attr_name, range)
-                }
-                Some(AttributeBase::Module(module)) => {
-                    self.lookup_module_attr(&module, attr_name, range)
-                }
-                Some(AttributeBase::Quantified(q)) => {
-                    if q.is_param_spec() && attr_name == "args" {
-                        Type::type_form(Type::Args(q.id()))
-                    } else if q.is_param_spec() && attr_name == "kwargs" {
-                        Type::type_form(Type::Kwargs(q.id()))
-                    } else {
-                        self.get_instance_attribute_or_error(
-                            &q.as_value(self.stdlib),
-                            attr_name,
-                            range,
-                        )
-                    }
-                }
-                Some(AttributeBase::TypeAny(style)) => self
-                    .get_instance_attribute(&self.stdlib.builtins_type(), attr_name)
-                    .unwrap_or_else(|| style.propagate()),
-                Some(AttributeBase::Any(style)) => style.propagate(),
-                None => self.error(
-                    range,
-                    format!(
-                        "TODO: Answers::expr_infer attribute: `{}`.{}",
-                        obj.clone().deterministic_printing(),
-                        attr_name,
-                    ),
-                ),
-            }
+            self.lookup_attr(obj.clone(), attr_name)
+                .ok_or_conflated_error_msg(attr_name, "Expr::attr_infer")
+                .unwrap_or_else(|msg| self.error(range, msg))
         })
     }
 
@@ -518,17 +418,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             let method_type = self.attr_infer(lhs, &Name::new(op.dunder()), range);
             let callable =
                 self.as_call_target_or_error(method_type, CallStyle::BinaryOp(op), range);
-            self.call_infer(
-                callable,
-                &[TypeCallArg::new(rhs, range)],
-                &[],
-                &|arg, hint| {
-                    if let Some(hint) = hint {
-                        self.check_type(hint, &arg.ty, arg.range);
-                    }
-                },
-                range,
-            )
+            self.call_infer(callable, &[CallArg::Type(&rhs, range)], &[], range)
         };
         let lhs = self.expr_infer(&x.left);
         let rhs = self.expr_infer(&x.right);
@@ -677,7 +567,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         None => self.stdlib.bool().to_type(),
                         Some(b) => Type::Literal(Lit::Bool(!b)),
                     },
-                    _ => self.error_todo(&format!("Answers::expr_infer on {}", x.op), x),
+                    UnaryOp::Invert => match t {
+                        Type::Literal(lit) => {
+                            Type::Literal(lit.invert(self.module_info(), x.range, self.errors()))
+                        }
+                        _ => self.error_todo(&format!("Answers::expr_infer on {}", x.op), x),
+                    },
                 }
             }
             Expr::Lambda(_) => self.error_todo("Answers::expr_infer", x),
@@ -869,11 +764,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         );
                         self.call_infer(
                             callable,
-                            &x.arguments.args,
+                            &x.arguments.args.map(CallArg::Expr),
                             &x.arguments.keywords,
-                            &|arg, hint| {
-                                self.expr(arg, hint);
-                            },
                             func_range,
                         )
                     })
@@ -916,10 +808,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             .collect::<SmallMap<_, _>>();
                         ty.subst(&param_map)
                     }
-                    Type::ClassDef(cls)
-                        if cls.qname().module.name().as_str() == "builtins"
-                            && cls.qname().name.id == "type" =>
-                    {
+                    Type::ClassDef(cls) if cls == *self.stdlib.builtins_type().class_object() => {
                         let targ = match xs.len() {
                             // This causes us to treat `type[list]` as equivalent to `type[list[Any]]`,
                             // which may or may not be what we want.
@@ -1015,7 +904,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     &Type::Tuple(Tuple::Concrete(elts)),
                                     &dunder::GETITEM,
                                     x.range,
-                                    slice::from_ref(&x.slice),
+                                    &[CallArg::Expr(&x.slice)],
                                     &[],
                                 ),
                             }
@@ -1025,7 +914,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         &Type::Tuple(Tuple::Unbounded(elt)),
                         &dunder::GETITEM,
                         x.range,
-                        slice::from_ref(&x.slice),
+                        &[CallArg::Expr(&x.slice)],
                         &[],
                     ),
                     Type::Any(style) => style.propagate(),
@@ -1033,7 +922,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         &fun,
                         &dunder::GETITEM,
                         x.range,
-                        slice::from_ref(&x.slice),
+                        &[CallArg::Expr(&x.slice)],
                         &[],
                     ),
                     t => self.error(
