@@ -23,9 +23,9 @@ testcase!(
     r#"
 from typing import assert_type
 class A:
-    def foo() -> int: ...
+    def foo(self) -> int: ...
 class B:
-    def foo() -> str: ...
+    def foo(self) -> str: ...
 def foo(x: A | B) -> None:
     assert_type(x.foo(), int | str)
 "#,
@@ -501,6 +501,16 @@ testcase!(
 from typing import reveal_type
 reveal_type()  # E: reveal_type needs 1 argument, got 0
 reveal_type(1)  # E: revealed type: Literal[1]
+    "#,
+);
+
+testcase!(
+    test_reveal_type_expand_var,
+    r#"
+from typing import reveal_type
+def f[T](x: T) -> T:
+    return x
+reveal_type(f(0))  # E: revealed type: int
     "#,
 );
 

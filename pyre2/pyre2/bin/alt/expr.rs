@@ -92,7 +92,7 @@ impl CallArg<'_> {
 
 /// A thing that can be called (see as_call_target and call_infer).
 /// Note that a single "call" may invoke multiple functions under the hood,
-/// e.g., `__new__` followed by `__init__` for ClassDef and ClassType.
+/// e.g., `__new__` followed by `__init__` for Class.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum CallTarget {
     Callable(Callable),
@@ -552,15 +552,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::BinOp(x) => self.binop_infer(x),
             Expr::UnaryOp(x) => {
                 let t = self.expr_infer(&x.operand);
-                match x.op {
+                self.distribute_over_union(&t, |t| match x.op {
                     UnaryOp::USub => match t {
                         Type::Literal(lit) => {
                             Type::Literal(lit.negate(self.module_info(), x.range, self.errors()))
                         }
+
                         _ => self.error_todo(&format!("Answers::expr_infer on {}", x.op), x),
                     },
                     UnaryOp::UAdd => match t {
-                        Type::Literal(lit) => Type::Literal(lit),
+                        Type::Literal(lit) => Type::Literal(lit.clone()),
                         _ => self.error_todo(&format!("Answers::expr_infer on {}", x.op), x),
                     },
                     UnaryOp::Not => match t.as_bool() {
@@ -573,7 +574,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         }
                         _ => self.error_todo(&format!("Answers::expr_infer on {}", x.op), x),
                     },
-                }
+                })
             }
             Expr::Lambda(_) => self.error_todo("Answers::expr_infer", x),
             Expr::If(x) => {
@@ -726,7 +727,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Expr::Call(x) if is_special_name(&x.func, "reveal_type") => {
                 if x.arguments.args.len() == 1 {
-                    let t = self.expr_infer(&x.arguments.args[0]);
+                    let t = self
+                        .solver()
+                        .deep_force(self.expr_infer(&x.arguments.args[0]));
                     self.error(
                         x.range,
                         format!("revealed type: {}", t.deterministic_printing()),
