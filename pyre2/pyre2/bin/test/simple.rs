@@ -727,6 +727,15 @@ y: C | int  # TODO: The generic class `C` is missing type arguments.
     "#,
 );
 
+// TODO: implement reflective operators
+testcase_with_bug!(
+    test_complex,
+    r#"
+z: complex =  3 + 4j # E: EXPECTED Literal[0+4j] <: int # E: EXPECTED int <: complex
+
+    "#,
+);
+
 testcase!(
     test_iterable_error,
     r#"
@@ -937,5 +946,18 @@ def foo():
     assert_type(x, Literal['test', 1])
 foo()
 x = "test"
+"#,
+);
+
+// TODO zeina: This should typecheck with no errors
+testcase_with_bug!(
+    test_generator,
+    r#"
+from typing import assert_type, Generator, Literal, Any
+
+def yielding():
+    yield 1  # E:  TODO: ExprYield - Answers::expr_infer
+
+
 "#,
 );
