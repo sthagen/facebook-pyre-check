@@ -77,13 +77,20 @@ impl BaseClass {
     }
 }
 
-fn strip_first_argument(ty: &Type) -> Type {
-    ty.apply_under_forall(|t| match t {
-        Type::Callable(c) if c.args_len() >= Some(1) => {
-            Type::callable(c.args.as_list().unwrap()[1..].to_owned(), c.ret.clone())
-        }
-        _ => t.clone(),
-    })
+fn is_unbound_function(ty: &Type) -> bool {
+    match ty {
+        Type::Forall(_, t) => is_unbound_function(t),
+        Type::Callable(_) => true,
+        _ => false,
+    }
+}
+
+fn bind_attribute(obj: Type, attr: Type) -> Type {
+    if is_unbound_function(&attr) {
+        Type::BoundMethod(Box::new(obj), Box::new(attr))
+    } else {
+        attr
+    }
 }
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
@@ -526,7 +533,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.get_class_member(cls.class_object(), name)
             .map(|member_ty| {
                 let instantiated_ty = cls.instantiate_member((*member_ty).clone());
-                strip_first_argument(&instantiated_ty)
+                bind_attribute(cls.self_type(), instantiated_ty)
             })
     }
 
