@@ -139,9 +139,62 @@ x: dict[str, Literal[1]] = {"a": 2} # E: EXPECTED Literal[2] <: Literal[1]
 x: MutableMapping[str, int] = {"a": 1}
 x: Iterable[str] = {"a": 1}
 x: Iterable[int] = {"oops": 1}  # E: EXPECTED Literal['oops'] <: int
+x: Iterable[Literal[4]] = {4: "a"}
 x: object = {"a": 1}
 x: list[str] = {"a": 1}  # E: EXPECTED dict[str, int] <: list[str]
     "#,
+);
+
+testcase!(
+    test_context_list_comprehension,
+    r#"
+class A: ...
+class B(A): ...
+xs: list[A] = [B() for _ in [0]]
+"#,
+);
+
+testcase!(
+    test_context_set_comprehension,
+    r#"
+class A: ...
+class B(A): ...
+xs: set[A] = {B() for _ in [0]}
+"#,
+);
+
+testcase!(
+    test_context_dict_comprehension,
+    r#"
+class A: ...
+class B(A): ...
+class X: ...
+class Y(X): ...
+xs: dict[A, X] = {B(): Y() for _ in [0]}
+"#,
+);
+
+testcase!(
+    test_context_if_expr,
+    r#"
+class A: ...
+class B(A): ...
+def cond() -> bool: ...
+xs: list[A] = [B()] if cond() else [B()]
+"#,
+);
+
+// Still infer types for unreachable branches (and find errors in them),
+// but don't propagate them to the result.
+testcase!(
+    test_context_if_expr_unreachable,
+    r#"
+class A: ...
+class B(A): ...
+def takes_int(x: int) -> None: ...
+xs: list[A] = [B()] if True else takes_int("") # E: EXPECTED Literal[''] <: int
+ys: list[A] = takes_int("") if False else [B()] # E: EXPECTED Literal[''] <: int
+"#,
 );
 
 // TODO: Unpacked assignment propagates wrong hint to RHS expression

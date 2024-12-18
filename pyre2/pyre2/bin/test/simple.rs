@@ -806,8 +806,8 @@ testcase!(
     test_assert,
     r#"
 def foo() -> str: ...
-assert foo(42)  # E: Expected 0 positional argument(s)
-assert False, foo(42)  # E: Expected 0 positional argument(s)
+assert foo(42)  # E: Expected 0 positional arguments
+assert False, foo(42)  # E: Expected 0 positional arguments
     "#,
 );
 
@@ -946,5 +946,17 @@ def foo():
     assert_type(x, Literal['test', 1])
 foo()
 x = "test"
+"#,
+);
+
+testcase_with_bug!(
+    test_incorrect_inference,
+    r#"
+from typing import assert_type, Any
+def id[T](x: T) -> T:
+    return x
+
+# Should be list[int]
+assert_type(id([0]), list[Any])
 "#,
 );

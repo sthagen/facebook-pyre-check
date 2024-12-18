@@ -24,7 +24,6 @@ use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
-use crate::alt::unwrap::UnwrappedDict;
 use crate::ast::Ast;
 use crate::binding::binding::Key;
 use crate::dunder;
@@ -45,6 +44,7 @@ use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
 use crate::types::types::AnyStyle;
 use crate::types::types::Type;
+use crate::util::display::count;
 use crate::util::prelude::SliceExt;
 
 enum CallStyle<'a> {
@@ -254,6 +254,164 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    fn callable_infer(
+        &self,
+        callable: Callable,
+        first_arg: Option<CallArg>,
+        remaining_args: &[CallArg],
+        keywords: &[Keyword],
+        range: TextRange,
+    ) -> Type {
+        let (is_bound, args_head): (bool, &[CallArg]) = match first_arg {
+            Some(arg) => (true, &[arg]),
+            None => (false, &[]),
+        };
+        let positional_count_error = |arg_range, n_expected| {
+            let (expected, actual) = if !is_bound {
+                (
+                    count(n_expected as usize, "positional argument"),
+                    remaining_args.len().to_string(),
+                )
+            } else if n_expected < 1 {
+                (
+                    "0 positional arguments".to_owned(),
+                    format!("{} (including implicit `self`)", remaining_args.len() + 1),
+                )
+            } else {
+                (
+                    count(n_expected as usize - 1, "positional argument"),
+                    remaining_args.len().to_string(),
+                )
+            };
+            self.error(arg_range, format!("Expected {expected}, got {actual}"))
+        };
+        let args_iter = args_head.iter().chain(remaining_args);
+        match callable.args {
+            Args::List(params) => {
+                let mut iparams = params.iter().enumerate().peekable();
+                let mut num_positional = 0;
+                let mut seen_names: SmallMap<Name, usize> = SmallMap::new();
+                for arg in args_iter {
+                    let mut hint = None;
+                    if let Some((p_idx, p)) = iparams.peek() {
+                        match p {
+                            Arg::PosOnly(ty, _required) => {
+                                num_positional += 1;
+                                iparams.next();
+                                hint = Some(ty)
+                            }
+                            Arg::Pos(name, ty, _required) => {
+                                num_positional += 1;
+                                seen_names.insert(name.clone(), *p_idx);
+                                iparams.next();
+                                hint = Some(ty)
+                            }
+                            Arg::VarArg(ty) => hint = Some(ty),
+                            Arg::KwOnly(..) | Arg::Kwargs(..) => {
+                                if num_positional >= 0 {
+                                    positional_count_error(arg.range(), num_positional);
+                                    num_positional = -1;
+                                }
+                            }
+                        };
+                    } else if num_positional >= 0 {
+                        positional_count_error(arg.range(), num_positional);
+                        num_positional = -1;
+                    }
+                    arg.check_against_hint(self, hint);
+                }
+                let mut need_positional = 0;
+                let mut kwparams = SmallMap::new();
+                let mut kwargs = None;
+                for (p_idx, p) in iparams {
+                    match p {
+                        Arg::PosOnly(_, required) => {
+                            if *required == Required::Required {
+                                need_positional += 1;
+                            }
+                        }
+                        Arg::VarArg(..) => {}
+                        Arg::Pos(name, _, _) | Arg::KwOnly(name, _, _) => {
+                            kwparams.insert(name.clone(), p_idx);
+                        }
+                        Arg::Kwargs(ty) => {
+                            kwargs = Some(ty);
+                        }
+                    }
+                }
+                for kw in keywords {
+                    let mut hint = None;
+                    if need_positional > 0 {
+                        self.error(
+                            kw.range,
+                            format!(
+                                "Expected {}",
+                                count(need_positional, "more positional argument")
+                            ),
+                        );
+                        need_positional = 0;
+                    } else {
+                        match &kw.arg {
+                            None => {
+                                self.error_todo(
+                                    "call_infer: unsupported **kwargs argument to call",
+                                    kw.range,
+                                );
+                            }
+                            Some(id) => {
+                                hint = kwargs;
+                                if let Some(&p_idx) = seen_names.get(&id.id) {
+                                    self.error(
+                                        kw.range,
+                                        format!("Multiple values for argument '{}'", id.id),
+                                    );
+                                    params[p_idx].visit(|ty| hint = Some(ty));
+                                } else if let Some(&p_idx) = kwparams.get(&id.id) {
+                                    seen_names.insert(id.id.clone(), p_idx);
+                                    params[p_idx].visit(|ty| hint = Some(ty));
+                                } else if kwargs.is_none() {
+                                    self.error(
+                                        kw.range,
+                                        format!("Unexpected keyword argument '{}'", id.id),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    self.expr(&kw.value, hint);
+                }
+                if need_positional > 0 {
+                    self.error(
+                        range,
+                        format!(
+                            "Expected {}",
+                            count(need_positional, "more positional argument")
+                        ),
+                    );
+                } else if num_positional >= 0 {
+                    for (name, &p_idx) in kwparams.iter() {
+                        let required = params[p_idx].is_required();
+                        if required && !seen_names.contains_key(name) {
+                            self.error(range, format!("Missing argument '{}'", name));
+                        }
+                    }
+                }
+                callable.ret
+            }
+            Args::Ellipsis => {
+                // Deal with Callable[..., R]
+                for t in args_iter {
+                    t.check_against_hint(self, None);
+                }
+                callable.ret
+            }
+            _ => self.error(
+                range,
+                "Answers::expr_infer wrong number of arguments to call".to_owned(),
+            ),
+        }
+    }
+
     fn call_infer(
         &self,
         call_target: CallTarget,
@@ -261,16 +419,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         keywords: &[Keyword],
         range: TextRange,
     ) -> Type {
-        let positional_count_error = |arg_range, expected| {
-            self.error(
-                arg_range,
-                format!(
-                    "Expected {} positional argument(s), got {}",
-                    expected,
-                    args.len()
-                ),
-            )
-        };
         match call_target {
             CallTarget::Class(cls) => {
                 self.call_infer(
@@ -287,132 +435,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             CallTarget::BoundMethod(obj, c) => {
                 let first_arg = CallArg::Type(&obj, range);
-                let mut full_args = vec![first_arg];
-                full_args.extend(args.to_owned());
-                self.call_infer(CallTarget::Callable(c), &full_args, keywords, range)
+                self.callable_infer(c, Some(first_arg), args, keywords, range)
             }
             CallTarget::Callable(callable) => {
-                match callable.args {
-                    Args::List(params) => {
-                        let mut iparams = params.iter().enumerate().peekable();
-                        let mut num_positional = 0;
-                        let mut seen_names: SmallMap<Name, usize> = SmallMap::new();
-                        for arg in args {
-                            let mut hint = None;
-                            if let Some((p_idx, p)) = iparams.peek() {
-                                match p {
-                                    Arg::PosOnly(ty, _required) => {
-                                        num_positional += 1;
-                                        iparams.next();
-                                        hint = Some(ty)
-                                    }
-                                    Arg::Pos(name, ty, _required) => {
-                                        num_positional += 1;
-                                        seen_names.insert(name.clone(), *p_idx);
-                                        iparams.next();
-                                        hint = Some(ty)
-                                    }
-                                    Arg::VarArg(ty) => hint = Some(ty),
-                                    Arg::KwOnly(..) | Arg::Kwargs(..) => {
-                                        if num_positional >= 0 {
-                                            positional_count_error(arg.range(), num_positional);
-                                            num_positional = -1;
-                                        }
-                                    }
-                                };
-                            } else if num_positional >= 0 {
-                                positional_count_error(arg.range(), num_positional);
-                                num_positional = -1;
-                            }
-                            arg.check_against_hint(self, hint);
-                        }
-                        let mut need_positional = 0;
-                        let mut kwparams = SmallMap::new();
-                        let mut kwargs = None;
-                        for (p_idx, p) in iparams {
-                            match p {
-                                Arg::PosOnly(_, required) => {
-                                    if *required == Required::Required {
-                                        need_positional += 1;
-                                    }
-                                }
-                                Arg::VarArg(..) => {}
-                                Arg::Pos(name, _, _) | Arg::KwOnly(name, _, _) => {
-                                    kwparams.insert(name.clone(), p_idx);
-                                }
-                                Arg::Kwargs(ty) => {
-                                    kwargs = Some(ty);
-                                }
-                            }
-                        }
-                        for kw in keywords {
-                            let mut hint = None;
-                            if need_positional > 0 {
-                                self.error(
-                                    kw.range,
-                                    format!(
-                                        "Expected {} more positional argument(s)",
-                                        need_positional
-                                    ),
-                                );
-                                need_positional = 0;
-                            } else {
-                                match &kw.arg {
-                                    None => {
-                                        self.error_todo(
-                                            "call_infer: unsupported **kwargs argument to call",
-                                            kw.range,
-                                        );
-                                    }
-                                    Some(id) => {
-                                        hint = kwargs;
-                                        if let Some(&p_idx) = seen_names.get(&id.id) {
-                                            self.error(
-                                                kw.range,
-                                                format!("Multiple values for argument '{}'", id.id),
-                                            );
-                                            params[p_idx].visit(|ty| hint = Some(ty));
-                                        } else if let Some(&p_idx) = kwparams.get(&id.id) {
-                                            seen_names.insert(id.id.clone(), p_idx);
-                                            params[p_idx].visit(|ty| hint = Some(ty));
-                                        } else if kwargs.is_none() {
-                                            self.error(
-                                                kw.range,
-                                                format!("Unexpected keyword argument '{}'", id.id),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            self.expr(&kw.value, hint);
-                        }
-                        if need_positional > 0 {
-                            self.error(
-                                range,
-                                format!("Expected {} more positional argument(s)", need_positional),
-                            );
-                        } else if num_positional >= 0 {
-                            for (name, &p_idx) in kwparams.iter() {
-                                let required = params[p_idx].is_required();
-                                if required && !seen_names.contains_key(name) {
-                                    self.error(range, format!("Missing argument '{}'", name));
-                                }
-                            }
-                        }
-                        callable.ret
-                    }
-                    Args::Ellipsis => {
-                        // Deal with Callable[..., R]
-                        for t in args {
-                            t.check_against_hint(self, None);
-                        }
-                        callable.ret
-                    }
-                    _ => self.error(
-                        range,
-                        "Answers::expr_infer wrong number of arguments to call".to_owned(),
-                    ),
-                }
+                self.callable_infer(callable, None, args, keywords, range)
             }
         }
     }
@@ -591,98 +617,150 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Expr::Lambda(_) => self.error_todo("Answers::expr_infer", x),
             Expr::If(x) => {
-                let condition_type = self.expr_infer(&x.test);
                 // TODO: Support type refinement
-                let body_type = self.expr_infer(&x.body);
-                let orelse_type = self.expr_infer(&x.orelse);
-                match condition_type.as_bool() {
-                    Some(true) => body_type,
-                    Some(false) => orelse_type,
-                    None => self.union(&body_type, &orelse_type),
+                let condition_type = self.expr_infer(&x.test);
+                if let Some(hint_ty) = hint {
+                    let mut body_hint = hint;
+                    let mut orelse_hint = hint;
+                    match condition_type.as_bool() {
+                        Some(true) => orelse_hint = None,
+                        Some(false) => body_hint = None,
+                        None => {}
+                    }
+                    self.expr(&x.body, body_hint);
+                    self.expr(&x.orelse, orelse_hint);
+                    hint_ty.clone()
+                } else {
+                    let body_type = self.expr_infer(&x.body);
+                    let orelse_type = self.expr_infer(&x.orelse);
+                    match condition_type.as_bool() {
+                        Some(true) => body_type,
+                        Some(false) => orelse_type,
+                        None => self.union(&body_type, &orelse_type),
+                    }
+                }
+            }
+            Expr::Tuple(x) => {
+                let ts = match hint {
+                    Some(Type::Tuple(Tuple::Concrete(elts))) if elts.len() == x.elts.len() => elts,
+                    Some(ty) => match self.decompose_tuple(ty) {
+                        Some(elem_ty) => &vec![elem_ty; x.elts.len()],
+                        None => &Vec::new(),
+                    },
+                    None => &Vec::new(),
+                };
+                Type::tuple(
+                    x.elts
+                        .iter()
+                        .enumerate()
+                        .map(|(i, x)| self.expr(x, ts.get(i)))
+                        .collect(),
+                )
+            }
+            Expr::List(x) => {
+                let hint = hint.and_then(|ty| self.decompose_list(ty));
+                if let Some(hint) = hint {
+                    x.elts.iter().for_each(|x| {
+                        self.expr(x, Some(&hint));
+                    });
+                    self.stdlib.list(hint).to_type()
+                } else if x.is_empty() {
+                    let elem_ty = self.solver().fresh_contained(self.uniques).to_type();
+                    self.stdlib.list(elem_ty).to_type()
+                } else {
+                    let tys = x
+                        .elts
+                        .map(|x| self.expr_infer(x).promote_literals(self.stdlib));
+                    self.stdlib.list(self.unions(&tys)).to_type()
                 }
             }
             Expr::Dict(x) => {
-                let hint = hint.and_then(|ty| self.unwrap_dict(ty));
-                if x.is_empty() {
-                    match hint {
-                        Some(x) => x.to_type(self.stdlib),
-                        None => self
-                            .stdlib
-                            .dict(
-                                self.solver().fresh_contained(self.uniques).to_type(),
-                                self.solver().fresh_contained(self.uniques).to_type(),
-                            )
-                            .to_type(),
-                    }
+                let hint = hint.and_then(|ty| self.decompose_dict(ty));
+                if let Some(hint) = hint {
+                    x.items.iter().for_each(|x| match &x.key {
+                        Some(key) => {
+                            self.expr(key, Some(&hint.key));
+                            self.expr(&x.value, Some(&hint.value));
+                        }
+                        None => {
+                            self.error_todo("Answers::expr_infer expansion in dict literal", x);
+                        }
+                    });
+                    hint.to_type(self.stdlib)
+                } else if x.is_empty() {
+                    let key_ty = self.solver().fresh_contained(self.uniques).to_type();
+                    let value_ty = self.solver().fresh_contained(self.uniques).to_type();
+                    self.stdlib.dict(key_ty, value_ty).to_type()
                 } else {
-                    let (key_hint, value_hint) = match hint {
-                        Some(UnwrappedDict { key, value }) => (Some(key), Some(value)),
-                        None => (None, None),
-                    };
-                    let key_tys: Vec<Type> = x
-                        .items
-                        .iter()
-                        .filter_map(|x| match &x.key {
-                            Some(key) => {
-                                let key_t = self.expr(key, key_hint.as_ref());
-                                Some(self.promote(key_t, key_hint.as_ref()))
-                            }
-                            _ => {
-                                self.error_todo("Answers::expr_infer expansion in dict literal", x);
-                                None
-                            }
-                        })
-                        .collect();
-                    let value_tys: Vec<Type> = x
-                        .items
-                        .iter()
-                        .filter_map(|x| match x.key {
-                            Some(_) => {
-                                let value_t = self.expr(&x.value, value_hint.as_ref());
-                                Some(self.promote(value_t, value_hint.as_ref()))
-                            }
-                            _ => {
-                                self.error_todo("Answers::expr_infer expansion in dict literal", x);
-                                None
-                            }
-                        })
-                        .collect();
-                    self.stdlib
-                        .dict(self.unions(&key_tys), self.unions(&value_tys))
-                        .to_type()
+                    let mut key_tys = Vec::new();
+                    let mut value_tys = Vec::new();
+                    x.items.iter().for_each(|x| match &x.key {
+                        Some(key) => {
+                            let key_t = self.expr_infer(key).promote_literals(self.stdlib);
+                            let value_t = self.expr_infer(&x.value).promote_literals(self.stdlib);
+                            key_tys.push(key_t);
+                            value_tys.push(value_t);
+                        }
+                        None => {
+                            self.error_todo("Answers::expr_infer expansion in dict literal", x);
+                        }
+                    });
+                    let key_ty = self.unions(&key_tys);
+                    let value_ty = self.unions(&value_tys);
+                    self.stdlib.dict(key_ty, value_ty).to_type()
                 }
             }
             Expr::Set(x) => {
-                let hint = hint.and_then(|ty| self.unwrap_set(ty));
-                if x.is_empty() {
-                    let elem_ty = match hint {
-                        None => self.solver().fresh_contained(self.uniques).to_type(),
-                        Some(elem_ty) => elem_ty,
-                    };
+                let hint = hint.and_then(|ty| self.decompose_set(ty));
+                if let Some(hint) = hint {
+                    x.elts.iter().for_each(|x| {
+                        self.expr(x, Some(&hint));
+                    });
+                    self.stdlib.set(hint).to_type()
+                } else if x.is_empty() {
+                    let elem_ty = self.solver().fresh_contained(self.uniques).to_type();
                     self.stdlib.set(elem_ty).to_type()
                 } else {
-                    let tys = x.elts.map(|x| {
-                        let t = self.expr(x, hint.as_ref());
-                        self.promote(t, hint.as_ref())
-                    });
+                    let tys = x
+                        .elts
+                        .map(|x| self.expr_infer(x).promote_literals(self.stdlib));
                     self.stdlib.set(self.unions(&tys)).to_type()
                 }
             }
             Expr::ListComp(x) => {
+                let hint = hint.and_then(|ty| self.decompose_list(ty));
                 self.ifs_infer(&x.generators);
-                let elem_ty = self.expr_infer(&x.elt);
-                self.stdlib.list(elem_ty).to_type()
+                if let Some(hint) = hint {
+                    self.expr(&x.elt, Some(&hint));
+                    self.stdlib.list(hint).to_type()
+                } else {
+                    let elem_ty = self.expr_infer(&x.elt).promote_literals(self.stdlib);
+                    self.stdlib.list(elem_ty).to_type()
+                }
             }
             Expr::SetComp(x) => {
+                let hint = hint.and_then(|ty| self.decompose_set(ty));
                 self.ifs_infer(&x.generators);
-                let elem_ty = self.expr_infer(&x.elt);
-                self.stdlib.set(elem_ty).to_type()
+                if let Some(hint) = hint {
+                    self.expr(&x.elt, Some(&hint));
+                    self.stdlib.set(hint).to_type()
+                } else {
+                    let elem_ty = self.expr_infer(&x.elt).promote_literals(self.stdlib);
+                    self.stdlib.set(elem_ty).to_type()
+                }
             }
             Expr::DictComp(x) => {
+                let hint = hint.and_then(|ty| self.decompose_dict(ty));
                 self.ifs_infer(&x.generators);
-                let k_ty = self.expr_infer(&x.key);
-                let v_ty = self.expr_infer(&x.value);
-                self.stdlib.dict(k_ty, v_ty).to_type()
+                if let Some(hint) = hint {
+                    self.expr(&x.key, Some(&hint.key));
+                    self.expr(&x.value, Some(&hint.value));
+                    hint.to_type(self.stdlib)
+                } else {
+                    let key_ty = self.expr_infer(&x.key).promote_literals(self.stdlib);
+                    let value_ty = self.expr_infer(&x.value).promote_literals(self.stdlib);
+                    self.stdlib.dict(key_ty, value_ty).to_type()
+                }
             }
             Expr::Generator(x) => {
                 self.ifs_infer(&x.generators);
@@ -957,39 +1035,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .get(&Key::Usage(ShortIdentifier::expr_name(x)))
                     .arc_clone(),
             },
-            Expr::List(x) => {
-                let hint = hint.and_then(|ty| self.unwrap_list(ty));
-                if x.is_empty() {
-                    let elem_ty = match hint {
-                        None => self.solver().fresh_contained(self.uniques).to_type(),
-                        Some(elem_ty) => elem_ty,
-                    };
-                    self.stdlib.list(elem_ty).to_type()
-                } else {
-                    let tys = x.elts.map(|x| {
-                        let t = self.expr(x, hint.as_ref());
-                        self.promote(t, hint.as_ref())
-                    });
-                    self.stdlib.list(self.unions(&tys)).to_type()
-                }
-            }
-            Expr::Tuple(x) => {
-                let ts = match hint {
-                    Some(Type::Tuple(Tuple::Concrete(elts))) if elts.len() == x.elts.len() => elts,
-                    Some(ty) => match self.unwrap_tuple(ty) {
-                        Some(elem_ty) => &vec![elem_ty; x.elts.len()],
-                        None => &Vec::new(),
-                    },
-                    None => &Vec::new(),
-                };
-                Type::tuple(
-                    x.elts
-                        .iter()
-                        .enumerate()
-                        .map(|(i, x)| self.expr(x, ts.get(i)))
-                        .collect(),
-                )
-            }
             Expr::Slice(_) => {
                 // TODO(stroxler, yangdanny): slices are generic, we should not hard code to int.
                 let int = self.stdlib.int().to_type();

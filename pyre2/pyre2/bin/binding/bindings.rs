@@ -46,14 +46,16 @@ use vec1::Vec1;
 use crate::ast::Ast;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
+use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::ContextManagerKind;
 use crate::binding::binding::FunctionKind;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
+use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
-use crate::binding::binding::KeyExported;
+use crate::binding::binding::KeyExport;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::binding::binding::Keyed;
 use crate::binding::binding::RaisedException;
@@ -229,7 +231,7 @@ impl FlowInfo {
 #[derive(Clone, Debug)]
 struct ClassBodyInner {
     name: Identifier,
-    instance_attributes_by_method: SmallMap<Name, SmallMap<Name, Binding>>,
+    instance_attributes_by_method: SmallMap<Name, SmallMap<Name, InstanceAttribute>>,
 }
 
 impl ClassBodyInner {
@@ -238,11 +240,16 @@ impl ClassBodyInner {
     }
 }
 
+/// Information about an instance attribute coming from a `self` assignment
+/// in a method.
+#[derive(Clone, Debug)]
+struct InstanceAttribute(Binding, Option<Idx<KeyAnnotation>>);
+
 #[derive(Clone, Debug)]
 struct MethodInner {
     name: Identifier,
     self_name: Option<Identifier>,
-    instance_attributes: SmallMap<Name, Binding>,
+    instance_attributes: SmallMap<Name, InstanceAttribute>,
 }
 
 #[derive(Clone, Debug)]
@@ -438,7 +445,7 @@ impl Bindings {
                     Binding::AnyType(AnyStyle::Error)
                 }
             };
-            builder.table.insert(KeyExported::Export(k), val);
+            builder.table.insert(KeyExport(k), val);
         }
         Self(Arc::new(BindingsInner {
             module_info,
@@ -746,7 +753,12 @@ impl<'a> BindingsBuilder<'a> {
     /// constructors, we currently are applying this logic for all methods.
     ///
     /// Returns `true` if the attribute was a self attribute.
-    fn bind_attr_if_self(&mut self, x: &ExprAttribute, binding: Binding) -> bool {
+    fn bind_attr_if_self(
+        &mut self,
+        x: &ExprAttribute,
+        binding: Binding,
+        annotation: Option<Idx<KeyAnnotation>>,
+    ) -> bool {
         for scope in self.scopes.iter_mut().rev() {
             if let ScopeKind::Method(method) = &mut scope.kind
                 && let Some(self_name) = &method.self_name
@@ -755,7 +767,7 @@ impl<'a> BindingsBuilder<'a> {
                 if !method.instance_attributes.contains_key(&x.attr.id) {
                     method
                         .instance_attributes
-                        .insert(x.attr.id.clone(), binding);
+                        .insert(x.attr.id.clone(), InstanceAttribute(binding, annotation));
                 }
                 return true;
             }
@@ -789,7 +801,7 @@ impl<'a> BindingsBuilder<'a> {
                     BindingAnnotation::AttrType(x.clone()),
                 );
                 let binding = make_binding(Some(ann));
-                self.bind_attr_if_self(x, binding.clone());
+                self.bind_attr_if_self(x, binding.clone(), None);
                 self.table.insert(Key::Anon(x.range), binding);
             }
             Expr::Subscript(x) => {
@@ -936,7 +948,10 @@ impl<'a> BindingsBuilder<'a> {
         }
         let func_name = x.name.clone();
         let self_type = match &self.scopes.last().kind {
-            ScopeKind::ClassBody(body) => Some(self.table.types.0.insert(body.as_self_type_key())),
+            // __new__ is a staticmethod that is special-cased at runtime to not need @staticmethod decoration.
+            ScopeKind::ClassBody(body) if func_name.id != dunder::NEW => {
+                Some(self.table.types.0.insert(body.as_self_type_key()))
+            }
             _ => None,
         };
 
@@ -1111,28 +1126,30 @@ impl<'a> BindingsBuilder<'a> {
         let last_scope = self.scopes.pop().unwrap();
         let mut fields = SmallSet::new();
         for (name, info) in last_scope.flow.info.iter() {
-            let mut val = Binding::Forward(self.table.types.0.insert(Key::Anywhere(
+            let flow_type = Binding::Forward(self.table.types.0.insert(Key::Anywhere(
                 name.clone(),
                 last_scope.stat.0.get(name).unwrap().loc,
             )));
-            if let Some(ann) = &info.ann {
-                val = Binding::AnnotatedType(*ann, Box::new(val));
-            }
+            let binding = if let Some(ann) = &info.ann {
+                BindingClassField(flow_type, Some(*ann))
+            } else {
+                BindingClassField(flow_type, None)
+            };
             fields.insert(name.clone());
             self.table.insert(
-                KeyExported::ClassField(ShortIdentifier::new(&x.name), name.clone()),
-                val,
+                KeyClassField(ShortIdentifier::new(&x.name), name.clone()),
+                binding,
             );
         }
         if let ScopeKind::ClassBody(body) = last_scope.kind {
             for (method_name, instance_attributes) in body.instance_attributes_by_method {
                 if method_name == dunder::INIT {
-                    for (name, binding) in instance_attributes {
+                    for (name, attribute) in instance_attributes {
                         if !fields.contains(&name) {
                             fields.insert(name.clone());
                             self.table.insert(
-                                KeyExported::ClassField(ShortIdentifier::new(&x.name), name),
-                                binding,
+                                KeyClassField(ShortIdentifier::new(&x.name), name),
+                                BindingClassField(attribute.0, attribute.1),
                             );
                         }
                     }
@@ -1440,10 +1457,7 @@ impl<'a> BindingsBuilder<'a> {
                         Some(v) => Binding::Expr(None, *v.clone()),
                         None => Binding::AnyType(AnyStyle::Implicit),
                     };
-                    if self.bind_attr_if_self(
-                        &attr,
-                        Binding::AnnotatedType(ann_key, Box::new(value_type)),
-                    ) {
+                    if self.bind_attr_if_self(&attr, value_type, Some(ann_key)) {
                         self.table.insert(
                             Key::Anon(attr.range),
                             Binding::Eq(ann_key, attr_key, attr.attr.id),

@@ -40,7 +40,8 @@ use crate::types::types::Type;
 use crate::util::display::DisplayWith;
 
 assert_eq_size!(Key, [usize; 5]);
-assert_eq_size!(KeyExported, [usize; 4]);
+assert_eq_size!(KeyExport, [usize; 3]);
+assert_eq_size!(KeyClassField, [usize; 4]);
 assert_eq_size!(KeyAnnotation, [u8; 12]); // Equivalent to 1.5 usize
 assert_eq_size!(KeyClassMetadata, [usize; 1]);
 assert_eq_size!(KeyLegacyTypeParam, [usize; 1]);
@@ -48,6 +49,7 @@ assert_eq_size!(KeyLegacyTypeParam, [usize; 1]);
 assert_eq_size!(Binding, [usize; 9]);
 assert_eq_size!(BindingAnnotation, [usize; 9]);
 assert_eq_size!(BindingClassMetadata, [usize; 8]);
+assert_eq_size!(BindingClassField, [usize; 10]);
 assert_eq_size!(BindingLegacyTypeParam, [u32; 1]);
 
 pub trait Keyed: Hash + Eq + Clone + DisplayWith<ModuleInfo> + Debug + Ranged + 'static {
@@ -60,7 +62,12 @@ impl Keyed for Key {
     type Value = Binding;
     type Answer = Type;
 }
-impl Keyed for KeyExported {
+impl Keyed for KeyClassField {
+    const EXPORTED: bool = true;
+    type Value = BindingClassField;
+    type Answer = Type;
+}
+impl Keyed for KeyExport {
     const EXPORTED: bool = true;
     type Value = Binding;
     type Answer = Type;
@@ -149,32 +156,43 @@ impl DisplayWith<Bindings> for Key {
     }
 }
 
-/// Like `Key`, but used for things accessible in another module.
+/// The binding definition site, at the end of the module (used for export).
+/// If it has an annotation, only the annotation will be returned.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum KeyExported {
-    /// The binding definition site, at the end of the module (used for export).
-    /// If it has an annotation, only the annotation will be returned.
-    Export(Name),
-    /// A reference to a field in a class.
-    /// The range is the range of the class name, not the field name.
-    ClassField(ShortIdentifier, Name),
-}
+pub struct KeyExport(pub Name);
 
-impl Ranged for KeyExported {
+impl Ranged for KeyExport {
     fn range(&self) -> TextRange {
-        match self {
-            Self::Export(_) => TextRange::default(),
-            Self::ClassField(c, _) => c.range(),
-        }
+        TextRange::default()
     }
 }
 
-impl DisplayWith<ModuleInfo> for KeyExported {
+impl DisplayWith<ModuleInfo> for KeyExport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, _: &ModuleInfo) -> fmt::Result {
+        write!(f, "export {}", self.0)
+    }
+}
+
+/// A reference to a field in a class.
+/// The range is the range of the class name, not the field name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KeyClassField(pub ShortIdentifier, pub Name);
+
+impl Ranged for KeyClassField {
+    fn range(&self) -> TextRange {
+        self.0.range()
+    }
+}
+
+impl DisplayWith<ModuleInfo> for KeyClassField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
-        match self {
-            Self::Export(n) => write!(f, "export {n}"),
-            Self::ClassField(x, n) => write!(f, "field {} {:?} . {}", ctx.display(x), x.range(), n),
-        }
+        write!(
+            f,
+            "field {} {:?} . {}",
+            ctx.display(&self.0),
+            self.0.range(),
+            self.1
+        )
     }
 }
 
@@ -571,6 +589,18 @@ impl DisplayWith<Bindings> for BindingAnnotation {
             Self::Type(t) => write!(f, "type {t}"),
             Self::AttrType(attr) => write!(f, "type {attr:?}"),
         }
+    }
+}
+
+/// Binding for a class field, which is any attribute of a class defined in
+/// either the class body or in method (like `__init__`) that we recognize as
+/// defining instance attributes.
+#[derive(Clone, Debug)]
+pub struct BindingClassField(pub Binding, pub Option<Idx<KeyAnnotation>>);
+
+impl DisplayWith<Bindings> for BindingClassField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
+        write!(f, "class field {}", self.0.display_with(ctx))
     }
 }
 

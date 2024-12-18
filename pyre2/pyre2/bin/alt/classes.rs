@@ -25,8 +25,8 @@ use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::ast::Ast;
 use crate::binding::binding::Key;
+use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
-use crate::binding::binding::KeyExported;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
@@ -40,6 +40,7 @@ use crate::types::type_var::Variance;
 use crate::types::types::TParamInfo;
 use crate::types::types::TParams;
 use crate::types::types::Type;
+use crate::util::display::count;
 use crate::util::prelude::SliceExt;
 
 /// Class members can fail to be
@@ -385,9 +386,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         range,
                         format!(
-                            "Expected {} type argument{} for class `{}`, got {}.",
-                            tparams.len(),
-                            if tparams.len() == 1 { "" } else { "s" },
+                            "Expected {} for class `{}`, got {}.",
+                            count(tparams.len(), "type argument"),
                             cls.name(),
                             nargs
                         ),
@@ -499,7 +499,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         if cls.contains(name) {
             let ty = self.get_from_class(
                 cls,
-                &KeyExported::ClassField(ShortIdentifier::new(cls.name()), name.clone()),
+                &KeyClassField(ShortIdentifier::new(cls.name()), name.clone()),
             );
             Some(ty)
         } else {

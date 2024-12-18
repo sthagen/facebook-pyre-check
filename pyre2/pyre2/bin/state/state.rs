@@ -23,7 +23,7 @@ use crate::alt::answers::LookupAnswer;
 use crate::alt::answers::Solutions;
 use crate::alt::answers::SolutionsEntry;
 use crate::alt::answers::Solve;
-use crate::binding::binding::KeyExported;
+use crate::binding::binding::KeyExport;
 use crate::binding::binding::Keyed;
 use crate::binding::bindings::BindingEntry;
 use crate::binding::bindings::BindingTable;
@@ -52,7 +52,7 @@ use crate::util::uniques::UniqueFactory;
 
 pub struct State {
     config: Config,
-    loader: Box<Loader>,
+    loader: Box<dyn Loader>,
     uniques: UniqueFactory,
     parallel: bool,
     stdlib: RwLock<Arc<Stdlib>>,
@@ -113,7 +113,7 @@ impl ModuleState {
 }
 
 impl State {
-    pub fn new(loader: Box<Loader>, config: Config, parallel: bool) -> Self {
+    pub fn new(loader: Box<dyn Loader>, config: Config, parallel: bool) -> Self {
         Self {
             config,
             loader,
@@ -226,7 +226,7 @@ impl State {
             return None;
         }
 
-        let t = self.lookup_answer(module, &KeyExported::Export(name.clone()));
+        let t = self.lookup_answer(module, &KeyExport(name.clone()));
         match t.arc_clone() {
             Type::ClassDef(cls) => Some(cls),
             ty => {
