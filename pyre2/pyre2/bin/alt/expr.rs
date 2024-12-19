@@ -412,6 +412,28 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    fn construct(
+        &self,
+        cls: ClassType,
+        args: &[CallArg],
+        keywords: &[Keyword],
+        range: TextRange,
+    ) -> Type {
+        self.call_infer(
+            self.as_call_target_or_error(
+                self.get_instance_attribute(&cls, &dunder::INIT)
+                    .unwrap()
+                    .value,
+                CallStyle::Method(&dunder::INIT),
+                range,
+            ),
+            args,
+            keywords,
+            range,
+        );
+        cls.self_type()
+    }
+
     fn call_infer(
         &self,
         call_target: CallTarget,
@@ -420,19 +442,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
     ) -> Type {
         match call_target {
-            CallTarget::Class(cls) => {
-                self.call_infer(
-                    self.as_call_target_or_error(
-                        self.get_instance_attribute(&cls, &dunder::INIT).unwrap(),
-                        CallStyle::Method(&dunder::INIT),
-                        range,
-                    ),
-                    args,
-                    keywords,
-                    range,
-                );
-                cls.self_type()
-            }
+            CallTarget::Class(cls) => self.construct(cls, args, keywords, range),
             CallTarget::BoundMethod(obj, c) => {
                 let first_arg = CallArg::Type(&obj, range);
                 self.callable_infer(c, Some(first_arg), args, keywords, range)
@@ -615,7 +625,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     },
                 })
             }
-            Expr::Lambda(_) => self.error_todo("Answers::expr_infer", x),
+            Expr::Lambda(lambda) => {
+                let parameters: Vec<Arg> = if let Some(parameters) = &lambda.parameters {
+                    (**parameters)
+                        .iter()
+                        .map(|p| {
+                            let ty = self
+                                .get(&Key::Definition(ShortIdentifier::new(p.name())))
+                                .arc_clone();
+                            Arg::Pos(p.name().clone().id, ty, Required::Required)
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                };
+                let ret = self.expr_infer(&lambda.body);
+                Type::Callable(Box::new(Callable {
+                    args: Args::List(parameters),
+                    ret,
+                }))
+            }
             Expr::If(x) => {
                 // TODO: Support type refinement
                 let condition_type = self.expr_infer(&x.test);
