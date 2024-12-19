@@ -49,10 +49,20 @@ pub enum NoClassAttribute {
     IsGenericMember,
 }
 
+/// Result of attribute lookup
 pub struct Attribute {
+    /// The attribute
     pub value: Type,
-    #[expect(dead_code)]
+    /// The class that defines the attribute, which may be different from the one the attribute is
+    /// looked up on. For example, given `class A: x: int; class B(A): pass`, the defining class
+    /// for attribute `x` is `A` even when `x` is looked up on `B`.
     defining_class: Class,
+}
+
+impl Attribute {
+    pub fn defined_on(&self, cls: &Class) -> bool {
+        self.defining_class == *cls
+    }
 }
 
 /// Private helper type used to share part of the logic needed for the
@@ -472,6 +482,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         ))));
         self.solver()
             .fresh_quantified(qs.as_slice(), promoted_cls, self.uniques)
+            .1
     }
 
     /// Get an ancestor `ClassType`, in terms of the type parameters of `class`.

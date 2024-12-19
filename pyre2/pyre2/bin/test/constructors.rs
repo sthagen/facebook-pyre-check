@@ -82,7 +82,7 @@ C[str](c)  # E: EXPECTED C[int] <: C[str]
     "#,
 );
 
-testcase_with_bug!(
+testcase!(
     test_metaclass_call,
     r#"
 class Meta(type):
@@ -91,12 +91,12 @@ class C(metaclass=Meta):
     def __init__(self, *args, **kwargs):
         pass
 C(5)
-C()     # Should be an error
-C("5")  # Should be an error
+C()     # E: Missing argument 'x'
+C("5")  # E: EXPECTED Literal['5'] <: int
     "#,
 );
 
-testcase_with_bug!(
+testcase!(
     test_metaclass_call_bad_classdef,
     r#"
 class Meta(type):
@@ -105,12 +105,12 @@ class Meta(type):
 class C(metaclass=Meta):
     pass
 # Both of these calls error at runtime.
-C()
+C()   # E: Missing argument 'x'
 C(0)  # E: Expected 0 positional arguments
     "#,
 );
 
-testcase_with_bug!(
+testcase!(
     test_metaclass_call_returns_something_else,
     r#"
 from typing import assert_type
@@ -120,18 +120,18 @@ class Meta(type):
 class C(metaclass=Meta):
     pass
 x = C()
-assert_type(x, int)  # E: assert_type
+assert_type(x, int)
     "#,
 );
 
-testcase_with_bug!(
+testcase!(
     test_new,
     r#"
 class C:
     def __new__[T](cls: type[T], x: int) -> T: ...
-C(5)    # E: Expected 0 positional arguments
-C()     # Should be an error
-C("5")  # E: Expected 0 positional arguments
+C(5)
+C()     # E: Missing argument 'x'
+C("5")  # E: EXPECTED Literal['5'] <: int
     "#,
 );
 
@@ -148,7 +148,7 @@ C("5")  # E: EXPECTED Literal['5'] <: int
     "#,
 );
 
-testcase_with_bug!(
+testcase!(
     test_new_and_inherited_init,
     r#"
 class Parent1:
@@ -165,12 +165,12 @@ class BadChild(Parent1):
 GoodChild(0)
 GoodChild()  # E: Missing argument 'x'
 # Both of these calls error at runtime.
-BadChild()
+BadChild()   # E: Missing argument 'x'
 BadChild(0)  # E: Expected 0 positional arguments
     "#,
 );
 
-testcase_with_bug!(
+testcase!(
     test_new_returns_something_else,
     r#"
 from typing import assert_type
@@ -178,7 +178,31 @@ class C:
     def __new__(cls) -> int:
         return 0
 x = C()
-assert_type(x, int)  # E: assert_type
+assert_type(x, int)
+    "#,
+);
+
+testcase_with_bug!(
+    test_generic_new,
+    r#"
+class C[T]:
+    def __new__(cls, x: T): ...
+C(0)  # Should we allow this? # E: TODO # E: Expected 0 positional arguments
+C[bool](True)  # This should be ok # E: TODO # E: Expected 0 positional arguments
+C[bool](0)  # This should be an error # E: TODO # E: Expected 0 positional arguments
+    "#,
+);
+
+testcase!(
+    test_new_return_self,
+    r#"
+from typing import Self, assert_type
+class C:
+    x: int
+    def __new__(cls) -> Self: ...
+    def __init__(self):
+        self.x = 42
+assert_type(C().x, int)
     "#,
 );
 

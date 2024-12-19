@@ -44,6 +44,7 @@ use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
 use crate::types::types::AnyStyle;
 use crate::types::types::Type;
+use crate::types::types::Var;
 use crate::util::display::count;
 use crate::util::prelude::SliceExt;
 
@@ -151,22 +152,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         CallTarget::any(AnyStyle::Error)
     }
 
-    fn as_call_target(&self, ty: Type) -> Option<CallTarget> {
+    /// Return a pair of the quantified variables I had to instantiate, and the resulting call target.
+    fn as_call_target(&self, ty: Type) -> Option<(Vec<Var>, CallTarget)> {
         match ty {
-            Type::Callable(c) => Some(CallTarget::Callable(*c)),
+            Type::Callable(c) => Some((Vec::new(), CallTarget::Callable(*c))),
             Type::BoundMethod(obj, func) => match self.as_call_target(*func.clone()) {
-                Some(CallTarget::Callable(c)) => Some(CallTarget::BoundMethod(*obj, c)),
+                Some((gs, CallTarget::Callable(c))) => Some((gs, CallTarget::BoundMethod(*obj, c))),
                 _ => None,
             },
             Type::ClassDef(cls) => self.as_call_target(self.instantiate_fresh(&cls)),
-            Type::Type(box Type::ClassType(cls)) => Some(CallTarget::Class(cls)),
+            Type::Type(box Type::ClassType(cls)) => Some((Vec::new(), CallTarget::Class(cls))),
             Type::Forall(params, t) => {
-                let t: Type = self.solver().fresh_quantified(
+                let (mut qs, t) = self.solver().fresh_quantified(
                     params.quantified().collect::<Vec<_>>().as_slice(),
                     *t,
                     self.uniques,
                 );
-                self.as_call_target(t)
+                self.as_call_target(t).map(|(qs2, x)| {
+                    qs.extend(qs2);
+                    (qs, x)
+                })
             }
             Type::Var(v) if let Some(_guard) = self.recurser.recurse(v) => {
                 self.as_call_target(self.solver().force_var(v))
@@ -175,14 +180,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let res = xs
                     .into_iter()
                     .map(|x| self.as_call_target(x))
-                    .collect::<Option<SmallSet<CallTarget>>>()?;
+                    .collect::<Option<SmallSet<_>>>()?;
                 if res.len() == 1 {
                     Some(res.into_iter().next().unwrap())
                 } else {
                     None
                 }
             }
-            Type::Any(style) => Some(CallTarget::any(style)),
+            Type::Any(style) => Some((Vec::new(), CallTarget::any(style))),
             Type::TypeAlias(ta) => self.as_call_target(ta.as_value(self.stdlib)),
             _ => None,
         }
@@ -193,7 +198,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         ty: Type,
         call_style: CallStyle,
         range: TextRange,
-    ) -> CallTarget {
+    ) -> (Vec<Var>, CallTarget) {
         match self.as_call_target(ty.clone()) {
             Some(target) => target,
             None => {
@@ -206,9 +211,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     CallStyle::FreeForm => "Expected a callable".to_owned(),
                 };
-                self.error_call_target(
-                    range,
-                    format!("{}, got {}", expect_message, ty.deterministic_printing()),
+                (
+                    Vec::new(),
+                    self.error_call_target(
+                        range,
+                        format!("{}, got {}", expect_message, ty.deterministic_printing()),
+                    ),
                 )
             }
         }
@@ -228,7 +236,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .ok_or_conflated_error_msg(method_name, "Expr::call_method_generic")
             {
                 Ok(ty) => self.as_call_target_or_error(ty, CallStyle::Method(method_name), range),
-                Err(msg) => self.error_call_target(range, msg),
+                Err(msg) => (Vec::new(), self.error_call_target(range, msg)),
             };
             self.call_infer(callable, args, keywords, range)
         })
@@ -412,6 +420,49 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    /// Get the `__call__` method from this class's metaclass.
+    fn get_metaclass_call(&self, cls: &ClassType) -> Option<Type> {
+        let metadata = self.get_metadata_for_class(cls.class_object());
+        let metaclass = metadata.metaclass()?;
+        let call_attr = self.get_instance_attribute(metaclass, &dunder::CALL)?;
+        if call_attr.defined_on(self.stdlib.builtins_type().class_object()) {
+            // The default behavior of `type.__call__` is already baked into our implementation of
+            // class construction; we only care about `__call__` if it is overridden.
+            return None;
+        }
+        match call_attr.value {
+            Type::BoundMethod(_, func) => {
+                // This method was bound to a general instance of the metaclass, but we have more
+                // information about the particular instance (`cls`) that it should be bound to.
+                Some(Type::BoundMethod(
+                    Box::new(Type::Type(Box::new(Type::ClassType(cls.clone())))),
+                    func,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the class's `__new__` method.
+    fn get_new(&self, cls: &ClassType, range: TextRange) -> Option<Type> {
+        let new_attr = match self.get_class_attribute(cls.class_object(), &dunder::NEW) {
+            Ok(attr) => attr,
+            Err(_) => {
+                self.error_todo(
+                    "__new__ is missing or uses class-scoped type parameters",
+                    range,
+                );
+                return None;
+            }
+        };
+        if new_attr.defined_on(self.stdlib.object_class_type().class_object()) {
+            // The default behavior of `object.__new__` is already baked into our implementation of
+            // class construction; we only care about `__new__` if it is overridden.
+            return None;
+        }
+        Some(new_attr.value)
+    }
+
     fn construct(
         &self,
         cls: ClassType,
@@ -419,11 +470,52 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         keywords: &[Keyword],
         range: TextRange,
     ) -> Type {
+        // Based on https://typing.readthedocs.io/en/latest/spec/constructors.html.
+        let instance_ty = Type::ClassType(cls.clone());
+        if let Some(call_method) = self.get_metaclass_call(&cls) {
+            let ret = self.call_infer(
+                self.as_call_target_or_error(call_method, CallStyle::Method(&dunder::CALL), range),
+                args,
+                keywords,
+                range,
+            );
+            if !self
+                .solver()
+                .is_subset_eq(&ret, &instance_ty, self.type_order())
+            {
+                // Got something other than an instance of the class under construction.
+                return ret;
+            }
+        }
+        let overrides_new = if let Some(new_method) = self.get_new(&cls, range) {
+            let cls_ty = Type::Type(Box::new(instance_ty.clone()));
+            let mut full_args = vec![CallArg::Type(&cls_ty, range)];
+            full_args.extend_from_slice(args);
+            let ret = self.call_infer(
+                self.as_call_target_or_error(new_method, CallStyle::Method(&dunder::NEW), range),
+                &full_args,
+                keywords,
+                range,
+            );
+            if !self
+                .solver()
+                .is_subset_eq(&ret, &instance_ty, self.type_order())
+            {
+                // Got something other than an instance of the class under construction.
+                return ret;
+            }
+            true
+        } else {
+            false
+        };
+        let init_method = self.get_instance_attribute(&cls, &dunder::INIT).unwrap();
+        if overrides_new && init_method.defined_on(self.stdlib.object_class_type().class_object()) {
+            // Class overrides `object.__new__` but not `object.__init__`. There's no need to call `__init__`.
+            return cls.self_type();
+        }
         self.call_infer(
             self.as_call_target_or_error(
-                self.get_instance_attribute(&cls, &dunder::INIT)
-                    .unwrap()
-                    .value,
+                init_method.value,
                 CallStyle::Method(&dunder::INIT),
                 range,
             ),
@@ -436,12 +528,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     fn call_infer(
         &self,
-        call_target: CallTarget,
+        call_target: (Vec<Var>, CallTarget),
         args: &[CallArg],
         keywords: &[Keyword],
         range: TextRange,
     ) -> Type {
-        match call_target {
+        let res = match call_target.1 {
             CallTarget::Class(cls) => self.construct(cls, args, keywords, range),
             CallTarget::BoundMethod(obj, c) => {
                 let first_arg = CallArg::Type(&obj, range);
@@ -450,7 +542,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             CallTarget::Callable(callable) => {
                 self.callable_infer(callable, None, args, keywords, range)
             }
-        }
+        };
+        self.solver().finish_quantified(&call_target.0);
+        res
     }
 
     pub fn attr_infer(&self, obj: &Type, attr_name: &Name, range: TextRange) -> Type {
@@ -626,7 +720,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 })
             }
             Expr::Lambda(lambda) => {
+                let hint_callable = hint.and_then(|ty| {
+                    if let Some(CallTarget::Callable(c)) = self.as_call_target(ty.clone()) {
+                        Some(c)
+                    } else {
+                        None
+                    }
+                });
                 let parameters: Vec<Arg> = if let Some(parameters) = &lambda.parameters {
+                    // TODO: use callable hint parameters to check body
                     (**parameters)
                         .iter()
                         .map(|p| {
@@ -639,11 +741,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 } else {
                     vec![]
                 };
-                let ret = self.expr_infer(&lambda.body);
-                Type::Callable(Box::new(Callable {
-                    args: Args::List(parameters),
-                    ret,
-                }))
+                if let Some(callable) = hint_callable {
+                    let inferred_callable = Type::Callable(Box::new(Callable {
+                        args: Args::List(parameters),
+                        ret: self.expr(&lambda.body, Some(&callable.ret)),
+                    }));
+                    let wanted_callable = Type::Callable(Box::new(callable));
+                    self.check_type(&wanted_callable, &inferred_callable, x.range());
+                    wanted_callable
+                } else {
+                    Type::Callable(Box::new(Callable {
+                        args: Args::List(parameters),
+                        ret: self.expr_infer(&lambda.body),
+                    }))
+                }
             }
             Expr::If(x) => {
                 // TODO: Support type refinement

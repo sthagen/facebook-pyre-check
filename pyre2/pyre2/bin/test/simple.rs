@@ -491,7 +491,7 @@ def bar(random: bool):
         x = foo([])
     else:
         x = foo([1])
-    assert_type(x, Any | int)
+    assert_type(x, int)
     "#,
 );
 
@@ -903,6 +903,32 @@ async def bar() -> str: ...
 async def test() -> None:
     assert_type(await Foo(), int)
     assert_type(await bar(), str)
+"#,
+);
+
+testcase!(
+    test_generic_create_literal,
+    r#"
+from typing import assert_type, Literal
+
+class Foo[T]:
+    def __init__(self, x: T) -> None: ...
+
+x: Literal[42] = 42
+assert_type(Foo(x), Foo[int])
+"#,
+);
+
+testcase!(
+    test_generic_get_literal,
+    r#"
+from typing import assert_type, Literal
+
+class Foo[T]:
+    def get(self) -> T: ...
+
+def test(x: Foo[Literal[42]]) -> None:
+    assert_type(x.get(), Literal[42])
 "#,
 );
 
