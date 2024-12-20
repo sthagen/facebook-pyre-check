@@ -444,17 +444,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     /// Get the class's `__new__` method.
-    fn get_new(&self, cls: &ClassType, range: TextRange) -> Option<Type> {
-        let new_attr = match self.get_class_attribute(cls.class_object(), &dunder::NEW) {
-            Ok(attr) => attr,
-            Err(_) => {
-                self.error_todo(
-                    "__new__ is missing or uses class-scoped type parameters",
-                    range,
-                );
-                return None;
-            }
-        };
+    fn get_new(&self, cls: &ClassType) -> Option<Type> {
+        let new_attr = self.get_class_attribute_with_targs(cls, &dunder::NEW)?;
         if new_attr.defined_on(self.stdlib.object_class_type().class_object()) {
             // The default behavior of `object.__new__` is already baked into our implementation of
             // class construction; we only care about `__new__` if it is overridden.
@@ -487,7 +478,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 return ret;
             }
         }
-        let overrides_new = if let Some(new_method) = self.get_new(&cls, range) {
+        let overrides_new = if let Some(new_method) = self.get_new(&cls) {
             let cls_ty = Type::Type(Box::new(instance_ty.clone()));
             let mut full_args = vec![CallArg::Type(&cls_ty, range)];
             full_args.extend_from_slice(args);
@@ -508,21 +499,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             false
         };
-        let init_method = self.get_instance_attribute(&cls, &dunder::INIT).unwrap();
-        if overrides_new && init_method.defined_on(self.stdlib.object_class_type().class_object()) {
-            // Class overrides `object.__new__` but not `object.__init__`. There's no need to call `__init__`.
-            return cls.self_type();
-        }
-        self.call_infer(
-            self.as_call_target_or_error(
-                init_method.value,
-                CallStyle::Method(&dunder::INIT),
+        let init_method = self.get_instance_attribute(&cls, &dunder::INIT);
+        // We skip calling `__init__` if:
+        // (1) it isn't defined (possible if we've been passed a custom typeshed), or
+        // (2) the class overrides `object.__new__` but not `object.__init__`, in wich case the
+        //     `__init__` call always succeeds at runtime.
+        if let Some(init_method) = init_method
+            && !(overrides_new
+                && init_method.defined_on(self.stdlib.object_class_type().class_object()))
+        {
+            self.call_infer(
+                self.as_call_target_or_error(
+                    init_method.value,
+                    CallStyle::Method(&dunder::INIT),
+                    range,
+                ),
+                args,
+                keywords,
                 range,
-            ),
-            args,
-            keywords,
-            range,
-        );
+            );
+        }
         cls.self_type()
     }
 
@@ -691,7 +687,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn expr_infer_with_hint(&self, x: &Expr, hint: Option<&Type>) -> Type {
         match x {
             Expr::BoolOp(x) => self.boolop(&x.values, x.op),
-            Expr::Named(_) => self.error_todo("Answers::expr_infer", x),
+            Expr::Named(x) => self.expr_infer_with_hint(&x.value, hint),
             Expr::BinOp(x) => self.binop_infer(x),
             Expr::UnaryOp(x) => {
                 let t = self.expr_infer(&x.operand);
@@ -721,7 +717,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Expr::Lambda(lambda) => {
                 let hint_callable = hint.and_then(|ty| {
-                    if let Some(CallTarget::Callable(c)) = self.as_call_target(ty.clone()) {
+                    if let Some((_, CallTarget::Callable(c))) = self.as_call_target(ty.clone()) {
                         Some(c)
                     } else {
                         None
