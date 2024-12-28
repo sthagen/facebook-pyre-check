@@ -1087,7 +1087,20 @@ impl<'a> BindingsBuilder<'a> {
             );
             return_expr_keys.insert(key);
         }
+
+        let mut yield_expr_keys = SmallSet::with_capacity(yield_exprs.len());
+        for x in yield_exprs {
+            let key = self.table.insert(
+                Key::YieldExpression(ShortIdentifier::new(&func_name), x.range()),
+                // collect the value of the yield expression.
+                Binding::Expr(None, yield_expr(x)),
+            );
+            yield_expr_keys.insert(key);
+        }
+
         let mut return_type = Binding::phi(return_expr_keys);
+        let yield_type = Binding::phi(yield_expr_keys);
+
         if let Some(ann) = return_ann {
             return_type = Binding::AnnotatedType(ann, Box::new(return_type));
         }
@@ -1095,6 +1108,8 @@ impl<'a> BindingsBuilder<'a> {
             Key::ReturnType(ShortIdentifier::new(&func_name)),
             return_type,
         );
+        self.table
+            .insert(Key::YieldType(ShortIdentifier::new(&func_name)), yield_type);
     }
 
     fn class_def(&mut self, mut x: StmtClassDef) {
@@ -1678,10 +1693,23 @@ impl<'a> BindingsBuilder<'a> {
 
                 for h in x.handlers {
                     base = self.scopes.last().flow.clone();
+                    let range = h.range();
                     let h = h.except_handler().unwrap(); // Only one variant for now
-                    if let Some(name) = h.name {
-                        // TODO(yangdanny): Should be looking at h.type_ to get the type information
-                        self.bind_definition(&name, Binding::AnyType(AnyStyle::Error), None);
+                    if let Some(name) = h.name
+                        && let Some(type_) = h.type_
+                    {
+                        self.ensure_expr(&type_);
+                        self.bind_definition(
+                            &name,
+                            Binding::ExceptionHandler(type_, x.is_star),
+                            None,
+                        );
+                    } else if let Some(type_) = h.type_ {
+                        self.ensure_expr(&type_);
+                        self.table.insert(
+                            Key::Anon(range),
+                            Binding::ExceptionHandler(type_, x.is_star),
+                        );
                     }
                     self.stmts(h.body);
                     mem::swap(&mut self.scopes.last_mut().flow, &mut base);
@@ -2039,5 +2067,15 @@ fn return_expr(x: StmtReturn) -> Expr {
     match x.value {
         Some(x) => *x,
         None => Expr::NoneLiteral(ExprNoneLiteral { range: x.range }),
+    }
+}
+
+fn yield_expr(x: Expr) -> Expr {
+    match x {
+        Expr::Yield(x) => match x.value {
+            Some(x) => *x,
+            None => Expr::NoneLiteral(ExprNoneLiteral { range: x.range() }),
+        },
+        _ => Expr::NoneLiteral(ExprNoneLiteral { range: x.range() }),
     }
 }
