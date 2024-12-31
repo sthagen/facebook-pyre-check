@@ -686,7 +686,7 @@ def f(x: list[int], y: dict[str, bool]) -> None:
     assert_type(y["test"], bool)
     x["foo"]  # E: Literal['foo'] <: int
     c = C()
-    c[0]  # E: Object of class `C` has no attribute `__getitem__`
+    c[0]  # E: `C` has no attribute `__getitem__`
     d = D()
     d[0]  # E: Expected `__getitem__` to be a callable, got int
 "#,
@@ -748,6 +748,33 @@ def f(x: A):
 );
 
 testcase!(
+    test_iterable_class_error,
+    r#"
+class A:
+    pass
+for _ in A:  # E: Class object `A` is not iterable
+    pass
+    "#,
+);
+
+testcase!(
+    test_iterable_generic_class,
+    r#"
+from typing import Iterator, assert_type
+class M(type):
+    def __iter__(self) -> Iterator[int]: ...
+class A[T](metaclass=M):
+    pass
+class B[T]:
+    pass
+for x in A[str]:
+    assert_type(x, int)
+for _ in B[str]:  # E: Class object `B[str]` is not iterable
+    pass
+    "#,
+);
+
+testcase!(
     test_iterable_bad_callable,
     r#"
 from typing import Self
@@ -772,7 +799,7 @@ class A:
     def __iter__(self) -> None:
         return None
 def f(x: A):
-    for _ in x:  # E: Object of class `NoneType` has no attribute `__next__`
+    for _ in x:  # E: `None` has no attribute `__next__`
         pass
     "#,
 );
@@ -799,6 +826,14 @@ class A:
 def f(x: A):
     for _ in x:  # E: EXPECTED int <: str
         pass
+    "#,
+);
+
+testcase!(
+    test_not_iterable,
+    r#"
+for _ in None:  # E: `None` is not iterable
+    pass
     "#,
 );
 
