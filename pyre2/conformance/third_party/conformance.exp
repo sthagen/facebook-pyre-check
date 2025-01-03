@@ -2666,6 +2666,16 @@
     },
     {
       "code": -2,
+      "column": 8,
+      "concise_description": "Unexpected keyword argument 'a'",
+      "description": "Unexpected keyword argument 'a'",
+      "line": 29,
+      "name": "PyreError",
+      "stop_column": 11,
+      "stop_line": 29
+    },
+    {
+      "code": -2,
       "column": 13,
       "concise_description": "Unexpected keyword argument 'b'",
       "description": "Unexpected keyword argument 'b'",
@@ -3118,9 +3128,9 @@
     },
     {
       "code": -2,
-      "column": 11,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "column": 13,
+      "concise_description": "Expected argument after ** to be a mapping, got: TD2",
+      "description": "Expected argument after ** to be a mapping, got: TD2",
       "line": 50,
       "name": "PyreError",
       "stop_column": 16,
@@ -3179,8 +3189,8 @@
     {
       "code": -2,
       "column": 11,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "concise_description": "EXPECTED str <: Unpack[TD2]",
+      "description": "EXPECTED str <: Unpack[TD2]",
       "line": 58,
       "name": "PyreError",
       "stop_column": 20,
@@ -3189,8 +3199,8 @@
     {
       "code": -2,
       "column": 11,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "concise_description": "EXPECTED int | str <: Unpack[TD2]",
+      "description": "EXPECTED int | str <: Unpack[TD2]",
       "line": 61,
       "name": "PyreError",
       "stop_column": 15,
@@ -3208,9 +3218,9 @@
     },
     {
       "code": -2,
-      "column": 11,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "column": 13,
+      "concise_description": "Expected argument after ** to be a mapping, got: TD2",
+      "description": "Expected argument after ** to be a mapping, got: TD2",
       "line": 62,
       "name": "PyreError",
       "stop_column": 16,
@@ -3228,9 +3238,9 @@
     },
     {
       "code": -2,
-      "column": 17,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "column": 19,
+      "concise_description": "Expected argument after ** to be a mapping, got: TD2",
+      "description": "Expected argument after ** to be a mapping, got: TD2",
       "line": 63,
       "name": "PyreError",
       "stop_column": 22,
@@ -3248,9 +3258,9 @@
     },
     {
       "code": -2,
-      "column": 14,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "column": 16,
+      "concise_description": "Expected argument after ** to be a mapping, got: TD2",
+      "description": "Expected argument after ** to be a mapping, got: TD2",
       "line": 64,
       "name": "PyreError",
       "stop_column": 19,
@@ -3278,9 +3288,9 @@
     },
     {
       "code": -2,
-      "column": 17,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "column": 19,
+      "concise_description": "Expected argument after ** to be a mapping, got: TD2",
+      "description": "Expected argument after ** to be a mapping, got: TD2",
       "line": 65,
       "name": "PyreError",
       "stop_column": 22,
@@ -3581,8 +3591,8 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: Callable[[int], str]",
-      "description": "TODO: Expr::attr_infer attribute base undefined for type: Callable[[int], str]",
+      "concise_description": "Object of class `FunctionType` has no attribute `other_attribute`",
+      "description": "Object of class `FunctionType` has no attribute `other_attribute`",
       "line": 196,
       "name": "PyreError",
       "stop_column": 31,
@@ -3601,8 +3611,8 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: Callable[[int], str]",
-      "description": "TODO: Expr::attr_infer attribute base undefined for type: Callable[[int], str]",
+      "concise_description": "Object of class `FunctionType` has no attribute `other_attribute2`",
+      "description": "Object of class `FunctionType` has no attribute `other_attribute2`",
       "line": 197,
       "name": "PyreError",
       "stop_column": 32,
@@ -4504,16 +4514,6 @@
     },
     {
       "code": -2,
-      "column": 34,
-      "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: @_",
-      "description": "TODO: Expr::attr_infer attribute base undefined for type: @_",
-      "line": 101,
-      "name": "PyreError",
-      "stop_column": 67,
-      "stop_line": 101
-    },
-    {
-      "code": -2,
       "column": 53,
       "concise_description": "EXPECTED Literal['hits'] <: _PyreReadOnly_[dict[str, int]]",
       "description": "EXPECTED Literal['hits'] <: _PyreReadOnly_[dict[str, int]]",
@@ -4829,16 +4829,6 @@
     },
     {
       "code": -2,
-      "column": 38,
-      "concise_description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "line": 43,
-      "name": "PyreError",
-      "stop_column": 43,
-      "stop_line": 43
-    },
-    {
-      "code": -2,
       "column": 16,
       "concise_description": "Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]",
       "description": "Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]",
@@ -4895,16 +4885,6 @@
       "line": 57,
       "name": "PyreError",
       "stop_column": 32,
-      "stop_line": 57
-    },
-    {
-      "code": -2,
-      "column": 38,
-      "concise_description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "line": 57,
-      "name": "PyreError",
-      "stop_column": 43,
       "stop_line": 57
     },
     {
@@ -5092,8 +5072,8 @@
     {
       "code": -2,
       "column": 32,
-      "concise_description": "Expected 0 positional arguments, got 2",
-      "description": "Expected 0 positional arguments, got 2",
+      "concise_description": "Expected 0 positional arguments, got 1",
+      "description": "Expected 0 positional arguments, got 1",
       "line": 98,
       "name": "PyreError",
       "stop_column": 35,
@@ -5101,19 +5081,9 @@
     },
     {
       "code": -2,
-      "column": 37,
-      "concise_description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "line": 98,
-      "name": "PyreError",
-      "stop_column": 42,
-      "stop_line": 98
-    },
-    {
-      "code": -2,
-      "column": 44,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "column": 46,
+      "concise_description": "Expected argument after ** to be a mapping, got: Unknown",
+      "description": "Expected argument after ** to be a mapping, got: Unknown",
       "line": 98,
       "name": "PyreError",
       "stop_column": 52,
@@ -5163,29 +5133,9 @@
     },
     {
       "code": -2,
-      "column": 32,
-      "concise_description": "Expected 0 positional arguments, got 1",
-      "description": "Expected 0 positional arguments, got 1",
-      "line": 25,
-      "name": "PyreError",
-      "stop_column": 37,
-      "stop_line": 25
-    },
-    {
-      "code": -2,
-      "column": 32,
-      "concise_description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "line": 25,
-      "name": "PyreError",
-      "stop_column": 37,
-      "stop_line": 25
-    },
-    {
-      "code": -2,
-      "column": 39,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "column": 41,
+      "concise_description": "Expected argument after ** to be a mapping, got: Unknown",
+      "description": "Expected argument after ** to be a mapping, got: Unknown",
       "line": 25,
       "name": "PyreError",
       "stop_column": 47,
@@ -9547,8 +9497,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[NoNonDefaults], type[NoNonDefaults[str, int]]) failed",
-      "description": "assert_type(type[NoNonDefaults], type[NoNonDefaults[str, int]]) failed",
+      "concise_description": "assert_type(type[NoNonDefaults[Error, Error]], type[NoNonDefaults[str, int]]) failed",
+      "description": "assert_type(type[NoNonDefaults[Error, Error]], type[NoNonDefaults[str, int]]) failed",
       "line": 30,
       "name": "PyreError",
       "stop_column": 58,
@@ -9557,8 +9507,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[AllTheDefaults], type[AllTheDefaults[Any, Any, str, int, bool]]) failed",
-      "description": "assert_type(type[AllTheDefaults], type[AllTheDefaults[Any, Any, str, int, bool]]) failed",
+      "concise_description": "assert_type(type[AllTheDefaults[Error, Error, Error, Error, Error]], type[AllTheDefaults[Any, Any, str, int, bool]]) failed",
+      "description": "assert_type(type[AllTheDefaults[Error, Error, Error, Error, Error]], type[AllTheDefaults[Any, Any, str, int, bool]]) failed",
       "line": 45,
       "name": "PyreError",
       "stop_column": 76,
@@ -9583,16 +9533,6 @@
       "name": "PyreError",
       "stop_column": 39,
       "stop_line": 76
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(type[Class_ParamSpec], type[Class_ParamSpec]) failed",
-      "description": "assert_type(type[Class_ParamSpec], type[Class_ParamSpec]) failed",
-      "line": 79,
-      "name": "PyreError",
-      "stop_column": 62,
-      "stop_line": 79
     },
     {
       "code": -2,
@@ -9653,16 +9593,6 @@
       "name": "PyreError",
       "stop_column": 44,
       "stop_line": 91
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(type[Class_TypeVarTuple], type[Class_TypeVarTuple]) failed",
-      "description": "assert_type(type[Class_TypeVarTuple], type[Class_TypeVarTuple]) failed",
-      "line": 94,
-      "name": "PyreError",
-      "stop_column": 76,
-      "stop_line": 94
     },
     {
       "code": -2,
@@ -9889,8 +9819,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[slice], type[slice[int, int, int | None]]) failed",
-      "description": "assert_type(type[slice], type[slice[int, int, int | None]]) failed",
+      "concise_description": "assert_type(type[slice[Error, Error, Error]], type[slice[int, int, int | None]]) failed",
+      "description": "assert_type(type[slice[Error, Error, Error]], type[slice[int, int, int | None]]) failed",
       "line": 23,
       "name": "PyreError",
       "stop_column": 54,
@@ -9949,8 +9879,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[Bar], type[Bar[Any, list[Any]]]) failed",
-      "description": "assert_type(type[Bar], type[Bar[Any, list[Any]]]) failed",
+      "concise_description": "assert_type(type[Bar[Error, Error]], type[Bar[Any, list[Any]]]) failed",
+      "description": "assert_type(type[Bar[Error, Error]], type[Bar[Any, list[Any]]]) failed",
       "line": 94,
       "name": "PyreError",
       "stop_column": 44,
@@ -10001,8 +9931,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[Bar], type[Bar[str]]) failed",
-      "description": "assert_type(type[Bar], type[Bar[str]]) failed",
+      "concise_description": "assert_type(type[Bar[Error]], type[Bar[str]]) failed",
+      "description": "assert_type(type[Bar[Error]], type[Bar[str]]) failed",
       "line": 45,
       "name": "PyreError",
       "stop_column": 33,
@@ -10125,8 +10055,8 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "description": "TODO: Starred(ExprStarred - Answers::expr_infer",
+      "concise_description": "`Args[_]` is not iterable",
+      "description": "`Args[_]` is not iterable",
       "line": 68,
       "name": "PyreError",
       "stop_column": 19,
@@ -10135,8 +10065,8 @@
     {
       "code": -2,
       "column": 11,
-      "concise_description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "description": "TODO: Starred(ExprStarred - Answers::expr_infer",
+      "concise_description": "`Args[_]` is not iterable",
+      "description": "`Args[_]` is not iterable",
       "line": 70,
       "name": "PyreError",
       "stop_column": 16,
@@ -10145,8 +10075,8 @@
     {
       "code": -2,
       "column": 11,
-      "concise_description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "description": "TODO: Starred(ExprStarred - Answers::expr_infer",
+      "concise_description": "`Args[_]` is not iterable",
+      "description": "`Args[_]` is not iterable",
       "line": 72,
       "name": "PyreError",
       "stop_column": 16,
@@ -10175,8 +10105,8 @@
     {
       "code": -2,
       "column": 16,
-      "concise_description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "description": "TODO: Starred(ExprStarred - Answers::expr_infer",
+      "concise_description": "`Args[_]` is not iterable",
+      "description": "`Args[_]` is not iterable",
       "line": 82,
       "name": "PyreError",
       "stop_column": 21,
@@ -10184,9 +10114,9 @@
     },
     {
       "code": -2,
-      "column": 23,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "column": 25,
+      "concise_description": "Expected argument after ** to be a mapping, got: Kwargs[_]",
+      "description": "Expected argument after ** to be a mapping, got: Kwargs[_]",
       "line": 82,
       "name": "PyreError",
       "stop_column": 31,
@@ -10205,8 +10135,8 @@
     {
       "code": -2,
       "column": 18,
-      "concise_description": "TODO: Starred(ExprStarred - Answers::expr_infer",
-      "description": "TODO: Starred(ExprStarred - Answers::expr_infer",
+      "concise_description": "`Args[_]` is not iterable",
+      "description": "`Args[_]` is not iterable",
       "line": 83,
       "name": "PyreError",
       "stop_column": 23,
@@ -10214,9 +10144,9 @@
     },
     {
       "code": -2,
-      "column": 25,
-      "concise_description": "TODO: call_infer: unsupported **kwargs argument to call",
-      "description": "TODO: call_infer: unsupported **kwargs argument to call",
+      "column": 27,
+      "concise_description": "Expected argument after ** to be a mapping, got: Kwargs[_]",
+      "description": "Expected argument after ** to be a mapping, got: Kwargs[_]",
       "line": 83,
       "name": "PyreError",
       "stop_column": 33,
@@ -11898,16 +11828,6 @@
     }
   ],
   "generics_type_erasure.py": [
-    {
-      "code": -2,
-      "column": 26,
-      "concise_description": "EXPECTED ?_ | None <: ?_",
-      "description": "EXPECTED ?_ | None <: ?_",
-      "line": 15,
-      "name": "PyreError",
-      "stop_column": 31,
-      "stop_line": 15
-    },
     {
       "code": -2,
       "column": 16,
@@ -15020,36 +14940,6 @@
       "name": "PyreError",
       "stop_column": 51,
       "stop_line": 72
-    },
-    {
-      "code": -2,
-      "column": 9,
-      "concise_description": "assert_type(Status | str, Literal[Status.SUCCESS]) failed",
-      "description": "assert_type(Status | str, Literal[Status.SUCCESS]) failed",
-      "line": 87,
-      "name": "PyreError",
-      "stop_column": 48,
-      "stop_line": 87
-    },
-    {
-      "code": -2,
-      "column": 9,
-      "concise_description": "assert_type(Status | str, Literal[Status.INVALID_DATA]) failed",
-      "description": "assert_type(Status | str, Literal[Status.INVALID_DATA]) failed",
-      "line": 89,
-      "name": "PyreError",
-      "stop_column": 53,
-      "stop_line": 89
-    },
-    {
-      "code": -2,
-      "column": 9,
-      "concise_description": "assert_type(Status | str, Literal[Status.FATAL_ERROR]) failed",
-      "description": "assert_type(Status | str, Literal[Status.FATAL_ERROR]) failed",
-      "line": 91,
-      "name": "PyreError",
-      "stop_column": 52,
-      "stop_line": 91
     },
     {
       "code": -2,
@@ -19920,52 +19810,12 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "assert_type(Any, str) failed",
-      "description": "assert_type(Any, str) failed",
-      "line": 116,
-      "name": "PyreError",
-      "stop_column": 33,
-      "stop_line": 116
-    },
-    {
-      "code": -2,
-      "column": 17,
-      "concise_description": "Class `object` has no class attribute `__name__`",
-      "description": "Class `object` has no class attribute `__name__`",
-      "line": 116,
-      "name": "PyreError",
-      "stop_column": 27,
-      "stop_line": 116
-    },
-    {
-      "code": -2,
-      "column": 5,
       "concise_description": "Class `object` has no class attribute `unknown`",
       "description": "Class `object` has no class attribute `unknown`",
       "line": 117,
       "name": "PyreError",
       "stop_column": 14,
       "stop_line": 117
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "assert_type(Any, str) failed",
-      "description": "assert_type(Any, str) failed",
-      "line": 119,
-      "name": "PyreError",
-      "stop_column": 33,
-      "stop_line": 119
-    },
-    {
-      "code": -2,
-      "column": 17,
-      "concise_description": "Class `object` has no class attribute `__name__`",
-      "description": "Class `object` has no class attribute `__name__`",
-      "line": 119,
-      "name": "PyreError",
-      "stop_column": 27,
-      "stop_line": 119
     },
     {
       "code": -2,

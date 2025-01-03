@@ -29,6 +29,7 @@ pub enum AttributeBase {
     Module(Module),
     Quantified(Quantified),
     Any(AnyStyle),
+    Never,
     /// type[Any] is a special case where attribute lookups first check the
     /// builtin `type` class before falling back to `Any`.
     TypeAny(AnyStyle),
@@ -123,7 +124,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 match self.get_class_attribute(&class, attr_name) {
                     Ok(attr) => LookupResult::Found(attr.value),
                     Err(NoClassAttribute::NoClassMember) => {
-                        LookupResult::NotFound(NotFound::ClassAttribute(class))
+                        // Classes are instances of their metaclass, which defaults to `builtins.type`.
+                        let metadata = self.get_metadata_for_class(&class);
+                        let instance_attr = match metadata.metaclass() {
+                            Some(meta) => self.get_instance_attribute(meta, attr_name),
+                            None => {
+                                self.get_instance_attribute(&self.stdlib.builtins_type(), attr_name)
+                            }
+                        };
+                        match instance_attr {
+                            Some(attr) => LookupResult::Found(attr.value),
+                            None => LookupResult::NotFound(NotFound::ClassAttribute(class)),
+                        }
                     }
                     Err(NoClassAttribute::IsGenericMember) => {
                         LookupResult::Error(LookupError::ClassAttributeIsGeneric(class))
@@ -155,6 +167,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 )
             }
             Some(AttributeBase::Any(style)) => LookupResult::Found(style.propagate()),
+            Some(AttributeBase::Never) => LookupResult::Found(Type::never()),
             None => LookupResult::Error(LookupError::AttributeBaseUndefined(ty)),
         }
     }
@@ -200,19 +213,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::Args(_) => Some(AttributeBase::ClassInstance(stdlib.param_spec_args())),
             Type::Kwargs(_) => Some(AttributeBase::ClassInstance(stdlib.param_spec_kwargs())),
             Type::None => Some(AttributeBase::ClassInstance(stdlib.none_type())),
+            Type::Never(_) => Some(AttributeBase::Never),
+            Type::Callable(_) => Some(AttributeBase::ClassInstance(stdlib.function_type())),
+            Type::BoundMethod(_, _) => Some(AttributeBase::ClassInstance(stdlib.method_type())),
+            Type::Ellipsis => Some(AttributeBase::ClassInstance(stdlib.ellipsis_type())),
+            Type::Forall(_, box base) => self.as_attribute_base(base, stdlib),
+            Type::Var(v) => self.as_attribute_base(self.solver().force_var(v), stdlib),
             // TODO: check to see which ones should have class representations
             Type::Union(_)
-            | Type::Never(_)
-            | Type::Callable(_)
-            | Type::BoundMethod(_, _)
-            | Type::Ellipsis
             | Type::SpecialForm(_)
             | Type::Type(_)
             | Type::Intersect(_)
-            | Type::Forall(_, _)
             | Type::Unpack(_)
-            | Type::Quantified(_)
-            | Type::Var(_) => None,
+            | Type::Quantified(_) => None,
         }
     }
 }

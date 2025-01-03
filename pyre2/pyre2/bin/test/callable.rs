@@ -145,8 +145,8 @@ testcase!(
 def test(x: int, y: str, /): ...
 test(1, "hello") # OK
 test(1) # E: Expected 1 more positional argument
-test(1, y="hello") # E: Expected 1 more positional argument
-test(1, "hello", 2) # E: Expected 2 positional arguments
+test(1, y="hello") # E: Expected 1 more positional argument # E: Unexpected keyword argument 'y'
+test(1, "hello", 2) # E: Expected 2 positional arguments, got 3
 "#,
 );
 
@@ -155,7 +155,7 @@ testcase!(
     r#"
 def test(*, x: int, y: str): ...
 test(x=1, y="hello") # OK
-test(1, "hello") # E: Expected 0 positional arguments
+test(1, "hello") # E: Expected 0 positional arguments, got 2 # E: Missing argument 'x' # E: Missing argument 'y'
 test(x=1) # E: Missing argument 'y'
 test(y="hello") # E: Missing argument 'x'
 "#,
@@ -204,6 +204,125 @@ testcase!(
     r#"
 def stub(x: int = ...): ... # OK
 def err(x: int = ...): pass # E: EXPECTED Ellipsis <: int
+"#,
+);
+
+testcase!(
+    test_splat_tuple,
+    r#"
+def test(x: int, y: int, z: int): ...
+test(*(1, 2, 3)) # OK
+test(*(1, 2)) # E: Missing argument 'z'
+test(*(1, 2, 3, 4)) # E: Expected 3 positional arguments, got 4
+"#,
+);
+
+testcase!(
+    test_splat_iterable,
+    r#"
+def test(x: int, y: int, z: int): ...
+test(*[1, 2, 3]) # OK
+test(*[1, 2]) # OK
+test(*[1, 2, 3, 4]) # OK
+test(*[1], 2) # E: Expected 3 positional arguments, got 4
+test(1, 2, 3, *[4]) # OK
+"#,
+);
+
+testcase!(
+    test_splat_union,
+    r#"
+def test(x: int, y: int, z: int): ...
+
+def fixed_same_len_ok(xs: tuple[int, int, int] | tuple[int, int, int]):
+    test(*xs) # OK
+
+def fixed_same_len_type_err(xs: tuple[int, int, int] | tuple[int, int, str]):
+    test(*xs) # E: EXPECTED int | str <: int
+
+def fixed_same_len_too_few(xs: tuple[int, int] | tuple[int, int]):
+    test(*xs) # E: Missing argument 'z'
+
+def fixed_diff_len(xs: tuple[int, int] | tuple[int, int, int]):
+    test(*xs) # OK (treated as Iterable[int])
+
+def mixed_same_type(xs: tuple[int, int] | Iterable[int]):
+    test(*xs) # OK (treated as Iterable[int])
+
+def mixed_type_err(xs: tuple[int, int] | Iterable[str]):
+    test(*xs) # E: EXPECTED int | str <: int
+"#,
+);
+
+// Normally, positional arguments can not come after keyword arguments. Splat args are an
+// exception. However, splat args are still evaluated first, so they consume positional params
+// before any keyword arguments.
+// See https://github.com/python/cpython/issues/104007
+testcase!(
+    test_splat_keyword_first,
+    r#"
+def test(x: str, y: int, z: int): ...
+test(x="", *(0, 1)) # E: EXPECTED Literal[0] <: str # E: Multiple values for argument 'x' # E: Missing argument 'z'
+"#,
+);
+
+testcase!(
+    test_splat_kwargs,
+    r#"
+def f(x: int, y: int, z: int): ...
+def test(kwargs: dict[str, int]):
+    f(**kwargs) # OK
+    f(1, **kwargs) # OK
+"#,
+);
+
+testcase!(
+    test_splat_kwargs_mixed_with_keywords,
+    r#"
+def f(x: str, y: int, z: int): ...
+def test(kwargs: dict[str, int]):
+    f("foo", **kwargs) # OK
+    f(x="foo", **kwargs) # OK
+    f(**kwargs) # E: EXPECTED int <: str
+"#,
+);
+
+testcase!(
+    test_splat_kwargs_multi,
+    r#"
+def f(x: int, y: int, z: int): ...
+def test(kwargs1: dict[str, int], kwargs2: dict[str, str]):
+    f(**kwargs1, **kwargs2) # E: EXPECTED str <: int
+"#,
+);
+
+testcase!(
+    test_splat_kwargs_mapping,
+    r#"
+from typing import Mapping
+def f(x: int, y: int, z: int): ...
+def test(kwargs: Mapping[str, int]):
+    f(**kwargs) # OK
+"#,
+);
+
+testcase!(
+    test_splat_kwargs_wrong_key,
+    r#"
+def f(x: int): ...
+def test(kwargs: dict[int, str]):
+    f(**kwargs) # E: Expected argument after ** to have `str` keys, got: int # E: Missing argument 'x'
+"#,
+);
+
+testcase!(
+    test_splat_kwargs_to_kwargs_param,
+    r#"
+def f(**kwargs: int): ...
+def g(**kwargs: str): ...
+def test(kwargs: dict[str, int]):
+    f(**kwargs) # OK
+    g(**kwargs) # E: EXPECTED int <: str
 "#,
 );
 

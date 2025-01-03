@@ -38,6 +38,7 @@ use crate::binding::binding::KeyClassMetadata;
 use crate::binding::binding::KeyExport;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::binding::binding::Keyed;
+use crate::binding::binding::NarrowOp;
 use crate::binding::binding::RaisedException;
 use crate::binding::binding::SizeExpectation;
 use crate::binding::binding::UnpackedPosition;
@@ -445,7 +446,7 @@ impl Answers {
     }
 }
 
-enum Iterable {
+pub enum Iterable {
     OfType(Type),
     FixedLen(Vec<Type>),
 }
@@ -685,7 +686,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         Iterable::OfType(ty)
     }
 
-    fn iterate(&self, iterable: &Type, range: TextRange) -> Vec<Iterable> {
+    pub fn iterate(&self, iterable: &Type, range: TextRange) -> Vec<Iterable> {
         match iterable {
             Type::ClassType(cls) => {
                 let call_method = |method_name: &Name,
@@ -716,9 +717,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Type::Type(box Type::ClassType(cls)) => vec![self.iterate_by_metaclass(cls, range)],
             Type::Union(ts) => ts.iter().flat_map(|t| self.iterate(t, range)).collect(),
-            _ => vec![Iterable::OfType(
-                self.error(range, format!("`{iterable}` is not iterable")),
-            )],
+            _ => vec![Iterable::OfType(self.error(
+                range,
+                format!(
+                    "`{}` is not iterable",
+                    iterable.clone().deterministic_printing()
+                ),
+            ))],
         }
     }
 
@@ -983,6 +988,48 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    fn narrow(&self, ty: &Type, op: &NarrowOp) -> Type {
+        match op {
+            NarrowOp::Is(e) => {
+                let right = self.expr(e, None);
+                // Get our best approximation of ty & right.
+                self.distribute_over_union(ty, |t| {
+                    if self.solver().is_subset_eq(&right, t, self.type_order()) {
+                        right.clone()
+                    } else {
+                        Type::never()
+                    }
+                })
+            }
+            NarrowOp::IsNot(e) => {
+                let right = self.expr(e, None);
+                // Get our best approximation of ty - right.
+                self.distribute_over_union(ty, |t| {
+                    // Only certain literal types can be compared by identity.
+                    match (t, &right) {
+                        (
+                            _,
+                            Type::None | Type::Literal(Lit::Bool(_)) | Type::Literal(Lit::Enum(_)),
+                        ) if *t == right => Type::never(),
+                        (Type::ClassType(cls), Type::Literal(Lit::Bool(b)))
+                            if *cls == self.stdlib.bool() =>
+                        {
+                            Type::Literal(Lit::Bool(!b))
+                        }
+                        (
+                            Type::ClassType(left_cls),
+                            Type::Literal(Lit::Enum(box (right_cls, _name))),
+                        ) if *left_cls == *right_cls => {
+                            // TODO: narrow to a union of all other enum members.
+                            t.clone()
+                        }
+                        _ => t.clone(),
+                    }
+                })
+            }
+        }
+    }
+
     fn solve_binding_inner(&self, binding: &Binding) -> Type {
         match binding {
             Binding::Expr(ann, e) => {
@@ -991,18 +1038,28 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Binding::ExceptionHandler(box ann, is_star) => {
                 let base_exception_type = self.stdlib.base_exception().to_type();
-                let base_exception_group_type = self
-                    .stdlib
-                    .base_exception_group(Type::Any(AnyStyle::Implicit))
-                    .to_type();
+                let base_exception_group_any_type = if *is_star {
+                    // Only query for `BaseExceptionGroup` if we see an `except*` handler (which
+                    // was introduced in Python3.11).
+                    // We can't unconditionally query for `BaseExceptionGroup` until Python3.10
+                    // is out of its EOL period.
+                    Some(
+                        self.stdlib
+                            .base_exception_group(Type::Any(AnyStyle::Implicit))
+                            .to_type(),
+                    )
+                } else {
+                    None
+                };
                 let check_exception_type = |exception_type: Type, range| {
                     let exception = self.untype(exception_type, range);
                     self.check_type(&base_exception_type, &exception, range);
-                    if *is_star
+                    if let Some(base_exception_group_any_type) =
+                        base_exception_group_any_type.as_ref()
                         && !exception.is_any()
                         && self.solver().is_subset_eq(
                             &exception,
-                            &base_exception_group_type,
+                            base_exception_group_any_type,
                             self.type_order(),
                         )
                     {
@@ -1228,7 +1285,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let yield_expr_type = self
                     .get(&Key::YieldType(ShortIdentifier::new(&x.name)))
                     .arc_clone();
-                let ret = if yield_expr_type.is_never() {
+                // # TODO zeina: raise a type error if return type is inconsistent with inferred generator type
+                let ret = if yield_expr_type.is_never() || ret.is_generator() {
                     ret
                 } else {
                     self.stdlib
@@ -1272,6 +1330,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     )
                 }
             }
+            Binding::Narrow(k, op) => self.narrow(&self.get_idx(*k), op),
             Binding::CheckRaisedException(RaisedException::WithoutCause(exc)) => {
                 self.check_is_exception(exc, exc.range(), false);
                 Type::None // Unused

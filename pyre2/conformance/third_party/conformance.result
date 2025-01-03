@@ -238,8 +238,8 @@
     "Line 41: Unexpected errors ['assert_type(Unpack[TD1], TD1) failed']",
     "Line 47: Unexpected errors ['EXPECTED Literal[1] <: Unpack[TD2]', \"EXPECTED Literal[''] <: Unpack[TD2]\", \"EXPECTED Literal['5'] <: Unpack[TD2]\"]",
     "Line 49: Unexpected errors [\"Unexpected keyword argument 'v1'\", \"Unexpected keyword argument 'v3'\"]",
-    "Line 50: Unexpected errors ['TODO: call_infer: unsupported **kwargs argument to call']",
-    "Line 62: Unexpected errors [\"Missing argument 'v3'\", 'TODO: call_infer: unsupported **kwargs argument to call']",
+    "Line 50: Unexpected errors ['Expected argument after ** to be a mapping, got: TD2']",
+    "Line 62: Unexpected errors [\"Missing argument 'v3'\", 'Expected argument after ** to be a mapping, got: TD2']",
     "Line 99: Unexpected errors ['EXPECTED Callable[[KwArgs[Unpack[TD2]]], None] <: TDProtocol1']",
     "Line 100: Unexpected errors ['EXPECTED Callable[[KwArgs[Unpack[TD2]]], None] <: TDProtocol2']",
     "Line 104: Unexpected errors ['EXPECTED Callable[[KwArgs[Unpack[TD2]]], None] <: TDProtocol6']"
@@ -259,7 +259,7 @@
     "Line 144: Unexpected errors ['EXPECTED Class7_2 <: Proto7[int, int]']",
     "Line 168: Unexpected errors ['EXPECTED Callable[[Any], Any] <: Proto8']",
     "Line 184: Unexpected errors ['EXPECTED type[Proto9[?_, ?_]] <: object']",
-    "Line 196: Unexpected errors [\"Missing argument 'flush'\", 'TODO: Expr::attr_infer attribute base undefined for type: Callable[[int], str]']",
+    "Line 196: Unexpected errors [\"Missing argument 'flush'\", 'Object of class `FunctionType` has no attribute `other_attribute`']",
     "Line 216: Unexpected errors ['EXPECTED Callable[[], None] <: Proto10']",
     "Line 236: Unexpected errors ['EXPECTED Callable[[int, str, None], Any] <: Proto11']",
     "Line 237: Unexpected errors ['EXPECTED Callable[[int, str, None], Any] <: Proto11']",
@@ -315,7 +315,7 @@
     "Line 61: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `ClassVar[list[int]]`']",
     "Line 78: Unexpected errors ['assert_type(Literal[3.1], float) failed']",
     "Line 98: Unexpected errors ['EXPECTED str | None <: str']",
-    "Line 101: Unexpected errors ['Expected 1 more positional argument', 'Object of class `NoneType` has no attribute `__add__`', 'Object of class `_PyreReadOnly_` has no attribute `__add__`', 'TODO: Expr::attr_infer attribute base undefined for type: @_', \"EXPECTED Literal['hits'] <: _PyreReadOnly_[dict[str, int]]\", \"EXPECTED Literal['hits'] <: dict[str, int]\", 'EXPECTED Literal[0] <: _PyreReadOnly_[str]', 'EXPECTED Literal[0] <: str']"
+    "Line 101: Unexpected errors ['Expected 1 more positional argument', 'Object of class `NoneType` has no attribute `__add__`', 'Object of class `_PyreReadOnly_` has no attribute `__add__`', \"EXPECTED Literal['hits'] <: _PyreReadOnly_[dict[str, int]]\", \"EXPECTED Literal['hits'] <: dict[str, int]\", 'EXPECTED Literal[0] <: _PyreReadOnly_[str]', 'EXPECTED Literal[0] <: str']"
   ],
   "classes_override.py": [
     "Line 53: Expected 1 errors",
@@ -342,9 +342,9 @@
     "Line 20: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'EXPECTED object <: Class1', 'Expected 0 positional arguments, got 1']",
     "Line 23: Unexpected errors ['assert_type(Class1, NoReturn) failed', \"Missing argument 'x'\"]",
     "Line 33: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'EXPECTED object <: Class2', 'Expected 0 positional arguments, got 1']",
-    "Line 43: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'Object of class `super` has no attribute `__call__`', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 43: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'Object of class `super` has no attribute `__call__`']",
     "Line 48: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'EXPECTED object <: Class3', 'Expected 0 positional arguments, got 1']",
-    "Line 57: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'Object of class `super` has no attribute `__call__`', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 57: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'Object of class `super` has no attribute `__call__`']",
     "Line 62: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'EXPECTED object <: Class4', 'Expected 0 positional arguments, got 1']"
   ],
   "constructors_call_new.py": [
@@ -354,11 +354,11 @@
     "Line 64: Unexpected errors ['assert_type(Class4, Class4 | Any) failed', \"Missing argument 'x'\"]",
     "Line 69: Unexpected errors ['EXPECTED None <: NoReturn']",
     "Line 76: Unexpected errors ['assert_type(Class5, NoReturn) failed', \"Missing argument 'x'\"]",
-    "Line 98: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'Expected 0 positional arguments, got 2', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: call_infer: unsupported **kwargs argument to call']",
+    "Line 98: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'Expected 0 positional arguments, got 1', 'Expected argument after ** to be a mapping, got: Unknown']",
     "Line 104: Unexpected errors ['assert_type(object, Class7) failed']"
   ],
   "constructors_call_type.py": [
-    "Line 25: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'EXPECTED object <: Class1', 'Expected 0 positional arguments, got 1', 'TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: call_infer: unsupported **kwargs argument to call']",
+    "Line 25: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'EXPECTED object <: Class1', 'Expected argument after ** to be a mapping, got: Unknown']",
     "Line 35: Unexpected errors ['Expected `__init__` to be a callable, got Callable[[super, Any], None] | Callable[[super, Any, Any], None] | Callable[[super], None]', 'EXPECTED object <: Class2', 'Expected 0 positional arguments, got 1']",
     "Line 63: Unexpected errors ['Expected a callable, got type[?_]']",
     "Line 71: Unexpected errors ['Expected a callable, got type[?_]']",
@@ -676,14 +676,14 @@
   "generics_defaults.py": [
     "Line 104: Expected 1 errors",
     "Line 111: Expected 1 errors",
-    "Line 30: Unexpected errors ['assert_type(type[NoNonDefaults], type[NoNonDefaults[str, int]]) failed']",
-    "Line 45: Unexpected errors ['assert_type(type[AllTheDefaults], type[AllTheDefaults[Any, Any, str, int, bool]]) failed']",
+    "Line 30: Unexpected errors ['assert_type(type[NoNonDefaults[Error, Error]], type[NoNonDefaults[str, int]]) failed']",
+    "Line 45: Unexpected errors ['assert_type(type[AllTheDefaults[Error, Error, Error, Error, Error]], type[AllTheDefaults[Any, Any, str, int, bool]]) failed']",
     "Line 76: Unexpected errors ['untype, got ParamSpec']",
-    "Line 79: Unexpected errors ['assert_type(type[Class_ParamSpec], type[Class_ParamSpec]) failed', 'Expected 0 type arguments for class `Class_ParamSpec`, got 2.']",
+    "Line 79: Unexpected errors ['Expected 0 type arguments for class `Class_ParamSpec`, got 2.']",
     "Line 80: Unexpected errors ['Expected 0 type arguments for class `Class_ParamSpec`, got 2.']",
     "Line 81: Unexpected errors ['Expected 0 type arguments for class `Class_ParamSpec`, got 1.', 'untype, got list[type[bool]]', 'Expected 0 type arguments for class `Class_ParamSpec`, got 2.']",
     "Line 91: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
-    "Line 94: Unexpected errors ['assert_type(type[Class_TypeVarTuple], type[Class_TypeVarTuple]) failed', 'Expected 0 type arguments for class `Class_TypeVarTuple`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 94: Unexpected errors ['Expected 0 type arguments for class `Class_TypeVarTuple`, got 1.', 'TODO: Starred(ExprStarred - Answers::expr_infer']",
     "Line 95: Unexpected errors ['Expected 0 type arguments for class `Class_TypeVarTuple`, got 2.']",
     "Line 96: Unexpected errors ['Expected 0 type arguments for class `Class_TypeVarTuple`, got 2.', 'Expected 0 type arguments for class `Class_TypeVarTuple`, got 2.']",
     "Line 127: Unexpected errors ['assert_type(Any, int) failed']",
@@ -699,10 +699,10 @@
     "Line 68: Expected 1 errors",
     "Line 74: Expected 1 errors",
     "Line 78: Expected 1 errors",
-    "Line 23: Unexpected errors ['assert_type(type[slice], type[slice[int, int, int | None]]) failed']",
+    "Line 23: Unexpected errors ['assert_type(type[slice[Error, Error, Error]], type[slice[int, int, int | None]]) failed']",
     "Line 24: Unexpected errors ['assert_type(slice[Any, Any, Any], slice[int, int, int | None]) failed']",
     "Line 25: Unexpected errors ['assert_type(slice[str, TypeVar[StartT], int | None], slice[str, str, int | None]) failed']",
-    "Line 94: Unexpected errors ['assert_type(type[Bar], type[Bar[Any, list[Any]]]) failed']",
+    "Line 94: Unexpected errors ['assert_type(type[Bar[Error, Error]], type[Bar[Any, list[Any]]]) failed']",
     "Line 95: Unexpected errors ['assert_type(type[Bar[int, list[TypeVar[Z1]]]], type[Bar[int, list[int]]]) failed']",
     "Line 96: Unexpected errors ['assert_type(Bar[int, list[TypeVar[Z1]]], Bar[int, list[int]]) failed']"
   ],
@@ -710,7 +710,7 @@
     "Line 30: Expected 1 errors",
     "Line 25: Unexpected errors ['untype, got Forall[DefaultStrT, LegacyExplicitTypeAlias[MyAlias, type[SomethingWithNoDefaults[int, DefaultStrT]]]]']",
     "Line 26: Unexpected errors ['assert_type(Any, SomethingWithNoDefaults[int, str]) failed']",
-    "Line 45: Unexpected errors ['assert_type(type[Bar], type[Bar[str]]) failed']",
+    "Line 45: Unexpected errors ['assert_type(type[Bar[Error]], type[Bar[str]]) failed']",
     "Line 46: Unexpected errors ['assert_type(Bar[Any], Bar[str]) failed']"
   ],
   "generics_paramspec_basic.py": [
@@ -737,10 +737,10 @@
     "Line 53: Unexpected errors ['EXPECTED Callable[[Var[Args[_]], KwArgs[Kwargs[_]]], None] <: Callable[ParamSpec(?_), None]']",
     "Line 56: Unexpected errors ['TODO: Subscript(ExprSubscript - expr_infer, Callable type']",
     "Line 66: Unexpected errors ['TODO: Subscript(ExprSubscript - expr_infer, Callable type']",
-    "Line 68: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer']",
+    "Line 68: Unexpected errors ['`Args[_]` is not iterable']",
     "Line 74: Unexpected errors ['EXPECTED Callable[[Var[Args[_]], KwArgs[Kwargs[_]]], None] <: Callable[ParamSpec(?_), None]']",
     "Line 79: Unexpected errors ['Answers::expr_infer wrong number of arguments to call']",
-    "Line 82: Unexpected errors ['TODO: Starred(ExprStarred - Answers::expr_infer', 'TODO: call_infer: unsupported **kwargs argument to call']",
+    "Line 82: Unexpected errors ['`Args[_]` is not iterable', 'Expected argument after ** to be a mapping, got: Kwargs[_]']",
     "Line 85: Unexpected errors ['EXPECTED Callable[[Var[Args[_]], KwArgs[Kwargs[_]]], None] <: Callable[ParamSpec(?_), None]']",
     "Line 89: Unexpected errors ['Answers::expr_infer wrong number of arguments to call', 'Answers::expr_infer wrong number of arguments to call']",
     "Line 96: Unexpected errors ['EXPECTED Callable[[int, str], int] <: Callable[ParamSpec(@_), int]', 'EXPECTED Literal[1] <: Args[_]', \"EXPECTED Literal['A'] <: Args[_]\"]",
@@ -885,7 +885,6 @@
     "Line 124: Unexpected errors ['assert_type(Literal[0+3j], complex) failed']"
   ],
   "generics_type_erasure.py": [
-    "Line 15: Unexpected errors ['EXPECTED ?_ | None <: ?_']",
     "Line 56: Unexpected errors ['assert_type(Any, bytes) failed']"
   ],
   "generics_typevartuple_args.py": [
@@ -1065,9 +1064,6 @@
     "Line 51: Unexpected errors ['assert_type(Any, IO[Any]) failed']",
     "Line 71: Unexpected errors ['EXPECTED Matrix[Literal[3], Literal[7]] <: Matrix[Literal[3], TypeVar[C]]']",
     "Line 72: Unexpected errors ['assert_type(Matrix[Literal[2], TypeVar[C]], Matrix[Literal[2], Literal[7]]) failed']",
-    "Line 87: Unexpected errors ['assert_type(Status | str, Literal[Status.SUCCESS]) failed']",
-    "Line 89: Unexpected errors ['assert_type(Status | str, Literal[Status.INVALID_DATA]) failed']",
-    "Line 91: Unexpected errors ['assert_type(Status | str, Literal[Status.FATAL_ERROR]) failed']",
     "Line 93: Unexpected errors ['assert_type(Status | str, str) failed']",
     "Line 106: Unexpected errors [\"EXPECTED str <: Literal['ABORTED', 'MALFORMED']\"]",
     "Line 109: Unexpected errors [\"EXPECTED str <: Literal['PENDING']\"]"
@@ -1453,8 +1449,6 @@
     "Line 107: Unexpected errors ['TODO: Expr::attr_infer attribute base undefined for type: Type']",
     "Line 108: Unexpected errors ['TODO: Expr::attr_infer attribute base undefined for type: Type']",
     "Line 110: Unexpected errors ['assert_type(BoundMethod[type, Callable[[type], tuple[type, ...]]], tuple[type, ...]) failed']",
-    "Line 116: Unexpected errors ['assert_type(Any, str) failed', 'Class `object` has no class attribute `__name__`']",
-    "Line 119: Unexpected errors ['assert_type(Any, str) failed', 'Class `object` has no class attribute `__name__`']",
     "Line 137: Unexpected errors ['assert_type(Type, type[Any]) failed']",
     "Line 139: Unexpected errors ['assert_type(type, type[Any]) failed']",
     "Line 152: Unexpected errors [\"Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA7, type[type[TypeVar[T]]]]\"]",

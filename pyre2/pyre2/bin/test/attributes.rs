@@ -223,3 +223,75 @@ class C:
 assert_type(f(C()).x, Literal[42])
     "#,
 );
+
+testcase!(
+    test_never_attr,
+    r#"
+from typing import Never, NoReturn, assert_type
+def f() -> NoReturn: ...
+def g():
+    x = f().x
+    assert_type(x, Never)
+    "#,
+);
+
+testcase!(
+    test_callable_attr,
+    r#"
+from typing import assert_type
+from types import CodeType
+def f():
+    pass
+def g():
+    assert_type(f.__code__, CodeType)
+    "#,
+);
+
+testcase!(
+    test_boundmethod_attr,
+    r#"
+from typing import assert_type
+class A:
+    def f(self):
+        pass
+def g(a: A):
+    assert_type(a.f.__self__, object)
+    "#,
+);
+
+testcase!(
+    test_ellipsis_attr,
+    r#"
+x = ...
+x.x  # E: Object of class `EllipsisType` has no attribute `x`
+    "#,
+);
+
+testcase!(
+    test_forall_attr,
+    r#"
+from typing import assert_type
+from types import CodeType
+def f[T](x: T) -> T:
+    return x
+assert_type(f.__code__, CodeType)
+    "#,
+);
+
+testcase!(
+    test_metaclass_attr,
+    r#"
+from typing import assert_type
+
+class A: ...
+class B[T]: ...
+assert_type(A.mro(), list[type])
+assert_type(B[int].mro(), list[type])
+
+class Meta(type):
+    x: int
+class C(metaclass=Meta):
+    pass
+assert_type(C.x, int)
+    "#,
+);
