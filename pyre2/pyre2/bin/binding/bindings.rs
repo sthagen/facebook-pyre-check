@@ -874,15 +874,14 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
-    /// Return the annotation that should be used at the moment, if one was provided.
-    fn bind_key(
+    fn update_flow_info(
         &mut self,
         name: &Name,
         key: Idx<Key>,
         annotation: Option<Idx<KeyAnnotation>>,
         is_import: bool,
     ) -> Option<Idx<KeyAnnotation>> {
-        let annotation = match self.scopes.last_mut().flow.info.entry(name.clone()) {
+        match self.scopes.last_mut().flow.info.entry(name.clone()) {
             Entry::Occupied(mut e) => {
                 // if there was a previous annotation, reuse that
                 let annotation = annotation.or_else(|| e.get().ann);
@@ -901,7 +900,18 @@ impl<'a> BindingsBuilder<'a> {
                 });
                 annotation
             }
-        };
+        }
+    }
+
+    /// Return the annotation that should be used at the moment, if one was provided.
+    fn bind_key(
+        &mut self,
+        name: &Name,
+        key: Idx<Key>,
+        annotation: Option<Idx<KeyAnnotation>>,
+        is_import: bool,
+    ) -> Option<Idx<KeyAnnotation>> {
+        let annotation = self.update_flow_info(name, key, annotation, is_import);
         let info = self.scopes.last().stat.0.get(name).unwrap_or_else(|| {
             let module = self.module_info.name();
             panic!("Name `{name}` not found in static scope of module `{module}`")
@@ -1405,9 +1415,7 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
-    fn negate_narrow_ops(
-        ops: Vec<(Name, NarrowOp, TextRange)>,
-    ) -> Vec<(Name, NarrowOp, TextRange)> {
+    fn negate_narrow_ops(ops: &[(Name, NarrowOp, TextRange)]) -> Vec<(Name, NarrowOp, TextRange)> {
         if ops.len() == 1 {
             let (name, op, range) = &ops[0];
             vec![(name.clone(), op.clone().negate(), *range)]
@@ -1447,26 +1455,24 @@ impl<'a> BindingsBuilder<'a> {
                 range: _,
                 op: UnaryOp::Not,
                 operand: box e,
-            })) => Self::negate_narrow_ops(Self::narrow_ops(Some(e))),
+            })) => Self::negate_narrow_ops(&Self::narrow_ops(Some(e))),
             _ => Vec::new(),
         }
     }
 
-    fn bind_narrow_op(
+    fn bind_narrow_ops(
         &mut self,
-        name: Name,
-        op: NarrowOp,
-        op_range: TextRange,
-        use_range: Option<TextRange>,
+        narrow_ops: &[(Name, NarrowOp, TextRange)],
+        use_range: TextRange,
     ) {
-        if let Some(use_range) = use_range
-            && let Some(name_key) = self.lookup_name(&name)
-        {
-            let binding_key = self.table.insert(
-                Key::Narrow(name.clone(), op_range, use_range),
-                Binding::Narrow(name_key, op),
-            );
-            self.bind_key(&name, binding_key, None, false);
+        for (name, op, op_range) in narrow_ops {
+            if let Some(name_key) = self.lookup_name(name) {
+                let binding_key = self.table.insert(
+                    Key::Narrow(name.clone(), *op_range, use_range),
+                    Binding::Narrow(name_key, op.clone()),
+                );
+                self.update_flow_info(name, binding_key, None, false);
+            }
         }
     }
 
@@ -1643,18 +1649,19 @@ impl<'a> BindingsBuilder<'a> {
                 }
             }
             Stmt::For(x) => {
-                self.setup_loop(x.range);
+                self.setup_loop(x.range, &[]);
                 self.ensure_expr(&x.iter);
                 let make_binding = |k| Binding::IterableValue(k, *x.iter.clone());
                 self.bind_target(&x.target, &make_binding, true);
                 self.stmts(x.body);
-                self.teardown_loop(x.range, x.orelse);
+                self.teardown_loop(x.range, &[], x.orelse);
             }
             Stmt::While(x) => {
-                self.setup_loop(x.range);
+                let narrow_ops = Self::narrow_ops(Some(*x.test.clone()));
+                self.setup_loop(x.range, &narrow_ops);
                 self.ensure_expr(&x.test);
                 self.stmts(x.body);
-                self.teardown_loop(x.range, x.orelse);
+                self.teardown_loop(x.range, &narrow_ops, x.orelse);
             }
             Stmt::If(x) => {
                 let range = x.range;
@@ -1675,15 +1682,13 @@ impl<'a> BindingsBuilder<'a> {
                     }
                     let mut base = self.scopes.last().flow.clone();
                     self.ensure_expr_opt(test.as_ref());
-                    let use_range = body.first().map(|stmt| stmt.range());
-                    for (name, op, op_range) in narrow_ops.iter() {
-                        self.bind_narrow_op(name.clone(), op.clone(), *op_range, use_range);
-                    }
                     let new_narrow_ops = Self::narrow_ops(test);
-                    for (name, op, op_range) in new_narrow_ops.iter() {
-                        self.bind_narrow_op(name.clone(), op.clone(), *op_range, use_range);
+                    if let Some(stmt) = body.first() {
+                        let use_range = stmt.range();
+                        self.bind_narrow_ops(&narrow_ops, use_range);
+                        self.bind_narrow_ops(&new_narrow_ops, use_range);
                     }
-                    narrow_ops.extend(Self::negate_narrow_ops(new_narrow_ops));
+                    narrow_ops.extend(Self::negate_narrow_ops(&new_narrow_ops));
                     self.stmts(body);
                     mem::swap(&mut self.scopes.last_mut().flow, &mut base);
                     branches.push(base);
@@ -1812,6 +1817,7 @@ impl<'a> BindingsBuilder<'a> {
             }
             Stmt::Assert(x) => {
                 self.ensure_expr(&x.test);
+                self.bind_narrow_ops(&Self::narrow_ops(Some(*x.test.clone())), x.range);
                 self.table
                     .insert(Key::Anon(x.test.range()), Binding::Expr(None, *x.test));
                 if let Some(msg_expr) = x.msg {
@@ -1945,35 +1951,43 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
-    fn setup_loop(&mut self, range: TextRange) {
+    fn setup_loop(&mut self, range: TextRange, narrow_ops: &[(Name, NarrowOp, TextRange)]) {
         let base = self.scopes.last().flow.clone();
         // To account for possible assignments to existing names in a loop, we
         // speculatively insert phi keys upfront.
         self.scopes.last_mut().flow = self.insert_phi_keys(base.clone(), range);
+        self.bind_narrow_ops(narrow_ops, range);
         self.scopes
             .last_mut()
             .loops
             .push(Loop(vec![(LoopExit::NeverRan, base)]));
     }
 
-    fn teardown_loop(&mut self, range: TextRange, orelse: Vec<Stmt>) {
+    fn teardown_loop(
+        &mut self,
+        range: TextRange,
+        narrow_ops: &[(Name, NarrowOp, TextRange)],
+        orelse: Vec<Stmt>,
+    ) {
         let done = self.scopes.last_mut().loops.pop().unwrap();
-        let (mut breaks, mut other_exits): (Vec<Flow>, Vec<Flow>) =
+        let (breaks, other_exits): (Vec<Flow>, Vec<Flow>) =
             done.0.into_iter().partition_map(|(exit, flow)| match exit {
                 LoopExit::Break => Either::Left(flow),
                 LoopExit::NeverRan | LoopExit::Continue => Either::Right(flow),
             });
-        if breaks.is_empty() || orelse.is_empty() {
-            // At least one of `breaks` and `orelse` is empty. If `breaks` is empty, then `orelse`
-            // always runs. If `orelse` is empty, then running it is a no-op.
-            other_exits.append(&mut breaks);
+        // We associate a range to the non-`break` exits from the loop; it doesn't matter much what
+        // it is as long as it's different from the loop's range.
+        let other_range = TextRange::new(range.start(), range.start());
+        if breaks.is_empty() {
+            // When there are no `break`s, the loop condition is always false once the body has exited,
+            // and any `orelse` always runs.
             self.merge_loop_into_current(other_exits, range);
+            self.bind_narrow_ops(&Self::negate_narrow_ops(narrow_ops), other_range);
             self.stmts(orelse);
         } else {
-            // When there are both `break`s and an `else`, the `else` runs only when we don't `break`.
-            let other_range =
-                TextRange::new(range.start(), orelse.first().unwrap().range().start());
+            // Otherwise, we negate the loop condition and run the `orelse` only when we don't `break`.
             self.merge_loop_into_current(other_exits, other_range);
+            self.bind_narrow_ops(&Self::negate_narrow_ops(narrow_ops), other_range);
             self.stmts(orelse);
             self.merge_loop_into_current(breaks, range);
         }
