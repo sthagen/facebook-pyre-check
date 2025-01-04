@@ -14,80 +14,102 @@ use crate::types::class::TArgs;
 use crate::types::types::Type;
 
 #[derive(Debug, Clone)]
+struct StdlibError {
+    bootstrapping: bool,
+    name: &'static str,
+}
+
+type StdlibResult<T> = Result<T, StdlibError>;
+
+#[derive(Debug, Clone)]
 pub struct Stdlib {
-    str: Option<Class>,
-    bool: Option<Class>,
-    int: Option<Class>,
-    bytes: Option<Class>,
-    float: Option<Class>,
-    complex: Option<Class>,
-    slice: Option<Class>,
-    base_exception: Option<Class>,
-    base_exception_group: Option<Class>,
-    exception_group: Option<Class>,
-    list: Option<Class>,
-    dict: Option<Class>,
-    set: Option<Class>,
-    tuple: Option<Class>,
-    iterable: Option<Class>,
-    generator: Option<Class>,
-    awaitable: Option<Class>,
-    coroutine: Option<Class>,
-    type_var: Option<Class>,
-    param_spec: Option<Class>,
-    param_spec_args: Option<Class>,
-    param_spec_kwargs: Option<Class>,
-    type_var_tuple: Option<Class>,
-    type_alias_type: Option<Class>,
-    traceback_type: Option<Class>,
-    builtins_type: Option<Class>,
-    ellipsis_type: Option<Class>,
-    none_type: Option<Class>,
-    function_type: Option<Class>,
-    method_type: Option<Class>,
+    str: StdlibResult<Class>,
+    bool: StdlibResult<Class>,
+    int: StdlibResult<Class>,
+    bytes: StdlibResult<Class>,
+    float: StdlibResult<Class>,
+    complex: StdlibResult<Class>,
+    slice: StdlibResult<Class>,
+    base_exception: StdlibResult<Class>,
+    base_exception_group: StdlibResult<Class>,
+    exception_group: StdlibResult<Class>,
+    list: StdlibResult<Class>,
+    dict: StdlibResult<Class>,
+    set: StdlibResult<Class>,
+    tuple: StdlibResult<Class>,
+    iterable: StdlibResult<Class>,
+    generator: StdlibResult<Class>,
+    awaitable: StdlibResult<Class>,
+    coroutine: StdlibResult<Class>,
+    type_var: StdlibResult<Class>,
+    param_spec: StdlibResult<Class>,
+    param_spec_args: StdlibResult<Class>,
+    param_spec_kwargs: StdlibResult<Class>,
+    type_var_tuple: StdlibResult<Class>,
+    type_alias_type: StdlibResult<Class>,
+    traceback_type: StdlibResult<Class>,
+    builtins_type: StdlibResult<Class>,
+    ellipsis_type: StdlibResult<Class>,
+    none_type: StdlibResult<Class>,
+    function_type: StdlibResult<Class>,
+    method_type: StdlibResult<Class>,
     // We want an owned ClassType for object because it allows the MRO code to clone less frequently.
-    object_class_type: Option<ClassType>,
+    object_class_type: StdlibResult<ClassType>,
 }
 
 impl Stdlib {
-    pub fn new(mut lookup_class: impl FnMut(ModuleName, &Name) -> Option<Class>) -> Self {
+    pub fn new(lookup_class: impl FnMut(ModuleName, &Name) -> Option<Class>) -> Self {
+        Self::new_with_bootstrapping(false, lookup_class)
+    }
+
+    pub fn new_with_bootstrapping(
+        bootstrapping: bool,
+        mut lookup_class: impl FnMut(ModuleName, &Name) -> Option<Class>,
+    ) -> Self {
         let builtins = ModuleName::builtins();
         let types = ModuleName::types();
         let typing = ModuleName::typing();
 
-        Self {
-            str: lookup_class(builtins, &Name::new("str")),
-            bool: lookup_class(builtins, &Name::new("bool")),
-            int: lookup_class(builtins, &Name::new("int")),
-            bytes: lookup_class(builtins, &Name::new("bytes")),
-            float: lookup_class(builtins, &Name::new("float")),
-            complex: lookup_class(builtins, &Name::new("complex")),
-            slice: lookup_class(builtins, &Name::new("slice")),
-            base_exception: lookup_class(builtins, &Name::new("BaseException")),
-            base_exception_group: lookup_class(builtins, &Name::new("BaseExceptionGroup")),
-            exception_group: lookup_class(builtins, &Name::new("ExceptionGroup")),
-            list: lookup_class(builtins, &Name::new("list")),
-            dict: lookup_class(builtins, &Name::new("dict")),
-            set: lookup_class(builtins, &Name::new("set")),
-            tuple: lookup_class(builtins, &Name::new("tuple")),
-            builtins_type: lookup_class(builtins, &Name::new("type")),
-            ellipsis_type: lookup_class(types, &Name::new("EllipsisType")),
-            none_type: lookup_class(types, &Name::new("NoneType")),
-            iterable: lookup_class(typing, &Name::new("Iterable")),
-            generator: lookup_class(typing, &Name::new("Generator")),
-            awaitable: lookup_class(typing, &Name::new("Awaitable")),
-            coroutine: lookup_class(typing, &Name::new("Coroutine")),
-            type_var: lookup_class(typing, &Name::new("TypeVar")),
-            param_spec: lookup_class(typing, &Name::new("ParamSpec")),
-            param_spec_args: lookup_class(typing, &Name::new("ParamSpecArgs")),
-            param_spec_kwargs: lookup_class(typing, &Name::new("ParamSpecKwargs")),
-            type_var_tuple: lookup_class(typing, &Name::new("TypeVarTuple")),
-            type_alias_type: lookup_class(typing, &Name::new("TypeAliasType")),
-            traceback_type: lookup_class(types, &Name::new("TracebackType")),
-            function_type: lookup_class(types, &Name::new("FunctionType")),
-            method_type: lookup_class(types, &Name::new("MethodType")),
+        let mut lookup_str = |module: ModuleName, name: &'static str| {
+            lookup_class(module, &Name::new_static(name)).ok_or(StdlibError {
+                bootstrapping,
+                name,
+            })
+        };
 
-            object_class_type: lookup_class(builtins, &Name::new("object"))
+        Self {
+            str: lookup_str(builtins, "str"),
+            bool: lookup_str(builtins, "bool"),
+            int: lookup_str(builtins, "int"),
+            bytes: lookup_str(builtins, "bytes"),
+            float: lookup_str(builtins, "float"),
+            complex: lookup_str(builtins, "complex"),
+            slice: lookup_str(builtins, "slice"),
+            base_exception: lookup_str(builtins, "BaseException"),
+            base_exception_group: lookup_str(builtins, "BaseExceptionGroup"),
+            exception_group: lookup_str(builtins, "ExceptionGroup"),
+            list: lookup_str(builtins, "list"),
+            dict: lookup_str(builtins, "dict"),
+            set: lookup_str(builtins, "set"),
+            tuple: lookup_str(builtins, "tuple"),
+            builtins_type: lookup_str(builtins, "type"),
+            ellipsis_type: lookup_str(types, "EllipsisType"),
+            none_type: lookup_str(types, "NoneType"),
+            iterable: lookup_str(typing, "Iterable"),
+            generator: lookup_str(typing, "Generator"),
+            awaitable: lookup_str(typing, "Awaitable"),
+            coroutine: lookup_str(typing, "Coroutine"),
+            type_var: lookup_str(typing, "TypeVar"),
+            param_spec: lookup_str(typing, "ParamSpec"),
+            param_spec_args: lookup_str(typing, "ParamSpecArgs"),
+            param_spec_kwargs: lookup_str(typing, "ParamSpecKwargs"),
+            type_var_tuple: lookup_str(typing, "TypeVarTuple"),
+            type_alias_type: lookup_str(typing, "TypeAliasType"),
+            traceback_type: lookup_str(types, "TracebackType"),
+            function_type: lookup_str(types, "FunctionType"),
+            method_type: lookup_str(types, "MethodType"),
+
+            object_class_type: lookup_str(builtins, "object")
                 .map(|obj| ClassType::new_for_stdlib(obj, TArgs::default())),
         }
     }
@@ -100,32 +122,33 @@ impl Stdlib {
     /// It works because the lookups only need a tiny subset of all `AnswersSolver` functionality,
     /// none of which actually depends on `Stdlib`.
     pub fn for_bootstrapping() -> Stdlib {
-        Self::new(|_, _| None)
+        Self::new_with_bootstrapping(true, |_, _| None)
     }
 
-    fn unwrap_class(cls: &Option<Class>) -> &Class {
-        if let Some(cls) = cls {
-            cls
-        } else {
-            unreachable!(
-                "Stdlib::primitive called using an stdlib with missing classes (probably a bootstrapping stdlib)"
-            )
+    fn unwrap<T>(x: &StdlibResult<T>) -> &T {
+        match x {
+            Ok(x) => x,
+            Err(err) => {
+                unreachable!(
+                    "Stdlib missing class `{}`{}",
+                    err.name,
+                    if err.bootstrapping {
+                        " (while bootstrapping)"
+                    } else {
+                        ""
+                    },
+                )
+            }
         }
     }
 
-    fn primitive(cls: &Option<Class>) -> ClassType {
+    fn primitive(cls: &StdlibResult<Class>) -> ClassType {
         // Note: this construction will panic if we incorrectly mark a generic type as primitive.
-        ClassType::new_for_stdlib(Self::unwrap_class(cls).clone(), TArgs::default())
+        ClassType::new_for_stdlib(Self::unwrap(cls).clone(), TArgs::default())
     }
 
     pub fn object_class_type(&self) -> &ClassType {
-        if let Some(o) = &self.object_class_type {
-            o
-        } else {
-            unreachable!(
-                "Stdlib::object_class_type called using an stdlib with missing classes (probably a bootstrapping stdlib)"
-            )
-        }
+        Self::unwrap(&self.object_class_type)
     }
 
     pub fn bool(&self) -> ClassType {
@@ -172,9 +195,9 @@ impl Stdlib {
         Self::primitive(&self.base_exception)
     }
 
-    fn apply(cls: &Option<Class>, targs: Vec<Type>) -> ClassType {
+    fn apply(cls: &StdlibResult<Class>, targs: Vec<Type>) -> ClassType {
         // Note: this construction will panic if we use `apply` with the wrong arity.
-        ClassType::new_for_stdlib(Self::unwrap_class(cls).clone(), TArgs::new(targs))
+        ClassType::new_for_stdlib(Self::unwrap(cls).clone(), TArgs::new(targs))
     }
 
     pub fn base_exception_group(&self, x: Type) -> ClassType {
