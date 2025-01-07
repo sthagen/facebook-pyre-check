@@ -473,7 +473,15 @@ impl BindingTable {
     {
         let entry = self.get_mut::<K>();
         let idx = entry.0.insert(key);
-        entry.1.insert_once(idx, value);
+        let existing = entry.1.insert(idx, value);
+        if let Some(existing) = existing {
+            panic!(
+                "Key {:?} already exists with value {:?}, cannot insert new value {:?}",
+                entry.0.idx_to_key(idx),
+                existing,
+                entry.1.get_exists(idx)
+            );
+        }
         idx
     }
 
@@ -1215,20 +1223,25 @@ impl<'a> BindingsBuilder<'a> {
         let last_scope = self.scopes.pop().unwrap();
         let mut fields = SmallSet::new();
         for (name, info) in last_scope.flow.info.iter() {
-            let flow_type = Binding::Forward(self.table.types.0.insert(Key::Anywhere(
-                name.clone(),
-                last_scope.stat.0.get(name).unwrap().loc,
-            )));
-            let binding = if let Some(ann) = &info.ann {
-                BindingClassField(flow_type, Some(*ann))
-            } else {
-                BindingClassField(flow_type, None)
-            };
-            fields.insert(name.clone());
-            self.table.insert(
-                KeyClassField(ShortIdentifier::new(&x.name), name.clone()),
-                binding,
-            );
+            // A name with flow info but not static info is a reference to something that's not a class field.
+            if let Some(stat_info) = last_scope.stat.0.get(name) {
+                let flow_type = Binding::Forward(
+                    self.table
+                        .types
+                        .0
+                        .insert(Key::Anywhere(name.clone(), stat_info.loc)),
+                );
+                let binding = if let Some(ann) = &info.ann {
+                    BindingClassField(flow_type, Some(*ann))
+                } else {
+                    BindingClassField(flow_type, None)
+                };
+                fields.insert(name.clone());
+                self.table.insert(
+                    KeyClassField(ShortIdentifier::new(&x.name), name.clone()),
+                    binding,
+                );
+            }
         }
         if let ScopeKind::ClassBody(body) = last_scope.kind {
             for (method_name, instance_attributes) in body.instance_attributes_by_method {
@@ -1428,19 +1441,22 @@ impl<'a> BindingsBuilder<'a> {
     fn narrow_ops(test: Option<Expr>) -> Vec<(Name, NarrowOp, TextRange)> {
         match test {
             Some(Expr::Compare(ExprCompare {
-                range,
+                range: _,
                 left: box Expr::Name(name),
                 ops,
                 comparators,
             })) => ops
                 .iter()
                 .zip(comparators)
-                .filter_map(|(op, right)| match op {
-                    CmpOp::Is => Some((name.id.clone(), NarrowOp::Is(Box::new(right)), range)),
-                    CmpOp::IsNot => {
-                        Some((name.id.clone(), NarrowOp::IsNot(Box::new(right)), range))
+                .filter_map(|(op, right)| {
+                    let range = right.range();
+                    match op {
+                        CmpOp::Is => Some((name.id.clone(), NarrowOp::Is(Box::new(right)), range)),
+                        CmpOp::IsNot => {
+                            Some((name.id.clone(), NarrowOp::IsNot(Box::new(right)), range))
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 })
                 .collect(),
             Some(Expr::BoolOp(ExprBoolOp {

@@ -237,3 +237,27 @@ def foo(x: int | None) -> None:
             assert_type(x, int)
     "#,
 );
+
+testcase!(
+    test_multiple_is,
+    r#"
+from typing import assert_type, Never
+def f(x: bool | None, y: bool | None):
+    if x is None is None:
+        assert_type(x, None)
+    if y is None is True:
+        assert_type(y, Never)
+    "#,
+);
+
+testcase!(
+    test_class_body,
+    r#"
+from typing import assert_type
+def f() -> str | None: ...
+x = f()
+class C:
+    if x is None:
+        assert_type(x, None)
+    "#,
+);
