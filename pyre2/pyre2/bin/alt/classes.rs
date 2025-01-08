@@ -94,6 +94,21 @@ impl BaseClass {
     }
 }
 
+pub struct Enum(ClassType);
+
+impl Enum {
+    pub fn get_member(&self, name: &Name) -> Option<Lit> {
+        // TODO(stroxler, yangdanny) Enums can contain attributes that are not
+        // members, we eventually need to implement enough checks to know the
+        // difference.
+        if self.0.class_object().contains(name) {
+            Some(Lit::Enum(Box::new((self.0.clone(), name.clone()))))
+        } else {
+            None
+        }
+    }
+}
+
 fn is_unbound_function(ty: &Type) -> bool {
     match ty {
         Type::Forall(_, t) => is_unbound_function(t),
@@ -386,14 +401,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.get_from_class(cls, &KeyClassMetadata(ShortIdentifier::new(cls.name())))
     }
 
-    pub fn is_enum(&self, cls: &Class) -> bool {
-        let metadata = self.get_metadata_for_class(cls);
-        metadata.metaclass().map_or(false, |m| {
-            self.solver().is_subset_eq(
+    pub fn get_enum(&self, cls: &ClassType) -> Option<Enum> {
+        let metadata = self.get_metadata_for_class(cls.class_object());
+        metadata.metaclass().and_then(|m| {
+            if self.solver().is_subset_eq(
                 &Type::ClassType(m.clone()),
                 &Type::ClassType(self.stdlib.enum_meta()),
                 self.type_order(),
-            )
+            ) {
+                Some(Enum(cls.clone()))
+            } else {
+                None
+            }
         })
     }
 
@@ -523,19 +542,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn get_class_field(&self, cls: &Class, name: &Name) -> Option<Arc<Type>> {
+    fn get_class_field(&self, cls: &Class, name: &Name) -> Option<Type> {
         if cls.contains(name) {
             let ty = self.get_from_class(
                 cls,
                 &KeyClassField(ShortIdentifier::new(cls.name()), name.clone()),
             );
-            Some(ty)
+            Some(ty.deref().clone())
         } else {
             None
         }
     }
 
-    fn get_class_member(&self, cls: &Class, name: &Name) -> Option<(Arc<Type>, Class)> {
+    fn get_class_member(&self, cls: &Class, name: &Name) -> Option<(Type, Class)> {
         if let Some(member) = self.get_class_field(cls, name) {
             Some((member, cls.dupe()))
         } else {
@@ -543,10 +562,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .ancestors(self.stdlib)
                 .filter_map(|ancestor| {
                     self.get_class_field(ancestor.class_object(), name)
-                        .as_deref()
                         .map(|ty| {
-                            let raw_member = ancestor.instantiate_member(ty.clone());
-                            (Arc::new(raw_member), ancestor.class_object().dupe())
+                            let raw_member = ancestor.instantiate_member(ty);
+                            (raw_member, ancestor.class_object().dupe())
                         })
                 })
                 .next()
@@ -556,7 +574,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn get_instance_attribute(&self, cls: &ClassType, name: &Name) -> Option<Attribute> {
         self.get_class_member(cls.class_object(), name)
             .map(|(member_ty, defining_class)| {
-                let instantiated_ty = cls.instantiate_member((*member_ty).clone());
+                let instantiated_ty = cls.instantiate_member(member_ty);
                 Attribute {
                     value: bind_attribute(cls.self_type(), instantiated_ty),
                     defining_class,
@@ -581,22 +599,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         match self.get_class_member(cls, name) {
             None => Err(NoClassAttribute::NoClassMember),
             Some((ty, defining_class)) => {
-                if self.depends_on_class_type_parameter(cls, ty.as_ref()) {
+                if self.depends_on_class_type_parameter(cls, &ty) {
                     Err(NoClassAttribute::IsGenericMember)
-                } else if self.is_enum(cls) {
-                    // TODO(stroxler, yangdanny) Enums can contain attributes that are not
-                    // members, we eventually need to implement enough checks to know the
-                    // difference.
+                } else if let Some(e) = self.get_enum(&self.promote_to_class_type_silently(cls))
+                    && let Some(member) = e.get_member(name)
+                {
                     Ok(Attribute {
-                        value: Type::Literal(Lit::Enum(Box::new((
-                            self.promote_to_class_type_silently(cls),
-                            name.to_owned(),
-                        )))),
+                        value: Type::Literal(member),
                         defining_class,
                     })
                 } else {
                     Ok(Attribute {
-                        value: ty.as_ref().clone(),
+                        value: ty,
                         defining_class,
                     })
                 }
@@ -612,21 +626,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Option<Attribute> {
         self.get_class_member(cls.class_object(), name)
             .map(|(member_ty, defining_class)| Attribute {
-                value: cls.instantiate_member((*member_ty).clone()),
+                value: cls.instantiate_member(member_ty),
                 defining_class,
             })
     }
 
     /// Given an identifier, see whether it is bound to an enum class. If so,
-    /// return a `ClassType` for the enum class, otherwise return `None`.
-    pub fn get_enum_class_type(&self, name: Identifier) -> Option<ClassType> {
+    /// return the enum, otherwise return `None`.
+    pub fn get_enum_from_name(&self, name: Identifier) -> Option<Enum> {
+        // TODO(stroxler): Eventually, we should raise type errors on generic Enum because
+        // this doesn't make semantic sense. But in the meantime we need to be robust against
+        // this possibility.
         match self.get(&Key::Usage(ShortIdentifier::new(&name))).deref() {
-            Type::ClassDef(class) if self.is_enum(class) => {
-                // TODO(stroxler): Eventually, we should raise type errors on generic Enum because
-                // this doesn't make semantic sense. But in the meantime we need to be robust against
-                // this possibility.
-                Some(self.promote_to_class_type_silently(class))
-            }
+            Type::ClassDef(class) => self.get_enum(&self.promote_to_class_type_silently(class)),
             _ => None,
         }
     }

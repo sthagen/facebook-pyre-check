@@ -76,7 +76,7 @@ def f2(x: Literal[True] | str):
     "#,
 );
 
-testcase_with_bug!(
+testcase!(
     test_is_not_enum_literal,
     r#"
 from typing import assert_type, Literal
@@ -89,7 +89,7 @@ def f1(x: Literal[E.X, E.Y]):
         assert_type(x, Literal[E.Y])
 def f2(x: E | int):
     if x is not E.X:
-        assert_type(x, Literal[E.Y] | int)  # E: assert_type
+        assert_type(x, Literal[E.Y] | int)
     "#,
 );
 
@@ -214,6 +214,7 @@ assert_type(x, str | None)
 );
 
 testcase_with_bug!(
+    "Unwanted EXPECTED error",
     test_while_overwrite,
     r#"
 from typing import assert_type, Literal
