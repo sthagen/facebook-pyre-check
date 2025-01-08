@@ -22,6 +22,7 @@ use starlark_map::ordered_set::OrderedSet;
 use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 
+use crate::alt::classes::ClassField;
 use crate::alt::expr::CallArg;
 use crate::ast::Ast;
 use crate::binding::binding::Binding;
@@ -29,6 +30,7 @@ use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingLegacyTypeParam;
+use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::ContextManagerKind;
 use crate::binding::binding::FunctionKind;
 use crate::binding::binding::Key;
@@ -89,6 +91,8 @@ use crate::util::display::DisplayWith;
 use crate::util::prelude::SliceExt;
 use crate::util::recurser::Recurser;
 use crate::util::uniques::UniqueFactory;
+
+pub const UNKNOWN: Name = Name::new_static("~unknown");
 
 /// Invariants:
 ///
@@ -201,12 +205,17 @@ impl SolveRecursive for KeyExport {
     }
 }
 impl SolveRecursive for KeyClassField {
-    type Recursive = Var;
-    fn promote_recursive(x: Self::Recursive) -> Self::Answer {
-        Type::Var(x)
+    type Recursive = ();
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        // TODO(stroxler) Revisit the recursive handling, which needs changes in the plumbing
+        // to work correctly; what we have here is a fallback to permissive gradual typing.
+        ClassField {
+            ty: Type::any_implicit(),
+            initialization: ClassFieldInitialization::Class,
+        }
     }
-    fn visit_type_mut(v: &mut Type, f: &mut dyn FnMut(&mut Type)) {
-        f(v);
+    fn visit_type_mut(v: &mut ClassField, f: &mut dyn FnMut(&mut Type)) {
+        f(&mut v.ty);
     }
 }
 impl SolveRecursive for KeyAnnotation {
@@ -287,22 +296,11 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyExport {
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyClassField {
-    fn solve(answers: &AnswersSolver<Ans>, binding: &BindingClassField) -> Arc<Type> {
+    fn solve(answers: &AnswersSolver<Ans>, binding: &BindingClassField) -> Arc<ClassField> {
         answers.solve_class_field(binding)
     }
 
-    fn recursive(answers: &AnswersSolver<Ans>) -> Self::Recursive {
-        answers.solver().fresh_recursive(answers.uniques)
-    }
-
-    fn record_recursive(
-        answers: &AnswersSolver<Ans>,
-        key: &KeyClassField,
-        answer: Arc<Type>,
-        recursive: Var,
-    ) {
-        answers.record_recursive(key.range(), answer, recursive);
-    }
+    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyAnnotation {
@@ -976,8 +974,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         )
     }
 
-    fn solve_class_field(&self, binding: &BindingClassField) -> Arc<Type> {
-        if let Some(ann) = &binding.1 {
+    fn solve_class_field(&self, binding: &BindingClassField) -> Arc<ClassField> {
+        let ty = if let Some(ann) = &binding.1 {
             let ann = self.get_idx(*ann);
             match &ann.ty {
                 Some(ty) => Arc::new(ty.clone()),
@@ -985,7 +983,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
         } else {
             self.solve_binding(&binding.0)
-        }
+        };
+        Arc::new(ClassField {
+            ty: ty.deref().clone(),
+            initialization: binding.2,
+        })
     }
 
     fn narrow(&self, ty: &Type, op: &NarrowOp) -> Type {
@@ -1039,6 +1041,67 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         _ => t.clone(),
                     }
                 })
+            }
+            NarrowOp::Truthy => self.distribute_over_union(ty, |t| {
+                if t.as_bool() == Some(false) {
+                    Type::never()
+                } else if matches!(t, Type::ClassType(cls)
+                if *cls == self.stdlib.bool())
+                {
+                    Type::Literal(Lit::Bool(true))
+                } else {
+                    t.clone()
+                }
+            }),
+            NarrowOp::Falsy => self.distribute_over_union(ty, |t| {
+                if t.as_bool() == Some(true) {
+                    Type::never()
+                } else if matches!(t, Type::ClassType(cls)
+                if *cls == self.stdlib.bool())
+                {
+                    Type::Literal(Lit::Bool(false))
+                } else {
+                    t.clone()
+                }
+            }),
+            NarrowOp::Eq(e) => {
+                let right = self.expr(e, None);
+                if matches!(right, Type::Literal(_) | Type::None) {
+                    self.distribute_over_union(ty, |t| {
+                        if self.solver().is_subset_eq(&right, t, self.type_order()) {
+                            right.clone()
+                        } else {
+                            Type::never()
+                        }
+                    })
+                } else {
+                    ty.clone()
+                }
+            }
+            NarrowOp::NotEq(e) => {
+                let right = self.expr(e, None);
+                if matches!(right, Type::Literal(_) | Type::None) {
+                    self.distribute_over_union(ty, |t| {
+                        match (t, &right) {
+                            (_, _) if *t == right => Type::never(),
+                            (Type::ClassType(cls), Type::Literal(Lit::Bool(b)))
+                                if *cls == self.stdlib.bool() =>
+                            {
+                                Type::Literal(Lit::Bool(!b))
+                            }
+                            (
+                                Type::ClassType(left_cls),
+                                Type::Literal(Lit::Enum(box (right_cls, _name))),
+                            ) if *left_cls == *right_cls => {
+                                // TODO: narrow to a union of all other enum members.
+                                t.clone()
+                            }
+                            _ => t.clone(),
+                        }
+                    })
+                } else {
+                    ty.clone()
+                }
             }
         }
     }
@@ -1417,17 +1480,29 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 Type::None // Unused
             }
-            Binding::NameAssign(name, annot_key, binding, range) => {
+            Binding::NameAssign(name, annot_key, binding, range, is_call) => {
                 let annot = annot_key.map(|k| self.get_idx(k));
                 let ty = self.solve_binding_inner(binding);
                 match (annot, &ty) {
                     (Some(annot), _) if annot.qualifiers.contains(&Qualifier::TypeAlias) => {
                         self.as_type_alias(name, TypeAliasStyle::LegacyExplicit, ty, *range)
                     }
+                    (None, Type::Type(box t))
+                        if *is_call && let Some(tvar) = t.as_tvar_declaration() =>
+                    {
+                        let tvar_name = &tvar.name.id;
+                        if *name != *tvar_name && *tvar_name != UNKNOWN {
+                            self.error(
+                                *range,
+                                format!("TypeVar must be assigned to a variable named {tvar_name}"),
+                            );
+                        }
+                        ty
+                    }
                     // TODO(stroxler, rechen): Do we want to include Type::ClassDef(_)
                     // when there is no annotation, so that `mylist = list` is treated
                     // like a value assignment rather than a type alias?
-                    (None, Type::Type(box t)) if !t.is_tvar_declaration(name) => {
+                    (None, Type::Type(_)) => {
                         self.as_type_alias(name, TypeAliasStyle::LegacyImplicit, ty, *range)
                     }
                     _ => ty,

@@ -26,6 +26,7 @@ use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use static_assertions::assert_eq_size;
 
+use crate::alt::classes::ClassField;
 use crate::binding::bindings::Bindings;
 use crate::graph::index::Idx;
 use crate::module::module_info::ModuleInfo;
@@ -65,7 +66,7 @@ impl Keyed for Key {
 impl Keyed for KeyClassField {
     const EXPORTED: bool = true;
     type Value = BindingClassField;
-    type Answer = Type;
+    type Answer = ClassField;
 }
 impl Keyed for KeyExport {
     const EXPORTED: bool = true;
@@ -325,6 +326,10 @@ pub enum FunctionKind {
 pub enum NarrowOp {
     Is(Box<Expr>),
     IsNot(Box<Expr>),
+    Truthy,
+    Falsy,
+    Eq(Box<Expr>),
+    NotEq(Box<Expr>),
 }
 
 impl NarrowOp {
@@ -332,6 +337,10 @@ impl NarrowOp {
         match self {
             Self::Is(e) => Self::IsNot(e),
             Self::IsNot(e) => Self::Is(e),
+            Self::Eq(e) => Self::NotEq(e),
+            Self::NotEq(e) => Self::Eq(e),
+            Self::Truthy => Self::Falsy,
+            Self::Falsy => Self::Truthy,
         }
     }
 }
@@ -412,8 +421,15 @@ pub enum Binding {
     /// An expectation that the types are identical, with an associated name for error messages.
     Eq(Idx<KeyAnnotation>, Idx<KeyAnnotation>, Name),
     /// An assignment to a name. The text range is the range of the RHS, and is used so that we
-    /// can error on bad type forms in type aliases.
-    NameAssign(Name, Option<Idx<KeyAnnotation>>, Box<Binding>, TextRange),
+    /// can error on bad type forms in type aliases. The boolean flag indicates whether the RHS
+    /// is a function call.
+    NameAssign(
+        Name,
+        Option<Idx<KeyAnnotation>>,
+        Box<Binding>,
+        TextRange,
+        bool,
+    ),
     /// A type alias declared with the `type` soft keyword
     ScopedTypeAlias(Name, Option<Box<TypeParams>>, Box<Binding>, TextRange),
     /// An entry in a MatchMapping. The Key looks up the value being matched, the Expr is the key we're extracting.
@@ -545,10 +561,10 @@ impl DisplayWith<Bindings> for Binding {
                 ctx.display(*k2),
                 name
             ),
-            Self::NameAssign(name, None, binding, _) => {
+            Self::NameAssign(name, None, binding, _, _) => {
                 write!(f, "{} = {}", name, binding.display_with(ctx))
             }
-            Self::NameAssign(name, Some(annot), binding, _) => {
+            Self::NameAssign(name, Some(annot), binding, _, _) => {
                 write!(
                     f,
                     "{}: {} = {}",
@@ -637,11 +653,24 @@ impl DisplayWith<Bindings> for BindingAnnotation {
     }
 }
 
+/// Correctly analyzing which attributes are visible on class objects, as well
+/// as handling method binding correctly, requires distinguishing which fields
+/// are assigned values in the class body.
+#[derive(Clone, Copy, Debug)]
+pub enum ClassFieldInitialization {
+    Class,
+    Instance,
+}
+
 /// Binding for a class field, which is any attribute of a class defined in
 /// either the class body or in method (like `__init__`) that we recognize as
 /// defining instance attributes.
 #[derive(Clone, Debug)]
-pub struct BindingClassField(pub Binding, pub Option<Idx<KeyAnnotation>>);
+pub struct BindingClassField(
+    pub Binding,
+    pub Option<Idx<KeyAnnotation>>,
+    pub ClassFieldInitialization,
+);
 
 impl DisplayWith<Bindings> for BindingClassField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {

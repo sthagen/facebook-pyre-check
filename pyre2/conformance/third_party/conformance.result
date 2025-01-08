@@ -314,7 +314,6 @@
     "Line 105: Expected 1 errors",
     "Line 61: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `ClassVar[list[int]]`']",
     "Line 78: Unexpected errors ['assert_type(Literal[3.1], float) failed']",
-    "Line 98: Unexpected errors ['EXPECTED str | None <: str']",
     "Line 101: Unexpected errors ['Expected 1 more positional argument', 'Object of class `NoneType` has no attribute `__add__`', 'Object of class `_PyreReadOnly_` has no attribute `__add__`', \"EXPECTED Literal['hits'] <: _PyreReadOnly_[dict[str, int]]\", \"EXPECTED Literal['hits'] <: dict[str, int]\", 'EXPECTED Literal[0] <: _PyreReadOnly_[str]', 'EXPECTED Literal[0] <: str']"
   ],
   "classes_override.py": [
@@ -712,7 +711,6 @@
     "Line 46: Unexpected errors ['assert_type(Bar[Any], Bar[str]) failed']"
   ],
   "generics_paramspec_basic.py": [
-    "Line 10: Expected 1 errors",
     "Line 15: Expected 1 errors",
     "Line 23: Expected 1 errors",
     "Line 31: Expected 1 errors",
@@ -757,10 +755,9 @@
     "Line 42: Unexpected errors ['EXPECTED Callable[[int, str], int] <: Callable[ParamSpec(@_), int]', 'EXPECTED Callable[[int, str], int] <: Callable[ParamSpec(@_), int]']",
     "Line 43: Unexpected errors ['assert_type(Any, bool) failed', 'Answers::expr_infer wrong number of arguments to call']",
     "Line 44: Unexpected errors ['assert_type(Any, bool) failed', 'Answers::expr_infer wrong number of arguments to call']",
-    "Line 72: Unexpected errors ['EXPECTED Callable[ParamSpec(?_), str] <: BoundMethod[Y[?_, ?_], Callable[ParamSpec(?_), str]]']",
     "Line 81: Unexpected errors ['EXPECTED Callable[[int], str] <: Callable[ParamSpec(@_), str]']",
     "Line 82: Unexpected errors ['untype, got list[type[int]]']",
-    "Line 84: Unexpected errors ['assert_type(BoundMethod[Y[int, Any], Callable[ParamSpec(Any), str]], Callable[[int], str]) failed']",
+    "Line 84: Unexpected errors ['assert_type(Callable[ParamSpec(Any), str], Callable[[int], str]) failed']",
     "Line 91: Unexpected errors ['TODO: Subscript(ExprSubscript - expr_infer, Callable type']",
     "Line 95: Unexpected errors ['EXPECTED Callable[[int, Var[bool]], int] <: Callable[ParamSpec(@_), int]']",
     "Line 96: Unexpected errors ['assert_type(Any, bool) failed']",
@@ -1062,8 +1059,7 @@
     "Line 51: Unexpected errors ['assert_type(Any, IO[Any]) failed']",
     "Line 71: Unexpected errors ['EXPECTED Matrix[Literal[3], Literal[7]] <: Matrix[Literal[3], TypeVar[C]]']",
     "Line 72: Unexpected errors ['assert_type(Matrix[Literal[2], TypeVar[C]], Matrix[Literal[2], Literal[7]]) failed']",
-    "Line 106: Unexpected errors [\"EXPECTED str <: Literal['ABORTED', 'MALFORMED']\"]",
-    "Line 109: Unexpected errors [\"EXPECTED str <: Literal['PENDING']\"]"
+    "Line 106: Unexpected errors [\"EXPECTED str <: Literal['ABORTED', 'MALFORMED']\"]"
   ],
   "literals_literalstring.py": [
     "Line 120: Expected 1 errors",

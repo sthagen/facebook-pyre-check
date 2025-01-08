@@ -23,6 +23,7 @@ use crate::types::class::ClassType;
 use crate::types::literal::Lit;
 use crate::types::module::Module;
 use crate::types::param_spec::ParamSpec;
+use crate::types::qname::QName;
 use crate::types::special_form::SpecialForm;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
@@ -478,12 +479,12 @@ impl Type {
         matches!(self, Type::Forall(_, _))
     }
 
-    pub fn is_tvar_declaration(&self, name: &Name) -> bool {
+    pub fn as_tvar_declaration(&self) -> Option<&QName> {
         match self {
-            Type::TypeVar(x) => x.qname().id() == name,
-            Type::TypeVarTuple(x) => x.qname().id() == name,
-            Type::ParamSpec(x) => x.qname().id() == name,
-            _ => false,
+            Type::TypeVar(t) => Some(t.qname()),
+            Type::TypeVarTuple(t) => Some(t.qname()),
+            Type::ParamSpec(t) => Some(t.qname()),
+            _ => None,
         }
     }
 
@@ -701,6 +702,7 @@ impl Type {
             Type::Literal(Lit::Bytes(x)) => Some(!x.is_empty()),
             Type::Literal(Lit::String(x)) => Some(!x.is_empty()),
             Type::None => Some(false),
+            Type::Tuple(Tuple::Concrete(elements)) => Some(!elements.is_empty()),
             Type::Union(options) => {
                 let mut answer = None;
                 for option in options {

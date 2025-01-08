@@ -17,7 +17,6 @@ use itertools::Either;
 use itertools::Itertools;
 use parse_display::Display;
 use ruff_python_ast::name::Name;
-use ruff_python_ast::Arguments;
 use ruff_python_ast::BoolOp;
 use ruff_python_ast::CmpOp;
 use ruff_python_ast::Comprehension;
@@ -58,6 +57,7 @@ use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingLegacyTypeParam;
+use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::ContextManagerKind;
 use crate::binding::binding::FunctionKind;
 use crate::binding::binding::Key;
@@ -228,6 +228,8 @@ struct FlowInfo {
     ann: Option<Idx<KeyAnnotation>>,
     /// Am I the result of an import (which needs merging)
     is_import: bool,
+    /// Am I initialized, or am I the result of an annotation with no value like `x: int`?
+    is_initialized: bool,
 }
 
 impl FlowInfo {
@@ -236,6 +238,7 @@ impl FlowInfo {
             key,
             ann,
             is_import: false,
+            is_initialized: true,
         }
     }
 }
@@ -519,7 +522,7 @@ impl<'a> BindingsBuilder<'a> {
                     let idx = self
                         .table
                         .insert(key, Binding::Import(builtins_module, name.clone()));
-                    self.bind_key(name, idx, None, false);
+                    self.bind_key(name, idx, None, false, true);
                 }
             }
             Err(err) => {
@@ -615,7 +618,7 @@ impl<'a> BindingsBuilder<'a> {
                     Binding::AnnotatedType(ann_key, Box::new(Binding::AnyType(AnyStyle::Implicit))),
                 );
                 self.scopes.last_mut().stat.add(name.id.clone(), name.range);
-                self.bind_key(&name.id, bind_key, Some(ann_key), false);
+                self.bind_key(&name.id, bind_key, Some(ann_key), false, true);
             }
         }
     }
@@ -748,11 +751,12 @@ impl<'a> BindingsBuilder<'a> {
         name: &Identifier,
         binding: Binding,
         annotation: Option<Idx<KeyAnnotation>>,
+        is_initialized: bool,
     ) -> Option<Idx<KeyAnnotation>> {
         let idx = self
             .table
             .insert(Key::Definition(ShortIdentifier::new(name)), binding);
-        self.bind_key(&name.id, idx, annotation, false)
+        self.bind_key(&name.id, idx, annotation, false, is_initialized)
     }
 
     // `should_ensure_expr` determines whether to call `ensure_expr` recursively in `bind_target`
@@ -851,7 +855,7 @@ impl<'a> BindingsBuilder<'a> {
             Expr::Name(name) => {
                 let key = Key::Definition(ShortIdentifier::expr_name(name));
                 let idx = self.table.types.0.insert(key);
-                let ann = self.bind_key(&name.id, idx, None, false);
+                let ann = self.bind_key(&name.id, idx, None, false, true);
                 self.table.types.1.insert(idx, make_binding(ann));
             }
             Expr::Attribute(x) => {
@@ -889,6 +893,7 @@ impl<'a> BindingsBuilder<'a> {
         key: Idx<Key>,
         annotation: Option<Idx<KeyAnnotation>>,
         is_import: bool,
+        is_initialized: bool,
     ) -> Option<Idx<KeyAnnotation>> {
         match self.scopes.last_mut().flow.info.entry(name.clone()) {
             Entry::Occupied(mut e) => {
@@ -898,6 +903,7 @@ impl<'a> BindingsBuilder<'a> {
                     key,
                     ann: annotation,
                     is_import,
+                    is_initialized,
                 };
                 annotation
             }
@@ -906,6 +912,7 @@ impl<'a> BindingsBuilder<'a> {
                     key,
                     ann: annotation,
                     is_import,
+                    is_initialized,
                 });
                 annotation
             }
@@ -919,8 +926,9 @@ impl<'a> BindingsBuilder<'a> {
         key: Idx<Key>,
         annotation: Option<Idx<KeyAnnotation>>,
         is_import: bool,
+        is_initialized: bool,
     ) -> Option<Idx<KeyAnnotation>> {
-        let annotation = self.update_flow_info(name, key, annotation, is_import);
+        let annotation = self.update_flow_info(name, key, annotation, is_import, is_initialized);
         let info = self.scopes.last().stat.0.get(name).unwrap_or_else(|| {
             let module = self.module_info.name();
             panic!("Name `{name}` not found in static scope of module `{module}`")
@@ -950,7 +958,7 @@ impl<'a> BindingsBuilder<'a> {
             qs.push(q);
             let name = x.name();
             self.scopes.last_mut().stat.add(name.id.clone(), name.range);
-            self.bind_definition(name, Binding::TypeParameter(q), None);
+            self.bind_definition(name, Binding::TypeParameter(q), None, true);
         }
         qs
     }
@@ -983,7 +991,7 @@ impl<'a> BindingsBuilder<'a> {
                 Binding::AnnotatedType(ann_key, Box::new(Binding::AnyType(AnyStyle::Implicit))),
             );
             self.scopes.last_mut().stat.add(name.id.clone(), name.range);
-            self.bind_key(&name.id, bind_key, Some(ann_key), false);
+            self.bind_key(&name.id, bind_key, Some(ann_key), false, true);
         }
         if let Scope {
             kind: ScopeKind::Method(method),
@@ -1090,6 +1098,7 @@ impl<'a> BindingsBuilder<'a> {
             &func_name,
             Binding::Function(Box::new(x), kind, legacy_tparams.into_boxed_slice()),
             None,
+            true,
         );
 
         let mut return_exprs = Vec::new();
@@ -1239,11 +1248,12 @@ impl<'a> BindingsBuilder<'a> {
                         .0
                         .insert(Key::Anywhere(name.clone(), stat_info.loc)),
                 );
-                let binding = if let Some(ann) = &info.ann {
-                    BindingClassField(flow_type, Some(*ann))
+                let initialization = if info.is_initialized {
+                    ClassFieldInitialization::Class
                 } else {
-                    BindingClassField(flow_type, None)
+                    ClassFieldInitialization::Instance
                 };
+                let binding = BindingClassField(flow_type, info.ann.dupe(), initialization);
                 fields.insert(name.clone());
                 self.table.insert(
                     KeyClassField(ShortIdentifier::new(&x.name), name.clone()),
@@ -1259,7 +1269,11 @@ impl<'a> BindingsBuilder<'a> {
                             fields.insert(name.clone());
                             self.table.insert(
                                 KeyClassField(ShortIdentifier::new(&x.name), name),
-                                BindingClassField(attribute.0, attribute.1),
+                                BindingClassField(
+                                    attribute.0,
+                                    attribute.1,
+                                    ClassFieldInitialization::Instance,
+                                ),
                             );
                         }
                     }
@@ -1283,6 +1297,7 @@ impl<'a> BindingsBuilder<'a> {
                 legacy_tparams.into_boxed_slice(),
             ),
             None,
+            true,
         );
     }
 
@@ -1298,17 +1313,32 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     // Traverse a pattern and bind all the names; key is the reference for the value that's being matched on
-    fn bind_pattern(&mut self, pattern: Pattern, key: Idx<Key>) {
+    fn bind_pattern(&mut self, subject_name: Option<&Name>, pattern: Pattern, key: Idx<Key>) {
         match pattern {
             Pattern::MatchValue(p) => {
                 self.ensure_expr(&p.value);
+                if let Some(subject_name) = subject_name {
+                    self.bind_narrow_ops(
+                        &[(
+                            subject_name.clone(),
+                            NarrowOp::Eq(p.value.clone()),
+                            p.range(),
+                        )],
+                        p.range(),
+                    );
+                }
             }
             Pattern::MatchAs(p) => {
-                if let Some(name) = &p.name {
-                    self.bind_definition(name, Binding::Forward(key), None);
-                }
+                // If there's no name for this pattern, refine the variable being matched
+                // If there is a new name, refine that instead
+                let new_subject_name = if let Some(name) = &p.name {
+                    self.bind_definition(name, Binding::Forward(key), None, true);
+                    Some(&name.id)
+                } else {
+                    subject_name
+                };
                 if let Some(box pattern) = p.pattern {
-                    self.bind_pattern(pattern, key)
+                    self.bind_pattern(new_subject_name, pattern, key)
                 }
             }
             Pattern::MatchSequence(x) => {
@@ -1327,6 +1357,7 @@ impl<'a> BindingsBuilder<'a> {
                                         position,
                                     ),
                                     None,
+                                    true,
                                 );
                             }
                             unbounded = true;
@@ -1345,7 +1376,7 @@ impl<'a> BindingsBuilder<'a> {
                                     position,
                                 ),
                             );
-                            self.bind_pattern(x, key);
+                            self.bind_pattern(None, x, key);
                         }
                     }
                 }
@@ -1368,10 +1399,10 @@ impl<'a> BindingsBuilder<'a> {
                             Key::Anon(key_expr.range()),
                             Binding::PatternMatchMapping(key_expr, key),
                         );
-                        self.bind_pattern(pattern, mapping_key)
+                        self.bind_pattern(None, pattern, mapping_key)
                     });
                 if let Some(rest) = x.rest {
-                    self.bind_definition(&rest, Binding::Forward(key), None);
+                    self.bind_definition(&rest, Binding::Forward(key), None, true);
                 }
             }
             Pattern::MatchClass(x) => {
@@ -1389,7 +1420,7 @@ impl<'a> BindingsBuilder<'a> {
                                 pattern.range(),
                             ),
                         );
-                        self.bind_pattern(pattern.clone(), attr_key)
+                        self.bind_pattern(None, pattern.clone(), attr_key)
                     });
                 x.arguments.keywords.into_iter().for_each(
                     |PatternKeyword {
@@ -1401,7 +1432,7 @@ impl<'a> BindingsBuilder<'a> {
                             Key::Anon(attr.range()),
                             Binding::PatternMatchClassKeyword(x.cls.clone(), attr, key),
                         );
-                        self.bind_pattern(pattern, attr_key)
+                        self.bind_pattern(None, pattern, attr_key)
                     },
                 )
             }
@@ -1417,7 +1448,7 @@ impl<'a> BindingsBuilder<'a> {
                         )
                     }
                     let mut base = self.scopes.last().flow.clone();
-                    self.bind_pattern(pattern, key);
+                    self.bind_pattern(None, pattern, key);
                     mem::swap(&mut self.scopes.last_mut().flow, &mut base);
                     branches.push(base);
                 }
@@ -1431,7 +1462,7 @@ impl<'a> BindingsBuilder<'a> {
         for x in &x.names {
             if &x.name != "*" {
                 let asname = x.asname.as_ref().unwrap_or(&x.name);
-                self.bind_definition(asname, Binding::AnyType(AnyStyle::Error), None);
+                self.bind_definition(asname, Binding::AnyType(AnyStyle::Error), None, true);
             }
         }
     }
@@ -1463,6 +1494,10 @@ impl<'a> BindingsBuilder<'a> {
                         CmpOp::IsNot => {
                             Some((name.id.clone(), NarrowOp::IsNot(Box::new(right)), range))
                         }
+                        CmpOp::Eq => Some((name.id.clone(), NarrowOp::Eq(Box::new(right)), range)),
+                        CmpOp::NotEq => {
+                            Some((name.id.clone(), NarrowOp::NotEq(Box::new(right)), range))
+                        }
                         _ => None,
                     }
                 })
@@ -1480,6 +1515,7 @@ impl<'a> BindingsBuilder<'a> {
                 op: UnaryOp::Not,
                 operand: box e,
             })) => Self::negate_narrow_ops(&Self::narrow_ops(Some(e))),
+            Some(Expr::Name(name)) => vec![(name.id.clone(), NarrowOp::Truthy, name.range())],
             _ => Vec::new(),
         }
     }
@@ -1495,7 +1531,7 @@ impl<'a> BindingsBuilder<'a> {
                     Key::Narrow(name.clone(), *op_range, use_range),
                     Binding::Narrow(name_key, op.clone()),
                 );
-                self.update_flow_info(name, binding_key, None, false);
+                self.update_flow_info(name, binding_key, None, false, true);
             }
         }
     }
@@ -1546,17 +1582,6 @@ impl<'a> BindingsBuilder<'a> {
                                 self.ensure_expr(&kw.value);
                             }
                         }
-                        if let Some(type_var_name) = type_var_name(arguments) {
-                            if !matches!(name, Some(ref x) if *x == type_var_name) {
-                                self.error(
-                                    arguments.args[0].range(),
-                                    format!(
-                                        "TypeVar must be assigned to a variable named {}",
-                                        type_var_name
-                                    ),
-                                );
-                            }
-                        }
                     }
                     _ => self.ensure_expr(&value),
                 }
@@ -1564,7 +1589,13 @@ impl<'a> BindingsBuilder<'a> {
                     let make_binding = |k: Option<Idx<KeyAnnotation>>| {
                         let b = Binding::Expr(k, value.clone());
                         if let Some(name) = &name {
-                            Binding::NameAssign(name.clone(), k, Box::new(b), value.range())
+                            Binding::NameAssign(
+                                name.clone(),
+                                k,
+                                Box::new(b),
+                                value.range(),
+                                matches!(value, Expr::Call(_)),
+                            )
                         } else {
                             b
                         }
@@ -1603,6 +1634,7 @@ impl<'a> BindingsBuilder<'a> {
                             self.ensure_expr(&value);
                         }
                         let range = value.range();
+                        let is_call = matches!(*value, Expr::Call(_));
                         self.bind_definition(
                             &name.clone(),
                             Binding::NameAssign(
@@ -1610,8 +1642,10 @@ impl<'a> BindingsBuilder<'a> {
                                 Some(ann_key),
                                 Box::new(Binding::Expr(Some(ann_key), *value)),
                                 range,
+                                is_call,
                             ),
                             Some(ann_key),
+                            true,
                         );
                     } else {
                         self.bind_definition(
@@ -1621,6 +1655,7 @@ impl<'a> BindingsBuilder<'a> {
                                 Box::new(Binding::AnyType(AnyStyle::Implicit)),
                             ),
                             Some(ann_key),
+                            false,
                         );
                     }
                 }
@@ -1678,7 +1713,7 @@ impl<'a> BindingsBuilder<'a> {
                         Box::new(expr_binding),
                         x.range,
                     );
-                    self.bind_definition(&Ast::expr_name_identifier(name), binding, None);
+                    self.bind_definition(&Ast::expr_name_identifier(name), binding, None, true);
                 } else {
                     self.todo("Bindings::stmt TypeAlias", &x);
                 }
@@ -1761,9 +1796,14 @@ impl<'a> BindingsBuilder<'a> {
             }
             Stmt::Match(x) => {
                 self.ensure_expr(&x.subject);
+                let subject_name = if let Expr::Name(ref name) = *x.subject {
+                    Some(&name.id)
+                } else {
+                    None
+                };
                 let key = self.table.insert(
                     Key::Anon(x.subject.range()),
-                    Binding::Expr(None, *x.subject),
+                    Binding::Expr(None, *x.subject.clone()),
                 );
                 let mut exhaustive = false;
                 let range = x.range;
@@ -1773,7 +1813,7 @@ impl<'a> BindingsBuilder<'a> {
                     if case.pattern.is_wildcard() || case.pattern.is_irrefutable() {
                         exhaustive = true;
                     }
-                    self.bind_pattern(case.pattern, key);
+                    self.bind_pattern(subject_name, case.pattern, key);
                     if let Some(guard) = case.guard {
                         self.ensure_expr(&guard);
                         self.table
@@ -1834,6 +1874,7 @@ impl<'a> BindingsBuilder<'a> {
                             &name,
                             Binding::ExceptionHandler(type_, x.is_star),
                             None,
+                            true,
                         );
                     } else if let Some(type_) = h.type_ {
                         self.ensure_expr(&type_);
@@ -1873,6 +1914,7 @@ impl<'a> BindingsBuilder<'a> {
                                 &asname,
                                 Binding::Module(m, m.components(), None),
                                 None,
+                                true,
                             );
                         }
                         None => {
@@ -1886,7 +1928,7 @@ impl<'a> BindingsBuilder<'a> {
                                 Key::Import(first.clone(), x.name.range),
                                 Binding::Module(m, vec![first.clone()], module_key),
                             );
-                            self.bind_key(&first, key, None, true);
+                            self.bind_key(&first, key, None, true, true);
                         }
                     }
                 }
@@ -1913,7 +1955,7 @@ impl<'a> BindingsBuilder<'a> {
                                             Binding::AnyType(AnyStyle::Error)
                                         };
                                         let key = self.table.insert(key, val);
-                                        self.bind_key(name, key, None, false);
+                                        self.bind_key(name, key, None, false, true);
                                     }
                                 } else {
                                     let asname = x.asname.unwrap_or_else(|| x.name.clone());
@@ -1926,7 +1968,7 @@ impl<'a> BindingsBuilder<'a> {
                                         );
                                         Binding::AnyType(AnyStyle::Error)
                                     };
-                                    self.bind_definition(&asname, val, None);
+                                    self.bind_definition(&asname, val, None, true);
                                 }
                             }
                         }
@@ -2178,6 +2220,7 @@ impl LegacyTParamBuilder {
                     // the binding created by `forward_lookup`).
                     Binding::CheckLegacyTypeParam(key, None),
                     None,
+                    true,
                 );
             }
         }
@@ -2214,21 +2257,5 @@ fn yield_expr(x: ExprYield) -> Expr {
     match x.value {
         Some(x) => *x,
         None => Expr::NoneLiteral(ExprNoneLiteral { range: x.range }),
-    }
-}
-
-fn type_var_name(x: &Arguments) -> Option<Name> {
-    if !x.args.is_empty() {
-        match &x.args[0] {
-            Expr::StringLiteral(x) => Some(Name::new(x.value.to_str())),
-            _ => None,
-        }
-    } else if let Some(keyword) = x.find_keyword("name") {
-        match &keyword.value {
-            Expr::StringLiteral(x) => Some(Name::new(x.value.to_str())),
-            _ => None,
-        }
-    } else {
-        None
     }
 }
