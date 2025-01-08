@@ -744,12 +744,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.type_order(),
         ) {
             self.error(
-                range,
-                format!(
-                    "Expression `{}` has type `{actual_type}` which does not derive from BaseException",
-                    self.module_info().display(x)
-                ),
-            );
+                 range,
+                 format!(
+                     "Expression `{}` has type `{actual_type}` which does not derive from BaseException",
+                     self.module_info().display(x)
+                 ),
+             );
         }
     }
 
@@ -990,18 +990,41 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         })
     }
 
+    // Get the union of all members of an enum, minus the specified member
+    fn subtract_enum_member(&self, cls: &ClassType, name: &Name) -> Type {
+        let e = self.get_enum(cls).unwrap();
+        self.unions(
+            &cls.class_object()
+                .fields()
+                .iter()
+                .filter_map(|f| {
+                    if *f == *name {
+                        None
+                    } else {
+                        e.get_member(f).map(Type::Literal)
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn intersect(&self, left: &Type, right: &Type) -> Type {
+        // Get our best approximation of ty & right.
+        self.distribute_over_union(left, |t| {
+            if self.solver().is_subset_eq(right, t, self.type_order()) {
+                right.clone()
+            } else {
+                Type::never()
+            }
+        })
+    }
+
     fn narrow(&self, ty: &Type, op: &NarrowOp) -> Type {
         match op {
             NarrowOp::Is(e) => {
                 let right = self.expr(e, None);
                 // Get our best approximation of ty & right.
-                self.distribute_over_union(ty, |t| {
-                    if self.solver().is_subset_eq(&right, t, self.type_order()) {
-                        right.clone()
-                    } else {
-                        Type::never()
-                    }
-                })
+                self.intersect(ty, &right)
             }
             NarrowOp::IsNot(e) => {
                 let right = self.expr(e, None);
@@ -1021,45 +1044,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         (
                             Type::ClassType(left_cls),
                             Type::Literal(Lit::Enum(box (right_cls, name))),
-                        ) if *left_cls == *right_cls => {
-                            let e = self.get_enum(left_cls).unwrap();
-                            self.unions(
-                                &left_cls
-                                    .class_object()
-                                    .fields()
-                                    .iter()
-                                    .filter_map(|f| {
-                                        if *f == *name {
-                                            None
-                                        } else {
-                                            e.get_member(f).map(Type::Literal)
-                                        }
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
-                        }
+                        ) if *left_cls == *right_cls => self.subtract_enum_member(left_cls, name),
                         _ => t.clone(),
                     }
                 })
             }
-            NarrowOp::Truthy => self.distribute_over_union(ty, |t| {
-                if t.as_bool() == Some(false) {
+            NarrowOp::Truthy | NarrowOp::Falsy => self.distribute_over_union(ty, |t| {
+                let boolval = matches!(op, NarrowOp::Truthy);
+                if t.as_bool() == Some(!boolval) {
                     Type::never()
-                } else if matches!(t, Type::ClassType(cls)
-                if *cls == self.stdlib.bool())
-                {
-                    Type::Literal(Lit::Bool(true))
-                } else {
-                    t.clone()
-                }
-            }),
-            NarrowOp::Falsy => self.distribute_over_union(ty, |t| {
-                if t.as_bool() == Some(true) {
-                    Type::never()
-                } else if matches!(t, Type::ClassType(cls)
-                if *cls == self.stdlib.bool())
-                {
-                    Type::Literal(Lit::Bool(false))
+                } else if matches!(t, Type::ClassType(cls) if *cls == self.stdlib.bool()) {
+                    Type::Literal(Lit::Bool(boolval))
                 } else {
                     t.clone()
                 }
@@ -1067,13 +1062,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             NarrowOp::Eq(e) => {
                 let right = self.expr(e, None);
                 if matches!(right, Type::Literal(_) | Type::None) {
-                    self.distribute_over_union(ty, |t| {
-                        if self.solver().is_subset_eq(&right, t, self.type_order()) {
-                            right.clone()
-                        } else {
-                            Type::never()
-                        }
-                    })
+                    self.intersect(ty, &right)
                 } else {
                     ty.clone()
                 }
@@ -1081,23 +1070,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             NarrowOp::NotEq(e) => {
                 let right = self.expr(e, None);
                 if matches!(right, Type::Literal(_) | Type::None) {
-                    self.distribute_over_union(ty, |t| {
-                        match (t, &right) {
-                            (_, _) if *t == right => Type::never(),
-                            (Type::ClassType(cls), Type::Literal(Lit::Bool(b)))
-                                if *cls == self.stdlib.bool() =>
-                            {
-                                Type::Literal(Lit::Bool(!b))
-                            }
-                            (
-                                Type::ClassType(left_cls),
-                                Type::Literal(Lit::Enum(box (right_cls, _name))),
-                            ) if *left_cls == *right_cls => {
-                                // TODO: narrow to a union of all other enum members.
-                                t.clone()
-                            }
-                            _ => t.clone(),
+                    self.distribute_over_union(ty, |t| match (t, &right) {
+                        (_, _) if *t == right => Type::never(),
+                        (Type::ClassType(cls), Type::Literal(Lit::Bool(b)))
+                            if *cls == self.stdlib.bool() =>
+                        {
+                            Type::Literal(Lit::Bool(!b))
                         }
+                        (
+                            Type::ClassType(left_cls),
+                            Type::Literal(Lit::Enum(box (right_cls, name))),
+                        ) if *left_cls == *right_cls => self.subtract_enum_member(left_cls, name),
+                        _ => t.clone(),
                     })
                 } else {
                     ty.clone()
@@ -1480,7 +1464,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 Type::None // Unused
             }
-            Binding::NameAssign(name, annot_key, binding, range, is_call) => {
+            Binding::NameAssign(name, annot_key, binding, range) => {
                 let annot = annot_key.map(|k| self.get_idx(k));
                 let ty = self.solve_binding_inner(binding);
                 match (annot, &ty) {
@@ -1488,7 +1472,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         self.as_type_alias(name, TypeAliasStyle::LegacyExplicit, ty, *range)
                     }
                     (None, Type::Type(box t))
-                        if *is_call && let Some(tvar) = t.as_tvar_declaration() =>
+                        if matches!(binding, box Binding::Expr(_, Expr::Call(_)))
+                            && let Some(tvar) = t.as_tvar_declaration() =>
                     {
                         let tvar_name = &tvar.name.id;
                         if *name != *tvar_name && *tvar_name != UNKNOWN {
