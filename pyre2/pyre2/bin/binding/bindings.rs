@@ -17,19 +17,14 @@ use itertools::Either;
 use itertools::Itertools;
 use parse_display::Display;
 use ruff_python_ast::name::Name;
-use ruff_python_ast::BoolOp;
-use ruff_python_ast::CmpOp;
 use ruff_python_ast::Comprehension;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
-use ruff_python_ast::ExprBoolOp;
 use ruff_python_ast::ExprCall;
-use ruff_python_ast::ExprCompare;
 use ruff_python_ast::ExprLambda;
 use ruff_python_ast::ExprName;
 use ruff_python_ast::ExprNoneLiteral;
 use ruff_python_ast::ExprSubscript;
-use ruff_python_ast::ExprUnaryOp;
 use ruff_python_ast::ExprYield;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Parameters;
@@ -43,7 +38,6 @@ use ruff_python_ast::StmtReturn;
 use ruff_python_ast::StringFlags;
 use ruff_python_ast::TypeParam;
 use ruff_python_ast::TypeParams;
-use ruff_python_ast::UnaryOp;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::Entry;
@@ -1321,11 +1315,7 @@ impl<'a> BindingsBuilder<'a> {
                 self.ensure_expr(&p.value);
                 if let Some(subject_name) = subject_name {
                     self.bind_narrow_ops(
-                        &NarrowOps(smallmap! {
-                            subject_name.clone() => vec![(
-                            NarrowOp::Eq(p.value.clone()),
-                            p.range(),
-                        )]}),
+                        &NarrowOps(smallmap! { subject_name.clone() => (NarrowOp::Eq(p.value.clone()), p.range()) }),
                         p.range(),
                     );
                 }
@@ -1469,63 +1459,14 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
-    fn narrow_ops(test: Option<Expr>) -> NarrowOps {
-        match test {
-            Some(Expr::Compare(ExprCompare {
-                range: _,
-                left: box Expr::Name(name),
-                ops,
-                comparators,
-            })) => {
-                let mut narrow_ops = NarrowOps::new();
-                for (cmp_op, right) in ops.iter().zip(comparators) {
-                    let range = right.range();
-                    let (name, op) = match cmp_op {
-                        CmpOp::Is => (name.id.clone(), NarrowOp::Is(Box::new(right))),
-                        CmpOp::IsNot => (name.id.clone(), NarrowOp::IsNot(Box::new(right))),
-                        CmpOp::Eq => (name.id.clone(), NarrowOp::Eq(Box::new(right))),
-                        CmpOp::NotEq => (name.id.clone(), NarrowOp::NotEq(Box::new(right))),
-                        _ => {
-                            continue;
-                        }
-                    };
-                    narrow_ops.and(name, op, range);
-                }
-                narrow_ops
-            }
-            Some(Expr::BoolOp(ExprBoolOp {
-                range: _,
-                op: BoolOp::And,
-                values,
-            })) => {
-                let mut narrow_ops = NarrowOps::new();
-                for e in values {
-                    narrow_ops.and_all(Self::narrow_ops(Some(e)))
-                }
-                narrow_ops
-            }
-            Some(Expr::UnaryOp(ExprUnaryOp {
-                range: _,
-                op: UnaryOp::Not,
-                operand: box e,
-            })) => Self::narrow_ops(Some(e)).negate(),
-            Some(Expr::Name(name)) => {
-                NarrowOps(smallmap! { name.id.clone() => vec![(NarrowOp::Truthy, name.range())] })
-            }
-            _ => NarrowOps::new(),
-        }
-    }
-
     fn bind_narrow_ops(&mut self, narrow_ops: &NarrowOps, use_range: TextRange) {
-        for (name, ops) in narrow_ops.0.iter() {
-            for (op, op_range) in ops {
-                if let Some(name_key) = self.lookup_name(name) {
-                    let binding_key = self.table.insert(
-                        Key::Narrow(name.clone(), *op_range, use_range),
-                        Binding::Narrow(name_key, op.clone()),
-                    );
-                    self.update_flow_info(name, binding_key, None, false, true);
-                }
+        for (name, (op, op_range)) in narrow_ops.0.iter() {
+            if let Some(name_key) = self.lookup_name(name) {
+                let binding_key = self.table.insert(
+                    Key::Narrow(name.clone(), *op_range, use_range),
+                    Binding::Narrow(name_key, op.clone()),
+                );
+                self.update_flow_info(name, binding_key, None, false, true);
             }
         }
     }
@@ -1713,7 +1654,7 @@ impl<'a> BindingsBuilder<'a> {
                 self.teardown_loop(x.range, &NarrowOps::new(), x.orelse);
             }
             Stmt::While(x) => {
-                let narrow_ops = Self::narrow_ops(Some(*x.test.clone()));
+                let narrow_ops = NarrowOps::from_expr(Some(*x.test.clone()));
                 self.setup_loop(x.range, &narrow_ops);
                 self.ensure_expr(&x.test);
                 self.stmts(x.body);
@@ -1738,7 +1679,7 @@ impl<'a> BindingsBuilder<'a> {
                     }
                     let mut base = self.scopes.last().flow.clone();
                     self.ensure_expr_opt(test.as_ref());
-                    let new_narrow_ops = Self::narrow_ops(test);
+                    let new_narrow_ops = NarrowOps::from_expr(test);
                     if let Some(stmt) = body.first() {
                         let use_range = stmt.range();
                         self.bind_narrow_ops(&narrow_ops, use_range);
@@ -1879,7 +1820,7 @@ impl<'a> BindingsBuilder<'a> {
             }
             Stmt::Assert(x) => {
                 self.ensure_expr(&x.test);
-                self.bind_narrow_ops(&Self::narrow_ops(Some(*x.test.clone())), x.range);
+                self.bind_narrow_ops(&NarrowOps::from_expr(Some(*x.test.clone())), x.range);
                 self.table
                     .insert(Key::Anon(x.test.range()), Binding::Expr(None, *x.test));
                 if let Some(msg_expr) = x.msg {

@@ -194,6 +194,23 @@ assert_type(x, int)
 );
 
 testcase!(
+    test_class_access_of_instance_only_attribute,
+    r#"
+from typing import assert_type, Any
+class C:
+    x: int
+    def __init__(self, y: str):
+        self.x = 0
+        self.y = y
+assert_type(C.x, Any)  # E: Instance-only attribute `x` of class `C` is not visible on the class
+assert_type(C.y, Any)  # E: Instance-only attribute `y` of class `C` is not visible on the class
+c = C("y")
+assert_type(c.x, int)
+assert_type(c.y, str)
+"#,
+);
+
+testcase!(
     test_match_method_against_callable,
     r#"
 from typing import Callable

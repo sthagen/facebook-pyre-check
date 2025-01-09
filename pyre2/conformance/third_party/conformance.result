@@ -408,8 +408,8 @@
   "dataclasses_descriptors.py": [
     "Line 35: Unexpected errors ['Expected 0 positional arguments, got 1']",
     "Line 37: Unexpected errors ['assert_type(Desc1, int) failed']",
-    "Line 61: Unexpected errors ['assert_type(Desc2[int], list[int]) failed']",
-    "Line 62: Unexpected errors ['assert_type(Desc2[str], list[str]) failed']",
+    "Line 61: Unexpected errors ['assert_type(Any, list[int]) failed', 'Instance-only attribute `x` of class `DC2` is not visible on the class']",
+    "Line 62: Unexpected errors ['assert_type(Any, list[str]) failed', 'Instance-only attribute `y` of class `DC2` is not visible on the class']",
     "Line 63: Unexpected errors ['assert_type(Desc2[str], list[str]) failed']",
     "Line 65: Unexpected errors ['Expected 0 positional arguments, got 3']",
     "Line 66: Unexpected errors ['assert_type(Desc2[int], int) failed']",
@@ -420,7 +420,6 @@
     "Line 27: Expected 1 errors",
     "Line 35: Expected 1 errors",
     "Line 36: Expected 1 errors",
-    "Line 37: Expected 1 errors",
     "Line 38: Expected 1 errors",
     "Line 30: Unexpected errors [\"Unexpected keyword argument 'final_no_default'\", \"Unexpected keyword argument 'final_with_default'\"]"
   ],
@@ -607,11 +606,12 @@
   ],
   "enums_definition.py": [],
   "enums_expansion.py": [
+    "Line 53: Expected 1 errors",
     "Line 23: Unexpected errors [\"Missing argument 'flush'\"]",
     "Line 31: Unexpected errors [\"Missing argument 'flush'\"]",
     "Line 33: Unexpected errors [\"Missing argument 'flush'\"]",
     "Line 50: Unexpected errors [\"Missing argument 'flush'\"]",
-    "Line 78: Unexpected errors ['EXPECTED list[object] <: list[Answer]']"
+    "Line 52: Unexpected errors ['assert_type(Literal[CustomFlags.FLAG3], CustomFlags) failed']"
   ],
   "enums_member_names.py": [],
   "enums_member_values.py": [
@@ -625,9 +625,8 @@
     "Line 84: Expected 1 errors",
     "Line 85: Expected 1 errors",
     "Line 116: Expected 1 errors",
-    "Line 129: Expected 1 errors",
-    "Line 27: Unexpected errors ['assert_type(Literal[Pet.genus], str) failed']",
-    "Line 28: Unexpected errors ['assert_type(Literal[Pet.species], str) failed']",
+    "Line 27: Unexpected errors ['assert_type(Any, str) failed', 'Instance-only attribute `genus` of class `Pet` is not visible on the class']",
+    "Line 28: Unexpected errors ['assert_type(Any, str) failed', 'Instance-only attribute `species` of class `Pet` is not visible on the class']",
     "Line 33: Unexpected errors ['Could not find import of `_enums_members`, Could not find path for `_enums_members`']",
     "Line 35: Unexpected errors ['assert_type(Any, str) failed']",
     "Line 36: Unexpected errors ['assert_type(Any, str) failed']",
@@ -637,7 +636,7 @@
     "Line 68: Unexpected errors ['EXPECTED Callable[[int], int] <: Callable[ParamSpec(@_), int]']",
     "Line 75: Unexpected errors [\"Missing argument 'flush'\"]",
     "Line 100: Unexpected errors ['assert_type(Literal[TrafficLight.AMBER], Literal[TrafficLight.YELLOW]) failed']",
-    "Line 128: Unexpected errors ['Could not find name `reveal_type`', 'revealed type: Literal[Example2.__B]']"
+    "Line 128: Unexpected errors ['Could not find name `reveal_type`', 'revealed type: Literal[2]']"
   ],
   "exceptions_context_managers.py": [
     "Line 64: Unexpected errors ['assert_type(int | str, str) failed']",
