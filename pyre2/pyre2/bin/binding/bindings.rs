@@ -20,6 +20,7 @@ use ruff_python_ast::name::Name;
 use ruff_python_ast::Comprehension;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
+use ruff_python_ast::ExprBooleanLiteral;
 use ruff_python_ast::ExprCall;
 use ruff_python_ast::ExprLambda;
 use ruff_python_ast::ExprName;
@@ -30,6 +31,7 @@ use ruff_python_ast::Identifier;
 use ruff_python_ast::Parameters;
 use ruff_python_ast::Pattern;
 use ruff_python_ast::PatternKeyword;
+use ruff_python_ast::Singleton;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
@@ -621,6 +623,22 @@ impl<'a> BindingsBuilder<'a> {
 
     /// Execute through the expr, ensuring every name has a binding.
     fn ensure_expr(&mut self, x: &Expr) {
+        if let Expr::If(x) = x {
+            // Ternary operation. We treat it like an if/else statement.
+            let base = self.scopes.last().flow.clone();
+            self.ensure_expr(&x.test);
+            let narrow_ops = NarrowOps::from_expr(Some((*x.test).clone()));
+            self.bind_narrow_ops(&narrow_ops, x.body.range());
+            self.ensure_expr(&x.body);
+            let if_branch = self.scopes.last().flow.clone();
+            self.scopes.last_mut().flow = base;
+            self.bind_narrow_ops(&narrow_ops.negate(), x.orelse.range());
+            self.ensure_expr(&x.orelse);
+            let else_branch = self.scopes.last().flow.clone();
+            self.scopes.last_mut().flow =
+                self.merge_flow(vec![if_branch, else_branch], x.range, false);
+            return;
+        }
         let new_scope = match x {
             Expr::Name(x) => {
                 let name = Ast::expr_name_identifier(x.clone());
@@ -1309,15 +1327,39 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     // Traverse a pattern and bind all the names; key is the reference for the value that's being matched on
-    fn bind_pattern(&mut self, subject_name: Option<&Name>, pattern: Pattern, key: Idx<Key>) {
+    fn bind_pattern(
+        &mut self,
+        subject_name: Option<&Name>,
+        pattern: Pattern,
+        key: Idx<Key>,
+    ) -> NarrowOps {
         match pattern {
             Pattern::MatchValue(p) => {
                 self.ensure_expr(&p.value);
                 if let Some(subject_name) = subject_name {
-                    self.bind_narrow_ops(
-                        &NarrowOps(smallmap! { subject_name.clone() => (NarrowOp::Eq(p.value.clone()), p.range()) }),
-                        p.range(),
-                    );
+                    NarrowOps(
+                        smallmap! { subject_name.clone() => (NarrowOp::Eq(p.value.clone()), p.range()) },
+                    )
+                } else {
+                    NarrowOps::new()
+                }
+            }
+            Pattern::MatchSingleton(p) => {
+                let value = match p.value {
+                    Singleton::None => Expr::NoneLiteral(ExprNoneLiteral::default()),
+                    Singleton::True | Singleton::False => {
+                        Expr::BooleanLiteral(ExprBooleanLiteral {
+                            range: TextRange::default(),
+                            value: matches!(p.value, Singleton::True),
+                        })
+                    }
+                };
+                if let Some(subject_name) = subject_name {
+                    NarrowOps(
+                        smallmap! { subject_name.clone() => (NarrowOp::Is(Box::new(value)), p.range()) },
+                    )
+                } else {
+                    NarrowOps::new()
                 }
             }
             Pattern::MatchAs(p) => {
@@ -1331,9 +1373,12 @@ impl<'a> BindingsBuilder<'a> {
                 };
                 if let Some(box pattern) = p.pattern {
                     self.bind_pattern(new_subject_name, pattern, key)
+                } else {
+                    NarrowOps::new()
                 }
             }
             Pattern::MatchSequence(x) => {
+                let mut narrow_ops = NarrowOps::new();
                 let num_patterns = x.patterns.len();
                 let mut unbounded = false;
                 for (idx, x) in x.patterns.into_iter().enumerate() {
@@ -1368,7 +1413,7 @@ impl<'a> BindingsBuilder<'a> {
                                     position,
                                 ),
                             );
-                            self.bind_pattern(None, x, key);
+                            narrow_ops.and_all(self.bind_pattern(None, x, key));
                         }
                     }
                 }
@@ -1381,8 +1426,10 @@ impl<'a> BindingsBuilder<'a> {
                     Key::Expect(x.range),
                     Binding::UnpackedLength(Box::new(Binding::Forward(key)), x.range, expect),
                 );
+                narrow_ops
             }
             Pattern::MatchMapping(x) => {
+                let mut narrow_ops = NarrowOps::new();
                 x.keys
                     .into_iter()
                     .zip(x.patterns)
@@ -1391,13 +1438,15 @@ impl<'a> BindingsBuilder<'a> {
                             Key::Anon(key_expr.range()),
                             Binding::PatternMatchMapping(key_expr, key),
                         );
-                        self.bind_pattern(None, pattern, mapping_key)
+                        narrow_ops.and_all(self.bind_pattern(None, pattern, mapping_key))
                     });
                 if let Some(rest) = x.rest {
                     self.bind_definition(&rest, Binding::Forward(key), None, true);
                 }
+                narrow_ops
             }
             Pattern::MatchClass(x) => {
+                let mut narrow_ops = NarrowOps::new();
                 x.arguments
                     .patterns
                     .into_iter()
@@ -1412,7 +1461,7 @@ impl<'a> BindingsBuilder<'a> {
                                 pattern.range(),
                             ),
                         );
-                        self.bind_pattern(None, pattern.clone(), attr_key)
+                        narrow_ops.and_all(self.bind_pattern(None, pattern.clone(), attr_key))
                     });
                 x.arguments.keywords.into_iter().for_each(
                     |PatternKeyword {
@@ -1424,11 +1473,13 @@ impl<'a> BindingsBuilder<'a> {
                             Key::Anon(attr.range()),
                             Binding::PatternMatchClassKeyword(x.cls.clone(), attr, key),
                         );
-                        self.bind_pattern(None, pattern, attr_key)
+                        narrow_ops.and_all(self.bind_pattern(None, pattern, attr_key))
                     },
-                )
+                );
+                narrow_ops
             }
             Pattern::MatchOr(x) => {
+                let mut narrow_ops: Option<NarrowOps> = None;
                 let range = x.range;
                 let mut branches = Vec::new();
                 let n_subpatterns = x.patterns.len();
@@ -1440,13 +1491,19 @@ impl<'a> BindingsBuilder<'a> {
                         )
                     }
                     let mut base = self.scopes.last().flow.clone();
-                    self.bind_pattern(None, pattern, key);
+                    let new_narrow_ops = self.bind_pattern(subject_name, pattern, key);
+                    if let Some(ref mut ops) = narrow_ops {
+                        ops.or_all(new_narrow_ops)
+                    } else {
+                        narrow_ops = Some(new_narrow_ops);
+                    }
                     mem::swap(&mut self.scopes.last_mut().flow, &mut base);
                     branches.push(base);
                 }
                 self.scopes.last_mut().flow = self.merge_flow(branches, range, false);
+                narrow_ops.unwrap_or_default()
             }
-            _ => {}
+            Pattern::MatchStar(_) => NarrowOps::new(),
         }
     }
 
@@ -1671,7 +1728,7 @@ impl<'a> BindingsBuilder<'a> {
                 //     pass
                 // x is bound to Narrow(x, Is(None)) in the if branch, and the negation, Narrow(x, IsNot(None)),
                 // is carried over to the else branch.
-                let mut narrow_ops = NarrowOps::new();
+                let mut negated_prev_ops = NarrowOps::new();
                 for (test, body) in Ast::if_branches_owned(x) {
                     let b = self.config.evaluate_bool_opt(test.as_ref());
                     if b == Some(false) {
@@ -1682,10 +1739,10 @@ impl<'a> BindingsBuilder<'a> {
                     let new_narrow_ops = NarrowOps::from_expr(test);
                     if let Some(stmt) = body.first() {
                         let use_range = stmt.range();
-                        self.bind_narrow_ops(&narrow_ops, use_range);
+                        self.bind_narrow_ops(&negated_prev_ops, use_range);
                         self.bind_narrow_ops(&new_narrow_ops, use_range);
                     }
-                    narrow_ops.and_all(new_narrow_ops.negate());
+                    negated_prev_ops.and_all(new_narrow_ops.negate());
                     self.stmts(body);
                     mem::swap(&mut self.scopes.last_mut().flow, &mut base);
                     branches.push(base);
@@ -1735,12 +1792,24 @@ impl<'a> BindingsBuilder<'a> {
                 let mut exhaustive = false;
                 let range = x.range;
                 let mut branches = Vec::new();
+                // Type narrowing operations that are carried over from one case to the next. For example, in:
+                //   match x:
+                //     case None:
+                //       pass
+                //     case _:
+                //       pass
+                // x is bound to Narrow(x, Eq(None)) in the first case, and the negation, Narrow(x, NotEq(None)),
+                // is carried over to the fallback case.
+                let mut negated_prev_ops = NarrowOps::new();
                 for case in x.cases {
                     let mut base = self.scopes.last().flow.clone();
                     if case.pattern.is_wildcard() || case.pattern.is_irrefutable() {
                         exhaustive = true;
                     }
-                    self.bind_pattern(subject_name, case.pattern, key);
+                    let new_narrow_ops = self.bind_pattern(subject_name, case.pattern, key);
+                    self.bind_narrow_ops(&negated_prev_ops, case.range);
+                    self.bind_narrow_ops(&new_narrow_ops, case.range);
+                    negated_prev_ops.and_all(new_narrow_ops.negate());
                     if let Some(guard) = case.guard {
                         self.ensure_expr(&guard);
                         self.table
