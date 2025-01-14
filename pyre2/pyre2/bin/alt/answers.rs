@@ -48,6 +48,7 @@ use crate::binding::bindings::BindingEntry;
 use crate::binding::bindings::BindingTable;
 use crate::binding::bindings::Bindings;
 use crate::binding::narrow::NarrowOp;
+use crate::binding::narrow::NarrowVal;
 use crate::binding::table::TableKeyed;
 use crate::dunder;
 use crate::dunder::inplace_dunder;
@@ -1065,24 +1066,35 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         })
     }
 
-    fn resolve_narrowing_call(&self, func: &Expr, args: &Arguments) -> Option<NarrowOp> {
+    fn resolve_narrowing_call(&self, func: &NarrowVal, args: &Arguments) -> Option<NarrowOp> {
         // TODO: matching on the name is a bad way to detect an `isinstance` call.
-        if matches!(func, Expr::Name(name) if name.id == "isinstance") && args.args.len() > 1 {
-            Some(NarrowOp::IsInstance(Box::new(args.args[1].clone())))
+        if matches!(func, NarrowVal::Expr(box Expr::Name(name)) if name.id == "isinstance")
+            && args.args.len() > 1
+        {
+            Some(NarrowOp::IsInstance(NarrowVal::Expr(Box::new(
+                args.args[1].clone(),
+            ))))
         } else {
             None
         }
     }
 
+    fn narrow_val_infer(&self, val: &NarrowVal) -> Type {
+        match val {
+            NarrowVal::Expr(e) => self.expr(e, None),
+            NarrowVal::Type(t, _) => (**t).clone(),
+        }
+    }
+
     fn narrow(&self, ty: &Type, op: &NarrowOp) -> Type {
         match op {
-            NarrowOp::Is(e) => {
-                let right = self.expr(e, None);
+            NarrowOp::Is(v) => {
+                let right = self.narrow_val_infer(v);
                 // Get our best approximation of ty & right.
                 self.intersect(ty, &right)
             }
-            NarrowOp::IsNot(e) => {
-                let right = self.expr(e, None);
+            NarrowOp::IsNot(v) => {
+                let right = self.narrow_val_infer(v);
                 // Get our best approximation of ty - right.
                 self.distribute_over_union(ty, |t| {
                     // Only certain literal types can be compared by identity.
@@ -1104,29 +1116,33 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                 })
             }
-            NarrowOp::IsInstance(e) => {
-                let right = self.expr(e, None);
-                match self.unwrap_type_form_silently(&right) {
-                    Some(right) => self.intersect(ty, &right),
-                    None => {
-                        self.error(e.range(), format!("Expected type form, got {}", right));
-                        Type::Any(AnyStyle::Error)
+            NarrowOp::IsInstance(v) | NarrowOp::IsNotInstance(v) => {
+                let is_negation = matches!(op, NarrowOp::IsNotInstance(_));
+                let right = self.narrow_val_infer(v);
+                if let Type::Tuple(Tuple::Concrete(ts)) = right {
+                    let distributed_op = NarrowOp::Or(
+                        ts.into_iter()
+                            .map(|t| NarrowOp::IsInstance(NarrowVal::Type(Box::new(t), v.range())))
+                            .collect(),
+                    );
+                    if is_negation {
+                        return self.narrow(ty, &distributed_op.negate());
+                    } else {
+                        return self.narrow(ty, &distributed_op);
                     }
                 }
-            }
-            NarrowOp::IsNotInstance(e) => {
-                let right = self.expr(e, None);
                 match self.unwrap_type_form_silently(&right) {
-                    Some(right) => self.distribute_over_union(ty, |t| {
+                    Some(right) if is_negation => self.distribute_over_union(ty, |t| {
                         if self.solver().is_subset_eq(t, &right, self.type_order()) {
                             Type::never()
                         } else {
                             t.clone()
                         }
                     }),
+                    Some(right) => self.intersect(ty, &right),
                     None => {
-                        self.error(e.range(), format!("Expected type form, got {}", right));
-                        Type::Any(AnyStyle::Error)
+                        self.error(v.range(), format!("Expected type form, got {}", right));
+                        Type::any_error()
                     }
                 }
             }
@@ -1140,16 +1156,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     t.clone()
                 }
             }),
-            NarrowOp::Eq(e) => {
-                let right = self.expr(e, None);
+            NarrowOp::Eq(v) => {
+                let right = self.narrow_val_infer(v);
                 if matches!(right, Type::Literal(_) | Type::None) {
                     self.intersect(ty, &right)
                 } else {
                     ty.clone()
                 }
             }
-            NarrowOp::NotEq(e) => {
-                let right = self.expr(e, None);
+            NarrowOp::NotEq(v) => {
+                let right = self.narrow_val_infer(v);
                 if matches!(right, Type::Literal(_) | Type::None) {
                     self.distribute_over_union(ty, |t| match (t, &right) {
                         (_, _) if *t == right => Type::never(),
