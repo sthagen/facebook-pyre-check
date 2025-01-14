@@ -6,10 +6,12 @@
  */
 
 use ruff_python_ast::name::Name;
+use ruff_python_ast::Arguments;
 use ruff_python_ast::BoolOp;
 use ruff_python_ast::CmpOp;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprBoolOp;
+use ruff_python_ast::ExprCall;
 use ruff_python_ast::ExprCompare;
 use ruff_python_ast::ExprName;
 use ruff_python_ast::ExprNamed;
@@ -32,6 +34,11 @@ pub enum NarrowOp {
     NotEq(Box<Expr>),
     And(Vec<NarrowOp>),
     Or(Vec<NarrowOp>),
+    IsInstance(Box<Expr>),
+    IsNotInstance(Box<Expr>),
+    /// (func, args) for a function call that may narrow the type of its first argument.
+    Call(Box<Expr>, Arguments),
+    NotCall(Box<Expr>, Arguments),
 }
 
 impl NarrowOp {
@@ -39,12 +46,16 @@ impl NarrowOp {
         match self {
             Self::Is(e) => Self::IsNot(e.clone()),
             Self::IsNot(e) => Self::Is(e.clone()),
+            Self::IsInstance(e) => Self::IsNotInstance(e.clone()),
+            Self::IsNotInstance(e) => Self::IsInstance(e.clone()),
             Self::Eq(e) => Self::NotEq(e.clone()),
             Self::NotEq(e) => Self::Eq(e.clone()),
             Self::Truthy => Self::Falsy,
             Self::Falsy => Self::Truthy,
             Self::And(ops) => Self::Or(ops.map(|op| op.negate())),
             Self::Or(ops) => Self::And(ops.map(|op| op.negate())),
+            Self::Call(f, args) => Self::NotCall(f.clone(), args.clone()),
+            Self::NotCall(f, args) => Self::Call(f.clone(), args.clone()),
         }
     }
 
@@ -178,6 +189,24 @@ impl NarrowOps {
                 op: UnaryOp::Not,
                 operand: box e,
             })) => Self::from_expr(Some(e)).negate(),
+            Some(Expr::Call(ExprCall {
+                range,
+                func,
+                arguments:
+                    ref args @ Arguments {
+                        range: _,
+                        args: ref posargs,
+                        keywords: _,
+                    },
+            })) if !posargs.is_empty() => {
+                // This may be a function call that narrows the type of its first argument. Record
+                // it as a possible narrowing operation that we'll resolve in the answers phase.
+                let mut narrow_ops = Self::new();
+                for name in expr_to_names(&posargs[0]) {
+                    narrow_ops.and(name.id, NarrowOp::Call(func.clone(), args.clone()), range);
+                }
+                narrow_ops
+            }
             Some(e) => {
                 let mut narrow_ops = Self::new();
                 for name in expr_to_names(&e) {

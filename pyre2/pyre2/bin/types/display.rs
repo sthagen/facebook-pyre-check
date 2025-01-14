@@ -232,8 +232,16 @@ impl<'a> TypeDisplayContext<'a> {
             Type::Module(m) => write!(f, "Module[{m}]"),
             Type::Var(var) => write!(f, "{var}"),
             Type::Quantified(var) => self.fmt_quantified(var, f),
-            Type::Args(id) => write!(f, "Args[{id}]"),
-            Type::Kwargs(id) => write!(f, "Kwargs[{id}]"),
+            Type::Args(q) => {
+                write!(f, "Args[")?;
+                self.fmt_quantified(q, f)?;
+                write!(f, "]")
+            }
+            Type::Kwargs(q) => {
+                write!(f, "Kwargs[")?;
+                self.fmt_quantified(q, f)?;
+                write!(f, "]")
+            }
             Type::SpecialForm(x) => write!(f, "{x}"),
             Type::Ellipsis => write!(f, "Ellipsis"),
             Type::Any(style) => match style {
@@ -283,10 +291,9 @@ mod tests {
     use crate::types::types::QuantifiedKind;
     use crate::types::types::TParamInfo;
     use crate::types::types::TParams;
-    use crate::util::prelude::SliceExt;
     use crate::util::uniques::UniqueFactory;
 
-    fn fake_class(name: &str, module: &str, range: u32, tparams: &[Quantified]) -> Class {
+    fn fake_class(name: &str, module: &str, range: u32, tparams: Vec<TParamInfo>) -> Class {
         let mi = ModuleInfo::new(
             ModuleName::from_str(module),
             PathBuf::from(module),
@@ -295,16 +302,19 @@ mod tests {
         Class::new(
             Identifier::new(Name::new(name), TextRange::empty(TextSize::new(range))),
             mi,
-            TParams::new(tparams.map(|q| TParamInfo {
-                name: Name::new(q.id().to_string()),
-                quantified: *q,
-                restriction: Restriction::Unrestricted,
-                default: None,
-                variance: Some(Variance::Invariant),
-            }))
-            .expect("test code"),
+            TParams::new(tparams).unwrap(),
             SmallSet::new(),
         )
+    }
+
+    fn fake_tparam(uniques: &UniqueFactory, name: &str, kind: QuantifiedKind) -> TParamInfo {
+        TParamInfo {
+            name: Name::new(name),
+            quantified: Quantified::new(uniques, kind),
+            restriction: Restriction::Unrestricted,
+            default: None,
+            variance: Some(Variance::Invariant),
+        }
     }
 
     fn fake_tyvar(name: &str, module: &str, range: u32) -> TypeVar {
@@ -325,14 +335,14 @@ mod tests {
     #[test]
     fn test_display() {
         let uniques = UniqueFactory::new();
-        let foo1 = fake_class("foo", "mod.ule", 5, &[]);
-        let foo2 = fake_class("foo", "mod.ule", 8, &[]);
-        let foo3 = fake_class("foo", "ule", 3, &[]);
+        let foo1 = fake_class("foo", "mod.ule", 5, Vec::new());
+        let foo2 = fake_class("foo", "mod.ule", 8, Vec::new());
+        let foo3 = fake_class("foo", "ule", 3, Vec::new());
         let bar = fake_class(
             "bar",
             "mod.ule",
             0,
-            &[Quantified::new(&uniques, QuantifiedKind::TypeVar)],
+            vec![fake_tparam(&uniques, "T", QuantifiedKind::TypeVar)],
         );
 
         fn class_type(class: &Class, targs: TArgs) -> Type {

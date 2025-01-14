@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
+use ruff_python_ast::Arguments;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Keyword;
 use ruff_python_ast::TypeParam;
@@ -153,6 +154,27 @@ table!(
     #[derive(Default, Debug, Clone)]
     pub struct Solutions(pub SolutionsEntry)
 );
+
+impl DisplayWith<ModuleInfo> for Solutions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
+        fn go<K: Keyed>(
+            entry: &SolutionsEntry<K>,
+            f: &mut fmt::Formatter<'_>,
+            ctx: &ModuleInfo,
+        ) -> fmt::Result
+        where
+            BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+        {
+            for (key, answer) in entry.iter() {
+                writeln!(f, "{} = {}", ctx.display(key), answer)?;
+            }
+            Ok(())
+        }
+
+        table_try_for_each!(self, |x| go(x, f, ctx));
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct AnswersSolver<'a, Ans: LookupAnswer> {
@@ -1035,10 +1057,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.distribute_over_union(left, |t| {
             if self.solver().is_subset_eq(right, t, self.type_order()) {
                 right.clone()
+            } else if self.solver().is_subset_eq(t, right, self.type_order()) {
+                t.clone()
             } else {
                 Type::never()
             }
         })
+    }
+
+    fn resolve_narrowing_call(&self, func: &Expr, args: &Arguments) -> Option<NarrowOp> {
+        // TODO: matching on the name is a bad way to detect an `isinstance` call.
+        if matches!(func, Expr::Name(name) if name.id == "isinstance") && args.args.len() > 1 {
+            Some(NarrowOp::IsInstance(Box::new(args.args[1].clone())))
+        } else {
+            None
+        }
     }
 
     fn narrow(&self, ty: &Type, op: &NarrowOp) -> Type {
@@ -1070,6 +1103,32 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         _ => t.clone(),
                     }
                 })
+            }
+            NarrowOp::IsInstance(e) => {
+                let right = self.expr(e, None);
+                match self.unwrap_type_form_silently(&right) {
+                    Some(right) => self.intersect(ty, &right),
+                    None => {
+                        self.error(e.range(), format!("Expected type form, got {}", right));
+                        Type::Any(AnyStyle::Error)
+                    }
+                }
+            }
+            NarrowOp::IsNotInstance(e) => {
+                let right = self.expr(e, None);
+                match self.unwrap_type_form_silently(&right) {
+                    Some(right) => self.distribute_over_union(ty, |t| {
+                        if self.solver().is_subset_eq(t, &right, self.type_order()) {
+                            Type::never()
+                        } else {
+                            t.clone()
+                        }
+                    }),
+                    None => {
+                        self.error(e.range(), format!("Expected type form, got {}", right));
+                        Type::Any(AnyStyle::Error)
+                    }
+                }
             }
             NarrowOp::Truthy | NarrowOp::Falsy => self.distribute_over_union(ty, |t| {
                 let boolval = matches!(op, NarrowOp::Truthy);
@@ -1122,6 +1181,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             NarrowOp::Or(ops) => self.unions(&ops.map(|op| self.narrow(ty, op))),
+            NarrowOp::Call(func, args) | NarrowOp::NotCall(func, args) => {
+                if let Some(resolved_op) = self.resolve_narrowing_call(func, args) {
+                    if matches!(op, NarrowOp::Call(..)) {
+                        self.narrow(ty, &resolved_op)
+                    } else {
+                        self.narrow(ty, &resolved_op.negate())
+                    }
+                } else {
+                    ty.clone()
+                }
+            }
         }
     }
 
