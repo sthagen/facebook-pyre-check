@@ -951,32 +951,12 @@
     },
     {
       "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED BoundMethod[TypeAliasType, Callable[[TypeAliasType], Any]] <: object",
-      "description": "EXPECTED BoundMethod[TypeAliasType, Callable[[TypeAliasType], Any]] <: object",
-      "line": 21,
-      "name": "PyreError",
-      "stop_column": 27,
-      "stop_line": 21
-    },
-    {
-      "code": -2,
       "column": 1,
       "concise_description": "Missing argument 'flush'",
       "description": "Missing argument 'flush'",
       "line": 22,
       "name": "PyreError",
       "stop_column": 6,
-      "stop_line": 22
-    },
-    {
-      "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED BoundMethod[TypeAliasType, Callable[[TypeAliasType], tuple[ParamSpec | TypeVar | TypeVarTuple, ...]]] <: object",
-      "description": "EXPECTED BoundMethod[TypeAliasType, Callable[[TypeAliasType], tuple[ParamSpec | TypeVar | TypeVarTuple, ...]]] <: object",
-      "line": 22,
-      "name": "PyreError",
-      "stop_column": 33,
       "stop_line": 22
     },
     {
@@ -998,6 +978,16 @@
       "name": "PyreError",
       "stop_column": 30,
       "stop_line": 23
+    },
+    {
+      "code": -2,
+      "column": 22,
+      "concise_description": "EXPECTED ScopedTypeAlias[GoodAlias1, type[int]] <: UnionType | type | tuple[Unknown, ...]",
+      "description": "EXPECTED ScopedTypeAlias[GoodAlias1, type[int]] <: UnionType | type | tuple[Unknown, ...]",
+      "line": 31,
+      "name": "PyreError",
+      "stop_column": 32,
+      "stop_line": 31
     },
     {
       "code": -2,
@@ -1263,32 +1253,12 @@
     },
     {
       "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED BoundMethod[TypeAliasType, Callable[[TypeAliasType], Any]] <: object",
-      "description": "EXPECTED BoundMethod[TypeAliasType, Callable[[TypeAliasType], Any]] <: object",
-      "line": 30,
-      "name": "PyreError",
-      "stop_column": 27,
-      "stop_line": 30
-    },
-    {
-      "code": -2,
       "column": 1,
       "concise_description": "Missing argument 'flush'",
       "description": "Missing argument 'flush'",
       "line": 31,
       "name": "PyreError",
       "stop_column": 6,
-      "stop_line": 31
-    },
-    {
-      "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED BoundMethod[TypeAliasType, Callable[[TypeAliasType], tuple[ParamSpec | TypeVar | TypeVarTuple, ...]]] <: object",
-      "description": "EXPECTED BoundMethod[TypeAliasType, Callable[[TypeAliasType], tuple[ParamSpec | TypeVar | TypeVarTuple, ...]]] <: object",
-      "line": 31,
-      "name": "PyreError",
-      "stop_column": 33,
       "stop_line": 31
     },
     {
@@ -3567,16 +3537,6 @@
       "name": "PyreError",
       "stop_column": 15,
       "stop_line": 169
-    },
-    {
-      "code": -2,
-      "column": 22,
-      "concise_description": "EXPECTED type[Proto9[?_, ?_]] <: object",
-      "description": "EXPECTED type[Proto9[?_, ?_]] <: object",
-      "line": 184,
-      "name": "PyreError",
-      "stop_column": 34,
-      "stop_line": 184
     },
     {
       "code": -2,
@@ -7447,16 +7407,6 @@
     },
     {
       "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED BoundMethod[InventoryItem, Callable[[object], str]] <: object",
-      "description": "EXPECTED BoundMethod[InventoryItem, Callable[[object], str]] <: object",
-      "line": 38,
-      "name": "PyreError",
-      "stop_column": 18,
-      "stop_line": 38
-    },
-    {
-      "code": -2,
       "column": 1,
       "concise_description": "Missing argument 'flush'",
       "description": "Missing argument 'flush'",
@@ -7467,32 +7417,12 @@
     },
     {
       "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED BoundMethod[InventoryItem, Callable[[object, object], bool]] <: object",
-      "description": "EXPECTED BoundMethod[InventoryItem, Callable[[object, object], bool]] <: object",
-      "line": 39,
-      "name": "PyreError",
-      "stop_column": 16,
-      "stop_line": 39
-    },
-    {
-      "code": -2,
       "column": 1,
       "concise_description": "Missing argument 'flush'",
       "description": "Missing argument 'flush'",
       "line": 40,
       "name": "PyreError",
       "stop_column": 6,
-      "stop_line": 40
-    },
-    {
-      "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED BoundMethod[InventoryItem, Callable[[object, object], bool]] <: object",
-      "description": "EXPECTED BoundMethod[InventoryItem, Callable[[object, object], bool]] <: object",
-      "line": 40,
-      "name": "PyreError",
-      "stop_column": 16,
       "stop_line": 40
     },
     {
@@ -7911,26 +7841,6 @@
     },
     {
       "code": -2,
-      "column": 62,
-      "concise_description": "EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 10,
-      "name": "PyreError",
-      "stop_column": 65,
-      "stop_line": 10
-    },
-    {
-      "code": -2,
-      "column": 17,
-      "concise_description": "EXPECTED type[str] <: object",
-      "description": "EXPECTED type[str] <: object",
-      "line": 11,
-      "name": "PyreError",
-      "stop_column": 20,
-      "stop_line": 11
-    },
-    {
-      "code": -2,
       "column": 22,
       "concise_description": "Expected `__getitem__` to be a callable, got Callable[[list[object], SupportsIndex], object] | Callable[[list[object], slice[Error, Error, Error]], list[object]]",
       "description": "Expected `__getitem__` to be a callable, got Callable[[list[object], SupportsIndex], object] | Callable[[list[object], slice[Error, Error, Error]], list[object]]",
@@ -7938,16 +7848,6 @@
       "name": "PyreError",
       "stop_column": 30,
       "stop_line": 11
-    },
-    {
-      "code": -2,
-      "column": 15,
-      "concise_description": "EXPECTED type[int] <: object",
-      "description": "EXPECTED type[int] <: object",
-      "line": 13,
-      "name": "PyreError",
-      "stop_column": 18,
-      "stop_line": 13
     },
     {
       "code": -2,
@@ -7968,16 +7868,6 @@
       "name": "PyreError",
       "stop_column": 12,
       "stop_line": 15
-    },
-    {
-      "code": -2,
-      "column": 13,
-      "concise_description": "EXPECTED type[int] <: object",
-      "description": "EXPECTED type[int] <: object",
-      "line": 17,
-      "name": "PyreError",
-      "stop_column": 16,
-      "stop_line": 17
     },
     {
       "code": -2,
@@ -9334,32 +9224,12 @@
     },
     {
       "code": -2,
-      "column": 32,
-      "concise_description": "EXPECTED ?_ <: object",
-      "description": "EXPECTED ?_ <: object",
-      "line": 92,
-      "name": "PyreError",
-      "stop_column": 42,
-      "stop_line": 92
-    },
-    {
-      "code": -2,
       "column": 18,
       "concise_description": "Expected `__add__` to be a callable, got Callable[[LiteralString, LiteralString], LiteralString] | Callable[[str, str], str]",
       "description": "Expected `__add__` to be a callable, got Callable[[LiteralString, LiteralString], LiteralString] | Callable[[str, str], str]",
       "line": 96,
       "name": "PyreError",
       "stop_column": 43,
-      "stop_line": 96
-    },
-    {
-      "code": -2,
-      "column": 32,
-      "concise_description": "EXPECTED ?_ <: object",
-      "description": "EXPECTED ?_ <: object",
-      "line": 96,
-      "name": "PyreError",
-      "stop_column": 42,
       "stop_line": 96
     },
     {
@@ -14436,6 +14306,26 @@
   "generics_upper_bound.py": [
     {
       "code": -2,
+      "column": 12,
+      "concise_description": "EXPECTED ?_ <: Sized",
+      "description": "EXPECTED ?_ <: Sized",
+      "line": 31,
+      "name": "PyreError",
+      "stop_column": 13,
+      "stop_line": 31
+    },
+    {
+      "code": -2,
+      "column": 21,
+      "concise_description": "EXPECTED ?_ <: Sized",
+      "description": "EXPECTED ?_ <: Sized",
+      "line": 31,
+      "name": "PyreError",
+      "stop_column": 22,
+      "stop_line": 31
+    },
+    {
+      "code": -2,
       "column": 1,
       "concise_description": "assert_type(list[int], list[int] | set[int]) failed",
       "description": "assert_type(list[int], list[int] | set[int]) failed",
@@ -16579,6 +16469,16 @@
     },
     {
       "code": -2,
+      "column": 12,
+      "concise_description": "EXPECTED list[object] <: Sized",
+      "description": "EXPECTED list[object] <: Sized",
+      "line": 23,
+      "name": "PyreError",
+      "stop_column": 15,
+      "stop_line": 23
+    },
+    {
+      "code": -2,
       "column": 16,
       "concise_description": "EXPECTED bool <: TypeGuard[list[str]]",
       "description": "EXPECTED bool <: TypeGuard[list[str]]",
@@ -16599,16 +16499,6 @@
     },
     {
       "code": -2,
-      "column": 30,
-      "concise_description": "EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 25,
-      "name": "PyreError",
-      "stop_column": 33,
-      "stop_line": 25
-    },
-    {
-      "code": -2,
       "column": 12,
       "concise_description": "EXPECTED bool <: TypeGuard[set[?_]]",
       "description": "EXPECTED bool <: TypeGuard[set[?_]]",
@@ -16616,6 +16506,16 @@
       "name": "PyreError",
       "stop_column": 49,
       "stop_line": 28
+    },
+    {
+      "code": -2,
+      "column": 23,
+      "concise_description": "EXPECTED type[int] <: type[@_]",
+      "description": "EXPECTED type[int] <: type[@_]",
+      "line": 31,
+      "name": "PyreError",
+      "stop_column": 26,
+      "stop_line": 31
     },
     {
       "code": -2,
@@ -16639,16 +16539,6 @@
     },
     {
       "code": -2,
-      "column": 32,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 41,
-      "name": "PyreError",
-      "stop_column": 35,
-      "stop_line": 41
-    },
-    {
-      "code": -2,
       "column": 16,
       "concise_description": "EXPECTED bool <: TypeGuard[int]",
       "description": "EXPECTED bool <: TypeGuard[int]",
@@ -16659,32 +16549,12 @@
     },
     {
       "code": -2,
-      "column": 32,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 45,
-      "name": "PyreError",
-      "stop_column": 35,
-      "stop_line": 45
-    },
-    {
-      "code": -2,
       "column": 16,
       "concise_description": "EXPECTED bool <: TypeGuard[int]",
       "description": "EXPECTED bool <: TypeGuard[int]",
       "line": 49,
       "name": "PyreError",
       "stop_column": 36,
-      "stop_line": 49
-    },
-    {
-      "code": -2,
-      "column": 32,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 49,
-      "name": "PyreError",
-      "stop_column": 35,
       "stop_line": 49
     },
     {
@@ -16769,6 +16639,26 @@
     },
     {
       "code": -2,
+      "column": 8,
+      "concise_description": "Missing argument 'val'",
+      "description": "Missing argument 'val'",
+      "line": 76,
+      "name": "PyreError",
+      "stop_column": 14,
+      "stop_line": 76
+    },
+    {
+      "code": -2,
+      "column": 15,
+      "concise_description": "EXPECTED object <: A",
+      "description": "EXPECTED object <: A",
+      "line": 76,
+      "name": "PyreError",
+      "stop_column": 19,
+      "stop_line": 76
+    },
+    {
+      "code": -2,
       "column": 9,
       "concise_description": "assert_type(object, int) failed",
       "description": "assert_type(object, int) failed",
@@ -16776,6 +16666,16 @@
       "name": "PyreError",
       "stop_column": 31,
       "stop_line": 77
+    },
+    {
+      "code": -2,
+      "column": 17,
+      "concise_description": "Expected 0 positional arguments, got 1",
+      "description": "Expected 0 positional arguments, got 1",
+      "line": 80,
+      "name": "PyreError",
+      "stop_column": 21,
+      "stop_line": 80
     },
     {
       "code": -2,
@@ -16849,16 +16749,6 @@
     },
     {
       "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 124,
-      "name": "PyreError",
-      "stop_column": 31,
-      "stop_line": 124
-    },
-    {
-      "code": -2,
       "column": 20,
       "concise_description": "EXPECTED Callable[[object], TypeGuard[int]] <: Callable[[object], str]",
       "description": "EXPECTED Callable[[object], TypeGuard[int]] <: Callable[[object], str]",
@@ -16899,32 +16789,12 @@
     },
     {
       "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 159,
-      "name": "PyreError",
-      "stop_column": 31,
-      "stop_line": 159
-    },
-    {
-      "code": -2,
       "column": 12,
       "concise_description": "EXPECTED bool <: TypeGuard[bool]",
       "description": "EXPECTED bool <: TypeGuard[bool]",
       "line": 163,
       "name": "PyreError",
       "stop_column": 33,
-      "stop_line": 163
-    },
-    {
-      "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED type[bool] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[bool] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 163,
-      "name": "PyreError",
-      "stop_column": 32,
       "stop_line": 163
     }
   ],
@@ -16971,16 +16841,6 @@
     },
     {
       "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED type[Awaitable] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[Awaitable] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 28,
-      "name": "PyreError",
-      "stop_column": 37,
-      "stop_line": 28
-    },
-    {
-      "code": -2,
       "column": 18,
       "concise_description": "Expression is not awaitable",
       "description": "Expression is not awaitable",
@@ -17011,16 +16871,6 @@
     },
     {
       "code": -2,
-      "column": 32,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 45,
-      "name": "PyreError",
-      "stop_column": 35,
-      "stop_line": 45
-    },
-    {
-      "code": -2,
       "column": 16,
       "concise_description": "EXPECTED bool <: TypeIs[int]",
       "description": "EXPECTED bool <: TypeIs[int]",
@@ -17031,32 +16881,12 @@
     },
     {
       "code": -2,
-      "column": 32,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 49,
-      "name": "PyreError",
-      "stop_column": 35,
-      "stop_line": 49
-    },
-    {
-      "code": -2,
       "column": 16,
       "concise_description": "EXPECTED bool <: TypeIs[int]",
       "description": "EXPECTED bool <: TypeIs[int]",
       "line": 53,
       "name": "PyreError",
       "stop_column": 36,
-      "stop_line": 53
-    },
-    {
-      "code": -2,
-      "column": 32,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 53,
-      "name": "PyreError",
-      "stop_column": 35,
       "stop_line": 53
     },
     {
@@ -17141,6 +16971,26 @@
     },
     {
       "code": -2,
+      "column": 8,
+      "concise_description": "Missing argument 'val'",
+      "description": "Missing argument 'val'",
+      "line": 79,
+      "name": "PyreError",
+      "stop_column": 14,
+      "stop_line": 79
+    },
+    {
+      "code": -2,
+      "column": 15,
+      "concise_description": "EXPECTED object <: A",
+      "description": "EXPECTED object <: A",
+      "line": 79,
+      "name": "PyreError",
+      "stop_column": 19,
+      "stop_line": 79
+    },
+    {
+      "code": -2,
       "column": 9,
       "concise_description": "assert_type(object, int) failed",
       "description": "assert_type(object, int) failed",
@@ -17148,6 +16998,16 @@
       "name": "PyreError",
       "stop_column": 31,
       "stop_line": 80
+    },
+    {
+      "code": -2,
+      "column": 17,
+      "concise_description": "Expected 0 positional arguments, got 1",
+      "description": "Expected 0 positional arguments, got 1",
+      "line": 83,
+      "name": "PyreError",
+      "stop_column": 21,
+      "stop_line": 83
     },
     {
       "code": -2,
@@ -17221,16 +17081,6 @@
     },
     {
       "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 128,
-      "name": "PyreError",
-      "stop_column": 31,
-      "stop_line": 128
-    },
-    {
-      "code": -2,
       "column": 20,
       "concise_description": "EXPECTED Callable[[object], TypeIs[int]] <: Callable[[object], str]",
       "description": "EXPECTED Callable[[object], TypeIs[int]] <: Callable[[object], str]",
@@ -17271,32 +17121,12 @@
     },
     {
       "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 163,
-      "name": "PyreError",
-      "stop_column": 31,
-      "stop_line": 163
-    },
-    {
-      "code": -2,
       "column": 12,
       "concise_description": "EXPECTED bool <: TypeGuard[int]",
       "description": "EXPECTED bool <: TypeGuard[int]",
       "line": 166,
       "name": "PyreError",
       "stop_column": 32,
-      "stop_line": 166
-    },
-    {
-      "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 166,
-      "name": "PyreError",
-      "stop_column": 31,
       "stop_line": 166
     },
     {
@@ -17331,32 +17161,12 @@
     },
     {
       "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 183,
-      "name": "PyreError",
-      "stop_column": 31,
-      "stop_line": 183
-    },
-    {
-      "code": -2,
       "column": 12,
       "concise_description": "EXPECTED bool <: TypeIs[bool]",
       "description": "EXPECTED bool <: TypeIs[bool]",
       "line": 187,
       "name": "PyreError",
       "stop_column": 33,
-      "stop_line": 187
-    },
-    {
-      "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED type[bool] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[bool] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 187,
-      "name": "PyreError",
-      "stop_column": 32,
       "stop_line": 187
     },
     {
@@ -17381,32 +17191,12 @@
     },
     {
       "code": -2,
-      "column": 26,
-      "concise_description": "EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[str] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 196,
-      "name": "PyreError",
-      "stop_column": 29,
-      "stop_line": 196
-    },
-    {
-      "code": -2,
       "column": 12,
       "concise_description": "EXPECTED bool <: TypeIs[list[int]]",
       "description": "EXPECTED bool <: TypeIs[list[int]]",
       "line": 200,
       "name": "PyreError",
       "stop_column": 46,
-      "stop_line": 200
-    },
-    {
-      "code": -2,
-      "column": 30,
-      "concise_description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "description": "EXPECTED type[int] <: UnionType | type | tuple[Unknown, ...]",
-      "line": 200,
-      "name": "PyreError",
-      "stop_column": 33,
       "stop_line": 200
     }
   ],
@@ -18945,16 +18735,6 @@
     },
     {
       "code": -2,
-      "column": 24,
-      "concise_description": "EXPECTED LegacyExplicitTypeAlias[SmallInt, type[int]] <: type[Any]",
-      "description": "EXPECTED LegacyExplicitTypeAlias[SmallInt, type[int]] <: type[Any]",
-      "line": 77,
-      "name": "PyreError",
-      "stop_column": 32,
-      "stop_line": 77
-    },
-    {
-      "code": -2,
       "column": 12,
       "concise_description": "Expected a callable, got type[?_]",
       "description": "Expected a callable, got type[?_]",
@@ -18972,16 +18752,6 @@
       "name": "PyreError",
       "stop_column": 25,
       "stop_line": 84
-    },
-    {
-      "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED LegacyExplicitTypeAlias[SmallInt, type[int]] <: type[@_]",
-      "description": "EXPECTED LegacyExplicitTypeAlias[SmallInt, type[int]] <: type[@_]",
-      "line": 85,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 85
     },
     {
       "code": -2,
@@ -19519,16 +19289,6 @@
     },
     {
       "code": -2,
-      "column": 19,
-      "concise_description": "EXPECTED type[TeamUser] <: type",
-      "description": "EXPECTED type[TeamUser] <: type",
-      "line": 42,
-      "name": "PyreError",
-      "stop_column": 27,
-      "stop_line": 42
-    },
-    {
-      "code": -2,
       "column": 1,
       "concise_description": "assert_type(Any, TeamUser) failed",
       "description": "assert_type(Any, TeamUser) failed",
@@ -19626,16 +19386,6 @@
       "name": "PyreError",
       "stop_column": 30,
       "stop_line": 84
-    },
-    {
-      "code": -2,
-      "column": 9,
-      "concise_description": "EXPECTED type[type] <: type",
-      "description": "EXPECTED type[type] <: type",
-      "line": 87,
-      "name": "PyreError",
-      "stop_column": 13,
-      "stop_line": 87
     },
     {
       "code": -2,
@@ -20031,6 +19781,16 @@
     },
     {
       "code": -2,
+      "column": 12,
+      "concise_description": "EXPECTED tuple[int] | tuple[int, Error, int] | tuple[str, str] <: Sized",
+      "description": "EXPECTED tuple[int] | tuple[int, Error, int] | tuple[str, str] <: Sized",
+      "line": 72,
+      "name": "PyreError",
+      "stop_column": 15,
+      "stop_line": 72
+    },
+    {
+      "code": -2,
       "column": 9,
       "concise_description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int]) failed",
       "description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int]) failed",
@@ -20041,6 +19801,16 @@
     },
     {
       "code": -2,
+      "column": 12,
+      "concise_description": "EXPECTED tuple[int] | tuple[int, Error, int] | tuple[str, str] <: Sized",
+      "description": "EXPECTED tuple[int] | tuple[int, Error, int] | tuple[str, str] <: Sized",
+      "line": 76,
+      "name": "PyreError",
+      "stop_column": 15,
+      "stop_line": 76
+    },
+    {
+      "code": -2,
       "column": 9,
       "concise_description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, int] | tuple[str, str]) failed",
       "description": "assert_type(tuple[int] | tuple[int, Any, int] | tuple[str, str], tuple[int, int] | tuple[str, str]) failed",
@@ -20048,6 +19818,16 @@
       "name": "PyreError",
       "stop_column": 60,
       "stop_line": 78
+    },
+    {
+      "code": -2,
+      "column": 12,
+      "concise_description": "EXPECTED tuple[int] | tuple[int, Error, int] | tuple[str, str] <: Sized",
+      "description": "EXPECTED tuple[int] | tuple[int, Error, int] | tuple[str, str] <: Sized",
+      "line": 80,
+      "name": "PyreError",
+      "stop_column": 15,
+      "stop_line": 80
     },
     {
       "code": -2,
