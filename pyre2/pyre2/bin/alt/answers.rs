@@ -1067,22 +1067,66 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     fn resolve_narrowing_call(&self, func: &NarrowVal, args: &Arguments) -> Option<NarrowOp> {
-        // TODO: matching on the name is a bad way to detect an `isinstance` call.
-        if matches!(func, NarrowVal::Expr(box Expr::Name(name)) if name.id == "isinstance")
+        // TODO: do something more reliable than matching on the name.
+        if let NarrowVal::Expr(box Expr::Name(name)) = func
             && args.args.len() > 1
         {
-            Some(NarrowOp::IsInstance(NarrowVal::Expr(Box::new(
-                args.args[1].clone(),
-            ))))
-        } else {
-            None
+            let second_arg = &args.args[1];
+            let op = match name.id.as_str() {
+                "isinstance" => Some(NarrowOp::IsInstance(NarrowVal::Expr(Box::new(
+                    second_arg.clone(),
+                )))),
+                "issubclass" => Some(NarrowOp::IsSubclass(NarrowVal::Expr(Box::new(
+                    second_arg.clone(),
+                )))),
+                _ => None,
+            };
+            if op.is_some() {
+                return op;
+            }
         }
+        let func_ty = self.narrow_val_infer(func);
+        func_ty
+            .as_typeguard()
+            .map(|t| NarrowOp::TypeGuard(t.clone()))
     }
 
     fn narrow_val_infer(&self, val: &NarrowVal) -> Type {
         match val {
             NarrowVal::Expr(e) => self.expr(e, None),
             NarrowVal::Type(t, _) => (**t).clone(),
+        }
+    }
+
+    fn distribute_narrow_op_over_tuple(
+        &self,
+        build_op: &dyn Fn(NarrowVal) -> NarrowOp,
+        ty: &Type,
+        range: TextRange,
+    ) -> Option<NarrowOp> {
+        if let Type::Tuple(Tuple::Concrete(ts)) = ty {
+            Some(NarrowOp::Or(
+                ts.iter()
+                    .map(|t| build_op(NarrowVal::Type(Box::new(t.clone()), range)))
+                    .collect(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn unwrap_type_form_and_narrow(
+        &self,
+        narrow: &dyn Fn(Type) -> Type,
+        ty: &Type,
+        range: TextRange,
+    ) -> Type {
+        match self.unwrap_type_form_silently(ty) {
+            Some(right) => narrow(right),
+            None => {
+                self.error(range, format!("Expected type form, got {}", ty));
+                Type::any_error()
+            }
         }
     }
 
@@ -1116,36 +1160,39 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                 })
             }
-            NarrowOp::IsInstance(v) | NarrowOp::IsNotInstance(v) => {
-                let is_negation = matches!(op, NarrowOp::IsNotInstance(_));
+            NarrowOp::IsInstance(v) => {
                 let right = self.narrow_val_infer(v);
-                if let Type::Tuple(Tuple::Concrete(ts)) = right {
-                    let distributed_op = NarrowOp::Or(
-                        ts.into_iter()
-                            .map(|t| NarrowOp::IsInstance(NarrowVal::Type(Box::new(t), v.range())))
-                            .collect(),
-                    );
-                    if is_negation {
-                        return self.narrow(ty, &distributed_op.negate());
-                    } else {
-                        return self.narrow(ty, &distributed_op);
-                    }
-                }
-                match self.unwrap_type_form_silently(&right) {
-                    Some(right) if is_negation => self.distribute_over_union(ty, |t| {
-                        if self.solver().is_subset_eq(t, &right, self.type_order()) {
-                            Type::never()
-                        } else {
-                            t.clone()
-                        }
-                    }),
-                    Some(right) => self.intersect(ty, &right),
-                    None => {
-                        self.error(v.range(), format!("Expected type form, got {}", right));
-                        Type::any_error()
-                    }
+                if let Some(distributed_op) =
+                    self.distribute_narrow_op_over_tuple(&NarrowOp::IsInstance, &right, v.range())
+                {
+                    self.narrow(ty, &distributed_op)
+                } else {
+                    let narrow = |right| self.intersect(ty, &right);
+                    self.unwrap_type_form_and_narrow(&narrow, &right, v.range())
                 }
             }
+            NarrowOp::IsNotInstance(v) => {
+                let right = self.narrow_val_infer(v);
+                if let Some(distributed_op) =
+                    self.distribute_narrow_op_over_tuple(&NarrowOp::IsInstance, &right, v.range())
+                {
+                    self.narrow(ty, &distributed_op.negate())
+                } else {
+                    let narrow = |right| {
+                        self.distribute_over_union(ty, |t| {
+                            if self.solver().is_subset_eq(t, &right, self.type_order()) {
+                                Type::never()
+                            } else {
+                                t.clone()
+                            }
+                        })
+                    };
+                    self.unwrap_type_form_and_narrow(&narrow, &right, v.range())
+                }
+            }
+            NarrowOp::IsSubclass(_) | NarrowOp::IsNotSubclass(_) => ty.clone(), // TODO: implement this
+            NarrowOp::TypeGuard(t) => t.clone(),
+            NarrowOp::NotTypeGuard(_) => ty.clone(),
             NarrowOp::Truthy | NarrowOp::Falsy => self.distribute_over_union(ty, |t| {
                 let boolval = matches!(op, NarrowOp::Truthy);
                 if t.as_bool() == Some(!boolval) {
@@ -1217,6 +1264,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let ty = ann.map(|k| self.get_idx(k));
                 self.expr(e, ty.as_ref().and_then(|x| x.ty.as_ref()))
             }
+            Binding::ReturnExpr(ann, e) => {
+                let ty = ann.map(|k| self.get_idx(k));
+                let hint = ty.as_ref().and_then(|x| x.ty.as_ref());
+                if matches!(hint, Some(Type::TypeGuard(_))) {
+                    self.expr(e, Some(&Type::ClassType(self.stdlib.bool())))
+                } else {
+                    self.expr(e, hint)
+                }
+            }
+            Binding::DecoratorApplication(d, k) => self.apply_decorator(d, k),
             Binding::ExceptionHandler(box ann, is_star) => {
                 let base_exception_type = self.stdlib.base_exception().to_type();
                 let base_exception_group_any_type = if *is_star {
@@ -1464,7 +1521,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .get(&Key::ReturnType(ShortIdentifier::new(&x.name)))
                     .arc_clone();
                 let yield_expr_type = self
-                    .get(&Key::YieldType(ShortIdentifier::new(&x.name)))
+                    .get(&Key::YieldTypeOfGenerator(ShortIdentifier::new(&x.name)))
                     .arc_clone();
                 // # TODO zeina: raise a type error if return type is inconsistent with inferred generator type
                 let ret = if yield_expr_type.is_never() || ret.is_generator() || ret.is_iterator() {

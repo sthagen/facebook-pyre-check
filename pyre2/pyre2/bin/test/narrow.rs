@@ -228,13 +228,13 @@ def f(x: str | None):
 );
 
 testcase_with_bug!(
-    "`Literal[False] | bool` should collapse to `bool`",
+    "`Literal[False, True] | bool` should collapse to `bool`",
     test_not_and,
     r#"
 from typing import assert_type, Literal
 def f(x: bool | None):
     if not (x is True and x is None):
-        assert_type(x, Literal[False] | bool | None)
+        assert_type(x, Literal[False, True] | bool | None)
     "#,
 );
 
@@ -463,6 +463,100 @@ from typing import assert_type
 X = int
 def f(x: str | int):
     if isinstance(x, X):
+        assert_type(x, int)
+    "#,
+);
+
+testcase!(
+    test_guarded_attribute_access_and,
+    r#"
+class A:
+    x: str
+class B:
+    pass
+def f(x: A | B):
+    return isinstance(x, A) and x.x
+    "#,
+);
+
+testcase!(
+    test_guarded_attribute_access_or,
+    r#"
+class A:
+    x: str
+def f(x: A | None):
+    return x is None or x.x
+    "#,
+);
+
+testcase!(
+    test_and_chain_with_walrus,
+    r#"
+from typing import assert_type, Literal
+
+class A: ...
+class B: ...
+
+x: A | B
+y = isinstance(x, A) and (z := True)
+assert_type(x, A | B)
+assert_type(z, Literal[True])
+    "#,
+);
+
+testcase!(
+    test_typeguard,
+    r#"
+from typing import TypeGuard, assert_type
+class Cat:
+    color: str
+class Dog:
+    pass
+def is_black_cat(x: Cat | Dog) -> TypeGuard[Cat]:
+    return isinstance(x, Cat) and x.color == "black"
+def f(x: Cat | Dog):
+    if is_black_cat(x):
+        assert_type(x, Cat)
+    else:
+        assert_type(x, Cat | Dog)
+    "#,
+);
+
+testcase_with_bug!(
+    "TODO",
+    test_issubclass,
+    r#"
+from typing import assert_type
+class A: ...
+class B(A): ...
+def f(x: type[B] | type[int]):
+    if issubclass(x, A):
+        assert_type(x, type[B])  # E: assert_type
+    else:
+        assert_type(x, type[int])  # E: assert_type
+    "#,
+);
+
+testcase!(
+    test_typeguard_instance_method,
+    r#"
+from typing import TypeGuard, assert_type
+class C:
+    def is_positive_int(self, x: object) -> TypeGuard[int]:
+        return isinstance(x, int) and x > 0
+def f(c: C, x: int | str):
+    if c.is_positive_int(x):
+        assert_type(x, int)
+    "#,
+);
+
+testcase!(
+    test_typeguard_generic_function,
+    r#"
+from typing import TypeGuard, assert_type
+def f[T](x: object, y: T, z: T) -> TypeGuard[int]: ...
+def g(x: int | str):
+    if f(x, 0, 0):
         assert_type(x, int)
     "#,
 );

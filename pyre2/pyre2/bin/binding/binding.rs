@@ -12,6 +12,7 @@ use std::hash::Hash;
 
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
+use ruff_python_ast::Decorator;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprSubscript;
@@ -96,14 +97,16 @@ pub enum Key {
     Import(Name, TextRange),
     /// I am defined in this module at this location.
     Definition(ShortIdentifier),
+    /// I am the result of applying a decorator to some definition or preceding decorator
+    DecoratorApplication(TextRange),
     /// I am the self type for a particular class.
     SelfType(ShortIdentifier),
     /// The type at a specific return point.
     ReturnExpression(ShortIdentifier, TextRange),
-    /// The type of a yield value at a specific point in the program.
-    YieldExpression(ShortIdentifier, TextRange),
+    /// The type yielded inside of a specific yield expression inside a function.
+    YieldTypeOfYield(ShortIdentifier, TextRange),
     /// The type of the yield value.
-    YieldType(ShortIdentifier),
+    YieldTypeOfGenerator(ShortIdentifier),
     /// The actual type of the return for a function.
     ReturnType(ShortIdentifier),
     /// I am a use in this module at this location.
@@ -133,10 +136,11 @@ impl Ranged for Key {
         match self {
             Self::Import(_, r) => *r,
             Self::Definition(x) => x.range(),
+            Self::DecoratorApplication(r) => r.range(),
             Self::SelfType(x) => x.range(),
             Self::ReturnExpression(_, r) => *r,
-            Self::YieldExpression(_, r) => *r,
-            Self::YieldType(x) => x.range(),
+            Self::YieldTypeOfYield(_, r) => *r,
+            Self::YieldTypeOfGenerator(x) => x.range(),
             Self::ReturnType(x) => x.range(),
             Self::Usage(x) => x.range(),
             Self::Anon(r) => *r,
@@ -153,6 +157,7 @@ impl DisplayWith<ModuleInfo> for Key {
         match self {
             Self::Import(n, r) => write!(f, "import {n} {r:?}"),
             Self::Definition(x) => write!(f, "{} {:?}", ctx.display(x), x.range()),
+            Self::DecoratorApplication(r) => write!(f, "decorator {:?}", r),
             Self::SelfType(x) => write!(f, "self {} {:?}", ctx.display(x), x.range()),
             Self::Usage(x) => write!(f, "use {} {:?}", ctx.display(x), x.range()),
             Self::Anon(r) => write!(f, "anon {r:?}"),
@@ -164,10 +169,10 @@ impl DisplayWith<ModuleInfo> for Key {
             Self::ReturnExpression(x, i) => {
                 write!(f, "return {} {:?} @ {i:?}", ctx.display(x), x.range())
             }
-            Self::YieldExpression(x, i) => {
+            Self::YieldTypeOfYield(x, i) => {
                 write!(f, "yield {} {:?} @ {i:?}", ctx.display(x), x.range())
             }
-            Self::YieldType(x) => write!(f, "yield {} {:?}", ctx.display(x), x.range()),
+            Self::YieldTypeOfGenerator(x) => write!(f, "yield {} {:?}", ctx.display(x), x.range()),
         }
     }
 }
@@ -327,6 +332,10 @@ pub enum Binding {
     /// An expression, optionally with a Key saying what the type must be.
     /// The Key must be a type of types, e.g. `Type::Type`.
     Expr(Option<Idx<KeyAnnotation>>, Expr),
+    /// An expression returned from a function.
+    ReturnExpr(Option<Idx<KeyAnnotation>>, Expr),
+    /// A decorator application: the Key is the entity being decorated.
+    DecoratorApplication(Box<Decorator>, Idx<Key>),
     /// A value in an iterable expression, e.g. IterableValue(\[1\]) represents 1.
     IterableValue(Option<Idx<KeyAnnotation>>, Expr),
     /// A value produced by entering a context manager.
@@ -427,11 +436,21 @@ impl DisplayWith<Bindings> for Binding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
         let m = ctx.module_info();
         match self {
-            Self::Expr(None, x) => write!(f, "{}", m.display(x)),
-            Self::Expr(Some(k), x) => write!(f, "{}: {}", ctx.display(*k), m.display(x)),
+            Self::Expr(None, x) | Self::ReturnExpr(None, x) => write!(f, "{}", m.display(x)),
+            Self::Expr(Some(k), x) | Self::ReturnExpr(Some(k), x) => {
+                write!(f, "{}: {}", ctx.display(*k), m.display(x))
+            }
             Self::IterableValue(None, x) => write!(f, "iter {}", m.display(x)),
             Self::IterableValue(Some(k), x) => {
                 write!(f, "iter {}: {}", ctx.display(*k), m.display(x))
+            }
+            Self::DecoratorApplication(box x, k) => {
+                write!(
+                    f,
+                    "decorator {} {}",
+                    m.display(&x.expression),
+                    ctx.display(*k)
+                )
             }
             Self::ExceptionHandler(box x, true) => write!(f, "except* {}", m.display(x)),
             Self::ExceptionHandler(box x, false) => write!(f, "except {}", m.display(x)),

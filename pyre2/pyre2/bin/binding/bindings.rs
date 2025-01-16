@@ -17,9 +17,11 @@ use itertools::Either;
 use itertools::Itertools;
 use parse_display::Display;
 use ruff_python_ast::name::Name;
+use ruff_python_ast::BoolOp;
 use ruff_python_ast::Comprehension;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
+use ruff_python_ast::ExprBoolOp;
 use ruff_python_ast::ExprBooleanLiteral;
 use ruff_python_ast::ExprCall;
 use ruff_python_ast::ExprLambda;
@@ -622,25 +624,58 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
+    /// Helper to clean up an expression that does type narrowing. We merge flows for the narrowing
+    /// operation and its negation, so that narrowing is limited to the body of the expression but
+    /// newly defined names persist.
+    fn negate_and_merge_flow(
+        &mut self,
+        base: Flow,
+        ops: &NarrowOps,
+        orelse: Option<&Expr>,
+        range: TextRange,
+    ) {
+        let if_branch = self.scopes.last().flow.clone();
+        self.scopes.last_mut().flow = base;
+        self.bind_narrow_ops(&ops.negate(), range);
+        self.ensure_expr_opt(orelse);
+        let else_branch = self.scopes.last().flow.clone();
+        self.scopes.last_mut().flow = self.merge_flow(vec![if_branch, else_branch], range, false);
+    }
+
     /// Execute through the expr, ensuring every name has a binding.
     fn ensure_expr(&mut self, x: &Expr) {
-        if let Expr::If(x) = x {
-            // Ternary operation. We treat it like an if/else statement.
-            let base = self.scopes.last().flow.clone();
-            self.ensure_expr(&x.test);
-            let narrow_ops = NarrowOps::from_expr(Some((*x.test).clone()));
-            self.bind_narrow_ops(&narrow_ops, x.body.range());
-            self.ensure_expr(&x.body);
-            let if_branch = self.scopes.last().flow.clone();
-            self.scopes.last_mut().flow = base;
-            self.bind_narrow_ops(&narrow_ops.negate(), x.orelse.range());
-            self.ensure_expr(&x.orelse);
-            let else_branch = self.scopes.last().flow.clone();
-            self.scopes.last_mut().flow =
-                self.merge_flow(vec![if_branch, else_branch], x.range, false);
-            return;
-        }
         let new_scope = match x {
+            Expr::If(x) => {
+                // Ternary operation. We treat it like an if/else statement.
+                let base = self.scopes.last().flow.clone();
+                self.ensure_expr(&x.test);
+                let narrow_ops = NarrowOps::from_expr(Some((*x.test).clone()));
+                self.bind_narrow_ops(&narrow_ops, x.body.range());
+                self.ensure_expr(&x.body);
+                self.negate_and_merge_flow(base, &narrow_ops, Some(&x.orelse), x.orelse.range());
+                return;
+            }
+            Expr::BoolOp(ExprBoolOp { range, op, values }) => {
+                let base = self.scopes.last().flow.clone();
+                let mut narrow_ops = NarrowOps::new();
+                for value in values {
+                    self.bind_narrow_ops(&narrow_ops, value.range());
+                    self.ensure_expr(value);
+                    let new_narrow_ops = NarrowOps::from_expr(Some(value.clone()));
+                    match op {
+                        BoolOp::And => {
+                            // Every subsequent value is evaluated only if all previous values were truthy.
+                            narrow_ops.and_all(new_narrow_ops);
+                        }
+                        BoolOp::Or => {
+                            // Every subsequent value is evaluated only if all previous values were falsy.
+                            narrow_ops.and_all(new_narrow_ops.negate());
+                        }
+                    }
+                }
+                self.negate_and_merge_flow(base, &narrow_ops, None, *range);
+                return;
+            }
             Expr::Name(x) => {
                 let name = Ast::expr_name_identifier(x.clone());
                 let binding = self.forward_lookup(&name);
@@ -767,11 +802,12 @@ impl<'a> BindingsBuilder<'a> {
         binding: Binding,
         annotation: Option<Idx<KeyAnnotation>>,
         is_initialized: bool,
-    ) -> Option<Idx<KeyAnnotation>> {
+    ) -> Idx<Key> {
         let idx = self
             .table
             .insert(Key::Definition(ShortIdentifier::new(name)), binding);
-        self.bind_key(&name.id, idx, annotation, false, is_initialized)
+        self.bind_key(&name.id, idx, annotation, false, is_initialized);
+        idx
     }
 
     fn bind_unpacking(
@@ -1008,6 +1044,7 @@ impl<'a> BindingsBuilder<'a> {
 
     fn function_def(&mut self, mut x: StmtFunctionDef) {
         let body = mem::take(&mut x.body);
+        let decorators = mem::take(&mut x.decorator_list);
         let kind = if is_ellipse(&body) {
             FunctionKind::Stub
         } else {
@@ -1098,7 +1135,7 @@ impl<'a> BindingsBuilder<'a> {
                 .insert(method.name.id.clone(), method.instance_attributes.clone());
         }
 
-        self.bind_definition(
+        let mut current_name_key = self.bind_definition(
             &func_name,
             Binding::Function(Box::new(x), kind, legacy_tparams.into_boxed_slice()),
             None,
@@ -1125,7 +1162,7 @@ impl<'a> BindingsBuilder<'a> {
         for x in return_exprs {
             let key = self.table.insert(
                 Key::ReturnExpression(ShortIdentifier::new(&func_name), x.range),
-                Binding::Expr(return_ann, return_expr(x)),
+                Binding::ReturnExpr(return_ann, return_expr(x)),
             );
             return_expr_keys.insert(key);
         }
@@ -1133,7 +1170,7 @@ impl<'a> BindingsBuilder<'a> {
         let mut yield_expr_keys = SmallSet::with_capacity(yield_exprs.len());
         for x in yield_exprs {
             let key = self.table.insert(
-                Key::YieldExpression(ShortIdentifier::new(&func_name), x.range()),
+                Key::YieldTypeOfYield(ShortIdentifier::new(&func_name), x.range()),
                 // collect the value of the yield expression.
                 Binding::Expr(None, yield_expr(x)),
             );
@@ -1150,8 +1187,20 @@ impl<'a> BindingsBuilder<'a> {
             Key::ReturnType(ShortIdentifier::new(&func_name)),
             return_type,
         );
-        self.table
-            .insert(Key::YieldType(ShortIdentifier::new(&func_name)), yield_type);
+        self.table.insert(
+            Key::YieldTypeOfGenerator(ShortIdentifier::new(&func_name)),
+            yield_type,
+        );
+
+        // Handle decorators, which re-bind the name from the definition.
+        for decorator in decorators {
+            self.ensure_expr(&decorator.expression);
+            current_name_key = self.table.insert(
+                Key::DecoratorApplication(decorator.range),
+                Binding::DecoratorApplication(Box::new(decorator), current_name_key),
+            );
+            self.bind_key(&func_name.id, current_name_key, None, true, true);
+        }
     }
 
     fn class_def(&mut self, mut x: StmtClassDef) {
