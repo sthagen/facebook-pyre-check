@@ -194,9 +194,9 @@ impl Static {
         if top_level && module_info.name() != ModuleName::builtins() {
             d.inject_builtins();
         }
-        for (name, (range, defn, count)) in d.definitions {
-            self.add_with_count(name, range, count).uses_key_import =
-                defn == DefinitionStyle::ImportModule;
+        for (name, def) in d.definitions {
+            self.add_with_count(name, def.range, def.count)
+                .uses_key_import = def.style == DefinitionStyle::ImportModule;
         }
         for (m, range) in d.import_all {
             if let Ok(exports) = modules.get(m) {
@@ -652,7 +652,7 @@ impl<'a> BindingsBuilder<'a> {
                 let narrow_ops = NarrowOps::from_expr(Some((*x.test).clone()));
                 self.bind_narrow_ops(&narrow_ops, x.body.range());
                 self.ensure_expr(&x.body);
-                self.negate_and_merge_flow(base, &narrow_ops, Some(&x.orelse), x.orelse.range());
+                self.negate_and_merge_flow(base, &narrow_ops, Some(&x.orelse), x.range());
                 return;
             }
             Expr::BoolOp(ExprBoolOp { range, op, values }) => {
@@ -1167,29 +1167,29 @@ impl<'a> BindingsBuilder<'a> {
             return_expr_keys.insert(key);
         }
 
-        let mut yield_expr_keys = SmallSet::with_capacity(yield_exprs.len());
-        for x in yield_exprs {
-            let key = self.table.insert(
-                Key::YieldTypeOfYield(ShortIdentifier::new(&func_name), x.range()),
-                // collect the value of the yield expression.
-                Binding::Expr(None, yield_expr(x)),
-            );
-            yield_expr_keys.insert(key);
-        }
-
         let mut return_type = Binding::phi(return_expr_keys);
-        let yield_type = Binding::phi(yield_expr_keys);
-
+        if !yield_exprs.is_empty() {
+            let mut yield_expr_keys = SmallSet::with_capacity(yield_exprs.len());
+            for x in yield_exprs {
+                let key = self.table.insert(
+                    Key::YieldTypeOfYield(ShortIdentifier::new(&func_name), x.range()),
+                    // collect the value of the yield expression.
+                    Binding::Expr(None, yield_expr(x)),
+                );
+                yield_expr_keys.insert(key);
+            }
+            let yield_type = Binding::phi(yield_expr_keys);
+            self.table.insert(
+                Key::YieldTypeOfGenerator(ShortIdentifier::new(&func_name)),
+                yield_type,
+            );
+        }
         if let Some(ann) = return_ann {
             return_type = Binding::AnnotatedType(ann, Box::new(return_type));
         }
         self.table.insert(
             Key::ReturnType(ShortIdentifier::new(&func_name)),
             return_type,
-        );
-        self.table.insert(
-            Key::YieldTypeOfGenerator(ShortIdentifier::new(&func_name)),
-            yield_type,
         );
 
         // Handle decorators, which re-bind the name from the definition.
