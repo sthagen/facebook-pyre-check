@@ -33,6 +33,8 @@ use crate::binding::binding::KeyClassMetadata;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
+use crate::types::annotation::Annotation;
+use crate::types::annotation::Qualifier;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
 use crate::types::class::TArgs;
@@ -52,6 +54,7 @@ use crate::util::prelude::SliceExt;
 #[derive(Debug, Clone)]
 pub struct ClassField {
     pub ty: Type,
+    pub annotation: Option<Annotation>,
     pub initialization: ClassFieldInitialization,
 }
 
@@ -116,6 +119,19 @@ impl BaseClass {
     }
 }
 
+pub struct TypedDict(ClassType);
+
+impl TypedDict {
+    pub fn new(cls: ClassType) -> Self {
+        Self(cls)
+    }
+}
+
+pub struct TypedDictField {
+    pub ty: Type,
+    pub required: bool,
+}
+
 pub struct Enum(ClassType);
 
 impl Enum {
@@ -142,6 +158,15 @@ impl Enum {
 
     pub fn class_type(&self) -> &ClassType {
         &self.0
+    }
+
+    pub fn get_members(&self) -> SmallSet<Lit> {
+        self.0
+            .class_object()
+            .fields()
+            .iter()
+            .filter_map(|f| self.get_member(f))
+            .collect()
     }
 }
 
@@ -317,16 +342,24 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         bases: &[Expr],
         keywords: &[(Name, Expr)],
     ) -> ClassMetadata {
+        let mut is_typed_dict = false;
         let bases_with_metadata: Vec<_> = bases
             .iter()
             .filter_map(|x| match self.base_class_of(x) {
                 BaseClass::Expr(x) => match self.expr_untype(&x) {
                     Type::ClassType(c) => {
                         let class_metadata = self.get_metadata_for_class(c.class_object());
+                        if class_metadata.is_typed_dict() {
+                            is_typed_dict = true;
+                        }
                         Some((c, class_metadata))
                     }
                     _ => None,
                 },
+                BaseClass::TypedDict => {
+                    is_typed_dict = true;
+                    None
+                }
                 _ => None,
             })
             .collect();
@@ -337,7 +370,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             });
         let metaclass =
             self.calculate_metaclass(cls, metaclasses.into_iter().next(), &bases_with_metadata);
-        ClassMetadata::new(cls, bases_with_metadata, metaclass, keywords, self.errors())
+        if is_typed_dict && metaclass.is_some() {
+            self.error(
+                cls.name().range,
+                "Typed dictionary definitions may not specify a metaclass.".to_string(),
+            );
+        }
+        ClassMetadata::new(
+            cls,
+            bases_with_metadata,
+            metaclass,
+            keywords,
+            is_typed_dict,
+            self.errors(),
+        )
     }
 
     fn calculate_metaclass(
@@ -453,6 +499,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         })
     }
 
+    pub fn get_typed_dict(&self, cls: &ClassType) -> Option<TypedDict> {
+        let metadata = self.get_metadata_for_class(cls.class_object());
+        if metadata.is_typed_dict() {
+            Some(TypedDict(cls.clone()))
+        } else {
+            None
+        }
+    }
+
     fn check_and_create_targs(&self, cls: &Class, targs: Vec<Type>, range: TextRange) -> TArgs {
         let tparams = cls.tparams();
         let nargs = targs.len();
@@ -540,11 +595,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         ClassType::new(cls.dupe(), targs)
     }
 
-    pub fn unwrap_type_form_silently(&self, ty: &Type) -> Option<Type> {
+    pub fn unwrap_class_object_silently(&self, ty: &Type) -> Option<Type> {
         match ty {
             Type::ClassDef(c) => Some(Type::ClassType(self.promote_to_class_type_silently(c))),
-            Type::Type(box inner) => Some(inner.clone()),
-            Type::TypeAlias(ta) => self.unwrap_type_form_silently(&ta.as_value(self.stdlib)),
+            Type::TypeAlias(ta) => self.unwrap_class_object_silently(&ta.as_value(self.stdlib)),
             _ => None,
         }
     }
@@ -710,5 +764,51 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::ClassDef(class) => self.get_enum(&self.promote_to_class_type_silently(class)),
             _ => None,
         }
+    }
+
+    pub fn get_typed_dict_from_key(&self, key: Idx<Key>) -> Option<TypedDict> {
+        match self.get_idx(key).deref() {
+            Type::ClassDef(class) => {
+                self.get_typed_dict(&self.promote_to_class_type_silently(class))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_typed_dict_fields(&self, typed_dict: &TypedDict) -> SmallMap<Name, TypedDictField> {
+        typed_dict
+            .0
+            .class_object()
+            .fields()
+            .iter()
+            .filter_map(|name| {
+                if let Some(ClassField {
+                    annotation:
+                        Some(Annotation {
+                            ty: Some(ty),
+                            qualifiers,
+                        }),
+                    ..
+                }) = self.get_class_field(typed_dict.0.class_object(), name)
+                {
+                    Some((
+                        name.clone(),
+                        TypedDictField {
+                            ty,
+                            required: if qualifiers.contains(&Qualifier::Required) {
+                                true
+                            } else if qualifiers.contains(&Qualifier::NotRequired) {
+                                false
+                            } else {
+                                // TODO(yangdanny): consider total=True/False
+                                true
+                            },
+                        },
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }

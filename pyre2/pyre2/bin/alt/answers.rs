@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
-use ruff_python_ast::Arguments;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Keyword;
 use ruff_python_ast::TypeParam;
@@ -47,8 +46,6 @@ use crate::binding::binding::UnpackedPosition;
 use crate::binding::bindings::BindingEntry;
 use crate::binding::bindings::BindingTable;
 use crate::binding::bindings::Bindings;
-use crate::binding::narrow::NarrowOp;
-use crate::binding::narrow::NarrowVal;
 use crate::binding::table::TableKeyed;
 use crate::dunder;
 use crate::dunder::inplace_dunder;
@@ -234,6 +231,7 @@ impl SolveRecursive for KeyClassField {
         // to work correctly; what we have here is a fallback to permissive gradual typing.
         ClassField {
             ty: Type::any_implicit(),
+            annotation: None,
             initialization: ClassFieldInitialization::Class,
         }
     }
@@ -1020,242 +1018,30 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
         }
-        let ty = if let Some(ann) = &field.annotation {
+        if self
+            .get_typed_dict_from_key(field.class.to_owned())
+            .is_some()
+            && matches!(field.initialization, ClassFieldInitialization::Class)
+        {
+            self.error(
+                field.range,
+                format!("TypedDict item `{}` may not be initialized.", field.name),
+            );
+        }
+        let (ty, ann) = if let Some(ann) = &field.annotation {
             let ann = self.get_idx(*ann);
             match &ann.ty {
-                Some(ty) => Arc::new(ty.clone()),
-                None => value_ty,
+                Some(ty) => (Arc::new(ty.clone()), Some(ann)),
+                None => (value_ty, Some(ann)),
             }
         } else {
-            value_ty
+            (value_ty, None)
         };
         Arc::new(ClassField {
             ty: ty.deref().clone(),
+            annotation: ann.map(|ann| ann.deref().clone()),
             initialization: field.initialization,
         })
-    }
-
-    // Get the union of all members of an enum, minus the specified member
-    fn subtract_enum_member(&self, cls: &ClassType, name: &Name) -> Type {
-        let e = self.get_enum(cls).unwrap();
-        self.unions(
-            &cls.class_object()
-                .fields()
-                .iter()
-                .filter_map(|f| {
-                    if *f == *name {
-                        None
-                    } else {
-                        e.get_member(f).map(Type::Literal)
-                    }
-                })
-                .collect::<Vec<_>>(),
-        )
-    }
-
-    fn intersect(&self, left: &Type, right: &Type) -> Type {
-        // Get our best approximation of ty & right.
-        self.distribute_over_union(left, |t| {
-            if self.solver().is_subset_eq(right, t, self.type_order()) {
-                right.clone()
-            } else if self.solver().is_subset_eq(t, right, self.type_order()) {
-                t.clone()
-            } else {
-                Type::never()
-            }
-        })
-    }
-
-    fn resolve_narrowing_call(&self, func: &NarrowVal, args: &Arguments) -> Option<NarrowOp> {
-        // TODO: do something more reliable than matching on the name.
-        if let NarrowVal::Expr(box Expr::Name(name)) = func
-            && args.args.len() > 1
-        {
-            let second_arg = &args.args[1];
-            let op = match name.id.as_str() {
-                "isinstance" => Some(NarrowOp::IsInstance(NarrowVal::Expr(Box::new(
-                    second_arg.clone(),
-                )))),
-                "issubclass" => Some(NarrowOp::IsSubclass(NarrowVal::Expr(Box::new(
-                    second_arg.clone(),
-                )))),
-                _ => None,
-            };
-            if op.is_some() {
-                return op;
-            }
-        }
-        let func_ty = self.narrow_val_infer(func);
-        func_ty
-            .as_typeguard()
-            .map(|t| NarrowOp::TypeGuard(t.clone()))
-    }
-
-    fn narrow_val_infer(&self, val: &NarrowVal) -> Type {
-        match val {
-            NarrowVal::Expr(e) => self.expr(e, None),
-            NarrowVal::Type(t, _) => (**t).clone(),
-        }
-    }
-
-    fn distribute_narrow_op_over_tuple(
-        &self,
-        build_op: &dyn Fn(NarrowVal) -> NarrowOp,
-        ty: &Type,
-        range: TextRange,
-    ) -> Option<NarrowOp> {
-        if let Type::Tuple(Tuple::Concrete(ts)) = ty {
-            Some(NarrowOp::Or(
-                ts.iter()
-                    .map(|t| build_op(NarrowVal::Type(Box::new(t.clone()), range)))
-                    .collect(),
-            ))
-        } else {
-            None
-        }
-    }
-
-    fn unwrap_type_form_and_narrow(
-        &self,
-        narrow: &dyn Fn(Type) -> Type,
-        ty: &Type,
-        range: TextRange,
-    ) -> Type {
-        match self.unwrap_type_form_silently(ty) {
-            Some(right) => narrow(right),
-            None => {
-                self.error(range, format!("Expected type form, got {}", ty));
-                Type::any_error()
-            }
-        }
-    }
-
-    fn narrow(&self, ty: &Type, op: &NarrowOp) -> Type {
-        match op {
-            NarrowOp::Is(v) => {
-                let right = self.narrow_val_infer(v);
-                // Get our best approximation of ty & right.
-                self.intersect(ty, &right)
-            }
-            NarrowOp::IsNot(v) => {
-                let right = self.narrow_val_infer(v);
-                // Get our best approximation of ty - right.
-                self.distribute_over_union(ty, |t| {
-                    // Only certain literal types can be compared by identity.
-                    match (t, &right) {
-                        (
-                            _,
-                            Type::None | Type::Literal(Lit::Bool(_)) | Type::Literal(Lit::Enum(_)),
-                        ) if *t == right => Type::never(),
-                        (Type::ClassType(cls), Type::Literal(Lit::Bool(b)))
-                            if *cls == self.stdlib.bool() =>
-                        {
-                            Type::Literal(Lit::Bool(!b))
-                        }
-                        (
-                            Type::ClassType(left_cls),
-                            Type::Literal(Lit::Enum(box (right_cls, name))),
-                        ) if *left_cls == *right_cls => self.subtract_enum_member(left_cls, name),
-                        _ => t.clone(),
-                    }
-                })
-            }
-            NarrowOp::IsInstance(v) => {
-                let right = self.narrow_val_infer(v);
-                if let Some(distributed_op) =
-                    self.distribute_narrow_op_over_tuple(&NarrowOp::IsInstance, &right, v.range())
-                {
-                    self.narrow(ty, &distributed_op)
-                } else {
-                    let narrow = |right| self.intersect(ty, &right);
-                    self.unwrap_type_form_and_narrow(&narrow, &right, v.range())
-                }
-            }
-            NarrowOp::IsNotInstance(v) => {
-                let right = self.narrow_val_infer(v);
-                if let Some(distributed_op) =
-                    self.distribute_narrow_op_over_tuple(&NarrowOp::IsInstance, &right, v.range())
-                {
-                    self.narrow(ty, &distributed_op.negate())
-                } else {
-                    let narrow = |right| {
-                        self.distribute_over_union(ty, |t| {
-                            if self.solver().is_subset_eq(t, &right, self.type_order()) {
-                                Type::never()
-                            } else {
-                                t.clone()
-                            }
-                        })
-                    };
-                    self.unwrap_type_form_and_narrow(&narrow, &right, v.range())
-                }
-            }
-            NarrowOp::IsSubclass(_) | NarrowOp::IsNotSubclass(_) => ty.clone(), // TODO: implement this
-            NarrowOp::TypeGuard(t) => t.clone(),
-            NarrowOp::NotTypeGuard(_) => ty.clone(),
-            NarrowOp::Truthy | NarrowOp::Falsy => self.distribute_over_union(ty, |t| {
-                let boolval = matches!(op, NarrowOp::Truthy);
-                if t.as_bool() == Some(!boolval) {
-                    Type::never()
-                } else if matches!(t, Type::ClassType(cls) if *cls == self.stdlib.bool()) {
-                    Type::Literal(Lit::Bool(boolval))
-                } else {
-                    t.clone()
-                }
-            }),
-            NarrowOp::Eq(v) => {
-                let right = self.narrow_val_infer(v);
-                if matches!(right, Type::Literal(_) | Type::None) {
-                    self.intersect(ty, &right)
-                } else {
-                    ty.clone()
-                }
-            }
-            NarrowOp::NotEq(v) => {
-                let right = self.narrow_val_infer(v);
-                if matches!(right, Type::Literal(_) | Type::None) {
-                    self.distribute_over_union(ty, |t| match (t, &right) {
-                        (_, _) if *t == right => Type::never(),
-                        (Type::ClassType(cls), Type::Literal(Lit::Bool(b)))
-                            if *cls == self.stdlib.bool() =>
-                        {
-                            Type::Literal(Lit::Bool(!b))
-                        }
-                        (
-                            Type::ClassType(left_cls),
-                            Type::Literal(Lit::Enum(box (right_cls, name))),
-                        ) if *left_cls == *right_cls => self.subtract_enum_member(left_cls, name),
-                        _ => t.clone(),
-                    })
-                } else {
-                    ty.clone()
-                }
-            }
-            NarrowOp::And(ops) => {
-                let mut ops_iter = ops.iter();
-                if let Some(first_op) = ops_iter.next() {
-                    let mut ret = self.narrow(ty, first_op);
-                    for next_op in ops_iter {
-                        ret = self.narrow(&ret, next_op);
-                    }
-                    ret
-                } else {
-                    ty.clone()
-                }
-            }
-            NarrowOp::Or(ops) => self.unions(&ops.map(|op| self.narrow(ty, op))),
-            NarrowOp::Call(func, args) | NarrowOp::NotCall(func, args) => {
-                if let Some(resolved_op) = self.resolve_narrowing_call(func, args) {
-                    if matches!(op, NarrowOp::Call(..)) {
-                        self.narrow(ty, &resolved_op)
-                    } else {
-                        self.narrow(ty, &resolved_op.negate())
-                    }
-                } else {
-                    ty.clone()
-                }
-            }
-        }
     }
 
     fn solve_binding_inner(&self, binding: &Binding) -> Type {
@@ -1264,10 +1050,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let ty = ann.map(|k| self.get_idx(k));
                 self.expr(e, ty.as_ref().and_then(|x| x.ty.as_ref()))
             }
-            Binding::ReturnExpr(ann, e) => {
-                let ty = ann.map(|k| self.get_idx(k));
-                let hint = ty.as_ref().and_then(|x| x.ty.as_ref());
-                if matches!(hint, Some(Type::TypeGuard(_))) {
+            Binding::ReturnExpr(ann, e, has_yields) => {
+                let ann = ann.map(|k| self.get_idx(k));
+                let hint = ann.as_ref().and_then(|x| x.ty.as_ref());
+
+                if *has_yields {
+                    let hint = match hint {
+                        Some(t) => {
+                            let decomposed = self.decompose_generator(t);
+                            decomposed.map(|(_, _, r)| r)
+                        }
+                        None => None,
+                    };
+                    self.expr(e, hint.as_ref())
+                } else if matches!(hint, Some(Type::TypeGuard(_))) {
                     self.expr(e, Some(&Type::ClassType(self.stdlib.bool())))
                 } else {
                     self.expr(e, hint)

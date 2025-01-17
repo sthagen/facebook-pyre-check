@@ -982,8 +982,8 @@
     {
       "code": -2,
       "column": 22,
-      "concise_description": "Expected type form, got ScopedTypeAlias[GoodAlias1, type[int]]",
-      "description": "Expected type form, got ScopedTypeAlias[GoodAlias1, type[int]]",
+      "concise_description": "Expected class object, got ScopedTypeAlias[GoodAlias1, type[int]]",
+      "description": "Expected class object, got ScopedTypeAlias[GoodAlias1, type[int]]",
       "line": 31,
       "name": "PyreError",
       "stop_column": 32,
@@ -1660,19 +1660,9 @@
     },
     {
       "code": -2,
-      "column": 12,
-      "concise_description": "EXPECTED C <: Generator[A, B, C]",
-      "description": "EXPECTED C <: Generator[A, B, C]",
-      "line": 48,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 48
-    },
-    {
-      "code": -2,
       "column": 16,
-      "concise_description": "EXPECTED Literal[False] <: Generator[A, B, C]",
-      "description": "EXPECTED Literal[False] <: Generator[A, B, C]",
+      "concise_description": "EXPECTED Literal[False] <: C",
+      "description": "EXPECTED Literal[False] <: C",
       "line": 54,
       "name": "PyreError",
       "stop_column": 21,
@@ -1681,8 +1671,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "EXPECTED None <: Generator[A, B, C]",
-      "description": "EXPECTED None <: Generator[A, B, C]",
+      "concise_description": "EXPECTED None <: C",
+      "description": "EXPECTED None <: C",
       "line": 56,
       "name": "PyreError",
       "stop_column": 16,
@@ -1697,26 +1687,6 @@
       "name": "PyreError",
       "stop_column": 16,
       "stop_line": 57
-    },
-    {
-      "code": -2,
-      "column": 16,
-      "concise_description": "EXPECTED Literal[3] <: Generator[A, int, Any]",
-      "description": "EXPECTED Literal[3] <: Generator[A, int, Any]",
-      "line": 63,
-      "name": "PyreError",
-      "stop_column": 17,
-      "stop_line": 63
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: Generator[A, int, Any]",
-      "description": "EXPECTED None <: Generator[A, int, Any]",
-      "line": 65,
-      "name": "PyreError",
-      "stop_column": 16,
-      "stop_line": 66
     },
     {
       "code": -2,
@@ -1740,26 +1710,6 @@
     },
     {
       "code": -2,
-      "column": 12,
-      "concise_description": "EXPECTED Literal[True] <: Iterable[A]",
-      "description": "EXPECTED Literal[True] <: Iterable[A]",
-      "line": 71,
-      "name": "PyreError",
-      "stop_column": 16,
-      "stop_line": 71
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: Iterator[A]",
-      "description": "EXPECTED None <: Iterator[A]",
-      "line": 75,
-      "name": "PyreError",
-      "stop_column": 14,
-      "stop_line": 75
-    },
-    {
-      "code": -2,
       "column": 5,
       "concise_description": "TODO: ExprYield - Answers::expr_infer",
       "description": "TODO: ExprYield - Answers::expr_infer",
@@ -1771,32 +1721,12 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "EXPECTED None <: Generator[None, None, None]",
-      "description": "EXPECTED None <: Generator[None, None, None]",
-      "line": 79,
-      "name": "PyreError",
-      "stop_column": 10,
-      "stop_line": 79
-    },
-    {
-      "code": -2,
-      "column": 5,
       "concise_description": "TODO: ExprYield - Answers::expr_infer",
       "description": "TODO: ExprYield - Answers::expr_infer",
       "line": 79,
       "name": "PyreError",
       "stop_column": 10,
       "stop_line": 79
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: Iterator[dict[str, int]]",
-      "description": "EXPECTED None <: Iterator[dict[str, int]]",
-      "line": 83,
-      "name": "PyreError",
-      "stop_column": 18,
-      "stop_line": 83
     },
     {
       "code": -2,
@@ -1821,16 +1751,6 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "EXPECTED None <: int",
-      "description": "EXPECTED None <: int",
-      "line": 92,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 92
-    },
-    {
-      "code": -2,
-      "column": 5,
       "concise_description": "TODO: ExprYield - Answers::expr_infer",
       "description": "TODO: ExprYield - Answers::expr_infer",
       "line": 92,
@@ -1841,32 +1761,12 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "EXPECTED None <: IntIterator",
-      "description": "EXPECTED None <: IntIterator",
-      "line": 101,
-      "name": "PyreError",
-      "stop_column": 12,
-      "stop_line": 101
-    },
-    {
-      "code": -2,
-      "column": 5,
       "concise_description": "TODO: ExprYield - Answers::expr_infer",
       "description": "TODO: ExprYield - Answers::expr_infer",
       "line": 101,
       "name": "PyreError",
       "stop_column": 12,
       "stop_line": 101
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: AsyncIntIterator",
-      "description": "EXPECTED None <: AsyncIntIterator",
-      "line": 110,
-      "name": "PyreError",
-      "stop_column": 12,
-      "stop_line": 110
     },
     {
       "code": -2,
@@ -1930,16 +1830,6 @@
     },
     {
       "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: Generator[None, float, None]",
-      "description": "EXPECTED None <: Generator[None, float, None]",
-      "line": 123,
-      "name": "PyreError",
-      "stop_column": 21,
-      "stop_line": 123
-    },
-    {
-      "code": -2,
       "column": 16,
       "concise_description": "TODO: ExprYield - Answers::expr_infer",
       "description": "TODO: ExprYield - Answers::expr_infer",
@@ -1967,16 +1857,6 @@
       "name": "PyreError",
       "stop_column": 29,
       "stop_line": 127
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: Generator[None, int, None]",
-      "description": "EXPECTED None <: Generator[None, int, None]",
-      "line": 131,
-      "name": "PyreError",
-      "stop_column": 21,
-      "stop_line": 131
     },
     {
       "code": -2,
@@ -2011,52 +1891,12 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "EXPECTED None <: Iterable[str]",
-      "description": "EXPECTED None <: Iterable[str]",
-      "line": 139,
-      "name": "PyreError",
-      "stop_column": 11,
-      "stop_line": 139
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: Iterable[str]",
-      "description": "EXPECTED None <: Iterable[str]",
-      "line": 140,
-      "name": "PyreError",
-      "stop_column": 13,
-      "stop_line": 140
-    },
-    {
-      "code": -2,
-      "column": 5,
       "concise_description": "TODO: ExprYield - Answers::expr_infer",
       "description": "TODO: ExprYield - Answers::expr_infer",
       "line": 140,
       "name": "PyreError",
       "stop_column": 13,
       "stop_line": 140
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: AsyncIterable[str]",
-      "description": "EXPECTED None <: AsyncIterable[str]",
-      "line": 144,
-      "name": "PyreError",
-      "stop_column": 11,
-      "stop_line": 144
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: AsyncIterable[str]",
-      "description": "EXPECTED None <: AsyncIterable[str]",
-      "line": 145,
-      "name": "PyreError",
-      "stop_column": 13,
-      "stop_line": 145
     },
     {
       "code": -2,
@@ -2117,16 +1957,6 @@
       "name": "PyreError",
       "stop_column": 26,
       "stop_line": 154
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: AsyncGenerator[str, None]",
-      "description": "EXPECTED None <: AsyncGenerator[str, None]",
-      "line": 159,
-      "name": "PyreError",
-      "stop_column": 35,
-      "stop_line": 161
     },
     {
       "code": -2,
@@ -2207,16 +2037,6 @@
       "name": "PyreError",
       "stop_column": 30,
       "stop_line": 179
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "EXPECTED None <: AsyncIterator[int]",
-      "description": "EXPECTED None <: AsyncIterator[int]",
-      "line": 187,
-      "name": "PyreError",
-      "stop_column": 10,
-      "stop_line": 187
     },
     {
       "code": -2,
@@ -21070,6 +20890,26 @@
   "typeddicts_class_syntax.py": [
     {
       "code": -2,
+      "column": 9,
+      "concise_description": "TypedDict item `method1` may not be initialized.",
+      "description": "TypedDict item `method1` may not be initialized.",
+      "line": 29,
+      "name": "PyreError",
+      "stop_column": 16,
+      "stop_line": 29
+    },
+    {
+      "code": -2,
+      "column": 9,
+      "concise_description": "TypedDict item `method2` may not be initialized.",
+      "description": "TypedDict item `method2` may not be initialized.",
+      "line": 34,
+      "name": "PyreError",
+      "stop_column": 16,
+      "stop_line": 34
+    },
+    {
+      "code": -2,
       "column": 5,
       "concise_description": "EXPECTED Callable[[], None] <: Callable[ParamSpec(@_), None]",
       "description": "EXPECTED Callable[[], None] <: Callable[ParamSpec(@_), None]",
@@ -21077,6 +20917,26 @@
       "name": "PyreError",
       "stop_column": 18,
       "stop_line": 38
+    },
+    {
+      "code": -2,
+      "column": 9,
+      "concise_description": "TypedDict item `method3` may not be initialized.",
+      "description": "TypedDict item `method3` may not be initialized.",
+      "line": 39,
+      "name": "PyreError",
+      "stop_column": 16,
+      "stop_line": 39
+    },
+    {
+      "code": -2,
+      "column": 7,
+      "concise_description": "Typed dictionary definitions may not specify a metaclass.",
+      "description": "Typed dictionary definitions may not specify a metaclass.",
+      "line": 44,
+      "name": "PyreError",
+      "stop_column": 20,
+      "stop_line": 44
     }
   ],
   "typeddicts_final.py": [
@@ -21092,22 +20952,12 @@
     },
     {
       "code": -2,
-      "column": 21,
-      "concise_description": "`Movie` has no attribute `__getitem__`",
-      "description": "`Movie` has no attribute `__getitem__`",
-      "line": 20,
-      "name": "PyreError",
-      "stop_column": 28,
-      "stop_line": 20
-    },
-    {
-      "code": -2,
-      "column": 12,
-      "concise_description": "`Movie` has no attribute `__getitem__`",
-      "description": "`Movie` has no attribute `__getitem__`",
+      "column": 18,
+      "concise_description": "Invalid key for typed dictionary `Movie`, got `Literal['name', 'year']`",
+      "description": "Invalid key for typed dictionary `Movie`, got `Literal['name', 'year']`",
       "line": 26,
       "name": "PyreError",
-      "stop_column": 22,
+      "stop_column": 21,
       "stop_line": 26
     }
   ],
@@ -21237,8 +21087,8 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "`Movie` has no attribute `__getitem__`",
-      "description": "`Movie` has no attribute `__getitem__`",
+      "concise_description": "Object of class `Movie` has no attribute `other`",
+      "description": "Object of class `Movie` has no attribute `other`",
       "line": 26,
       "name": "PyreError",
       "stop_column": 21,
@@ -21287,8 +21137,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Object of class `Movie` has no attribute `get`",
-      "description": "Object of class `Movie` has no attribute `get`",
+      "concise_description": "Expected 1 more positional argument",
+      "description": "Expected 1 more positional argument",
       "line": 41,
       "name": "PyreError",
       "stop_column": 10,
@@ -21297,8 +21147,28 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Object of class `Movie` has no attribute `get`",
-      "description": "Object of class `Movie` has no attribute `get`",
+      "concise_description": "Missing argument 'default'",
+      "description": "Missing argument 'default'",
+      "line": 41,
+      "name": "PyreError",
+      "stop_column": 10,
+      "stop_line": 41
+    },
+    {
+      "code": -2,
+      "column": 11,
+      "concise_description": "EXPECTED Literal['name'] <: Mapping[str, object]",
+      "description": "EXPECTED Literal['name'] <: Mapping[str, object]",
+      "line": 41,
+      "name": "PyreError",
+      "stop_column": 17,
+      "stop_line": 41
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Expected 1 more positional argument",
+      "description": "Expected 1 more positional argument",
       "line": 44,
       "name": "PyreError",
       "stop_column": 10,
@@ -21307,8 +21177,28 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Object of class `Movie` has no attribute `clear`",
-      "description": "Object of class `Movie` has no attribute `clear`",
+      "concise_description": "Missing argument 'default'",
+      "description": "Missing argument 'default'",
+      "line": 44,
+      "name": "PyreError",
+      "stop_column": 10,
+      "stop_line": 44
+    },
+    {
+      "code": -2,
+      "column": 11,
+      "concise_description": "EXPECTED Literal['other'] <: Mapping[str, object]",
+      "description": "EXPECTED Literal['other'] <: Mapping[str, object]",
+      "line": 44,
+      "name": "PyreError",
+      "stop_column": 18,
+      "stop_line": 44
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Object of class `Mapping` has no attribute `clear`",
+      "description": "Object of class `Mapping` has no attribute `clear`",
       "line": 47,
       "name": "PyreError",
       "stop_column": 12,
@@ -21337,8 +21227,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(Any, str | None) failed",
-      "description": "assert_type(Any, str | None) failed",
+      "concise_description": "assert_type(object | Any | None, str | None) failed",
+      "description": "assert_type(object | Any | None, str | None) failed",
       "line": 60,
       "name": "PyreError",
       "stop_column": 52,
@@ -21347,8 +21237,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Object of class `MovieOptional` has no attribute `get`",
-      "description": "Object of class `MovieOptional` has no attribute `get`",
+      "concise_description": "Expected 1 more positional argument",
+      "description": "Expected 1 more positional argument",
       "line": 60,
       "name": "PyreError",
       "stop_column": 31,
@@ -21356,9 +21246,29 @@
     },
     {
       "code": -2,
+      "column": 13,
+      "concise_description": "Missing argument 'default'",
+      "description": "Missing argument 'default'",
+      "line": 60,
+      "name": "PyreError",
+      "stop_column": 31,
+      "stop_line": 60
+    },
+    {
+      "code": -2,
+      "column": 32,
+      "concise_description": "EXPECTED Literal['name'] <: Mapping[str, object]",
+      "description": "EXPECTED Literal['name'] <: Mapping[str, object]",
+      "line": 60,
+      "name": "PyreError",
+      "stop_column": 38,
+      "stop_line": 60
+    },
+    {
+      "code": -2,
       "column": 1,
-      "concise_description": "Object of class `MovieOptional` has no attribute `clear`",
-      "description": "Object of class `MovieOptional` has no attribute `clear`",
+      "concise_description": "Object of class `Mapping` has no attribute `clear`",
+      "description": "Object of class `Mapping` has no attribute `clear`",
       "line": 62,
       "name": "PyreError",
       "stop_column": 21,
@@ -21405,16 +21315,6 @@
       "name": "PyreError",
       "stop_column": 14,
       "stop_line": 24
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "`Band` has no attribute `__getitem__`",
-      "description": "`Band` has no attribute `__getitem__`",
-      "line": 25,
-      "name": "PyreError",
-      "stop_column": 14,
-      "stop_line": 25
     },
     {
       "code": -2,
@@ -21521,42 +21421,12 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "EXPECTED B1 <: A1",
-      "description": "EXPECTED B1 <: A1",
-      "line": 34,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 34
-    },
-    {
-      "code": -2,
-      "column": 14,
-      "concise_description": "EXPECTED C1 <: A1",
-      "description": "EXPECTED C1 <: A1",
-      "line": 35,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 35
-    },
-    {
-      "code": -2,
-      "column": 14,
       "concise_description": "EXPECTED A1 <: B1",
       "description": "EXPECTED A1 <: B1",
       "line": 37,
       "name": "PyreError",
       "stop_column": 15,
       "stop_line": 37
-    },
-    {
-      "code": -2,
-      "column": 14,
-      "concise_description": "EXPECTED C1 <: B1",
-      "description": "EXPECTED C1 <: B1",
-      "line": 38,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 38
     },
     {
       "code": -2,
@@ -21571,42 +21441,12 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "EXPECTED B1 <: C1",
-      "description": "EXPECTED B1 <: C1",
-      "line": 41,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 41
-    },
-    {
-      "code": -2,
-      "column": 14,
-      "concise_description": "EXPECTED B2 <: A2",
-      "description": "EXPECTED B2 <: A2",
-      "line": 78,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 78
-    },
-    {
-      "code": -2,
-      "column": 14,
       "concise_description": "EXPECTED C2 <: A2",
       "description": "EXPECTED C2 <: A2",
       "line": 79,
       "name": "PyreError",
       "stop_column": 15,
       "stop_line": 79
-    },
-    {
-      "code": -2,
-      "column": 14,
-      "concise_description": "EXPECTED A2 <: B2",
-      "description": "EXPECTED A2 <: B2",
-      "line": 81,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 81
     },
     {
       "code": -2,
@@ -21797,8 +21637,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Object of class `A` has no attribute `update`",
-      "description": "Object of class `A` has no attribute `update`",
+      "concise_description": "Object of class `Mapping` has no attribute `update`",
+      "description": "Object of class `Mapping` has no attribute `update`",
       "line": 23,
       "name": "PyreError",
       "stop_column": 10,
@@ -21807,8 +21647,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Object of class `A` has no attribute `update`",
-      "description": "Object of class `A` has no attribute `update`",
+      "concise_description": "Object of class `Mapping` has no attribute `update`",
+      "description": "Object of class `Mapping` has no attribute `update`",
       "line": 34,
       "name": "PyreError",
       "stop_column": 13,
@@ -21859,18 +21699,8 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "EXPECTED TD5 <: TD3",
-      "description": "EXPECTED TD5 <: TD3",
-      "line": 54,
-      "name": "PyreError",
-      "stop_column": 10,
-      "stop_line": 54
-    },
-    {
-      "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED TD3 <: TD4",
-      "description": "EXPECTED TD3 <: TD4",
+      "concise_description": "EXPECTED TD5 <: TD4",
+      "description": "EXPECTED TD5 <: TD4",
       "line": 55,
       "name": "PyreError",
       "stop_column": 10,
@@ -21885,16 +21715,6 @@
       "name": "PyreError",
       "stop_column": 10,
       "stop_line": 56
-    },
-    {
-      "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED TD3 <: TD5",
-      "description": "EXPECTED TD3 <: TD5",
-      "line": 57,
-      "name": "PyreError",
-      "stop_column": 10,
-      "stop_line": 57
     },
     {
       "code": -2,
@@ -21971,26 +21791,6 @@
     {
       "code": -2,
       "column": 10,
-      "concise_description": "EXPECTED B1 <: A1",
-      "description": "EXPECTED B1 <: A1",
-      "line": 21,
-      "name": "PyreError",
-      "stop_column": 12,
-      "stop_line": 21
-    },
-    {
-      "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED B1 <: Mapping[str, object]",
-      "description": "EXPECTED B1 <: Mapping[str, object]",
-      "line": 24,
-      "name": "PyreError",
-      "stop_column": 30,
-      "stop_line": 24
-    },
-    {
-      "code": -2,
-      "column": 10,
       "concise_description": "EXPECTED dict[str, int] <: B2",
       "description": "EXPECTED dict[str, int] <: B2",
       "line": 37,
@@ -22001,32 +21801,12 @@
     {
       "code": -2,
       "column": 10,
-      "concise_description": "EXPECTED B2 <: A2",
-      "description": "EXPECTED B2 <: A2",
-      "line": 38,
-      "name": "PyreError",
-      "stop_column": 12,
-      "stop_line": 38
-    },
-    {
-      "code": -2,
-      "column": 10,
       "concise_description": "EXPECTED dict[str, int] <: B3",
       "description": "EXPECTED dict[str, int] <: B3",
       "line": 61,
       "name": "PyreError",
       "stop_column": 26,
       "stop_line": 61
-    },
-    {
-      "code": -2,
-      "column": 10,
-      "concise_description": "EXPECTED B3 <: A3",
-      "description": "EXPECTED B3 <: A3",
-      "line": 62,
-      "name": "PyreError",
-      "stop_column": 12,
-      "stop_line": 62
     },
     {
       "code": -2,
@@ -22097,26 +21877,6 @@
       "name": "PyreError",
       "stop_column": 27,
       "stop_line": 82
-    },
-    {
-      "code": -2,
-      "column": 28,
-      "concise_description": "EXPECTED B3 <: Mapping[str, object]",
-      "description": "EXPECTED B3 <: Mapping[str, object]",
-      "line": 83,
-      "name": "PyreError",
-      "stop_column": 30,
-      "stop_line": 83
-    },
-    {
-      "code": -2,
-      "column": 25,
-      "concise_description": "EXPECTED B3 <: Mapping[str, Any]",
-      "description": "EXPECTED B3 <: Mapping[str, Any]",
-      "line": 84,
-      "name": "PyreError",
-      "stop_column": 27,
-      "stop_line": 84
     },
     {
       "code": -2,
@@ -22417,16 +22177,6 @@
       "name": "PyreError",
       "stop_column": 38,
       "stop_line": 151
-    },
-    {
-      "code": -2,
-      "column": 14,
-      "concise_description": "EXPECTED Outer2 <: Outer3",
-      "description": "EXPECTED Outer2 <: Outer3",
-      "line": 152,
-      "name": "PyreError",
-      "stop_column": 16,
-      "stop_line": 152
     }
   ],
   "typeddicts_usage.py": [

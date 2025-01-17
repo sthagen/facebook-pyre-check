@@ -1162,7 +1162,7 @@ impl<'a> BindingsBuilder<'a> {
         for x in return_exprs {
             let key = self.table.insert(
                 Key::ReturnExpression(ShortIdentifier::new(&func_name), x.range),
-                Binding::ReturnExpr(return_ann, return_expr(x)),
+                Binding::ReturnExpr(return_ann, return_expr(x), !yield_exprs.is_empty()),
             );
             return_expr_keys.insert(key);
         }
@@ -1193,7 +1193,7 @@ impl<'a> BindingsBuilder<'a> {
         );
 
         // Handle decorators, which re-bind the name from the definition.
-        for decorator in decorators {
+        for decorator in decorators.into_iter().rev() {
             self.ensure_expr(&decorator.expression);
             current_name_key = self.table.insert(
                 Key::DecoratorApplication(decorator.range),

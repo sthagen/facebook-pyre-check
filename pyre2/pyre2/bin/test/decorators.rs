@@ -53,3 +53,21 @@ def decorated(x: int) -> str:
 assert_type(decorated, Callable[[int, int], str])
     "#,
 );
+
+testcase!(
+    test_chaining_decorators,
+    r#"
+from typing import assert_type, Callable, Any
+
+def decorator0[T, R](f: Callable[[T], R]) -> Callable[[T], set[R]]: ...
+
+def decorator1[T, R](f: Callable[[T], R]) -> Callable[[T], list[R]]: ...
+
+@decorator1
+@decorator0
+def decorated(x: int) -> str:
+   return f"{x}"
+
+assert_type(decorated, Callable[[int], list[set[str]]])
+    "#,
+);

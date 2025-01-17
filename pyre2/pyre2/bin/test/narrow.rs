@@ -468,6 +468,16 @@ def f(x: str | int):
 );
 
 testcase!(
+    test_isinstance_error,
+    r#"
+from typing import assert_type
+def f(x: int | list[int]):
+    if isinstance(x, list[int]):  # E: Expected class object
+        assert_type(x, int | list[int])
+    "#,
+);
+
+testcase!(
     test_guarded_attribute_access_and,
     r#"
 class A:
@@ -522,8 +532,7 @@ def f(x: Cat | Dog):
     "#,
 );
 
-testcase_with_bug!(
-    "TODO",
+testcase!(
     test_issubclass,
     r#"
 from typing import assert_type
@@ -531,9 +540,18 @@ class A: ...
 class B(A): ...
 def f(x: type[B] | type[int]):
     if issubclass(x, A):
-        assert_type(x, type[B])  # E: assert_type
+        assert_type(x, type[B])
     else:
-        assert_type(x, type[int])  # E: assert_type
+        assert_type(x, type[int])
+    "#,
+);
+
+testcase!(
+    test_issubclass_error,
+    r#"
+def f(x: int):
+    if issubclass(x, int):  # E: EXPECTED int <: type
+        return True
     "#,
 );
 
