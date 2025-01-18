@@ -12,6 +12,7 @@ module CallGraphAnalysis = struct
     type t = {
       pyre_api: Analysis.PyrePysaEnvironment.ReadOnly.t;
       define_call_graphs: CallGraph.SharedMemory.ReadOnly.t;
+      decorator_resolution: CallGraph.DecoratorResolution.Results.t;
     }
   end
 
@@ -69,10 +70,8 @@ module CallGraphAnalysis = struct
   end
 
   let analyze_define
-      ~context:{ Context.pyre_api; define_call_graphs; _ }
-      ~qualifier
+      ~context:{ Context.pyre_api; define_call_graphs; decorator_resolution; _ }
       ~callable
-      ~define:{ Ast.Node.value = define; _ }
       ~previous_model:{ CallGraph.HigherOrderCallGraph.call_graph = previous_call_graph; _ }
       ~get_callee_model
     =
@@ -82,11 +81,18 @@ module CallGraphAnalysis = struct
       |> Option.value_exn
            ~message:(Format.asprintf "Missing call graph for `%a`" Target.pp callable)
     in
+    let qualifier, { Ast.Node.value = define; _ } =
+      callable
+      |> Target.strip_parameters
+      |> CallGraph.get_module_and_definition_exn ~pyre_api ~decorator_resolution
+    in
     let ({ CallGraph.HigherOrderCallGraph.call_graph; _ } as model) =
-      CallGraph.higher_order_call_graph_of_callable
-        ~pyre_api
+      CallGraph.higher_order_call_graph_of_define
         ~define_call_graph
-        ~callable
+        ~pyre_api
+        ~qualifier
+        ~define
+        ~initial_state:(CallGraph.HigherOrderCallGraph.State.initialize_from_callable callable)
         ~get_callee_model
     in
     let dependencies call_graph =
@@ -96,19 +102,25 @@ module CallGraphAnalysis = struct
     in
     let additional_dependencies =
       Target.Set.diff (dependencies call_graph) (dependencies previous_call_graph)
-      |> Target.Set.elements
     in
-    (if CallGraph.debug_higher_order_call_graph define then
-       let pp_targets formatter =
-         List.iter ~f:(fun target -> Format.fprintf formatter "%a" Target.pp target)
-       in
-       Log.dump
-         "Additional dependencies for `%a`: `%a`"
-         Ast.Reference.pp
-         (Analysis.PyrePysaLogic.qualified_name_of_define ~module_name:qualifier define)
-         pp_targets
-         additional_dependencies);
-    { AnalyzeDefineResult.result = (); model; additional_dependencies }
+    if CallGraph.debug_higher_order_call_graph define then (
+      Log.dump
+        "Returned callables for `%a`: `%a`"
+        Target.pp_pretty_with_kind
+        callable
+        CallGraph.CallTarget.Set.pp
+        model.CallGraph.HigherOrderCallGraph.returned_callables;
+      Log.dump
+        "Additional dependencies for `%a`: `%a`"
+        Ast.Reference.pp
+        (Analysis.PyrePysaLogic.qualified_name_of_define ~module_name:qualifier define)
+        Target.Set.pp_pretty_with_kind
+        additional_dependencies);
+    {
+      AnalyzeDefineResult.result = ();
+      model;
+      additional_dependencies = Target.Set.elements additional_dependencies;
+    }
 end
 
 module Fixpoint = FixpointAnalysis.Make (CallGraphAnalysis)
@@ -124,9 +136,15 @@ let compute
       { DependencyGraph.dependency_graph; callables_to_analyze; override_targets; _ }
     ~override_graph_shared_memory
     ~initial_callables
+    ~decorator_resolution
     ~max_iterations
   =
-  let definitions = FetchCallables.get_definitions initial_callables in
+  let decorated_callables =
+    CallGraph.DecoratorResolution.Results.decorated_callables decorator_resolution
+  in
+  let definitions =
+    initial_callables |> FetchCallables.get_definitions |> List.rev_append decorated_callables
+  in
   let initial_call_graph callable =
     define_call_graphs
     |> CallGraph.SharedMemory.read_only
@@ -152,15 +170,15 @@ let compute
   Fixpoint.compute
     ~scheduler
     ~scheduler_policy
-    ~pyre_api
     ~override_graph:(OverrideGraph.SharedMemory.read_only override_graph_shared_memory)
     ~dependency_graph
     ~context:
       {
         CallGraphAnalysis.Context.pyre_api;
         define_call_graphs = CallGraph.SharedMemory.read_only define_call_graphs;
+        decorator_resolution;
       }
-    ~callables_to_analyze
+    ~callables_to_analyze:(List.rev_append decorated_callables callables_to_analyze)
     ~max_iterations
     ~error_on_max_iterations:false
     ~epoch:Fixpoint.Epoch.initial

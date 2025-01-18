@@ -144,6 +144,9 @@ module CallCallees : sig
     new_targets: CallTarget.t list;
     (* Call targets for calls to the `__init__` instance method. *)
     init_targets: CallTarget.t list;
+    (* Call targets for the calls to artificially created callables that call the decorators. Only
+       used by call graph building. *)
+    decorated_targets: CallTarget.t list;
     (* Information about arguments that are callables, and possibly called. *)
     higher_order_parameters: HigherOrderParameterMap.t;
     (* True if at least one callee could not be resolved.
@@ -156,6 +159,7 @@ module CallCallees : sig
     :  ?call_targets:CallTarget.t list ->
     ?new_targets:CallTarget.t list ->
     ?init_targets:CallTarget.t list ->
+    ?decorated_targets:CallTarget.t list ->
     ?higher_order_parameters:HigherOrderParameterMap.t ->
     ?unresolved:bool ->
     unit ->
@@ -347,10 +351,18 @@ module DecoratorDefine : sig
   [@@deriving show, eq]
 end
 
+(* A map from each callable to its decorators. *)
+module CallableToDecoratorsMap : sig
+  type t
+
+  val empty : t
+
+  val create : pyre_api:PyrePysaEnvironment.ReadOnly.t -> Target.t list -> t
+end
+
 module DecoratorResolution : sig
   type t =
     | Decorators of DecoratorDefine.t
-    | DefinitionNotFound
     | PropertySetterUnsupported
     | Undecorated
       (* A callable is `Undecorated` if it does not have any decorator, or all of its decorators are
@@ -372,8 +384,25 @@ module DecoratorResolution : sig
     :  ?debug:bool ->
     pyre_in_context:PyrePysaEnvironment.InContext.t ->
     override_graph:OverrideGraph.SharedMemory.ReadOnly.t option ->
+    decorators:CallableToDecoratorsMap.t ->
     Target.t ->
     t
+
+  module Results : sig
+    type t
+
+    val empty : t
+
+    val decorated_callables : t -> Target.t list
+
+    val resolve_batch_exn
+      :  debug:bool ->
+      pyre_api:PyrePysaEnvironment.ReadOnly.t ->
+      override_graph:OverrideGraph.SharedMemory.t ->
+      decorators:CallableToDecoratorsMap.t ->
+      Target.t list ->
+      t
+  end
 end
 
 val call_graph_of_define
@@ -381,6 +410,7 @@ val call_graph_of_define
   pyre_api:PyrePysaEnvironment.ReadOnly.t ->
   override_graph:OverrideGraph.SharedMemory.ReadOnly.t option ->
   attribute_targets:Target.HashSet.t ->
+  decorators:CallableToDecoratorsMap.t ->
   qualifier:Reference.t ->
   define:Ast.Statement.Define.t ->
   DefineCallGraph.t
@@ -398,6 +428,7 @@ val call_graph_of_callable
   pyre_api:PyrePysaEnvironment.ReadOnly.t ->
   override_graph:OverrideGraph.SharedMemory.ReadOnly.t option ->
   attribute_targets:Target.HashSet.t ->
+  decorators:CallableToDecoratorsMap.t ->
   callable:Target.t ->
   DefineCallGraph.t
 
@@ -420,11 +451,19 @@ module HigherOrderCallGraph : sig
 
     val empty : t
 
-    val from_list : (TaintAccessPath.Root.t * Target.t) list -> t
+    val initialize_from_roots : (TaintAccessPath.Root.t * Target.t) list -> t
+
+    val initialize_from_callable : Target.t -> t
   end
 end
 
 val debug_higher_order_call_graph : Ast.Statement.Define.t -> bool
+
+val get_module_and_definition_exn
+  :  pyre_api:PyrePysaEnvironment.ReadOnly.t ->
+  decorator_resolution:DecoratorResolution.Results.t ->
+  Target.t ->
+  Reference.t * Ast.Statement.Define.t Node.t
 
 val higher_order_call_graph_of_define
   :  define_call_graph:DefineCallGraph.t ->
@@ -432,13 +471,6 @@ val higher_order_call_graph_of_define
   qualifier:Reference.t ->
   define:Ast.Statement.Define.t ->
   initial_state:HigherOrderCallGraph.State.t ->
-  get_callee_model:(Target.t -> HigherOrderCallGraph.t option) ->
-  HigherOrderCallGraph.t
-
-val higher_order_call_graph_of_callable
-  :  pyre_api:PyrePysaEnvironment.ReadOnly.t ->
-  define_call_graph:DefineCallGraph.t ->
-  callable:Target.t ->
   get_callee_model:(Target.t -> HigherOrderCallGraph.t option) ->
   HigherOrderCallGraph.t
 
@@ -497,7 +529,9 @@ module SharedMemory : sig
     override_graph:OverrideGraph.SharedMemory.ReadOnly.t option ->
     store_shared_memory:bool ->
     attribute_targets:Target.Set.t ->
+    decorators:CallableToDecoratorsMap.t ->
     skip_analysis_targets:Target.Set.t ->
     definitions:Target.t list ->
+    decorator_resolution:DecoratorResolution.Results.t ->
     call_graphs
 end
