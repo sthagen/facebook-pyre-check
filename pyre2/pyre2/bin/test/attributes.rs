@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use crate::test::util::TestEnv;
 use crate::testcase;
 
 testcase!(
@@ -408,5 +409,31 @@ class Meta(type):
 class C(metaclass=Meta):
     pass
 assert_type(C.x, int)
+    "#,
+);
+
+fn env_with_stub() -> TestEnv {
+    let mut t = TestEnv::new();
+    t.add_with_path(
+        "foo",
+        r#"
+class A:
+    x: int = ...
+    y: int
+    "#,
+        "foo.pyi",
+    );
+    t
+}
+
+testcase!(
+    test_stub_initializes_attr_with_ellipses,
+    env_with_stub(),
+    r#"
+from typing import assert_type
+from foo import A
+
+assert_type(A.x, int)
+A.y  # E: Instance-only attribute `y` of class `A` is not visible on the class
     "#,
 );

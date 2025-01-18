@@ -6,6 +6,7 @@
  */
 
 use crate::testcase;
+use crate::testcase_with_bug;
 
 testcase!(
     test_typed_dict,
@@ -30,6 +31,20 @@ class Coord(TypedDict, metaclass=EnumMeta):  # E: Typed dictionary definitions m
     "#,
 );
 
+testcase_with_bug!(
+    "Generic typed dicts are not supported yet",
+    test_typed_dict_generic,
+    r#"
+from typing import TypedDict
+class Coord[T](TypedDict):
+    x: T
+    y: T
+def foo(c: Coord[int]):
+    x: int = c["x"]  # E: `Coord[int]` has no attribute `__getitem__`
+    y: str = c["y"]  # E: `Coord[int]` has no attribute `__getitem__`
+    "#,
+);
+
 testcase!(
     test_typed_dict_initialized_field,
     r#"
@@ -50,8 +65,8 @@ class Coord(TypedDict):
 def foo(c: Coord, key: str):
     x: int = c["x"]
     x2: int = c.x  # E: Object of class `Mapping` has no attribute `x`
-    x3: int = c[key]  # E: Invalid key for typed dictionary `Coord`, got `str`
-    x4: int = c["aaaaaa"]  # E: Object of class `Coord` has no attribute `aaaaaa`
+    x3: int = c[key]  # E: Invalid key for TypedDict `Coord`, got `str`
+    x4: int = c["aaaaaa"]  # E: TypedDict `Coord` does not have key `aaaaaa`
     "#,
 );
 
@@ -72,8 +87,8 @@ class Pair(TypedDict):
 
 def foo(a: Coord, b: Coord3D, c: Pair):
     coord: Coord = b
-    coord2: Coord3D = a  # E: EXPECTED Coord <: Coord3D
-    coord3: Coord = c  # E: Pair <: Coord
+    coord2: Coord3D = a  # E: EXPECTED TypedDict[Coord] <: TypedDict[Coord3D]
+    coord3: Coord = c  # E: TypedDict[Pair] <: TypedDict[Coord]
     coord4: Pair = a
     "#,
 );
@@ -90,7 +105,7 @@ class CoordNotRequired(TypedDict):
     y: NotRequired[int]
 
 def foo(a: Coord, b: CoordNotRequired):
-    coord: Coord = b  # E: EXPECTED CoordNotRequired <: Coord
-    coord2: CoordNotRequired = a  # E: EXPECTED Coord <: CoordNotRequired
+    coord: Coord = b  # E: EXPECTED TypedDict[CoordNotRequired] <: TypedDict[Coord]
+    coord2: CoordNotRequired = a  # E: EXPECTED TypedDict[Coord] <: TypedDict[CoordNotRequired]
     "#,
 );
