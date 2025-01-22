@@ -6,7 +6,6 @@
  */
 
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_typed_dict,
@@ -21,6 +20,21 @@ def foo(c: Coord) -> Mapping[str, object]:
 );
 
 testcase!(
+    test_typed_dict_readonly,
+    r#"
+from typing import TypedDict, ReadOnly
+class Coord(TypedDict):
+    x: int
+    y: ReadOnly[int]
+def foo(c: Coord) -> None:
+    c["x"] = 1
+    c["x"] = "foo"  # E: Expected int, got Literal['foo']
+    c["y"] = 3  # E: Key `y` in TypedDict `Coord` is read-only
+    c["z"] = 4  # E: TypedDict `Coord` does not have key `z`
+    "#,
+);
+
+testcase!(
     test_typed_dict_metaclass,
     r#"
 from enum import EnumMeta
@@ -31,8 +45,7 @@ class Coord(TypedDict, metaclass=EnumMeta):  # E: Typed dictionary definitions m
     "#,
 );
 
-testcase_with_bug!(
-    "Generic typed dicts are not supported yet",
+testcase!(
     test_typed_dict_generic,
     r#"
 from typing import TypedDict
@@ -40,8 +53,8 @@ class Coord[T](TypedDict):
     x: T
     y: T
 def foo(c: Coord[int]):
-    x: int = c["x"]  # E: `Coord[int]` has no attribute `__getitem__`
-    y: str = c["y"]  # E: `Coord[int]` has no attribute `__getitem__`
+    x: int = c["x"]
+    y: str = c["y"]  # E: EXPECTED int <: str
     "#,
 );
 
@@ -107,5 +120,44 @@ class CoordNotRequired(TypedDict):
 def foo(a: Coord, b: CoordNotRequired):
     coord: Coord = b  # E: EXPECTED TypedDict[CoordNotRequired] <: TypedDict[Coord]
     coord2: CoordNotRequired = a  # E: EXPECTED TypedDict[Coord] <: TypedDict[CoordNotRequired]
+    "#,
+);
+
+testcase!(
+    test_typed_dict_totality,
+    r#"
+from typing import TypedDict, NotRequired
+
+class CoordXY(TypedDict, total=True):
+    x: int
+    y: int
+class CoordZ(TypedDict, total=False):
+    z: int
+
+class Coord(CoordZ):
+    x: int
+    y: int
+class Coord2(CoordXY, total=False):
+    z: int
+class Coord3(TypedDict):
+    x: int
+    y: int
+    z: NotRequired[int]
+class Coord4(TypedDict, CoordXY, CoordZ):
+    pass
+
+def foo(a: Coord, b: Coord2, c: Coord3, d: Coord4):
+    coord: Coord = b
+    coord = c
+    coord = d
+    coord2: Coord2 = a
+    coord2 = c
+    coord2 = d
+    coord3: Coord3 = a
+    coord3 = b
+    coord3 = d
+    coord4: Coord4 = a
+    coord4 = b
+    coord4 = c
     "#,
 );

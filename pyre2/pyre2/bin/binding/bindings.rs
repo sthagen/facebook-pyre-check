@@ -19,6 +19,7 @@ use parse_display::Display;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::BoolOp;
 use ruff_python_ast::Comprehension;
+use ruff_python_ast::Decorator;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprBoolOp;
@@ -79,7 +80,9 @@ use crate::dunder;
 use crate::error::collector::ErrorCollector;
 use crate::export::definitions::DefinitionStyle;
 use crate::export::definitions::Definitions;
+use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
+use crate::export::special::SpecialExport;
 use crate::graph::index::Idx;
 use crate::graph::index::Index;
 use crate::graph::index_map::IndexMap;
@@ -138,7 +141,7 @@ impl Display for Bindings {
 
 struct BindingsBuilder<'a> {
     module_info: ModuleInfo,
-    modules: &'a dyn LookupExport,
+    lookup: &'a dyn LookupExport,
     config: &'a Config,
     errors: &'a ErrorCollector,
     uniques: &'a UniqueFactory,
@@ -186,7 +189,7 @@ impl Static {
         x: &[Stmt],
         module_info: &ModuleInfo,
         top_level: bool,
-        modules: &dyn LookupExport,
+        lookup: &dyn LookupExport,
         config: &Config,
     ) {
         let mut d = Definitions::new(x, module_info.name(), module_info.is_init(), config);
@@ -198,8 +201,8 @@ impl Static {
                 .uses_key_import = def.style == DefinitionStyle::ImportModule;
         }
         for (m, range) in d.import_all {
-            if let Ok(exports) = modules.get(m) {
-                for name in exports.wildcard(modules).iter() {
+            if let Ok(exports) = lookup.get(m) {
+                for name in exports.wildcard(lookup).iter() {
                     self.add_with_count(name.clone(), range, 1).uses_key_import = true;
                 }
             }
@@ -221,24 +224,53 @@ struct Flow {
 }
 
 #[derive(Debug, Clone)]
-struct FlowInfo {
-    key: Idx<Key>,
+enum FlowStyle {
     /// The annotation associated with this key, if any.
     /// If there is one, all subsequent bindings must obey this annotation.
-    ann: Option<Idx<KeyAnnotation>>,
-    /// Am I the result of an import (which needs merging)
-    is_import: bool,
-    /// Am I initialized, or am I the result of an annotation with no value like `x: int`?
-    is_initialized: bool,
+    /// Also store am I initialized, or am I the result of `x: int`?
+    Annotated {
+        ann: Idx<KeyAnnotation>,
+        is_initialized: bool,
+    },
+    /// Am I the result of an import (which needs merging).
+    /// E.g. `import foo.bar` and `import foo.baz` need merging.
+    MergeableImport,
+    /// Was I imported from somewhere (and if so, where)
+    Import(ModuleName),
+}
+
+#[derive(Debug, Clone)]
+struct FlowInfo {
+    key: Idx<Key>,
+    style: Option<FlowStyle>,
 }
 
 impl FlowInfo {
-    fn new(key: Idx<Key>, ann: Option<Idx<KeyAnnotation>>) -> Self {
-        Self {
+    fn new(key: Idx<Key>, style: Option<FlowStyle>) -> Self {
+        Self { key, style }
+    }
+
+    fn new_with_ann(key: Idx<Key>, ann: Option<Idx<KeyAnnotation>>) -> Self {
+        Self::new(
             key,
-            ann,
-            is_import: false,
-            is_initialized: true,
+            ann.map(|x| FlowStyle::Annotated {
+                ann: x,
+                is_initialized: true,
+            }),
+        )
+    }
+
+    fn ann(&self) -> Option<Idx<KeyAnnotation>> {
+        match self.style.as_ref()? {
+            FlowStyle::Annotated { ann, .. } => Some(*ann),
+            _ => None,
+        }
+    }
+
+    fn is_initialized(&self) -> bool {
+        match self.style.as_ref() {
+            Some(FlowStyle::Annotated { is_initialized, .. }) => *is_initialized,
+            _ => true,
         }
     }
 }
@@ -414,14 +446,15 @@ impl Bindings {
     pub fn new(
         x: Vec<Stmt>,
         module_info: ModuleInfo,
-        modules: &dyn LookupExport,
+        exports: Exports,
+        lookup: &dyn LookupExport,
         config: &Config,
         errors: &ErrorCollector,
         uniques: &UniqueFactory,
     ) -> Self {
         let mut builder = BindingsBuilder {
             module_info: module_info.dupe(),
-            modules,
+            lookup,
             config,
             errors,
             uniques,
@@ -434,7 +467,7 @@ impl Bindings {
             .scopes
             .last_mut()
             .stat
-            .stmts(&x, &module_info, true, modules, config);
+            .stmts(&x, &module_info, true, lookup, config);
         if module_info.name() != ModuleName::builtins() {
             builder.inject_builtins();
         }
@@ -446,10 +479,9 @@ impl Bindings {
             let val = match info {
                 Some(FlowInfo {
                     key,
-                    ann: Some(ann),
-                    ..
+                    style: Some(FlowStyle::Annotated { ann, .. }),
                 }) => Binding::AnnotatedType(*ann, Box::new(Binding::Forward(*key))),
-                Some(FlowInfo { key, ann: None, .. }) => Binding::Forward(*key),
+                Some(FlowInfo { key, .. }) => Binding::Forward(*key),
                 None => {
                     // We think we have a binding for this, but we didn't encounter a flow element, so have no idea of what.
                     // This might be because we haven't fully implemented all bindings, or because the two disagree. Just guess.
@@ -461,7 +493,9 @@ impl Bindings {
                     Binding::AnyType(AnyStyle::Error)
                 }
             };
-            builder.table.insert(KeyExport(k), val);
+            if exports.contains(&k, lookup) {
+                builder.table.insert(KeyExport(k), val);
+            }
         }
         Self(Arc::new(BindingsInner {
             module_info,
@@ -515,14 +549,14 @@ impl<'a> BindingsBuilder<'a> {
 
     fn inject_builtins(&mut self) {
         let builtins_module = ModuleName::builtins();
-        match self.modules.get(builtins_module) {
+        match self.lookup.get(builtins_module) {
             Ok(builtins_export) => {
-                for name in builtins_export.wildcard(self.modules).iter() {
+                for name in builtins_export.wildcard(self.lookup).iter() {
                     let key = Key::Import(name.clone(), TextRange::default());
                     let idx = self
                         .table
                         .insert(key, Binding::Import(builtins_module, name.clone()));
-                    self.bind_key(name, idx, None, false, true);
+                    self.bind_key(name, idx, Some(FlowStyle::Import(builtins_module)));
                 }
             }
             Err(err) => {
@@ -533,6 +567,36 @@ impl<'a> BindingsBuilder<'a> {
 
     fn todo(&mut self, msg: &str, x: impl Ranged + Debug) {
         self.errors.todo(&self.module_info, msg, x);
+    }
+
+    fn as_special_export(&self, name: &Name) -> Option<SpecialExport> {
+        let special = SpecialExport::new(name)?;
+        for scope in self.scopes.iter().rev() {
+            if let Some(flow) = scope.flow.info.get(name) {
+                match flow.style {
+                    Some(FlowStyle::Import(m)) if special.defined_in(m) => return Some(special),
+                    _ if special.defined_in(self.module_info.name()) => return Some(special),
+                    _ => return None,
+                }
+            }
+        }
+        None
+    }
+
+    fn is_annotated(&self, name: &Name) -> bool {
+        self.as_special_export(name) == Some(SpecialExport::Annotated)
+    }
+
+    fn is_type_var(&self, name: &Name) -> bool {
+        self.as_special_export(name) == Some(SpecialExport::TypeVar)
+    }
+
+    fn is_type_alias(&self, name: &Name) -> bool {
+        self.as_special_export(name) == Some(SpecialExport::TypeAlias)
+    }
+
+    fn is_literal(&self, name: &Name) -> bool {
+        self.as_special_export(name) == Some(SpecialExport::Literal)
     }
 
     fn error(&self, range: TextRange, msg: String) {
@@ -584,7 +648,7 @@ impl<'a> BindingsBuilder<'a> {
             Some(value) => {
                 self.table.insert(key, value);
             }
-            None if name.as_str() == "__file__" || name.as_str() == "__name__" => {
+            None if name.id == dunder::FILE || name.id == dunder::NAME => {
                 self.table.insert(key, Binding::StrType);
             }
             None => {
@@ -609,16 +673,12 @@ impl<'a> BindingsBuilder<'a> {
         if let Some(parameters) = &lambda.parameters {
             for x in parameters.iter() {
                 let name = x.name();
-                let ann_key = self.table.insert(
-                    KeyAnnotation::Annotation(ShortIdentifier::new(name)),
-                    BindingAnnotation::Type(Type::any_implicit()),
-                );
                 let bind_key = self.table.insert(
                     Key::Definition(ShortIdentifier::new(name)),
-                    Binding::AnnotatedType(ann_key, Box::new(Binding::AnyType(AnyStyle::Implicit))),
+                    Binding::AnyType(AnyStyle::Implicit),
                 );
                 self.scopes.last_mut().stat.add(name.id.clone(), name.range);
-                self.bind_key(&name.id, bind_key, Some(ann_key), false, true);
+                self.bind_key(&name.id, bind_key, None);
             }
         }
     }
@@ -633,11 +693,11 @@ impl<'a> BindingsBuilder<'a> {
         orelse: Option<&Expr>,
         range: TextRange,
     ) {
-        let if_branch = self.scopes.last().flow.clone();
+        let if_branch = mem::take(&mut self.scopes.last_mut().flow);
         self.scopes.last_mut().flow = base;
         self.bind_narrow_ops(&ops.negate(), range);
         self.ensure_expr_opt(orelse);
-        let else_branch = self.scopes.last().flow.clone();
+        let else_branch = mem::take(&mut self.scopes.last_mut().flow);
         self.scopes.last_mut().flow = self.merge_flow(vec![if_branch, else_branch], range, false);
     }
 
@@ -648,7 +708,7 @@ impl<'a> BindingsBuilder<'a> {
                 // Ternary operation. We treat it like an if/else statement.
                 let base = self.scopes.last().flow.clone();
                 self.ensure_expr(&x.test);
-                let narrow_ops = NarrowOps::from_expr(Some((*x.test).clone()));
+                let narrow_ops = NarrowOps::from_expr(Some(&x.test));
                 self.bind_narrow_ops(&narrow_ops, x.body.range());
                 self.ensure_expr(&x.body);
                 self.negate_and_merge_flow(base, &narrow_ops, Some(&x.orelse), x.range());
@@ -660,7 +720,7 @@ impl<'a> BindingsBuilder<'a> {
                 for value in values {
                     self.bind_narrow_ops(&narrow_ops, value.range());
                     self.ensure_expr(value);
-                    let new_narrow_ops = NarrowOps::from_expr(Some(value.clone()));
+                    let new_narrow_ops = NarrowOps::from_expr(Some(value));
                     match op {
                         BoolOp::And => {
                             // Every subsequent value is evaluated only if all previous values were truthy.
@@ -727,21 +787,20 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     /// Execute through the expr, ensuring every name has a binding.
-    fn ensure_type(
-        &mut self,
-        x: &mut Expr,
-        forward_lookup: &mut impl FnMut(&mut Self, &Identifier) -> Option<Binding>,
-    ) {
+    fn ensure_type(&mut self, x: &mut Expr, tparams_builder: &mut Option<LegacyTParamBuilder>) {
         match x {
             Expr::Name(x) => {
                 let name = Ast::expr_name_identifier(x.clone());
-                let binding = forward_lookup(self, &name);
+                let binding = match tparams_builder {
+                    Some(legacy) => legacy.forward_lookup(self, &name),
+                    None => self.forward_lookup(&name),
+                };
                 self.ensure_name(&name, binding);
             }
             Expr::Subscript(ExprSubscript {
                 value: box Expr::Name(name),
                 ..
-            }) if name.id == "Literal" => {
+            }) if self.is_literal(&name.id) => {
                 // Don't go inside a literal, since you might find strings which are really strings, not string-types
                 self.ensure_expr(x);
             }
@@ -749,10 +808,10 @@ impl<'a> BindingsBuilder<'a> {
                 value: box Expr::Name(name),
                 slice: box Expr::Tuple(tup),
                 ..
-            }) if name.id == "Annotated" && !tup.is_empty() => {
+            }) if self.is_annotated(&name.id) && !tup.is_empty() => {
                 // Only go inside the first argument to Annotated, the rest are non-type metadata.
-                self.ensure_type(&mut Expr::Name(name.clone()), forward_lookup);
-                self.ensure_type(&mut tup.elts[0], forward_lookup);
+                self.ensure_type(&mut Expr::Name(name.clone()), tparams_builder);
+                self.ensure_type(&mut tup.elts[0], tparams_builder);
                 for e in tup.elts[1..].iter_mut() {
                     self.ensure_expr(e);
                 }
@@ -775,7 +834,7 @@ impl<'a> BindingsBuilder<'a> {
                     }
                 }
             }
-            _ => Visitors::visit_expr_mut(x, |x| self.ensure_type(x, forward_lookup)),
+            _ => Visitors::visit_expr_mut(x, |x| self.ensure_type(x, tparams_builder)),
         }
     }
 
@@ -783,10 +842,10 @@ impl<'a> BindingsBuilder<'a> {
     fn ensure_type_opt(
         &mut self,
         x: Option<&mut Expr>,
-        forward_lookup: &mut impl FnMut(&mut Self, &Identifier) -> Option<Binding>,
+        tparams_builder: &mut Option<LegacyTParamBuilder>,
     ) {
         if let Some(x) = x {
-            self.ensure_type(x, forward_lookup);
+            self.ensure_type(x, tparams_builder);
         }
     }
 
@@ -794,13 +853,12 @@ impl<'a> BindingsBuilder<'a> {
         &mut self,
         name: &Identifier,
         binding: Binding,
-        annotation: Option<Idx<KeyAnnotation>>,
-        is_initialized: bool,
+        style: Option<FlowStyle>,
     ) -> Idx<Key> {
         let idx = self
             .table
             .insert(Key::Definition(ShortIdentifier::new(name)), binding);
-        self.bind_key(&name.id, idx, annotation, false, is_initialized);
+        self.bind_key(&name.id, idx, style);
         idx
     }
 
@@ -892,7 +950,7 @@ impl<'a> BindingsBuilder<'a> {
             Expr::Name(name) => {
                 let key = Key::Definition(ShortIdentifier::expr_name(name));
                 let idx = self.table.types.0.insert(key);
-                let ann = self.bind_key(&name.id, idx, None, false, true);
+                let ann = self.bind_key(&name.id, idx, None);
                 self.table.types.1.insert(idx, make_binding(ann));
             }
             Expr::Attribute(x) => {
@@ -925,31 +983,21 @@ impl<'a> BindingsBuilder<'a> {
         &mut self,
         name: &Name,
         key: Idx<Key>,
-        annotation: Option<Idx<KeyAnnotation>>,
-        is_import: bool,
-        is_initialized: bool,
+        style: Option<FlowStyle>,
     ) -> Option<Idx<KeyAnnotation>> {
         match self.scopes.last_mut().flow.info.entry(name.clone()) {
             Entry::Occupied(mut e) => {
                 // if there was a previous annotation, reuse that
-                let annotation = annotation.or_else(|| e.get().ann);
-                *e.get_mut() = FlowInfo {
-                    key,
-                    ann: annotation,
-                    is_import,
-                    is_initialized,
-                };
-                annotation
-            }
-            Entry::Vacant(e) => {
-                e.insert(FlowInfo {
-                    key,
-                    ann: annotation,
-                    is_import,
-                    is_initialized,
+                let style = style.or_else(|| {
+                    e.get().ann().map(|ann| FlowStyle::Annotated {
+                        ann,
+                        is_initialized: true,
+                    })
                 });
-                annotation
+                *e.get_mut() = FlowInfo { key, style };
+                e.get().ann()
             }
+            Entry::Vacant(e) => e.insert(FlowInfo { key, style }).ann(),
         }
     }
 
@@ -958,11 +1006,9 @@ impl<'a> BindingsBuilder<'a> {
         &mut self,
         name: &Name,
         key: Idx<Key>,
-        annotation: Option<Idx<KeyAnnotation>>,
-        is_import: bool,
-        is_initialized: bool,
+        style: Option<FlowStyle>,
     ) -> Option<Idx<KeyAnnotation>> {
-        let annotation = self.update_flow_info(name, key, annotation, is_import, is_initialized);
+        let annotation = self.update_flow_info(name, key, style);
         let info = self.scopes.last().stat.0.get(name).unwrap_or_else(|| {
             let module = self.module_info.name();
             panic!("Name `{name}` not found in static scope of module `{module}`")
@@ -982,7 +1028,7 @@ impl<'a> BindingsBuilder<'a> {
             let q = match x {
                 TypeParam::TypeVar(x) => {
                     if let Some(bound) = &mut x.bound {
-                        self.ensure_type(bound, &mut BindingsBuilder::forward_lookup);
+                        self.ensure_type(bound, &mut None);
                     }
                     Quantified::type_var(self.uniques)
                 }
@@ -992,7 +1038,7 @@ impl<'a> BindingsBuilder<'a> {
             qs.push(q);
             let name = x.name();
             self.scopes.last_mut().stat.add(name.id.clone(), name.range);
-            self.bind_definition(name, Binding::TypeParameter(q), None, true);
+            self.bind_definition(name, Binding::TypeParameter(q), None);
         }
         qs
     }
@@ -1025,7 +1071,14 @@ impl<'a> BindingsBuilder<'a> {
                 Binding::AnnotatedType(ann_key, Box::new(Binding::AnyType(AnyStyle::Implicit))),
             );
             self.scopes.last_mut().stat.add(name.id.clone(), name.range);
-            self.bind_key(&name.id, bind_key, Some(ann_key), false, true);
+            self.bind_key(
+                &name.id,
+                bind_key,
+                Some(FlowStyle::Annotated {
+                    ann: ann_key,
+                    is_initialized: true,
+                }),
+            );
         }
         if let Scope {
             kind: ScopeKind::Method(method),
@@ -1033,6 +1086,23 @@ impl<'a> BindingsBuilder<'a> {
         } = self.scopes.last_mut()
         {
             method.self_name = self_name;
+        }
+    }
+
+    fn decorators(
+        &mut self,
+        name: &Name,
+        mut current_name_key: Idx<Key>,
+        decorators: Vec<Decorator>,
+    ) {
+        // Handle decorators, which re-bind the name from the definition.
+        for decorator in decorators.into_iter().rev() {
+            self.ensure_expr(&decorator.expression);
+            current_name_key = self.table.insert(
+                Key::DecoratorApplication(decorator.range),
+                Binding::DecoratorApplication(Box::new(decorator), current_name_key),
+            );
+            self.bind_key(name, current_name_key, None);
         }
     }
 
@@ -1074,23 +1144,19 @@ impl<'a> BindingsBuilder<'a> {
             .as_mut()
             .map(|tparams| self.type_params(tparams));
 
-        let mut legacy_tparam_builder = LegacyTParamBuilder::new(tparams.is_some());
+        let mut legacy = Some(LegacyTParamBuilder::new(tparams.is_some()));
 
         // We need to bind all the parameters expressions _after_ the type params, but before the parameter names,
         // which might shadow some types.
         for (param, default) in Ast::parameters_iter_mut(&mut x.parameters) {
-            self.ensure_type_opt(param.annotation.as_deref_mut(), &mut |lookup_name, name| {
-                legacy_tparam_builder.forward_lookup(lookup_name, name)
-            });
+            self.ensure_type_opt(param.annotation.as_deref_mut(), &mut legacy);
             if let Some(default) = default {
                 self.ensure_expr_opt(default.as_deref());
             }
         }
-        self.ensure_type_opt(
-            return_annotation.as_deref_mut(),
-            &mut |lookup_name, name| legacy_tparam_builder.forward_lookup(lookup_name, name),
-        );
+        self.ensure_type_opt(return_annotation.as_deref_mut(), &mut legacy);
 
+        let legacy_tparam_builder = legacy.unwrap();
         legacy_tparam_builder.add_name_definitions(self);
 
         if self_type.is_none() {
@@ -1115,25 +1181,24 @@ impl<'a> BindingsBuilder<'a> {
             &body,
             &self.module_info,
             false,
-            self.modules,
+            self.lookup,
             self.config,
         );
         self.stmts(body);
         let func_scope = self.scopes.pop().unwrap();
         self.scopes.pop().unwrap();
 
-        if let ScopeKind::Method(method) = &func_scope.kind
+        if let ScopeKind::Method(method) = func_scope.kind
             && let ScopeKind::ClassBody(body) = &mut self.scopes.last_mut().kind
         {
             body.instance_attributes_by_method
-                .insert(method.name.id.clone(), method.instance_attributes.clone());
+                .insert(method.name.id, method.instance_attributes);
         }
 
-        let mut current_name_key = self.bind_definition(
+        let current_name_key = self.bind_definition(
             &func_name,
             Binding::Function(Box::new(x), kind, legacy_tparams.into_boxed_slice()),
             None,
-            true,
         );
 
         let mut return_exprs = Vec::new();
@@ -1168,15 +1233,23 @@ impl<'a> BindingsBuilder<'a> {
                 let key = self.table.insert(
                     Key::YieldTypeOfYield(ShortIdentifier::new(&func_name), x.range()),
                     // collect the value of the yield expression.
-                    Binding::Expr(None, yield_expr(x)),
+                    Binding::Expr(None, yield_expr(x.clone())),
                 );
                 yield_expr_keys.insert(key);
+
+                self.table.insert(
+                    Key::SendTypeOfYield(x.range()),
+                    // collect the value of the yield expression.
+                    Binding::SendTypeOfYield(ShortIdentifier::new(&func_name)),
+                );
             }
             let yield_type = Binding::phi(yield_expr_keys);
             self.table.insert(
                 Key::YieldTypeOfGenerator(ShortIdentifier::new(&func_name)),
-                yield_type,
+                yield_type.clone(),
             );
+            // combine the original (syntactic) return type and the yield type to analyze later and obtain the final return type.
+            return_type = Binding::Generator(Box::new(yield_type), Box::new(return_type));
         }
         if let Some(ann) = return_ann {
             return_type = Binding::AnnotatedType(ann, Box::new(return_type));
@@ -1185,20 +1258,12 @@ impl<'a> BindingsBuilder<'a> {
             Key::ReturnType(ShortIdentifier::new(&func_name)),
             return_type,
         );
-
-        // Handle decorators, which re-bind the name from the definition.
-        for decorator in decorators.into_iter().rev() {
-            self.ensure_expr(&decorator.expression);
-            current_name_key = self.table.insert(
-                Key::DecoratorApplication(decorator.range),
-                Binding::DecoratorApplication(Box::new(decorator), current_name_key),
-            );
-            self.bind_key(&func_name.id, current_name_key, None, true, true);
-        }
+        self.decorators(&func_name.id, current_name_key, decorators);
     }
 
     fn class_def(&mut self, mut x: StmtClassDef) {
         let body = mem::take(&mut x.body);
+        let decorators = mem::take(&mut x.decorator_list);
 
         self.scopes.push(Scope::class_body(x.name.clone()));
 
@@ -1212,7 +1277,7 @@ impl<'a> BindingsBuilder<'a> {
             self.type_params(x);
         });
 
-        let mut legacy_tparam_builder = LegacyTParamBuilder::new(x.type_params.is_some());
+        let mut legacy = Some(LegacyTParamBuilder::new(x.type_params.is_some()));
         let bases = x.bases().map(|base| {
             let mut base = base.clone();
             // Forward refs are fine *inside* of a base expression in the type arguments,
@@ -1229,9 +1294,7 @@ impl<'a> BindingsBuilder<'a> {
                 }
                 _ => {}
             }
-            self.ensure_type(&mut base, &mut |lookup_name, name| {
-                legacy_tparam_builder.forward_lookup(lookup_name, name)
-            });
+            self.ensure_type(&mut base, &mut legacy);
             base
         });
 
@@ -1256,16 +1319,23 @@ impl<'a> BindingsBuilder<'a> {
             BindingClassMetadata(definition_key, bases.clone(), keywords),
         );
 
+        let legacy_tparam_builder = legacy.unwrap();
         legacy_tparam_builder.add_name_definitions(self);
 
-        let cur_scope = self.scopes.last().clone();
-        let non_field_names = cur_scope.flow.info.keys().collect::<SmallSet<_>>();
+        let non_field_names = self
+            .scopes
+            .last()
+            .flow
+            .info
+            .keys()
+            .cloned()
+            .collect::<SmallSet<_>>();
 
         self.scopes.last_mut().stat.stmts(
             &body,
             &self.module_info,
             false,
-            self.modules,
+            self.lookup,
             self.config,
         );
         self.stmts(body);
@@ -1285,7 +1355,7 @@ impl<'a> BindingsBuilder<'a> {
                         .0
                         .insert(Key::Anywhere(name.clone(), stat_info.loc)),
                 );
-                let initialization = if info.is_initialized {
+                let initialization = if info.is_initialized() {
                     ClassFieldInitialization::Class
                 } else {
                     ClassFieldInitialization::Instance
@@ -1294,7 +1364,7 @@ impl<'a> BindingsBuilder<'a> {
                     class: definition_key,
                     name: name.clone(),
                     value: flow_type,
-                    annotation: info.ann.dupe(),
+                    annotation: info.ann(),
                     range: stat_info.loc,
                     initialization,
                 };
@@ -1336,16 +1406,17 @@ impl<'a> BindingsBuilder<'a> {
 
         let legacy_tparams = legacy_tparam_builder.lookup_keys(self);
 
-        self.bind_definition(
-            &x.name.clone(),
+        let name = x.name.clone();
+        let current_name_key = self.bind_definition(
+            &name,
             Binding::ClassDef(
                 Box::new((x, fields)),
                 bases.into_boxed_slice(),
                 legacy_tparams.into_boxed_slice(),
             ),
             None,
-            true,
         );
+        self.decorators(&name.id, current_name_key, decorators);
     }
 
     fn add_loop_exitpoint(&mut self, exit: LoopExit, range: TextRange) {
@@ -1399,7 +1470,7 @@ impl<'a> BindingsBuilder<'a> {
                 // If there's no name for this pattern, refine the variable being matched
                 // If there is a new name, refine that instead
                 let new_subject_name = if let Some(name) = &p.name {
-                    self.bind_definition(name, Binding::Forward(key), None, true);
+                    self.bind_definition(name, Binding::Forward(key), None);
                     Some(&name.id)
                 } else {
                     subject_name
@@ -1427,7 +1498,6 @@ impl<'a> BindingsBuilder<'a> {
                                         position,
                                     ),
                                     None,
-                                    true,
                                 );
                             }
                             unbounded = true;
@@ -1474,7 +1544,7 @@ impl<'a> BindingsBuilder<'a> {
                         narrow_ops.and_all(self.bind_pattern(None, pattern, mapping_key))
                     });
                 if let Some(rest) = x.rest {
-                    self.bind_definition(&rest, Binding::Forward(key), None, true);
+                    self.bind_definition(&rest, Binding::Forward(key), None);
                 }
                 narrow_ops
             }
@@ -1551,7 +1621,8 @@ impl<'a> BindingsBuilder<'a> {
         for x in &x.names {
             if &x.name != "*" {
                 let asname = x.asname.as_ref().unwrap_or(&x.name);
-                self.bind_definition(asname, Binding::AnyType(AnyStyle::Error), None, true);
+                // We pass None as imported_from, since we are really faking up a local error definition
+                self.bind_definition(asname, Binding::AnyType(AnyStyle::Error), None);
             }
         }
     }
@@ -1563,7 +1634,7 @@ impl<'a> BindingsBuilder<'a> {
                     Key::Narrow(name.clone(), *op_range, use_range),
                     Binding::Narrow(name_key, op.clone()),
                 );
-                self.update_flow_info(name, binding_key, None, false, true);
+                self.update_flow_info(name, binding_key, None);
             }
         }
     }
@@ -1595,21 +1666,18 @@ impl<'a> BindingsBuilder<'a> {
                         range: _,
                         func: box Expr::Name(type_var),
                         arguments,
-                    }) if type_var.id == "TypeVar" && !arguments.is_empty() => {
+                    }) if self.is_type_var(&type_var.id) && !arguments.is_empty() => {
                         self.ensure_expr(&Expr::Name(type_var.clone()));
                         // The constraints (i.e., any positional arguments after the first)
                         // and some keyword arguments are types.
                         for arg in arguments.args.iter_mut().skip(1) {
-                            self.ensure_type(arg, &mut BindingsBuilder::forward_lookup);
+                            self.ensure_type(arg, &mut None);
                         }
                         for kw in arguments.keywords.iter_mut() {
                             if let Some(id) = &kw.arg
                                 && (id.id == "bound" || id.id == "default")
                             {
-                                self.ensure_type(
-                                    &mut kw.value,
-                                    &mut BindingsBuilder::forward_lookup,
-                                );
+                                self.ensure_type(&mut kw.value, &mut None);
                             } else {
                                 self.ensure_expr(&kw.value);
                             }
@@ -1619,11 +1687,10 @@ impl<'a> BindingsBuilder<'a> {
                 }
                 for target in x.targets {
                     let make_binding = |k: Option<Idx<KeyAnnotation>>| {
-                        let b = Binding::Expr(k, value.clone());
                         if let Some(name) = &name {
-                            Binding::NameAssign(name.clone(), k, Box::new(b), value.range())
+                            Binding::NameAssign(name.clone(), k, Box::new(value.clone()))
                         } else {
-                            b
+                            Binding::Expr(k, value.clone())
                         }
                     };
                     self.bind_target(&target, &make_binding);
@@ -1640,7 +1707,7 @@ impl<'a> BindingsBuilder<'a> {
                 Expr::Name(name) => {
                     let name = Ast::expr_name_identifier(name);
                     let ann_key = KeyAnnotation::Annotation(ShortIdentifier::new(&name));
-                    self.ensure_type(&mut x.annotation, &mut BindingsBuilder::forward_lookup);
+                    self.ensure_type(&mut x.annotation, &mut None);
                     let ann_val = if let Some(special) = SpecialForm::new(&name.id, &x.annotation) {
                         BindingAnnotation::Type(special.to_type())
                     } else {
@@ -1664,30 +1731,31 @@ impl<'a> BindingsBuilder<'a> {
                     let binding = if let Some(mut value) = value {
                         // Handle forward references in explicit type aliases.
                         if let Expr::Name(name) = *x.annotation
-                            && name.id == "TypeAlias"
+                            && self.is_type_alias(&name.id)
                         {
-                            self.ensure_type(&mut value, &mut BindingsBuilder::forward_lookup);
+                            self.ensure_type(&mut value, &mut None);
                         } else {
                             self.ensure_expr(&value);
                         }
-                        let range = value.range();
-                        Binding::NameAssign(
-                            name.id.clone(),
-                            Some(ann_key),
-                            Box::new(Binding::Expr(Some(ann_key), *value)),
-                            range,
-                        )
+                        Binding::NameAssign(name.id.clone(), Some(ann_key), value)
                     } else {
                         Binding::AnnotatedType(
                             ann_key,
                             Box::new(Binding::AnyType(AnyStyle::Implicit)),
                         )
                     };
-                    self.bind_definition(&name, binding, Some(ann_key), is_initialized);
+                    self.bind_definition(
+                        &name,
+                        binding,
+                        Some(FlowStyle::Annotated {
+                            ann: ann_key,
+                            is_initialized,
+                        }),
+                    );
                 }
                 Expr::Attribute(attr) => {
                     self.ensure_expr(&attr.value);
-                    self.ensure_type(&mut x.annotation, &mut BindingsBuilder::forward_lookup);
+                    self.ensure_type(&mut x.annotation, &mut None);
                     // This is the type of the attribute.
                     let attr_key = self.table.insert(
                         KeyAnnotation::AttrAnnotation(attr.range),
@@ -1731,15 +1799,9 @@ impl<'a> BindingsBuilder<'a> {
                     if let Some(params) = &mut x.type_params {
                         self.type_params(params);
                     }
-                    self.ensure_type(&mut x.value, &mut BindingsBuilder::forward_lookup);
-                    let expr_binding = Binding::Expr(None, *x.value);
-                    let binding = Binding::ScopedTypeAlias(
-                        name.id.clone(),
-                        x.type_params.map(Box::new),
-                        Box::new(expr_binding),
-                        x.range,
-                    );
-                    self.bind_definition(&Ast::expr_name_identifier(name), binding, None, true);
+                    self.ensure_type(&mut x.value, &mut None);
+                    let binding = Binding::ScopedTypeAlias(name.id.clone(), x.type_params, x.value);
+                    self.bind_definition(&Ast::expr_name_identifier(name), binding, None);
                 } else {
                     self.todo("Bindings::stmt TypeAlias", &x);
                 }
@@ -1754,7 +1816,7 @@ impl<'a> BindingsBuilder<'a> {
                 self.teardown_loop(x.range, &NarrowOps::new(), x.orelse);
             }
             Stmt::While(x) => {
-                let narrow_ops = NarrowOps::from_expr(Some(*x.test.clone()));
+                let narrow_ops = NarrowOps::from_expr(Some(&x.test));
                 self.setup_loop(x.range, &narrow_ops);
                 self.ensure_expr(&x.test);
                 self.table
@@ -1780,12 +1842,12 @@ impl<'a> BindingsBuilder<'a> {
                         continue; // We won't pick this branch
                     }
                     let mut base = self.scopes.last().flow.clone();
-                    if let Some(e) = test.as_ref() {
-                        self.ensure_expr(e);
+                    let new_narrow_ops = NarrowOps::from_expr(test.as_ref());
+                    if let Some(e) = test {
+                        self.ensure_expr(&e);
                         self.table
-                            .insert(Key::Anon(e.range()), Binding::Expr(None, e.clone()));
+                            .insert(Key::Anon(e.range()), Binding::Expr(None, e));
                     }
-                    let new_narrow_ops = NarrowOps::from_expr(test);
                     if let Some(stmt) = body.first() {
                         let use_range = stmt.range();
                         self.bind_narrow_ops(&negated_prev_ops, use_range);
@@ -1801,7 +1863,7 @@ impl<'a> BindingsBuilder<'a> {
                     }
                 }
                 if !exhaustive {
-                    branches.push(self.scopes.last().flow.clone());
+                    branches.push(mem::take(&mut self.scopes.last_mut().flow));
                 }
                 self.scopes.last_mut().flow = self.merge_flow(branches, range, false);
             }
@@ -1831,13 +1893,13 @@ impl<'a> BindingsBuilder<'a> {
             Stmt::Match(x) => {
                 self.ensure_expr(&x.subject);
                 let subject_name = if let Expr::Name(ref name) = *x.subject {
-                    Some(&name.id)
+                    Some(name.id.clone())
                 } else {
                     None
                 };
                 let key = self.table.insert(
                     Key::Anon(x.subject.range()),
-                    Binding::Expr(None, *x.subject.clone()),
+                    Binding::Expr(None, *x.subject),
                 );
                 let mut exhaustive = false;
                 let range = x.range;
@@ -1856,7 +1918,8 @@ impl<'a> BindingsBuilder<'a> {
                     if case.pattern.is_wildcard() || case.pattern.is_irrefutable() {
                         exhaustive = true;
                     }
-                    let new_narrow_ops = self.bind_pattern(subject_name, case.pattern, key);
+                    let new_narrow_ops =
+                        self.bind_pattern(subject_name.as_ref(), case.pattern, key);
                     self.bind_narrow_ops(&negated_prev_ops, case.range);
                     self.bind_narrow_ops(&new_narrow_ops, case.range);
                     negated_prev_ops.and_all(new_narrow_ops.negate());
@@ -1873,7 +1936,7 @@ impl<'a> BindingsBuilder<'a> {
                     }
                 }
                 if !exhaustive {
-                    branches.push(self.scopes.last().flow.clone());
+                    branches.push(mem::take(&mut self.scopes.last_mut().flow));
                 }
                 self.scopes.last_mut().flow = self.merge_flow(branches, range, false);
             }
@@ -1920,7 +1983,6 @@ impl<'a> BindingsBuilder<'a> {
                             &name,
                             Binding::ExceptionHandler(type_, x.is_star),
                             None,
-                            true,
                         );
                     } else if let Some(type_) = h.type_ {
                         self.ensure_expr(&type_);
@@ -1939,7 +2001,7 @@ impl<'a> BindingsBuilder<'a> {
             }
             Stmt::Assert(x) => {
                 self.ensure_expr(&x.test);
-                self.bind_narrow_ops(&NarrowOps::from_expr(Some(*x.test.clone())), x.range);
+                self.bind_narrow_ops(&NarrowOps::from_expr(Some(&x.test)), x.range);
                 self.table
                     .insert(Key::Anon(x.test.range()), Binding::Expr(None, *x.test));
                 if let Some(msg_expr) = x.msg {
@@ -1951,7 +2013,7 @@ impl<'a> BindingsBuilder<'a> {
             Stmt::Import(x) => {
                 for x in x.names {
                     let m = ModuleName::from_name(&x.name.id);
-                    if let Err(err) = self.modules.get(m) {
+                    if let Err(err) = self.lookup.get(m) {
                         self.error(x.range, Arc::unwrap_or_clone(err));
                     }
                     match x.asname {
@@ -1960,21 +2022,27 @@ impl<'a> BindingsBuilder<'a> {
                                 &asname,
                                 Binding::Module(m, m.components(), None),
                                 None,
-                                true,
                             );
                         }
                         None => {
                             let first = m.first_component();
                             let flow_info = self.scopes.last().flow.info.get(&first);
                             let module_key = match flow_info {
-                                Some(flow_info) if flow_info.is_import => Some(flow_info.key),
+                                Some(flow_info)
+                                    if matches!(
+                                        flow_info.style,
+                                        Some(FlowStyle::MergeableImport)
+                                    ) =>
+                                {
+                                    Some(flow_info.key)
+                                }
                                 _ => None,
                             };
                             let key = self.table.insert(
                                 Key::Import(first.clone(), x.name.range),
                                 Binding::Module(m, vec![first.clone()], module_key),
                             );
-                            self.bind_key(&first, key, None, true, true);
+                            self.bind_key(&first, key, Some(FlowStyle::MergeableImport));
                         }
                     }
                 }
@@ -1985,13 +2053,13 @@ impl<'a> BindingsBuilder<'a> {
                     x.level,
                     x.module.as_ref().map(|x| &x.id),
                 ) {
-                    match self.modules.get(m) {
+                    match self.lookup.get(m) {
                         Ok(module_exports) => {
                             for x in x.names {
                                 if &x.name == "*" {
-                                    for name in module_exports.wildcard(self.modules).iter() {
+                                    for name in module_exports.wildcard(self.lookup).iter() {
                                         let key = Key::Import(name.clone(), x.range);
-                                        let val = if module_exports.contains(name, self.modules) {
+                                        let val = if module_exports.contains(name, self.lookup) {
                                             Binding::Import(m, name.clone())
                                         } else {
                                             self.error(
@@ -2001,11 +2069,11 @@ impl<'a> BindingsBuilder<'a> {
                                             Binding::AnyType(AnyStyle::Error)
                                         };
                                         let key = self.table.insert(key, val);
-                                        self.bind_key(name, key, None, false, true);
+                                        self.bind_key(name, key, Some(FlowStyle::Import(m)));
                                     }
                                 } else {
                                     let asname = x.asname.unwrap_or_else(|| x.name.clone());
-                                    let val = if module_exports.contains(&x.name.id, self.modules) {
+                                    let val = if module_exports.contains(&x.name.id, self.lookup) {
                                         Binding::Import(m, x.name.id)
                                     } else {
                                         self.error(
@@ -2014,7 +2082,7 @@ impl<'a> BindingsBuilder<'a> {
                                         );
                                         Binding::AnyType(AnyStyle::Error)
                                     };
-                                    self.bind_definition(&asname, val, None, true);
+                                    self.bind_definition(&asname, val, Some(FlowStyle::Import(m)));
                                 }
                             }
                         }
@@ -2057,7 +2125,7 @@ impl<'a> BindingsBuilder<'a> {
         let items = x
             .info
             .iter_hashed()
-            .map(|x| (x.0.cloned(), x.1.ann))
+            .map(|x| (x.0.cloned(), x.1.ann()))
             .collect::<SmallSet<_>>();
         let mut res = SmallMap::with_capacity(items.len());
         for (name, ann) in items.into_iter() {
@@ -2066,7 +2134,7 @@ impl<'a> BindingsBuilder<'a> {
                 .types
                 .0
                 .insert(Key::Phi(name.key().clone(), range));
-            res.insert_hashed(name, FlowInfo::new(key, ann));
+            res.insert_hashed(name, FlowInfo::new_with_ann(key, ann));
         }
         Flow {
             info: res,
@@ -2075,7 +2143,7 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     fn setup_loop(&mut self, range: TextRange, narrow_ops: &NarrowOps) {
-        let base = self.scopes.last().flow.clone();
+        let base = mem::take(&mut self.scopes.last_mut().flow);
         // To account for possible assignments to existing names in a loop, we
         // speculatively insert phi keys upfront.
         self.scopes.last_mut().flow = self.insert_phi_keys(base.clone(), range);
@@ -2135,7 +2203,7 @@ impl<'a> BindingsBuilder<'a> {
                 SmallSet<Option<Idx<KeyAnnotation>>>,
             ) = visible_branches
                 .iter()
-                .flat_map(|x| x.info.get(name.key()).cloned().map(|x| (x.key, x.ann)))
+                .flat_map(|x| x.info.get(name.key()).cloned().map(|x| (x.key, x.ann())))
                 .unzip();
             let mut anns = unordered_anns
                 .into_iter()
@@ -2165,7 +2233,7 @@ impl<'a> BindingsBuilder<'a> {
             let key = self
                 .table
                 .insert(Key::Phi(name.key().clone(), range), Binding::phi(values));
-            res.insert_hashed(name, FlowInfo::new(key, ann.map(|x| x.0)));
+            res.insert_hashed(name, FlowInfo::new_with_ann(key, ann.map(|x| x.0)));
         }
         Flow {
             info: res,
@@ -2174,7 +2242,7 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     fn merge_loop_into_current(&mut self, mut branches: Vec<Flow>, range: TextRange) {
-        branches.push(self.scopes.last().flow.clone());
+        branches.push(mem::take(&mut self.scopes.last_mut().flow));
         self.scopes.last_mut().flow = self.merge_flow(branches, range, true);
     }
 }
@@ -2261,7 +2329,6 @@ impl LegacyTParamBuilder {
                     // the binding created by `forward_lookup`).
                     Binding::CheckLegacyTypeParam(key, None),
                     None,
-                    true,
                 );
             }
         }

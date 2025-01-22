@@ -101,6 +101,8 @@ pub enum Key {
     DecoratorApplication(TextRange),
     /// I am the self type for a particular class.
     SelfType(ShortIdentifier),
+    /// The send type of a yield expression.
+    SendTypeOfYield(TextRange),
     /// The type at a specific return point.
     ReturnExpression(ShortIdentifier, TextRange),
     /// The type yielded inside of a specific yield expression inside a function.
@@ -139,6 +141,7 @@ impl Ranged for Key {
             Self::Definition(x) => x.range(),
             Self::DecoratorApplication(r) => r.range(),
             Self::SelfType(x) => x.range(),
+            Self::SendTypeOfYield(x) => x.range(),
             Self::ReturnExpression(_, r) => *r,
             Self::YieldTypeOfYield(_, r) => *r,
             Self::YieldTypeOfGenerator(x) => x.range(),
@@ -160,6 +163,9 @@ impl DisplayWith<ModuleInfo> for Key {
             Self::Definition(x) => write!(f, "{} {:?}", ctx.display(x), x.range()),
             Self::DecoratorApplication(r) => write!(f, "decorator {:?}", r),
             Self::SelfType(x) => write!(f, "self {} {:?}", ctx.display(x), x.range()),
+            Self::SendTypeOfYield(x) => {
+                write!(f, "send type of yield {} {:?}", ctx.display(x), x.range())
+            }
             Self::Usage(x) => write!(f, "use {} {:?}", ctx.display(x), x.range()),
             Self::Anon(r) => write!(f, "anon {r:?}"),
             Self::Expect(r) => write!(f, "expect {r:?}"),
@@ -334,9 +340,14 @@ pub enum Binding {
     /// The Key must be a type of types, e.g. `Type::Type`.
     Expr(Option<Idx<KeyAnnotation>>, Expr),
     /// An expression returned from a function.
+    /// The `bool` is whether the function has `yield` within it.
     ReturnExpr(Option<Idx<KeyAnnotation>>, Expr, bool),
+    /// An expression returned from a function.
+    SendTypeOfYield(ShortIdentifier),
     /// A decorator application: the Key is the entity being decorated.
     DecoratorApplication(Box<Decorator>, Idx<Key>),
+    /// A grouping of both the yield expression types and the return type.
+    Generator(Box<Binding>, Box<Binding>),
     /// A value in an iterable expression, e.g. IterableValue(\[1\]) represents 1.
     IterableValue(Option<Idx<KeyAnnotation>>, Expr),
     /// A value produced by entering a context manager.
@@ -392,8 +403,6 @@ pub enum Binding {
     /// An import of a module.
     /// Also contains the path along the module to bind, and optionally a key
     /// with the previous import to this binding (in which case merge the modules).
-    /// FIXME: Once we fix on alt, we the Module type will be ModuleName+Vec<Name>,
-    /// so people using the None option will be able to use Self::Type instead.
     Module(ModuleName, Vec<Name>, Option<Idx<Key>>),
     /// An exception and its cause from a raise statement.
     CheckRaisedException(RaisedException),
@@ -407,11 +416,10 @@ pub enum Binding {
     CheckLegacyTypeParam(Idx<KeyLegacyTypeParam>, Option<TextRange>),
     /// An expectation that the types are identical, with an associated name for error messages.
     Eq(Idx<KeyAnnotation>, Idx<KeyAnnotation>, Name),
-    /// An assignment to a name. The text range is the range of the RHS, and is used so that we
-    /// can error on bad type forms in type aliases.
-    NameAssign(Name, Option<Idx<KeyAnnotation>>, Box<Binding>, TextRange),
+    /// An assignment to a name.
+    NameAssign(Name, Option<Idx<KeyAnnotation>>, Box<Expr>),
     /// A type alias declared with the `type` soft keyword
-    ScopedTypeAlias(Name, Option<Box<TypeParams>>, Box<Binding>, TextRange),
+    ScopedTypeAlias(Name, Option<TypeParams>, Box<Expr>),
     /// An entry in a MatchMapping. The Key looks up the value being matched, the Expr is the key we're extracting.
     PatternMatchMapping(Expr, Idx<Key>),
     /// An entry in a MatchClass. The Key looks up the value being matched, the Expr is the class name.
@@ -440,6 +448,17 @@ impl DisplayWith<Bindings> for Binding {
             Self::Expr(None, x) | Self::ReturnExpr(None, x, _) => write!(f, "{}", m.display(x)),
             Self::Expr(Some(k), x) | Self::ReturnExpr(Some(k), x, _) => {
                 write!(f, "{}: {}", ctx.display(*k), m.display(x))
+            }
+            Self::Generator(box target, box iterable) => {
+                write!(
+                    f,
+                    "Generator(Yield: {}, Return: {})",
+                    target.display_with(ctx),
+                    iterable.display_with(ctx)
+                )
+            }
+            self::Binding::SendTypeOfYield(x) => {
+                write!(f, "send type of yield {} {:?}", m.display(x), x.range())
             }
             Self::IterableValue(None, x) => write!(f, "iter {}", m.display(x)),
             Self::IterableValue(Some(k), x) => {
@@ -551,22 +570,27 @@ impl DisplayWith<Bindings> for Binding {
                 ctx.display(*k2),
                 name
             ),
-            Self::NameAssign(name, None, binding, _) => {
-                write!(f, "{} = {}", name, binding.display_with(ctx))
+            Self::NameAssign(name, None, expr) => {
+                write!(f, "{} = {}", name, expr.display_with(ctx.module_info()))
             }
-            Self::NameAssign(name, Some(annot), binding, _) => {
+            Self::NameAssign(name, Some(annot), expr) => {
                 write!(
                     f,
                     "{}: {} = {}",
                     name,
                     ctx.display(*annot),
-                    binding.display_with(ctx)
+                    expr.display_with(ctx.module_info())
                 )
             }
-            Self::ScopedTypeAlias(name, None, binding, _r) => {
-                write!(f, "type {} = {}", name, binding.display_with(ctx))
+            Self::ScopedTypeAlias(name, None, expr) => {
+                write!(
+                    f,
+                    "type {} = {}",
+                    name,
+                    expr.display_with(ctx.module_info())
+                )
             }
-            Self::ScopedTypeAlias(name, Some(params), binding, _r) => {
+            Self::ScopedTypeAlias(name, Some(params), expr) => {
                 write!(
                     f,
                     "type {}[{}] = {}",
@@ -576,7 +600,7 @@ impl DisplayWith<Bindings> for Binding {
                         .map(|p| format!("{}", p.name()))
                         .collect::<Vec<_>>()
                         .join(", "),
-                    binding.display_with(ctx)
+                    expr.display_with(ctx.module_info())
                 )
             }
             Self::PatternMatchMapping(mapping_key, binding_key) => {

@@ -732,10 +732,31 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.iterate(&self.solver().force_var(*v), range)
             }
             Type::ClassDef(cls) => {
-                vec![self.iterate_by_metaclass(&self.promote_to_class_type(cls, range), range)]
+                if let Type::ClassType(class_type) = &self.promote(cls, range) {
+                    vec![self.iterate_by_metaclass(class_type, range)]
+                } else {
+                    // Promoted type must be a TypedDict
+                    vec![self.iterate_by_metaclass(
+                        &self.stdlib.mapping(
+                            self.stdlib.str().to_type(),
+                            self.stdlib.object_class_type().clone().to_type(),
+                        ),
+                        range,
+                    )]
+                }
             }
             Type::Type(box Type::ClassType(cls)) => vec![self.iterate_by_metaclass(cls, range)],
             Type::Union(ts) => ts.iter().flat_map(|t| self.iterate(t, range)).collect(),
+            Type::TypedDict(_) => self.iterate(
+                &self
+                    .stdlib
+                    .mapping(
+                        self.stdlib.str().to_type(),
+                        self.stdlib.object_class_type().clone().to_type(),
+                    )
+                    .to_type(),
+                range,
+            ),
             _ => vec![Iterable::OfType(self.error(
                 range,
                 format!(
@@ -836,9 +857,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             return Type::any_error();
         }
         let mut ty = match &ty {
-            Type::ClassDef(cls) => {
-                Type::type_form(Type::ClassType(self.promote_to_class_type(cls, range)))
-            }
+            Type::ClassDef(cls) => Type::type_form(self.promote(cls, range)),
             t => t.clone(),
         };
         let mut seen = SmallMap::new();
@@ -930,9 +949,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         enter_type
     }
 
-    pub fn scoped_type_params(&self, x: &Option<Box<TypeParams>>) -> Vec<TParamInfo> {
+    pub fn scoped_type_params(&self, x: Option<&TypeParams>) -> Vec<TParamInfo> {
         match x {
-            Some(box x) => {
+            Some(x) => {
                 fn get_quantified(t: &Type) -> Quantified {
                     match t {
                         Type::Type(box Type::Quantified(q)) => *q,
@@ -1050,6 +1069,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let ty = ann.map(|k| self.get_idx(k));
                 self.expr(e, ty.as_ref().and_then(|x| x.ty.as_ref()))
             }
+            Binding::Generator(yield_type, return_type) => {
+                let yield_type = self.solve_binding_inner(yield_type);
+                let return_type = self.solve_binding_inner(return_type);
+                self.stdlib
+                    .generator(yield_type, Type::any_implicit(), return_type)
+                    .to_type()
+            }
+            // TODO: Zeina, here we must construct a ReturnAnnotation key and look it up. The lookup will panic if key is not found. Figure out how to handle the failure.
+            Binding::SendTypeOfYield(_) => Type::any_explicit(),
             Binding::ReturnExpr(ann, e, has_yields) => {
                 let ann = ann.map(|k| self.get_idx(k));
                 let hint = ann.as_ref().and_then(|x| x.ty.as_ref());
@@ -1167,17 +1195,54 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let base = self.expr(&x.value, None);
                 let slice_ty = self.expr(&x.slice, None);
                 let value_ty = self.solve_binding_inner(b);
-                self.call_method_or_error(
-                    &base,
-                    &dunder::SETITEM,
-                    x.range,
-                    &[
-                        CallArg::Type(&slice_ty, x.slice.range()),
-                        // use the subscript's location
-                        CallArg::Type(&value_ty, x.range),
-                    ],
-                    &[],
-                )
+                match (&base, &slice_ty) {
+                    (Type::TypedDict(typed_dict), Type::Literal(Lit::String(field_name))) => {
+                        if let Some(field) = typed_dict.fields().get(&Name::new(field_name.clone()))
+                        {
+                            if field.read_only {
+                                self.error(
+                                    x.slice.range(),
+                                    format!(
+                                        "Key `{}` in TypedDict `{}` is read-only",
+                                        field_name,
+                                        typed_dict.name(),
+                                    ),
+                                )
+                            } else if !self.solver().is_subset_eq(
+                                &value_ty,
+                                &field.ty,
+                                self.type_order(),
+                            ) {
+                                self.error(
+                                    x.range(),
+                                    format!("Expected {}, got {}", field.ty, value_ty),
+                                )
+                            } else {
+                                Type::ClassType(self.stdlib.none_type())
+                            }
+                        } else {
+                            self.error(
+                                x.slice.range(),
+                                format!(
+                                    "TypedDict `{}` does not have key `{}`",
+                                    typed_dict.name(),
+                                    field_name
+                                ),
+                            )
+                        }
+                    }
+                    (_, _) => self.call_method_or_error(
+                        &base,
+                        &dunder::SETITEM,
+                        x.range,
+                        &[
+                            CallArg::Type(&slice_ty, x.slice.range()),
+                            // use the subscript's location
+                            CallArg::Type(&value_ty, x.range),
+                        ],
+                        &[],
+                    ),
+                }
             }
             Binding::UnpackedValue(b, range, pos) => {
                 let iterables = self.iterate(&self.solve_binding_inner(b), *range);
@@ -1324,7 +1389,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 } else {
                     ret
                 };
-                let mut tparams = self.scoped_type_params(&x.type_params);
+                let mut tparams = self.scoped_type_params(x.type_params.as_deref());
                 let legacy_tparams = legacy_tparam_keys
                     .iter()
                     .filter_map(|key| self.get_idx(*key).deref().parameter().cloned());
@@ -1428,21 +1493,22 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 Type::None // Unused
             }
-            Binding::NameAssign(name, annot_key, binding, range) => {
+            Binding::NameAssign(name, annot_key, expr) => {
                 let annot = annot_key.map(|k| self.get_idx(k));
-                let ty = self.solve_binding_inner(binding);
+                let ty = self.expr(expr, annot.as_ref().and_then(|x| x.ty.as_ref()));
+                let expr_range = expr.range();
                 match (annot, &ty) {
                     (Some(annot), _) if annot.qualifiers.contains(&Qualifier::TypeAlias) => {
-                        self.as_type_alias(name, TypeAliasStyle::LegacyExplicit, ty, *range)
+                        self.as_type_alias(name, TypeAliasStyle::LegacyExplicit, ty, expr_range)
                     }
                     (None, Type::Type(box t))
-                        if matches!(binding, box Binding::Expr(_, Expr::Call(_)))
+                        if matches!(&**expr, Expr::Call(_))
                             && let Some(tvar) = t.as_tvar_declaration() =>
                     {
                         let tvar_name = &tvar.name.id;
                         if *name != *tvar_name && *tvar_name != UNKNOWN {
                             self.error(
-                                *range,
+                                expr_range,
                                 format!("TypeVar must be assigned to a variable named {tvar_name}"),
                             );
                         }
@@ -1452,21 +1518,28 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     // when there is no annotation, so that `mylist = list` is treated
                     // like a value assignment rather than a type alias?
                     (None, Type::Type(_)) => {
-                        self.as_type_alias(name, TypeAliasStyle::LegacyImplicit, ty, *range)
+                        self.as_type_alias(name, TypeAliasStyle::LegacyImplicit, ty, expr_range)
                     }
                     _ => ty,
                 }
             }
-            Binding::ScopedTypeAlias(name, params, binding, range) => {
-                let ty = self.solve_binding_inner(binding);
-                let ta = self.as_type_alias(name, TypeAliasStyle::Scoped, ty, *range);
+            Binding::ScopedTypeAlias(name, params, expr) => {
+                let ty = self.expr(expr, None);
+                let expr_range = expr.range();
+                let ta = self.as_type_alias(name, TypeAliasStyle::Scoped, ty, expr_range);
                 match ta {
                     Type::Forall(..) => self.error(
-                        *range,
+                        expr.range(),
                         format!("Type parameters used in `{name}` but not declared"),
                     ),
                     Type::TypeAlias(_) => {
-                        ta.forall(self.type_params(*range, self.scoped_type_params(params)))
+                        let params_range = params.as_ref().map_or(expr_range, |x| x.range);
+                        ta.forall(
+                            self.type_params(
+                                params_range,
+                                self.scoped_type_params(params.as_ref()),
+                            ),
+                        )
                     }
                     _ => ta,
                 }
@@ -1489,8 +1562,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 // TODO: check that value matches class
                 // TODO: check against duplicate keys (optional)
                 let binding_ty = self.get_idx(*key).arc_clone();
-                let match_args =
-                    self.attr_infer(&binding_ty, &Name::new_static("__match_args__"), *range);
+                let match_args = self.attr_infer(&binding_ty, &dunder::MATCH_ARGS, *range);
                 match match_args {
                     Type::Tuple(Tuple::Concrete(ts)) => {
                         if *idx < ts.len() {
