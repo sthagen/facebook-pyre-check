@@ -125,6 +125,46 @@ x: TypeAlias = 1
 );
 
 testcase!(
+    test_type_alias_import_direct,
+    r#"
+from typing import TypeAlias
+class C: pass
+x: TypeAlias = "C"
+y: x = C()
+"#,
+);
+
+testcase!(
+    test_type_alias_import_star,
+    r#"
+from typing import *
+class C: pass
+x: TypeAlias = "C"
+y: x = C()
+"#,
+);
+
+testcase!(
+    test_type_alias_import_module,
+    r#"
+import typing
+class C: pass
+x: typing.TypeAlias = "C"
+y: x = C()
+"#,
+);
+
+testcase!(
+    test_type_alias_import_named,
+    r#"
+import typing as tt
+class C: pass
+x: tt.TypeAlias = "C"
+y: x = C()
+"#,
+);
+
+testcase!(
     test_attribute_access,
     r#"
 from typing import TypeAlias

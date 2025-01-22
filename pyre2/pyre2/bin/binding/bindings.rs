@@ -234,9 +234,14 @@ enum FlowStyle {
     },
     /// Am I the result of an import (which needs merging).
     /// E.g. `import foo.bar` and `import foo.baz` need merging.
-    MergeableImport,
+    /// The `ModuleName` will be the most recent entry.
+    MergeableImport(ModuleName),
     /// Was I imported from somewhere (and if so, where)
+    /// E.g. `from foo import bar` would get `foo` here.
     Import(ModuleName),
+    /// Am I an alias for a module import, `import foo.bar as baz`
+    /// would get `foo.bar` here.
+    ImportAs(ModuleName),
 }
 
 #[derive(Debug, Clone)]
@@ -569,34 +574,60 @@ impl<'a> BindingsBuilder<'a> {
         self.errors.todo(&self.module_info, msg, x);
     }
 
-    fn as_special_export(&self, name: &Name) -> Option<SpecialExport> {
-        let special = SpecialExport::new(name)?;
+    fn get_flow_info(&self, name: &Name) -> Option<&FlowInfo> {
         for scope in self.scopes.iter().rev() {
             if let Some(flow) = scope.flow.info.get(name) {
-                match flow.style {
-                    Some(FlowStyle::Import(m)) if special.defined_in(m) => return Some(special),
-                    _ if special.defined_in(self.module_info.name()) => return Some(special),
-                    _ => return None,
-                }
+                return Some(flow);
             }
         }
         None
     }
 
-    fn is_annotated(&self, name: &Name) -> bool {
-        self.as_special_export(name) == Some(SpecialExport::Annotated)
+    fn as_special_export(&self, e: &Expr) -> Option<SpecialExport> {
+        // Only works for things with `Foo` or `source.Foo`.
+        // Does not work for things with nested modules - but no SpecialExport's have that.
+        match e {
+            Expr::Name(name) => {
+                let name = &name.id;
+                let special = SpecialExport::new(name)?;
+                let flow = self.get_flow_info(name)?;
+                match flow.style {
+                    Some(FlowStyle::Import(m)) if special.defined_in(m) => Some(special),
+                    _ if special.defined_in(self.module_info.name()) => Some(special),
+                    _ => None,
+                }
+            }
+            Expr::Attribute(ExprAttribute {
+                value: box Expr::Name(module),
+                attr: name,
+                ..
+            }) => {
+                let special = SpecialExport::new(&name.id)?;
+                let flow = self.get_flow_info(&module.id)?;
+                match flow.style {
+                    Some(FlowStyle::MergeableImport(m)) if special.defined_in(m) => Some(special),
+                    Some(FlowStyle::ImportAs(m)) if special.defined_in(m) => Some(special),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
-    fn is_type_var(&self, name: &Name) -> bool {
-        self.as_special_export(name) == Some(SpecialExport::TypeVar)
+    fn is_annotated(&self, e: &Expr) -> bool {
+        self.as_special_export(e) == Some(SpecialExport::Annotated)
     }
 
-    fn is_type_alias(&self, name: &Name) -> bool {
-        self.as_special_export(name) == Some(SpecialExport::TypeAlias)
+    fn is_type_var(&self, e: &Expr) -> bool {
+        self.as_special_export(e) == Some(SpecialExport::TypeVar)
     }
 
-    fn is_literal(&self, name: &Name) -> bool {
-        self.as_special_export(name) == Some(SpecialExport::Literal)
+    fn is_type_alias(&self, e: &Expr) -> bool {
+        self.as_special_export(e) == Some(SpecialExport::TypeAlias)
+    }
+
+    fn is_literal(&self, e: &Expr) -> bool {
+        self.as_special_export(e) == Some(SpecialExport::Literal)
     }
 
     fn error(&self, range: TextRange, msg: String) {
@@ -797,20 +828,17 @@ impl<'a> BindingsBuilder<'a> {
                 };
                 self.ensure_name(&name, binding);
             }
-            Expr::Subscript(ExprSubscript {
-                value: box Expr::Name(name),
-                ..
-            }) if self.is_literal(&name.id) => {
+            Expr::Subscript(ExprSubscript { value, .. }) if self.is_literal(value) => {
                 // Don't go inside a literal, since you might find strings which are really strings, not string-types
                 self.ensure_expr(x);
             }
             Expr::Subscript(ExprSubscript {
-                value: box Expr::Name(name),
+                value,
                 slice: box Expr::Tuple(tup),
                 ..
-            }) if self.is_annotated(&name.id) && !tup.is_empty() => {
+            }) if self.is_annotated(value) && !tup.is_empty() => {
                 // Only go inside the first argument to Annotated, the rest are non-type metadata.
-                self.ensure_type(&mut Expr::Name(name.clone()), tparams_builder);
+                self.ensure_type(&mut *value, tparams_builder);
                 self.ensure_type(&mut tup.elts[0], tparams_builder);
                 for e in tup.elts[1..].iter_mut() {
                     self.ensure_expr(e);
@@ -1664,10 +1692,10 @@ impl<'a> BindingsBuilder<'a> {
                 match &mut value {
                     Expr::Call(ExprCall {
                         range: _,
-                        func: box Expr::Name(type_var),
+                        func,
                         arguments,
-                    }) if self.is_type_var(&type_var.id) && !arguments.is_empty() => {
-                        self.ensure_expr(&Expr::Name(type_var.clone()));
+                    }) if self.is_type_var(func) && !arguments.is_empty() => {
+                        self.ensure_expr(func);
                         // The constraints (i.e., any positional arguments after the first)
                         // and some keyword arguments are types.
                         for arg in arguments.args.iter_mut().skip(1) {
@@ -1730,9 +1758,7 @@ impl<'a> BindingsBuilder<'a> {
 
                     let binding = if let Some(mut value) = value {
                         // Handle forward references in explicit type aliases.
-                        if let Expr::Name(name) = *x.annotation
-                            && self.is_type_alias(&name.id)
-                        {
+                        if self.is_type_alias(&x.annotation) {
                             self.ensure_type(&mut value, &mut None);
                         } else {
                             self.ensure_expr(&value);
@@ -2021,7 +2047,7 @@ impl<'a> BindingsBuilder<'a> {
                             self.bind_definition(
                                 &asname,
                                 Binding::Module(m, m.components(), None),
-                                None,
+                                Some(FlowStyle::ImportAs(m)),
                             );
                         }
                         None => {
@@ -2031,7 +2057,7 @@ impl<'a> BindingsBuilder<'a> {
                                 Some(flow_info)
                                     if matches!(
                                         flow_info.style,
-                                        Some(FlowStyle::MergeableImport)
+                                        Some(FlowStyle::MergeableImport(_))
                                     ) =>
                                 {
                                     Some(flow_info.key)
@@ -2042,7 +2068,7 @@ impl<'a> BindingsBuilder<'a> {
                                 Key::Import(first.clone(), x.name.range),
                                 Binding::Module(m, vec![first.clone()], module_key),
                             );
-                            self.bind_key(&first, key, Some(FlowStyle::MergeableImport));
+                            self.bind_key(&first, key, Some(FlowStyle::MergeableImport(m)));
                         }
                     }
                 }
