@@ -65,6 +65,7 @@ use crate::table_try_for_each;
 use crate::type_order::TypeOrder;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
+use crate::types::callable::Callable;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
 use crate::types::class::Class;
@@ -812,7 +813,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.tvars_to_tparams_for_type_alias(t, seen, tparams);
                 }
             }
-            Type::Callable(callable) => {
+            Type::Callable(callable, _) => {
                 let visit = |t: &mut Type| self.tvars_to_tparams_for_type_alias(t, seen, tparams);
                 callable.visit_mut(visit);
             }
@@ -1077,9 +1078,24 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .to_type()
             }
             // TODO: Zeina, here we must construct a ReturnAnnotation key and look it up. The lookup will panic if key is not found. Figure out how to handle the failure.
-            Binding::SendTypeOfYield(_) => Type::any_explicit(),
+            Binding::SendTypeOfYield(ann, range) => {
+                let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
+                match gen_ann {
+                    Some(gen_ann) => {
+                        let gen_type = gen_ann.get_type();
+
+                        if let Some((_, send_type, _)) = self.decompose_generator(gen_type) {
+                            send_type
+                        } else {
+                            self.error(*range, format!("Yield expression found but the function has an incompatible annotation `{gen_type}`"))
+                        }
+                    }
+
+                    None => Type::any_explicit(),
+                }
+            }
             Binding::ReturnExpr(ann, e, has_yields) => {
-                let ann = ann.map(|k| self.get_idx(k));
+                let ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 let hint = ann.as_ref().and_then(|x| x.ty.as_ref());
 
                 if *has_yields {
@@ -1394,7 +1410,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .iter()
                     .filter_map(|key| self.get_idx(*key).deref().parameter().cloned());
                 tparams.extend(legacy_tparams);
-                let callable = Type::callable(params, ret);
+                let callable = Type::Callable(
+                    Box::new(Callable::list(params, ret)),
+                    Some(Box::new((self.module_info().name(), x.name.id.clone()))),
+                );
                 callable.forall(self.type_params(x.range, tparams))
             }
             Binding::Import(m, name) => self
