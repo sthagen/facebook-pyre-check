@@ -35,6 +35,7 @@ use crate::dunder;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::callable::Callable;
+use crate::types::callable::Kind;
 use crate::types::callable::Param;
 use crate::types::callable::Params;
 use crate::types::callable::Required;
@@ -192,9 +193,11 @@ impl CallArgPreEval<'_> {
 /// e.g., `__new__` followed by `__init__` for Class.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum CallTarget {
+    /// A thing whose type is a Callable, usually a function.
     Callable(Callable),
     /// Method of a class. The `Type` is the self/cls argument.
     BoundMethod(Type, Callable),
+    /// A class object.
     Class(ClassType),
 }
 
@@ -285,6 +288,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Type::Any(style) => Some((Vec::new(), CallTarget::any(style))),
             Type::TypeAlias(ta) => self.as_call_target(ta.as_value(self.stdlib)),
+            Type::ClassType(cls) => self
+                .get_instance_attribute(&cls, &dunder::CALL)
+                .and_then(|a| self.as_call_target(a.value)),
             _ => None,
         }
     }
@@ -360,24 +366,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    /// Calls a method on the metaclass of `cls`. Returns None without attempting a call if we
-    /// don't find a method defined on a metaclass that isn't the default `builtins.type`.
-    pub fn call_metaclass_method(
+    /// If the metaclass defines a custom `__call__`, call it. If the `__call__` comes from `type`, ignore
+    /// it because `type.__call__` behavior is baked into our constructor logic.
+    pub fn call_metaclass(
         &self,
         cls: &ClassType,
-        method_name: &Name,
         range: TextRange,
         args: &[CallArg],
         keywords: &[Keyword],
     ) -> Option<Type> {
-        let metadata = self.get_metadata_for_class(cls.class_object());
-        let metaclass = metadata.metaclass()?;
-        let attr = self.get_instance_attribute(metaclass, method_name)?;
-        if attr.defined_on(self.stdlib.builtins_type().class_object()) {
-            // In general, we ignore the default `type` metaclass, so ignore methods inherited from it as well.
-            return None;
-        }
-        let method = match attr.value {
+        let dunder_call = match self.get_metaclass_dunder_call(cls)? {
             Type::BoundMethod(_, func) => {
                 // This method was bound to a general instance of the metaclass, but we have more
                 // information about the particular instance that it should be bound to.
@@ -386,10 +384,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     func,
                 )
             }
-            _ => attr.value,
+            dunder_call => dunder_call,
         };
         Some(self.call_infer(
-            self.as_call_target_or_error(method, CallStyle::Method(method_name), range),
+            self.as_call_target_or_error(dunder_call, CallStyle::Method(&dunder::CALL), range),
             args,
             keywords,
             range,
@@ -606,17 +604,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.solver().expand(ret)
     }
 
-    /// Get the class's `__new__` method.
-    fn get_new(&self, cls: &ClassType) -> Option<Type> {
-        let new_attr = self.get_class_attribute_with_targs(cls, &dunder::NEW)?;
-        if new_attr.defined_on(self.stdlib.object_class_type().class_object()) {
-            // The default behavior of `object.__new__` is already baked into our implementation of
-            // class construction; we only care about `__new__` if it is overridden.
-            return None;
-        }
-        Some(new_attr.value)
-    }
-
     fn construct(
         &self,
         cls: ClassType,
@@ -626,7 +613,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Type {
         // Based on https://typing.readthedocs.io/en/latest/spec/constructors.html.
         let instance_ty = Type::ClassType(cls.clone());
-        if let Some(ret) = self.call_metaclass_method(&cls, &dunder::CALL, range, args, keywords)
+        if let Some(ret) = self.call_metaclass(&cls, range, args, keywords)
             && !self
                 .solver()
                 .is_subset_eq(&ret, &instance_ty, self.type_order())
@@ -634,7 +621,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             // Got something other than an instance of the class under construction.
             return ret;
         }
-        let overrides_new = if let Some(new_method) = self.get_new(&cls) {
+        let overrides_new = if let Some(new_method) = self.get_dunder_new(&cls) {
             let cls_ty = Type::type_form(instance_ty.clone());
             let mut full_args = vec![CallArg::Type(&cls_ty, range)];
             full_args.extend_from_slice(args);
@@ -841,16 +828,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     /// Apply a decorator. This effectively synthesizes a function call.
-    pub fn apply_decorator(&self, decorator: &Decorator, decoratee: &Idx<Key>) -> Type {
-        let call_target = {
-            let ty = self.expr(&decorator.expression, None);
-            self.as_call_target_or_error(ty, CallStyle::FreeForm, decorator.range)
-        };
-        let ty_decoratee = self.get_idx(*decoratee);
-        if matches!(ty_decoratee.as_ref(), Type::ClassDef(_)) {
-            // TODO: don't just ignore class decorators.
+    pub fn apply_decorator(&self, decorator: &Decorator, decoratee: Idx<Key>) -> Type {
+        let ty_decoratee = self.get_idx(decoratee);
+        if matches!(&*ty_decoratee, Type::ClassDef(cls) if cls.has_qname("typing", "TypeVar")) {
+            // Avoid recursion in TypeVar, which is decorated with `@final`, whose type signature
+            // itself depends on a TypeVar.
             return ty_decoratee.arc_clone();
         }
+        let ty_decorator = self.expr(&decorator.expression, None);
+        match ty_decorator.function_kind() {
+            Some(Kind::Dataclass) => {
+                // TODO: Implement dataclass functionality
+            }
+            _ => {}
+        }
+        if matches!(ty_decoratee.as_ref(), Type::ClassDef(_)) {
+            // TODO: don't blanket ignore class decorators.
+            return ty_decoratee.arc_clone();
+        }
+        let call_target =
+            { self.as_call_target_or_error(ty_decorator, CallStyle::FreeForm, decorator.range) };
         let arg = CallArg::Type(ty_decoratee.as_ref(), decorator.range);
         self.call_infer(call_target, &[arg], &[], decorator.range)
     }
@@ -917,9 +914,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             params: Params::List(parameters),
                             ret: self.expr(&lambda.body, Some(&callable.ret)),
                         }),
-                        None,
+                        Kind::Anon,
                     );
-                    let wanted_callable = Type::Callable(Box::new(callable), None);
+                    let wanted_callable = Type::Callable(Box::new(callable), Kind::Anon);
                     self.check_type(&wanted_callable, &inferred_callable, x.range());
                     wanted_callable
                 } else {
@@ -928,7 +925,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             params: Params::List(parameters),
                             ret: self.expr_infer(&lambda.body),
                         }),
-                        None,
+                        Kind::Anon,
                     )
                 }
             }
@@ -1092,9 +1089,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None => self.error(x.range, "Expression is not awaitable".to_owned()),
                 }
             }
-            Expr::Yield(x) => self.get(&Key::SendTypeOfYield(x.range)).arc_clone(),
-
-            Expr::YieldFrom(_) => self.error_todo("Answers::expr_infer", x),
+            Expr::Yield(_) => self.get(&Key::SendTypeOfYield(x.range())).arc_clone(),
+            Expr::YieldFrom(_) => self.get(&Key::ReturnTypeOfYield(x.range())).arc_clone(),
             Expr::Compare(x) => {
                 let _ty = self.expr_infer(&x.left);
                 let _tys = x.comparators.map(|x| self.expr_infer(x));
@@ -1228,10 +1224,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     // Note that we have to check for `builtins.type` by name here because this code runs
                     // when we're bootstrapping the stdlib and don't have access to class objects yet.
-                    Type::ClassDef(cls)
-                        if cls.qname().module.name().as_str() == "builtins"
-                            && cls.qname().name.id == "type" =>
-                    {
+                    Type::ClassDef(cls) if cls.has_qname("builtins", "type") => {
                         let targ = match xs.len() {
                             // This causes us to treat `type[list]` as equivalent to `type[list[Any]]`,
                             // which may or may not be what we want.

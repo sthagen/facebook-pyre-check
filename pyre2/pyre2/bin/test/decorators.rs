@@ -6,7 +6,6 @@
  */
 
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_simple_function_decorator,
@@ -23,11 +22,10 @@ assert_type(decorated, int)
     "#,
 );
 
-testcase_with_bug!(
-    "The logic tested here passes, but assert_type is running into a problem we need to debug.",
+testcase!(
     test_identity_function_decorator,
     r#"
-from typing import assert_type, Callable, Any
+from typing import Any, Callable, Never
 
 def decorator[T](f: T) -> T: ...
 
@@ -35,7 +33,8 @@ def decorator[T](f: T) -> T: ...
 def decorated(x: int) -> str:
    return f"{x}"
 
-assert_type(decorated, Callable[[int], str])  # E: assert_type(Callable[[int], str], Callable[[int], str])
+# Uses the error message to verify the type of `decorated`
+check: Never = decorated  # E: EXPECTED (x: int) -> str
     "#,
 );
 
@@ -69,5 +68,31 @@ def decorated(x: int) -> str:
    return f"{x}"
 
 assert_type(decorated, Callable[[int], list[set[str]]])
+    "#,
+);
+
+testcase!(
+    test_callable_instance,
+    r#"
+from typing import Callable, Never
+class im_callable:
+    def __call__[T](self, arg: T, /) -> T: ...
+@im_callable()
+def f(x: int) -> int:
+    return x
+# Uses the error message to verify the type of `f`
+check: Never = f  # E: EXPECTED (x: int) -> int
+    "#,
+);
+
+// This test case does not directly use a decorator, but it verifies our
+// handling of the `@final` decorator applied to `typing.TypeVar`, which can
+// trigger recursion that breaks legacy type parameter handling if we are not
+// careful.
+testcase!(
+    test_that_final_decorator_on_type_var_works,
+    r#"
+from typing import MutableSequence
+x: MutableSequence[int]
     "#,
 );

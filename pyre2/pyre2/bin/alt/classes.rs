@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Display;
 use std::ops::Deref;
@@ -32,6 +31,7 @@ use crate::binding::binding::Key;
 use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
 use crate::binding::binding::KeyLegacyTypeParam;
+use crate::dunder;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Annotation;
@@ -41,14 +41,15 @@ use crate::types::class::ClassType;
 use crate::types::class::Substitution;
 use crate::types::class::TArgs;
 use crate::types::class_metadata::ClassMetadata;
+use crate::types::literal::Enum;
 use crate::types::literal::Lit;
-use crate::types::qname::QName;
 use crate::types::special_form::SpecialForm;
 use crate::types::type_var::Variance;
 use crate::types::types::TParamInfo;
 use crate::types::types::TParams;
 use crate::types::types::Type;
-use crate::util::arc_id::ArcId;
+use crate::types::types::TypedDict;
+use crate::types::types::TypedDictField;
 use crate::util::display::count;
 use crate::util::prelude::SliceExt;
 
@@ -72,7 +73,8 @@ impl Display for ClassField {
     }
 }
 
-/// Class members can fail to be
+/// Provide a root cause for why a class attribute lookup failed, which can
+/// be used to produce better error messages.
 pub enum NoClassAttribute {
     NoClassMember,
     InstanceOnlyAttribute,
@@ -100,8 +102,6 @@ impl Attribute {
 /// work of computing inherticance information and the MRO.
 #[derive(Debug, Clone)]
 enum BaseClass {
-    #[expect(dead_code)] // Will be used in the future
-    NamedTuple,
     TypedDict,
     Generic(Vec<Type>),
     Protocol(Vec<Type>),
@@ -120,95 +120,6 @@ impl BaseClass {
             }
             _ => panic!("cannot apply base class"),
         }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TypedDictField {
-    pub ty: Type,
-    pub required: bool,
-    pub read_only: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TypedDictInner(Class, TArgs, SmallMap<Name, TypedDictField>);
-
-impl PartialOrd for TypedDictInner {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for TypedDictInner {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
-#[derive(Debug, Clone, Dupe, Eq, PartialEq, Hash, PartialOrd, Ord)]
-pub struct TypedDict(ArcId<TypedDictInner>);
-
-impl TypedDict {
-    pub fn new(cls: Class, targs: TArgs, fields: SmallMap<Name, TypedDictField>) -> Self {
-        Self(ArcId::new(TypedDictInner(cls, targs, fields)))
-    }
-
-    pub fn qname(&self) -> &QName {
-        self.0.0.qname()
-    }
-
-    pub fn name(&self) -> &Name {
-        &self.0.0.name().id
-    }
-
-    pub fn fields(&self) -> &SmallMap<Name, TypedDictField> {
-        &self.0.2
-    }
-
-    pub fn class_object(&self) -> &Class {
-        &self.0.0
-    }
-
-    pub fn targs(&self) -> &TArgs {
-        &self.0.1
-    }
-}
-
-pub struct Enum(ClassType);
-
-impl Enum {
-    pub fn get_member(&self, name: &Name) -> Option<Lit> {
-        // TODO(stroxler, yangdanny) Enums can contain attributes that are not
-        // members, we eventually need to implement enough checks to know the
-        // difference.
-        //
-        // Instance-only attributes are one case of this and are correctly handled
-        // upstream, but there are other cases as well.
-
-        // Names starting but not ending with __ are private
-        // Names starting and ending with _ are reserved by the enum
-        if name.starts_with("__") && !name.ends_with("__")
-            || name.starts_with("_") && name.ends_with("_")
-        {
-            None
-        } else if self.0.class_object().contains(name) {
-            Some(Lit::Enum(Box::new((self.0.clone(), name.clone()))))
-        } else {
-            None
-        }
-    }
-
-    pub fn class_type(&self) -> &ClassType {
-        &self.0
-    }
-
-    pub fn get_members(&self) -> SmallSet<Lit> {
-        self.0
-            .class_object()
-            .fields()
-            .iter()
-            .filter_map(|f| self.get_member(f))
-            .collect()
     }
 }
 
@@ -247,6 +158,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         )
     }
 
+    pub fn functional_class_definition(&self, name: &Identifier, fields: &SmallSet<Name>) -> Class {
+        Class::new(
+            name.clone(),
+            self.module_info().dupe(),
+            TParams::default(),
+            fields.clone(),
+        )
+    }
+
     /// This helper deals with special cases where we want to intercept an `Expr`
     /// manually and create a special variant of `BaseClass` instead of calling
     /// `expr_untype` and creating a `BaseClass::Type`.
@@ -270,7 +190,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     fn base_class_of(&self, base_expr: &Expr) -> BaseClass {
         if let Some(special_base_class) = self.special_base_class(base_expr) {
-            // This branch handles cases like `NamedTuple` or `Protocol`
+            // This branch handles cases like `Protocol`
             special_base_class
         } else if let Expr::Subscript(subscript) = base_expr
             && let Some(mut special_base_class) = self.special_base_class(&subscript.value)
@@ -385,14 +305,29 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         keywords: &[(Name, Expr)],
     ) -> ClassMetadata {
         let mut is_typed_dict = false;
+        let mut is_named_tuple = false;
+        let bases: Vec<BaseClass> = bases.iter().map(|x| self.base_class_of(x)).collect();
+        let is_protocol = bases.iter().any(|x| matches!(x, BaseClass::Protocol(_)));
         let bases_with_metadata: Vec<_> = bases
             .iter()
-            .filter_map(|x| match self.base_class_of(x) {
-                BaseClass::Expr(x) => match self.expr_untype(&x) {
+            .filter_map(|x| match x {
+                BaseClass::Expr(x) => match self.expr_untype(x) {
                     Type::ClassType(c) => {
-                        let class_metadata = self.get_metadata_for_class(c.class_object());
+                        let cls = c.class_object();
+                        let class_metadata = self.get_metadata_for_class(cls);
                         if class_metadata.is_typed_dict() {
                             is_typed_dict = true;
+                        }
+                        if class_metadata.is_named_tuple()
+                        || cls.has_qname("typing", "NamedTuple")
+                        {
+                            is_named_tuple = true;
+                        }
+                        if is_protocol && !class_metadata.is_protocol() {
+                            self.error(
+                                x.range(),
+                                "If `Protocol` is included as a base class, all other bases must be protocols.".to_owned(),
+                            );
                         }
                         Some((c, class_metadata))
                     }
@@ -417,6 +352,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 _ => None,
             })
             .collect();
+        if is_named_tuple && bases_with_metadata.len() > 1 {
+            self.error(
+                cls.name().range,
+                "Named tuples do not support multiple inheritance".to_owned(),
+            );
+        }
         let (metaclasses, keywords): (Vec<_>, Vec<(_, _)>) =
             keywords.iter().partition_map(|(n, x)| match n.as_str() {
                 "metaclass" => Either::Left(x),
@@ -427,7 +368,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         if is_typed_dict && metaclass.is_some() {
             self.error(
                 cls.name().range,
-                "Typed dictionary definitions may not specify a metaclass.".to_string(),
+                "Typed dictionary definitions may not specify a metaclass.".to_owned(),
             );
         }
         ClassMetadata::new(
@@ -436,6 +377,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             metaclass,
             keywords,
             is_typed_dict,
+            is_named_tuple,
+            is_protocol,
             self.errors(),
         )
     }
@@ -554,7 +497,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 &Type::ClassType(self.stdlib.enum_meta()),
                 self.type_order(),
             ) {
-                Some(Enum(cls.clone()))
+                Some(Enum { cls: cls.clone() })
             } else {
                 None
             }
@@ -754,7 +697,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     // Get every member of a class, including those declared in parent classes.
-    fn get_all_members(&self, cls: &Class) -> SmallMap<Name, (ClassField, Class)> {
+    pub fn get_all_members(&self, cls: &Class) -> SmallMap<Name, (ClassField, Class)> {
         let mut members = SmallMap::new();
         for name in cls.fields() {
             if let Some(field) = self.get_class_field(cls, name) {
@@ -836,17 +779,34 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    /// Gets an attribute from a class with type arguments (i.e., a ClassType).
-    pub fn get_class_attribute_with_targs(
-        &self,
-        cls: &ClassType,
-        name: &Name,
-    ) -> Option<Attribute> {
-        self.get_class_member(cls.class_object(), name)
+    /// Get the class's `__new__` method.
+    pub fn get_dunder_new(&self, cls: &ClassType) -> Option<Type> {
+        let new_attr = self
+            .get_class_member(cls.class_object(), &dunder::NEW)
             .map(|(member, defining_class)| Attribute {
                 value: cls.instantiate_member(member.ty),
                 defining_class,
-            })
+            })?;
+        if new_attr.defined_on(self.stdlib.object_class_type().class_object()) {
+            // The default behavior of `object.__new__` is already baked into our implementation of
+            // class construction; we only care about `__new__` if it is overridden.
+            return None;
+        }
+        Some(new_attr.value)
+    }
+
+    /// Get the metaclass `__call__` method.
+    pub fn get_metaclass_dunder_call(&self, cls: &ClassType) -> Option<Type> {
+        let metadata = self.get_metadata_for_class(cls.class_object());
+        let metaclass = metadata.metaclass()?;
+        let attr = self.get_instance_attribute(metaclass, &dunder::CALL)?;
+        if attr.defined_on(self.stdlib.builtins_type().class_object()) {
+            // The behavior of `type.__call__` is already baked into our implementation of constructors,
+            // so we can skip analyzing it at the type level.
+            None
+        } else {
+            Some(attr.value)
+        }
     }
 
     /// Given an identifier, see whether it is bound to an enum class. If so,

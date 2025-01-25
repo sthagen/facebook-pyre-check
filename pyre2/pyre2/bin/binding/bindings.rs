@@ -9,7 +9,6 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::mem;
-use std::ops::Deref;
 use std::sync::Arc;
 
 use dupe::Dupe;
@@ -29,7 +28,6 @@ use ruff_python_ast::ExprLambda;
 use ruff_python_ast::ExprName;
 use ruff_python_ast::ExprNoneLiteral;
 use ruff_python_ast::ExprSubscript;
-use ruff_python_ast::ExprYield;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Parameters;
 use ruff_python_ast::Pattern;
@@ -75,6 +73,7 @@ use crate::binding::narrow::NarrowVal;
 use crate::binding::table::TableKeyed;
 use crate::binding::util::is_ellipse;
 use crate::binding::util::is_never;
+use crate::binding::util::is_valid_identifier;
 use crate::config::Config;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
@@ -149,7 +148,7 @@ struct BindingsBuilder<'a> {
     /// Accumulate all the return statements
     returns: Vec<StmtReturn>,
     /// Accumulate all the yield statements
-    yields: Vec<ExprYield>,
+    yields: Vec<Expr>,
     table: BindingTable,
 }
 
@@ -223,7 +222,7 @@ struct Flow {
     no_next: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum FlowStyle {
     /// The annotation associated with this key, if any.
     /// If there is one, all subsequent bindings must obey this annotation.
@@ -242,6 +241,15 @@ enum FlowStyle {
     /// Am I an alias for a module import, `import foo.bar as baz`
     /// would get `foo.bar` here.
     ImportAs(ModuleName),
+}
+
+impl FlowStyle {
+    fn ann(&self) -> Option<Idx<KeyAnnotation>> {
+        match self {
+            FlowStyle::Annotated { ann, .. } => Some(*ann),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -266,10 +274,7 @@ impl FlowInfo {
     }
 
     fn ann(&self) -> Option<Idx<KeyAnnotation>> {
-        match self.style.as_ref()? {
-            FlowStyle::Annotated { ann, .. } => Some(*ann),
-            _ => None,
-        }
+        self.style.as_ref()?.ann()
     }
 
     fn is_initialized(&self) -> bool {
@@ -630,6 +635,13 @@ impl<'a> BindingsBuilder<'a> {
         self.as_special_export(e) == Some(SpecialExport::Literal)
     }
 
+    fn is_enum(&self, name: &Expr) -> bool {
+        match self.as_special_export(name) {
+            Some(SpecialExport::Enum | SpecialExport::IntEnum | SpecialExport::StrEnum) => true,
+            _ => false,
+        }
+    }
+
     fn error(&self, range: TextRange, msg: String) {
         self.errors.add(&self.module_info, range, msg);
     }
@@ -664,7 +676,7 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     fn forward_lookup(&mut self, name: &Identifier) -> Option<Binding> {
-        self.lookup_name(name.id()).map(Binding::Forward)
+        self.lookup_name(&name.id).map(Binding::Forward)
     }
 
     /// Given a name appearing in an expression, create a `Usage` key for that
@@ -798,8 +810,12 @@ impl<'a> BindingsBuilder<'a> {
                 self.bind_lambda(x);
                 true
             }
-            Expr::Yield(y) => {
-                self.yields.push(y.clone());
+            Expr::Yield(_) => {
+                self.yields.push(x.clone());
+                false
+            }
+            Expr::YieldFrom(_) => {
+                self.yields.push(x.clone());
                 false
             }
             _ => false,
@@ -1071,7 +1087,7 @@ impl<'a> BindingsBuilder<'a> {
         qs
     }
 
-    fn parameters(&mut self, x: &mut Parameters, self_type: &Option<Idx<Key>>) {
+    fn parameters(&mut self, x: &mut Parameters, self_type: Option<Idx<Key>>) {
         let mut self_name = None;
         for x in x.iter() {
             let name = x.name();
@@ -1079,7 +1095,7 @@ impl<'a> BindingsBuilder<'a> {
                 self_name = Some(name.clone());
             }
             let ann_val = match x.annotation() {
-                Some(a) => BindingAnnotation::AnnotateExpr(a.clone(), *self_type),
+                Some(a) => BindingAnnotation::AnnotateExpr(a.clone(), self_type),
                 None => {
                     if let Some(self_name) = &self_name
                         && name.id == *self_name.id
@@ -1199,9 +1215,9 @@ impl<'a> BindingsBuilder<'a> {
             &mut x.parameters,
             if func_name.id == dunder::NEW {
                 // __new__ is a staticmethod that is special-cased at runtime to not need @staticmethod decoration.
-                &None
+                None
             } else {
-                &self_type
+                self_type
             },
         );
 
@@ -1261,14 +1277,19 @@ impl<'a> BindingsBuilder<'a> {
                 let key = self.table.insert(
                     Key::YieldTypeOfYield(ShortIdentifier::new(&func_name), x.range()),
                     // collect the value of the yield expression.
-                    Binding::Expr(None, yield_expr(x.clone())),
+                    Binding::YieldTypeOfYield(x.clone()),
                 );
                 yield_expr_keys.insert(key);
 
                 self.table.insert(
                     Key::SendTypeOfYield(x.range()),
                     // collect the value of the yield expression.
-                    Binding::SendTypeOfYield(return_ann, x.range),
+                    Binding::SendTypeOfYield(return_ann, x.range()),
+                );
+                self.table.insert(
+                    Key::ReturnTypeOfYield(x.range()),
+                    // collect the value of the yield expression.
+                    Binding::ReturnTypeOfYield(return_ann, x.range()),
                 );
             }
             let yield_type = Binding::phi(yield_expr_keys);
@@ -1445,6 +1466,66 @@ impl<'a> BindingsBuilder<'a> {
             None,
         );
         self.decorators(&name.id, current_name_key, decorators);
+    }
+
+    fn synthesize_enum_def(
+        &mut self,
+        class_name: Identifier,
+        base_name: ExprName,
+        members: &[Expr],
+    ) {
+        let definition_key = self
+            .table
+            .types
+            .0
+            .insert(Key::Definition(ShortIdentifier::new(&class_name)));
+        self.table.insert(
+            KeyClassMetadata(ShortIdentifier::new(&class_name)),
+            BindingClassMetadata(definition_key, vec![Expr::Name(base_name)], vec![]),
+        );
+        let mut fields = SmallSet::new();
+        match members {
+            // Enum('Color5', 'RED, GREEN, BLUE')
+            // Enum('Color6', 'RED GREEN BLUE')
+            [Expr::StringLiteral(x)] => {
+                let s = x.value.to_str();
+                let parts: Vec<&str> = if s.contains(',') {
+                    s.split(',').map(str::trim).collect()
+                } else {
+                    s.split_whitespace().collect()
+                };
+                for member in parts {
+                    if is_valid_identifier(member) {
+                        let member_name = Name::new(member);
+                        fields.insert(member_name.clone());
+                        self.table.insert(
+                            KeyClassField(ShortIdentifier::new(&class_name), member_name.clone()),
+                            BindingClassField {
+                                class: definition_key,
+                                name: member_name,
+                                value: Binding::AnyType(AnyStyle::Implicit),
+                                annotation: None,
+                                range: x.range(),
+                                initialization: ClassFieldInitialization::Class,
+                            },
+                        );
+                    } else {
+                        self.error(x.range, format!("{member} is not a valid identifier"))
+                    }
+                }
+            }
+            _ => self.error(class_name.range, "TODO enum functional syntax".to_owned()),
+        }
+        let self_binding = Binding::SelfType(definition_key);
+        self.table.insert(
+            Key::SelfType(ShortIdentifier::new(&class_name)),
+            self_binding,
+        );
+        self.bind_definition(
+            &class_name,
+            Binding::FunctionalClassDef(class_name.clone(), fields),
+            None,
+        );
     }
 
     fn add_loop_exitpoint(&mut self, exit: LoopExit, range: TextRange) {
@@ -1688,8 +1769,9 @@ impl<'a> BindingsBuilder<'a> {
                     None
                 };
                 let mut value = *x.value;
-                // Handle forward references in a TypeVar call.
+                let mut is_synthesized_class = false;
                 match &mut value {
+                    // Handle forward references in a TypeVar call.
                     Expr::Call(ExprCall {
                         range: _,
                         func,
@@ -1711,18 +1793,40 @@ impl<'a> BindingsBuilder<'a> {
                             }
                         }
                     }
+                    Expr::Call(ExprCall {
+                        range: _,
+                        func: box ref func @ Expr::Name(ref base_name),
+                        arguments,
+                    }) if self.is_enum(func)
+                        && arguments.keywords.is_empty()
+                        && let Some(name) = &name =>
+                    {
+                        self.ensure_expr(func);
+                        for arg in arguments.args.iter_mut() {
+                            self.ensure_expr(arg);
+                        }
+                        // Use the variable name, not the string literal argument
+                        self.synthesize_enum_def(
+                            Identifier::new(name.clone(), x.targets[0].range()),
+                            base_name.clone(),
+                            &arguments.args[1..],
+                        );
+                        is_synthesized_class = true;
+                    }
                     _ => self.ensure_expr(&value),
                 }
-                for target in x.targets {
-                    let make_binding = |k: Option<Idx<KeyAnnotation>>| {
-                        if let Some(name) = &name {
-                            Binding::NameAssign(name.clone(), k, Box::new(value.clone()))
-                        } else {
-                            Binding::Expr(k, value.clone())
-                        }
-                    };
-                    self.bind_target(&target, &make_binding);
-                    self.ensure_expr(&target);
+                if !is_synthesized_class {
+                    for target in x.targets {
+                        let make_binding = |k: Option<Idx<KeyAnnotation>>| {
+                            if let Some(name) = &name {
+                                Binding::NameAssign(name.clone(), k, Box::new(value.clone()))
+                            } else {
+                                Binding::Expr(k, value.clone())
+                            }
+                        };
+                        self.bind_target(&target, &make_binding);
+                        self.ensure_expr(&target);
+                    }
                 }
             }
             Stmt::AugAssign(x) => {
@@ -1918,7 +2022,7 @@ impl<'a> BindingsBuilder<'a> {
             }
             Stmt::Match(x) => {
                 self.ensure_expr(&x.subject);
-                let subject_name = if let Expr::Name(ref name) = *x.subject {
+                let subject_name = if let Expr::Name(name) = &*x.subject {
                     Some(name.id.clone())
                 } else {
                     None
@@ -2102,11 +2206,23 @@ impl<'a> BindingsBuilder<'a> {
                                     let val = if module_exports.contains(&x.name.id, self.lookup) {
                                         Binding::Import(m, x.name.id)
                                     } else {
-                                        self.error(
-                                            x.range,
-                                            format!("Could not import `{}` from `{m}`", x.name.id),
-                                        );
-                                        Binding::AnyType(AnyStyle::Error)
+                                        let x_as_module_name = m.append(&x.name.id);
+                                        if self.lookup.get(x_as_module_name).is_ok() {
+                                            Binding::Module(
+                                                x_as_module_name,
+                                                x_as_module_name.components(),
+                                                None,
+                                            )
+                                        } else {
+                                            self.error(
+                                                x.range,
+                                                format!(
+                                                    "Could not import `{}` from `{m}`",
+                                                    x.name.id
+                                                ),
+                                            );
+                                            Binding::AnyType(AnyStyle::Error)
+                                        }
                                     };
                                     self.bind_definition(&asname, val, Some(FlowStyle::Import(m)));
                                 }
@@ -2205,6 +2321,50 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
+    fn merge_flow_style(
+        &mut self,
+        styles: SmallSet<Option<&FlowStyle>>,
+        name: &Name,
+        is_loop: bool,
+    ) -> Option<FlowStyle> {
+        if styles.len() == 1 {
+            return styles.first().unwrap().cloned();
+        }
+
+        // The only distinct styles we can meaningfully merge are annotations
+        let unordered_anns: SmallSet<Option<Idx<KeyAnnotation>>> =
+            styles.iter().map(|x| x.as_ref()?.ann()).collect();
+        let mut anns = unordered_anns
+            .into_iter()
+            .flatten()
+            .map(|k| (k, self.table.annotations.0.idx_to_key(k).range()))
+            .collect::<Vec<_>>();
+        anns.sort_by_key(|(_, range)| (range.start(), range.end()));
+        // If there are multiple annotations, this picks the first one.
+        let mut ann = None;
+        for other_ann in anns.into_iter() {
+            match &ann {
+                None => {
+                    ann = Some(other_ann);
+                }
+                Some(ann) => {
+                    // A loop might capture the same annotation multiple times at many exit points.
+                    // But we only want to consider it when we join up `if` statements.
+                    if !is_loop {
+                        self.table.insert(
+                            Key::Expect(other_ann.1),
+                            Binding::Eq(other_ann.0, ann.0, name.clone()),
+                        );
+                    }
+                }
+            }
+        }
+        ann.map(|x| FlowStyle::Annotated {
+            ann: x.0,
+            is_initialized: true,
+        })
+    }
+
     fn merge_flow(&mut self, mut xs: Vec<Flow>, range: TextRange, is_loop: bool) -> Flow {
         if xs.len() == 1 && xs[0].no_next {
             return xs.pop().unwrap();
@@ -2224,42 +2384,16 @@ impl<'a> BindingsBuilder<'a> {
             .collect::<SmallSet<_>>();
         let mut res = SmallMap::with_capacity(names.len());
         for name in names.into_iter() {
-            let (values, unordered_anns): (
-                SmallSet<Idx<Key>>,
-                SmallSet<Option<Idx<KeyAnnotation>>>,
-            ) = visible_branches
-                .iter()
-                .flat_map(|x| x.info.get(name.key()).cloned().map(|x| (x.key, x.ann())))
-                .unzip();
-            let mut anns = unordered_anns
-                .into_iter()
-                .flatten()
-                .map(|k| (k, self.table.annotations.0.idx_to_key(k).range()))
-                .collect::<Vec<_>>();
-            anns.sort_by_key(|(_, range)| (range.start(), range.end()));
-            // If there are multiple annotations, this picks the first one.
-            let mut ann = None;
-            for other_ann in anns.into_iter() {
-                match &ann {
-                    None => {
-                        ann = Some(other_ann);
-                    }
-                    Some(ann) => {
-                        // A loop might capture the same annotation multiple times at many exit points.
-                        // But we only want to consider it when we join up `if` statements.
-                        if !is_loop {
-                            self.table.insert(
-                                Key::Expect(other_ann.1),
-                                Binding::Eq(other_ann.0, ann.0, name.deref().clone()),
-                            );
-                        }
-                    }
-                }
-            }
+            let (values, styles): (SmallSet<Idx<Key>>, SmallSet<Option<&FlowStyle>>) =
+                visible_branches
+                    .iter()
+                    .flat_map(|x| x.info.get(name.key()).map(|x| (x.key, x.style.as_ref())))
+                    .unzip();
+            let style = self.merge_flow_style(styles, name.key(), is_loop);
             let key = self
                 .table
                 .insert(Key::Phi(name.key().clone(), range), Binding::phi(values));
-            res.insert_hashed(name, FlowInfo::new_with_ann(key, ann.map(|x| x.0)));
+            res.insert_hashed(name, FlowInfo { key, style });
         }
         Flow {
             info: res,
@@ -2305,7 +2439,7 @@ impl LegacyTParamBuilder {
     ) -> Option<Binding> {
         self.legacy_tparams
             .entry(name.id.clone())
-            .or_insert_with(|| builder.lookup_name(name.id()).map(|x| (name.clone(), x)))
+            .or_insert_with(|| builder.lookup_name(&name.id).map(|x| (name.clone(), x)))
             .as_ref()
             .map(|(id, _)| {
                 let range_if_scoped_params_exist = if self.has_scoped_tparams {
@@ -2381,13 +2515,6 @@ impl LegacyTParamBuilder {
 }
 
 fn return_expr(x: StmtReturn) -> Expr {
-    match x.value {
-        Some(x) => *x,
-        None => Expr::NoneLiteral(ExprNoneLiteral { range: x.range }),
-    }
-}
-
-fn yield_expr(x: ExprYield) -> Expr {
     match x.value {
         Some(x) => *x,
         None => Expr::NoneLiteral(ExprNoneLiteral { range: x.range }),

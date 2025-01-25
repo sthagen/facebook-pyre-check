@@ -81,10 +81,48 @@ class Yield: pass
 class Send: pass
 class Return: pass
 
-def my_generator(n: int) -> Generator[Yield, Send, Return]:
+def my_generator_nested() -> Generator[Yield, Send, Return]:
+    yield Yield()
+    return Return()
+
+def my_generator() -> Generator[Yield, Send, Return]:
     s = yield Yield()
+    y = yield from  my_generator_nested()
 
     reveal_type(s) # E: revealed type: Send
+    reveal_type(y) # E: revealed type: Return
+
+    return Return()
+
+"#,
+);
+
+testcase_with_bug!(
+    r#"
+TODO zeina: we should correctly determine the send() type based on the signature of the generator. Additionally, we should correctly handle the return type of the generator.
+    "#,
+    test_nested_generator_error,
+    r#"
+
+from typing import Generator, reveal_type
+
+class Yield: pass
+class Send: pass
+class Return: pass
+
+class Yield2: pass
+
+def my_generator_nested() -> Generator[Yield2, Send, Return]:
+    yield Yield()
+    return Return()
+
+def my_generator() -> Generator[Yield, Send, Return]:
+    s = yield Yield()
+    y = yield from  my_generator_nested()
+    
+    reveal_type(s) # E: revealed type: Send
+    reveal_type(y) # E: revealed type: Return
+
     return Return()
 
 "#,
@@ -118,13 +156,13 @@ from typing import Generator, reveal_type
 
 def nested_generator():
     yield 1
-    yield from another_generator()  # E: TODO: YieldFrom(ExprYieldFrom - Answers::expr_infer
+    yield from another_generator()
     yield 3
 
 def another_generator():
     yield 2
 
-reveal_type(nested_generator()) # E: revealed type: Generator[Literal[1, 3], Unknown, None]
+reveal_type(nested_generator()) # E: revealed type: Generator[Literal[1, 2, 3], Unknown, None]
 reveal_type(another_generator()) # E: revealed type: Generator[Literal[2], Unknown, None]
 
 "#,
@@ -169,7 +207,7 @@ testcase_with_bug!(
 from typing import AsyncGenerator, reveal_type # E: Could not import `AsyncGenerator` from `typing`
 
 async def async_count_up_to() -> AsyncGenerator[int, None]:
-    yield 2 # E: Yield expression found but the function has an incompatible annotation `Error`
+    yield 2 # E: Yield expression found but the function has an incompatible annotation `Error` # E: YieldFrom expression found but the function has an incompatible annotation `Error`
 
 reveal_type(async_count_up_to()) # E: revealed type: Coroutine[Unknown, Unknown, Error]
 

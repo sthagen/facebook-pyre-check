@@ -138,8 +138,12 @@ impl ModuleName {
         Ok(ModuleName::from_string(itertools::join(components, ".")))
     }
 
+    pub fn append(self, name: &Name) -> Self {
+        Self::from_string(format!("{}.{}", self.as_str(), name))
+    }
+
     pub fn new_maybe_relative(
-        &self,
+        self,
         is_init: bool,
         mut dots: u32,
         suffix: Option<&Name>,
@@ -170,24 +174,15 @@ impl ModuleName {
         &self.0
     }
 
-    pub fn first_component(&self) -> Name {
+    pub fn first_component(self) -> Name {
         match self.0.split_once('.') {
             None => Name::new(self.as_str()),
             Some(x) => Name::new(x.0),
         }
     }
 
-    pub fn components(&self) -> Vec<Name> {
+    pub fn components(self) -> Vec<Name> {
         self.0.split('.').map(Name::new).collect()
-    }
-
-    #[allow(dead_code)] // Only used in tests, for now
-    pub fn prefix_match_count(&self, path: &[Name]) -> usize {
-        self.0
-            .split('.')
-            .zip(path.iter())
-            .take_while(|(a, b)| *a == *b)
-            .count()
     }
 }
 

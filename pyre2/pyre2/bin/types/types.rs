@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Display;
 use std::sync::Arc;
@@ -16,12 +17,12 @@ use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use static_assertions::assert_eq_size;
 
-use crate::alt::classes::TypedDict;
-use crate::module::module_name::ModuleName;
 use crate::types::callable::Callable;
+use crate::types::callable::Kind;
 use crate::types::callable::Param;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
+use crate::types::class::TArgs;
 use crate::types::literal::Lit;
 use crate::types::module::Module;
 use crate::types::param_spec::ParamSpec;
@@ -33,6 +34,7 @@ use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
 use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
+use crate::util::arc_id::ArcId;
 use crate::util::display::commas_iter;
 use crate::util::uniques::Unique;
 use crate::util::uniques::UniqueFactory;
@@ -315,6 +317,57 @@ impl TypeAlias {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedDictField {
+    pub ty: Type,
+    pub required: bool,
+    pub read_only: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TypedDictInner(Class, TArgs, SmallMap<Name, TypedDictField>);
+
+impl PartialOrd for TypedDictInner {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TypedDictInner {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+#[derive(Debug, Clone, Dupe, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub struct TypedDict(ArcId<TypedDictInner>);
+
+impl TypedDict {
+    pub fn new(cls: Class, targs: TArgs, fields: SmallMap<Name, TypedDictField>) -> Self {
+        Self(ArcId::new(TypedDictInner(cls, targs, fields)))
+    }
+
+    pub fn qname(&self) -> &QName {
+        self.0.0.qname()
+    }
+
+    pub fn name(&self) -> &Name {
+        &self.0.0.name().id
+    }
+
+    pub fn fields(&self) -> &SmallMap<Name, TypedDictField> {
+        &self.0.2
+    }
+
+    pub fn class_object(&self) -> &Class {
+        &self.0.0
+    }
+
+    pub fn targs(&self) -> &TArgs {
+        &self.0.1
+    }
+}
+
 // We have a lot of types, want to make sure they stay a reasonable size
 assert_eq_size!(Type, [usize; 4]);
 
@@ -322,8 +375,8 @@ assert_eq_size!(Type, [usize; 4]);
 pub enum Type {
     Literal(Lit),
     LiteralString,
-    /// Note that the name doesn't participate in subtyping, and thus two types with distinct names are still subtypes.
-    Callable(Box<Callable>, Option<Box<(ModuleName, Name)>>),
+    /// Note that the Kind metadata doesn't participate in subtyping, and thus two types with distinct metadata are still subtypes.
+    Callable(Box<Callable>, Kind),
     /// A method of a class. The first `Box<Type>` is the self/cls argument,
     /// and the second is the function.
     BoundMethod(Box<Type>, Box<Type>),
@@ -402,21 +455,14 @@ impl Type {
 
     pub fn is_generator(&self) -> bool {
         match self {
-            Type::ClassType(cls) => {
-                let typ = cls.class_object();
-                let name = typ.name().id().as_str();
-                if name == "Generator" {
-                    return true;
-                }
-                false
-            }
+            Type::ClassType(cls) => cls.class_object().has_qname("typing", "Generator"),
             _ => false,
         }
     }
 
     pub fn is_iterator(&self) -> bool {
         match self {
-            Type::ClassType(cls) => cls.class_object().name().id().as_str() == "Iterator",
+            Type::ClassType(cls) => cls.class_object().has_qname("typing", "Iterator"),
             _ => false,
         }
     }
@@ -444,15 +490,15 @@ impl Type {
     }
 
     pub fn callable(params: Vec<Param>, ret: Type) -> Self {
-        Type::Callable(Box::new(Callable::list(params, ret)), None)
+        Type::Callable(Box::new(Callable::list(params, ret)), Kind::Anon)
     }
 
     pub fn callable_ellipsis(ret: Type) -> Self {
-        Type::Callable(Box::new(Callable::ellipsis(ret)), None)
+        Type::Callable(Box::new(Callable::ellipsis(ret)), Kind::Anon)
     }
 
     pub fn callable_param_spec(p: Type, ret: Type) -> Self {
-        Type::Callable(Box::new(Callable::param_spec(p, ret)), None)
+        Type::Callable(Box::new(Callable::param_spec(p, ret)), Kind::Anon)
     }
 
     pub fn forall(self, tparams: TParams) -> Self {
@@ -504,6 +550,14 @@ impl Type {
 
     pub fn is_none(&self) -> bool {
         matches!(self, Type::None)
+    }
+
+    pub fn function_kind(&self) -> Option<&Kind> {
+        match self {
+            Type::Callable(_, kind) => Some(kind),
+            Type::Forall(_, t) => t.function_kind(),
+            _ => None,
+        }
     }
 
     pub fn subst(self, mp: &SmallMap<Quantified, Type>) -> Self {
@@ -594,8 +648,8 @@ impl Type {
 
     pub fn anon_callables(self) -> Self {
         self.transform(|ty| {
-            if let Type::Callable(_, name @ Some(_)) = ty {
-                *name = None;
+            if let Type::Callable(_, name) = ty {
+                *name = Kind::Anon;
             }
         })
     }

@@ -103,6 +103,8 @@ pub enum Key {
     SelfType(ShortIdentifier),
     /// The send type of a yield expression.
     SendTypeOfYield(TextRange),
+    /// The return type of a yield expression.
+    ReturnTypeOfYield(TextRange),
     /// The type at a specific return point.
     ReturnExpression(ShortIdentifier, TextRange),
     /// The type yielded inside of a specific yield expression inside a function.
@@ -142,6 +144,7 @@ impl Ranged for Key {
             Self::DecoratorApplication(r) => r.range(),
             Self::SelfType(x) => x.range(),
             Self::SendTypeOfYield(x) => x.range(),
+            Self::ReturnTypeOfYield(x) => x.range(),
             Self::ReturnExpression(_, r) => *r,
             Self::YieldTypeOfYield(_, r) => *r,
             Self::YieldTypeOfGenerator(x) => x.range(),
@@ -164,6 +167,9 @@ impl DisplayWith<ModuleInfo> for Key {
             Self::DecoratorApplication(r) => write!(f, "decorator {:?}", r),
             Self::SelfType(x) => write!(f, "self {} {:?}", ctx.display(x), x.range()),
             Self::SendTypeOfYield(x) => {
+                write!(f, "send type of yield {} {:?}", ctx.display(x), x.range())
+            }
+            Self::ReturnTypeOfYield(x) => {
                 write!(f, "send type of yield {} {:?}", ctx.display(x), x.range())
             }
             Self::Usage(x) => write!(f, "use {} {:?}", ctx.display(x), x.range()),
@@ -344,10 +350,14 @@ pub enum Binding {
     ReturnExpr(Option<Idx<KeyAnnotation>>, Expr, bool),
     /// An expression returned from a function.
     SendTypeOfYield(Option<Idx<KeyAnnotation>>, TextRange),
+    /// Return type of yield
+    ReturnTypeOfYield(Option<Idx<KeyAnnotation>>, TextRange),
     /// A decorator application: the Key is the entity being decorated.
     DecoratorApplication(Box<Decorator>, Idx<Key>),
     /// A grouping of both the yield expression types and the return type.
     Generator(Box<Binding>, Box<Binding>),
+    /// Actual value of yield expression
+    YieldTypeOfYield(Expr),
     /// A value in an iterable expression, e.g. IterableValue(\[1\]) represents 1.
     IterableValue(Option<Idx<KeyAnnotation>>, Expr),
     /// A value produced by entering a context manager.
@@ -392,6 +402,7 @@ pub enum Binding {
         Box<[Expr]>,
         Box<[Idx<KeyLegacyTypeParam>]>,
     ),
+    FunctionalClassDef(Identifier, SmallSet<Name>),
     /// The Self type for a class, must point at a class.
     SelfType(Idx<Key>),
     /// A forward reference to another binding.
@@ -463,6 +474,13 @@ impl DisplayWith<Bindings> for Binding {
             self::Binding::SendTypeOfYield(None, _) => {
                 write!(f, "no annotation so send type is Any")
             }
+            self::Binding::ReturnTypeOfYield(Some(x), _) => {
+                write!(f, "annotation containing send type {}", ctx.display(*x))
+            }
+            self::Binding::ReturnTypeOfYield(None, _) => {
+                write!(f, "no annotation so send type is Any")
+            }
+            Self::YieldTypeOfYield(x) => write!(f, "yield expr {}", m.display(x)),
             Self::IterableValue(None, x) => write!(f, "iter {}", m.display(x)),
             Self::IterableValue(Some(k), x) => {
                 write!(f, "iter {}: {}", ctx.display(*k), m.display(x))
@@ -523,6 +541,7 @@ impl DisplayWith<Bindings> for Binding {
             Self::Function(x, _, _) => write!(f, "def {}", x.name.id),
             Self::Import(m, n) => write!(f, "import {m}.{n}"),
             Self::ClassDef(box (c, _), _, _) => write!(f, "class {}", c.name.id),
+            Self::FunctionalClassDef(x, _) => write!(f, "class {}", x.id),
             Self::SelfType(k) => write!(f, "self {}", ctx.display(*k)),
             Self::Forward(k) => write!(f, "{}", ctx.display(*k)),
             Self::AugAssign(s) => write!(f, "augmented_assign {:?}", s),

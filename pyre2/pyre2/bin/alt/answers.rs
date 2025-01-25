@@ -13,7 +13,7 @@ use std::sync::Arc;
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
-use ruff_python_ast::Keyword;
+use ruff_python_ast::ExprNoneLiteral;
 use ruff_python_ast::TypeParam;
 use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
@@ -22,6 +22,7 @@ use starlark_map::ordered_set::OrderedSet;
 use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 
+use crate::alt::attr::LookupResult;
 use crate::alt::classes::ClassField;
 use crate::alt::expr::CallArg;
 use crate::ast::Ast;
@@ -66,10 +67,10 @@ use crate::type_order::TypeOrder;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
 use crate::types::callable::Callable;
+use crate::types::callable::Kind;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
 use crate::types::class::Class;
-use crate::types::class::ClassType;
 use crate::types::class_metadata::ClassMetadata;
 use crate::types::literal::Lit;
 use crate::types::module::Module;
@@ -543,7 +544,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             },
             || K::recursive(self),
         );
-        if let Ok((ref v, Some(ref r))) = result {
+        if let Ok((v, Some(r))) = &result {
             let k = self.bindings().idx_to_key(idx);
             K::record_recursive(self, k, v.clone(), r.clone());
         }
@@ -679,75 +680,48 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn iterate_by_method(
-        &self,
-        call_method: &dyn Fn(&Name, TextRange, &[CallArg], &[Keyword]) -> Option<Type>,
-        range: TextRange,
-    ) -> Option<Type> {
-        if let Some(iterator_ty) = call_method(&dunder::ITER, range, &[], &[]) {
-            Some(self.call_method_or_error(&iterator_ty, &dunder::NEXT, range, &[], &[]))
-        } else {
-            let int_ty = self.stdlib.int().to_type();
-            let arg = CallArg::Type(&int_ty, range);
-            call_method(&dunder::GETITEM, range, &[arg], &[])
-        }
-    }
-
-    fn iterate_by_metaclass(&self, cls: &ClassType, range: TextRange) -> Iterable {
-        let call_method =
-            |method_name: &Name, range: TextRange, args: &[CallArg], keywords: &[Keyword]| {
-                self.call_metaclass_method(cls, method_name, range, args, keywords)
-            };
-        let ty = self
-            .iterate_by_method(&call_method, range)
-            .unwrap_or_else(|| {
-                self.error(range, format!("Class object `{}` is not iterable", cls))
-            });
-        Iterable::OfType(ty)
-    }
-
+    /// Given an `iterable` type, determine the iteration type; this is the type
+    /// of `x` if we were to loop using `for x in iterable`.
     pub fn iterate(&self, iterable: &Type, range: TextRange) -> Vec<Iterable> {
+        // Use the iterable protocol interfaces to determine the iterable type.
+        // Special cases like Tuple should be intercepted first.
+        let iterate_by_interface = || {
+            let iteration_ty = if let Some(iterator_ty) =
+                self.call_method(iterable, &dunder::ITER, range, &[], &[])
+            {
+                Some(self.call_method_or_error(&iterator_ty, &dunder::NEXT, range, &[], &[]))
+            } else {
+                let int_ty = self.stdlib.int().to_type();
+                let arg = CallArg::Type(&int_ty, range);
+                self.call_method(iterable, &dunder::GETITEM, range, &[arg], &[])
+            };
+            Iterable::OfType(iteration_ty.unwrap_or_else(|| {
+                self.error(
+                    range,
+                    format!(
+                        "Type `{}` is not iterable",
+                        iterable.clone().deterministic_printing()
+                    ),
+                )
+            }))
+        };
         match iterable {
-            Type::ClassType(cls) => {
-                let call_method = |method_name: &Name,
-                                   range: TextRange,
-                                   args: &[CallArg],
-                                   keywords: &[Keyword]| {
-                    self.call_method(iterable, method_name, range, args, keywords)
-                };
-                let ty = self
-                    .iterate_by_method(&call_method, range)
-                    .unwrap_or_else(|| {
-                        self.error(range, format!("Class `{}` is not iterable", cls.name()))
-                    });
-                vec![Iterable::OfType(ty)]
-            }
-            Type::Tuple(Tuple::Concrete(elts)) => vec![Iterable::FixedLen(elts.clone())],
-            Type::Tuple(Tuple::Unbounded(box elt)) => vec![Iterable::OfType(elt.clone())],
-            Type::LiteralString => vec![Iterable::OfType(self.stdlib.str().to_type())],
-            Type::Literal(lit) if lit.is_string() => {
-                vec![Iterable::OfType(self.stdlib.str().to_type())]
-            }
-            Type::Any(_) => vec![Iterable::OfType(Type::any_implicit())],
-            Type::Var(v) if let Some(_guard) = self.recurser.recurse(*v) => {
-                self.iterate(&self.solver().force_var(*v), range)
+            Type::ClassType(_) | Type::Type(box Type::ClassType(_)) => {
+                vec![iterate_by_interface()]
             }
             Type::ClassDef(cls) => {
-                if let Type::ClassType(class_type) = &self.promote(cls, range) {
-                    vec![self.iterate_by_metaclass(class_type, range)]
-                } else {
-                    // Promoted type must be a TypedDict
-                    vec![self.iterate_by_metaclass(
-                        &self.stdlib.mapping(
-                            self.stdlib.str().to_type(),
-                            self.stdlib.object_class_type().clone().to_type(),
-                        ),
+                if self.get_metadata_for_class(cls).is_typed_dict() {
+                    vec![Iterable::OfType(self.error(
                         range,
-                    )]
+                        format!(
+                            "Type `{}` (a `TypedDict` class object) is not iterable",
+                            iterable.clone().deterministic_printing()
+                        ),
+                    ))]
+                } else {
+                    vec![iterate_by_interface()]
                 }
             }
-            Type::Type(box Type::ClassType(cls)) => vec![self.iterate_by_metaclass(cls, range)],
-            Type::Union(ts) => ts.iter().flat_map(|t| self.iterate(t, range)).collect(),
             Type::TypedDict(_) => self.iterate(
                 &self
                     .stdlib
@@ -758,6 +732,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .to_type(),
                 range,
             ),
+            Type::Tuple(Tuple::Concrete(elts)) => vec![Iterable::FixedLen(elts.clone())],
+            Type::Tuple(Tuple::Unbounded(box elt)) => vec![Iterable::OfType(elt.clone())],
+            Type::LiteralString => vec![Iterable::OfType(self.stdlib.str().to_type())],
+            Type::Literal(lit) if lit.is_string() => {
+                vec![Iterable::OfType(self.stdlib.str().to_type())]
+            }
+            Type::Any(_) => vec![Iterable::OfType(Type::any_implicit())],
+            Type::Var(v) if let Some(_guard) = self.recurser.recurse(*v) => {
+                self.iterate(&self.solver().force_var(*v), range)
+            }
+            Type::Union(ts) => ts.iter().flat_map(|t| self.iterate(t, range)).collect(),
             _ => vec![Iterable::OfType(self.error(
                 range,
                 format!(
@@ -1024,15 +1009,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             if field.annotation.is_some() {
                 self.error(field.range, format!("Enum member `{}` may not be annotated directly. Instead, annotate the _value_ attribute.", field.name));
             }
-            if let Some(enum_value_attr) = self
-                .get_class_attribute_with_targs(enum_.class_type(), &Name::new_static("_value_"))
+
+            if let LookupResult::Found(enum_value_ty) =
+                self.lookup_attr(Type::ClassType(enum_.cls), &Name::new_static("_value_"))
             {
                 if !matches!(*value_ty, Type::Tuple(_))
-                    && !self.solver().is_subset_eq(
-                        &value_ty,
-                        &enum_value_attr.value,
-                        self.type_order(),
-                    )
+                    && !self
+                        .solver()
+                        .is_subset_eq(&value_ty, &enum_value_ty, self.type_order())
                 {
                     self.error(field.range, format!("The value for enum member `{}` must match the annotation of the _value_ attribute.", field.name));
                 }
@@ -1077,7 +1061,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .generator(yield_type, Type::any_implicit(), return_type)
                     .to_type()
             }
-            // TODO: Zeina, here we must construct a ReturnAnnotation key and look it up. The lookup will panic if key is not found. Figure out how to handle the failure.
             Binding::SendTypeOfYield(ann, range) => {
                 let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 match gen_ann {
@@ -1094,6 +1077,38 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None => Type::any_explicit(),
                 }
             }
+            Binding::ReturnTypeOfYield(ann, range) => {
+                let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
+                match gen_ann {
+                    Some(gen_ann) => {
+                        let gen_type = gen_ann.get_type();
+
+                        if let Some((_, _, return_type)) = self.decompose_generator(gen_type) {
+                            return_type
+                        } else {
+                            self.error(*range, format!("YieldFrom expression found but the function has an incompatible annotation `{gen_type}`"))
+                        }
+                    }
+
+                    None => Type::any_explicit(),
+                }
+            }
+            Binding::YieldTypeOfYield(x) => match x.clone() {
+                Expr::Yield(x) => match x.value {
+                    Some(x) => self.expr(&x, None),
+                    None => self.expr(
+                        &Expr::NoneLiteral(ExprNoneLiteral { range: x.range() }),
+                        None,
+                    ),
+                },
+                Expr::YieldFrom(x) => {
+                    let gen_type = self.expr(&x.value, None);
+                    self.decompose_generator(&gen_type)
+                        .map_or(Type::any_implicit(), |(y, _, _)| y)
+                }
+                _ => unreachable!("yield or yield from expression expected"),
+            },
+
             Binding::ReturnExpr(ann, e, has_yields) => {
                 let ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 let hint = ann.as_ref().and_then(|x| x.ty.as_ref());
@@ -1113,7 +1128,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.expr(e, hint)
                 }
             }
-            Binding::DecoratorApplication(d, k) => self.apply_decorator(d, k),
+            Binding::DecoratorApplication(d, k) => self.apply_decorator(d, *k),
             Binding::ExceptionHandler(box ann, is_star) => {
                 let base_exception_type = self.stdlib.base_exception().to_type();
                 let base_exception_group_any_type = if *is_star {
@@ -1141,7 +1156,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.type_order(),
                         )
                     {
-                        self.error(range, "Exception handler annotation in `except*` clause may not extend `BaseExceptionGroup`".to_string());
+                        self.error(range, "Exception handler annotation in `except*` clause may not extend `BaseExceptionGroup`".to_owned());
                     }
                     exception
                 };
@@ -1412,7 +1427,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 tparams.extend(legacy_tparams);
                 let callable = Type::Callable(
                     Box::new(Callable::list(params, ret)),
-                    Some(Box::new((self.module_info().name(), x.name.id.clone()))),
+                    Kind::from_name(self.module_info().name(), &x.name.id),
                 );
                 callable.forall(self.type_params(x.range, tparams))
             }
@@ -1421,6 +1436,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .arc_clone(),
             Binding::ClassDef(box (x, fields), bases, legacy_tparams) => {
                 Type::ClassDef(self.class_definition(x, fields.clone(), bases, legacy_tparams))
+            }
+            Binding::FunctionalClassDef(x, fields) => {
+                Type::ClassDef(self.functional_class_definition(x, fields))
             }
             Binding::SelfType(k) => match &*self.get_idx(*k) {
                 Type::ClassDef(c) => c.self_type(),

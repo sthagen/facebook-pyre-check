@@ -46,6 +46,21 @@ class Coord(TypedDict, metaclass=EnumMeta):  # E: Typed dictionary definitions m
 );
 
 testcase!(
+    test_typed_dict_iterate,
+    r#"
+from typing import TypedDict, assert_type
+class Coord(TypedDict):
+    x: int
+    y: int
+def foo(c: Coord) -> None:
+    for x in Coord:  # E: Type `type[Coord]` (a `TypedDict` class object) is not iterable
+        pass
+    for x in c:
+        assert_type(x, str)
+    "#,
+);
+
+testcase!(
     test_typed_dict_generic,
     r#"
 from typing import TypedDict

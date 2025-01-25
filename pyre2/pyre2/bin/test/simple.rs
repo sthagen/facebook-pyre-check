@@ -646,7 +646,7 @@ testcase!(
 class A:
     pass
 def f(x: A):
-    for _ in x:  # E: Class `A` is not iterable
+    for _ in x:  # E: Type `A` is not iterable
         pass
     "#,
 );
@@ -656,7 +656,7 @@ testcase!(
     r#"
 class A:
     pass
-for _ in A:  # E: Class object `A` is not iterable
+for _ in A:  # E: Type `type[A]` is not iterable
     pass
     "#,
 );
@@ -673,7 +673,7 @@ class B[T]:
     pass
 for x in A[str]:
     assert_type(x, int)
-for _ in B[str]:  # E: Class object `B[str]` is not iterable
+for _ in B[str]:  # E: Type `type[B[str]]` is not iterable
     pass
     "#,
 );
@@ -891,7 +891,8 @@ async def test() -> None:
 "#,
 );
 
-testcase!(
+testcase_with_bug!(
+    "TODO(yangdanny) Protocol checking",
     test_await_wrong_await_return_type,
     r#"
 class Foo:
@@ -899,7 +900,7 @@ class Foo:
         ...
 
 async def test() -> None:
-    await Foo()  # E: Expression is not awaitable
+    await Foo()  # this should be an error because the return type of __await__ doesn't match the protocol
 "#,
 );
 
@@ -944,4 +945,16 @@ from typing import assert_type
 class A: pass
 assert_type(A, type[A])
     "#,
+);
+
+testcase!(
+    test_literal_string_after_if,
+    r#"
+from typing import Literal
+
+if True:
+    pass
+
+x: Literal["little", "big"] = "big"
+"#,
 );
