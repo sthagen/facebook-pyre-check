@@ -9,20 +9,21 @@ use std::char;
 use std::fmt;
 use std::fmt::Display;
 
-use ordered_float::NotNan;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprBooleanLiteral;
 use ruff_python_ast::ExprBytesLiteral;
 use ruff_python_ast::ExprFString;
-use ruff_python_ast::ExprNumberLiteral;
 use ruff_python_ast::ExprStringLiteral;
+use ruff_python_ast::ExprUnaryOp;
 use ruff_python_ast::FStringElement;
 use ruff_python_ast::FStringPart;
 use ruff_python_ast::Identifier;
+use ruff_python_ast::Int;
 use ruff_python_ast::Number;
 use ruff_python_ast::UnaryOp;
+use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_set::SmallSet;
 use static_assertions::assert_eq_size;
@@ -41,11 +42,6 @@ assert_eq_size!(Lit, [usize; 3]);
 pub enum Lit {
     String(Box<str>),
     Int(i64),
-    Float(NotNan<f64>),
-    Complex {
-        real: NotNan<f64>,
-        imag: NotNan<f64>,
-    },
     Bool(bool),
     Bytes(Box<[u8]>),
     Enum(Box<(ClassType, Name)>),
@@ -56,14 +52,6 @@ impl Display for Lit {
         match self {
             Lit::String(x) => write!(f, "'{x}'"),
             Lit::Int(x) => write!(f, "{x}"),
-            Lit::Float(x) => {
-                let mut s = x.to_string();
-                if !s.contains('.') {
-                    s.push_str(".0");
-                }
-                write!(f, "{s}")
-            }
-            Lit::Complex { real, imag } => write!(f, "{real}+{imag}j"),
             Lit::Bool(x) => {
                 let s = if *x { "True" } else { "False" };
                 write!(f, "{s}")
@@ -92,58 +80,92 @@ impl Lit {
         module_info: &ModuleInfo,
         get_enum_from_name: &dyn Fn(Identifier) -> Option<Enum>,
         errors: &ErrorCollector,
-    ) -> Self {
+    ) -> Type {
+        let int = |i| match i {
+            Some(i) => Lit::Int(i).to_type(),
+            None => {
+                errors.add(
+                    module_info,
+                    x.range(),
+                    "Int literal exceeds range, expected to fit within 64 bits".to_owned(),
+                );
+                Type::any_error()
+            }
+        };
+
         match x {
-            Expr::UnaryOp(x) => match x.op {
-                UnaryOp::UAdd => {
-                    Self::from_expr(&x.operand, module_info, get_enum_from_name, errors)
-                }
-                UnaryOp::USub => {
-                    Self::from_expr(&x.operand, module_info, get_enum_from_name, errors).negate(
-                        module_info,
-                        x.range,
-                        errors,
-                    )
-                }
-                _ => {
-                    errors.todo(module_info, "Lit::from_expr", x);
-                    Lit::Bool(false)
-                }
-            },
-            Expr::StringLiteral(x) => Self::from_string_literal(x),
-            Expr::BytesLiteral(x) => Self::from_bytes_literal(x),
-            Expr::NumberLiteral(x) => Self::from_number_literal(x, module_info, errors),
-            Expr::BooleanLiteral(x) => Self::from_boolean_literal(x),
+            Expr::UnaryOp(ExprUnaryOp {
+                op: UnaryOp::UAdd,
+                operand: box Expr::NumberLiteral(n),
+                ..
+            }) if let Number::Int(i) = &n.value => int(i.as_i64()),
+            Expr::UnaryOp(ExprUnaryOp {
+                op: UnaryOp::USub,
+                operand: box Expr::NumberLiteral(n),
+                ..
+            }) if let Number::Int(i) = &n.value => int(i.as_i64().and_then(|x| x.checked_neg())),
+            Expr::NumberLiteral(n) if let Number::Int(i) = &n.value => int(i.as_i64()),
+            Expr::StringLiteral(x) => Self::from_string_literal(x).to_type(),
+            Expr::BytesLiteral(x) => Self::from_bytes_literal(x).to_type(),
+            Expr::BooleanLiteral(x) => Self::from_boolean_literal(x).to_type(),
             Expr::Attribute(ExprAttribute {
-                range: _,
+                range,
                 value: box Expr::Name(maybe_enum_name),
                 attr: member_name,
                 ctx: _,
             }) => match get_enum_from_name(Ast::expr_name_identifier(maybe_enum_name.clone())) {
-                Some(e) if let Some(lit) = e.get_member(&member_name.id) => lit,
-                _ => {
-                    errors.todo(module_info, "Lit::from_expr", x);
-                    Lit::Bool(false)
+                Some(e) => match e.get_member(&member_name.id) {
+                    Some(lit) => lit.to_type(),
+                    None => {
+                        errors.add(
+                            module_info,
+                            *range,
+                            format!(
+                                "Enumeration `{}` does not have member `{}`",
+                                maybe_enum_name.id, member_name.id
+                            ),
+                        );
+                        Type::any_error()
+                    }
+                },
+                None => {
+                    errors.add(
+                        module_info,
+                        *range,
+                        format!(
+                            "Literal expression `{}` is not an enumeration",
+                            maybe_enum_name.id
+                        ),
+                    );
+                    Type::any_error()
                 }
             },
             _ => {
-                errors.todo(module_info, "Lit::from_expr", x);
-                Lit::Bool(false)
+                errors.add(
+                    module_info,
+                    x.range(),
+                    "Invalid literal expression".to_owned(),
+                );
+                Type::any_error()
             }
         }
     }
 
     pub fn negate(
         &self,
+        stdlib: &Stdlib,
         module_info: &ModuleInfo,
         range: TextRange,
         errors: &ErrorCollector,
-    ) -> Self {
+    ) -> Type {
         match self {
-            Lit::Int(x) if let Some(x) = x.checked_neg() => Lit::Int(x),
+            Lit::Int(x) => match x.checked_neg() {
+                Some(x) => Lit::Int(x).to_type(),
+                None => stdlib.int().to_type(), // Loss of precision
+            },
             _ => {
                 errors.add(module_info, range, format!("Cannot negate type {self}"));
-                self.clone()
+                Type::any_error()
             }
         }
     }
@@ -153,15 +175,15 @@ impl Lit {
         module_info: &ModuleInfo,
         range: TextRange,
         errors: &ErrorCollector,
-    ) -> Self {
+    ) -> Type {
         match self {
             Lit::Int(x) => {
                 let x = !x;
-                Lit::Int(x)
+                Lit::Int(x).to_type()
             }
             _ => {
                 errors.add(module_info, range, format!("Cannot invert type {self}"));
-                self.clone()
+                Type::any_error()
             }
         }
     }
@@ -192,24 +214,8 @@ impl Lit {
         Some(Lit::String(collected_literals.join("").into_boxed_str()))
     }
 
-    pub fn from_number_literal(
-        x: &ExprNumberLiteral,
-        module_info: &ModuleInfo,
-        errors: &ErrorCollector,
-    ) -> Self {
-        match &x.value {
-            Number::Int(x) if let Some(x) = x.as_i64() => Lit::Int(x),
-            Number::Float(x) if let Ok(x) = NotNan::new(*x) => Lit::Float(x),
-            Number::Complex { real, imag }
-                if let (Ok(real), Ok(imag)) = (NotNan::new(*real), NotNan::new(*imag)) =>
-            {
-                Lit::Complex { imag, real }
-            }
-            _ => {
-                errors.todo(module_info, "Lit::from_number_literal", x);
-                Lit::Int(0)
-            }
-        }
+    pub fn from_int(x: &Int) -> Option<Self> {
+        Some(Lit::Int(x.as_i64()?))
     }
 
     pub fn from_boolean_literal(x: &ExprBooleanLiteral) -> Self {
@@ -229,8 +235,6 @@ impl Lit {
             Lit::Int(_) => stdlib.int(),
             Lit::Bool(_) => stdlib.bool(),
             Lit::Bytes(_) => stdlib.bytes(),
-            Lit::Float(_) => stdlib.float(),
-            Lit::Complex { .. } => stdlib.complex(),
             Lit::Enum(box (class_type, _)) => class_type.clone(),
         }
     }

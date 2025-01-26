@@ -635,7 +635,7 @@ testcase_with_bug!(
     "TODO: implement reflective operators",
     test_complex,
     r#"
-z: complex =  3 + 4j # E: EXPECTED Literal[0+4j] <: int # E: EXPECTED int <: complex
+z: complex =  3 + 4j # E: EXPECTED complex <: int # E: EXPECTED int <: complex
 
     "#,
 );
@@ -770,13 +770,31 @@ z: foo(y=x)  # E: untype, got Never
 "#,
 );
 
-testcase_with_bug!(
-    "FIXME: Should give a better error message",
+testcase!(
     test_invalid_literal,
     r#"
 from typing import Literal
 x = 1
-y: Literal[x]  # E: TODO: Name(ExprName - Lit::from_expr
+y: Literal[x]  # E: Invalid literal expression
+"#,
+);
+
+testcase!(
+    test_large_int_literal,
+    r#"
+from typing import assert_type, Literal
+x = 1
+y = 0xFFFFFFFFFFFFFFFFFF
+assert_type(x, Literal[1])
+assert_type(y, int)
+"#,
+);
+
+testcase!(
+    test_large_int_type,
+    r#"
+from typing import Literal
+x: Literal[0xFFFFFFFFFFFFFFFFFF]  # E: Int literal exceeds range
 "#,
 );
 

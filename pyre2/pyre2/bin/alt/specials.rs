@@ -71,7 +71,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         &|name| self.get_enum_from_name(name),
                         self.errors(),
                     );
-                    literals.push(Type::Literal(lit));
+                    literals.push(lit);
                 }
                 Type::type_form(self.unions(&literals))
             }
@@ -89,7 +89,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         let ty = self.expr_untype(name);
                         Type::type_form(Type::callable_param_spec(ty, ret))
                     }
-                    x => self.error_todo("expr_infer, Callable type", x),
+                    x => self.todo("expr_infer, Callable type", x),
                 }
             }
             SpecialForm::Callable => self.error(
@@ -140,7 +140,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 ),
             ),
             SpecialForm::Annotated if arguments.len() > 1 => self.expr(&arguments[0], None),
-            _ => self.error_todo(
+            _ => self.todo(
                 &format!(
                     "Answers::apply_special_form cannot handle `{special_form}[{}]`",
                     arguments

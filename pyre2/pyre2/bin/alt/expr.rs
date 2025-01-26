@@ -16,6 +16,7 @@ use ruff_python_ast::ExprBinOp;
 use ruff_python_ast::ExprSlice;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Keyword;
+use ruff_python_ast::Number;
 use ruff_python_ast::Operator;
 use ruff_python_ast::UnaryOp;
 use ruff_text_size::Ranged;
@@ -859,8 +860,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::BinOp(x) => self.binop_infer(x),
             Expr::UnaryOp(x) => {
                 let t = self.expr_infer(&x.operand);
-                let unop = |t: &Type, f: &dyn Fn(&Lit) -> Lit, method: &Name| match t {
-                    Type::Literal(lit) => Type::Literal(f(lit)),
+                let unop = |t: &Type, f: &dyn Fn(&Lit) -> Type, method: &Name| match t {
+                    Type::Literal(lit) => f(lit),
                     Type::ClassType(_) => self.call_method_or_error(t, method, x.range, &[], &[]),
                     _ => self.error(
                         x.range,
@@ -869,11 +870,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 };
                 self.distribute_over_union(&t, |t| match x.op {
                     UnaryOp::USub => {
-                        let f = |lit: &Lit| lit.negate(self.module_info(), x.range, self.errors());
+                        let f = |lit: &Lit| {
+                            lit.negate(self.stdlib, self.module_info(), x.range, self.errors())
+                        };
                         unop(t, &f, &dunder::NEG)
                     }
                     UnaryOp::UAdd => {
-                        let f = |lit: &Lit| lit.clone();
+                        let f = |lit: &Lit| lit.clone().to_type();
                         unop(t, &f, &dunder::POS)
                     }
                     UnaryOp::Not => match t.as_bool() {
@@ -996,7 +999,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.expr(&x.value, Some(&hint.value));
                         }
                         None => {
-                            self.error_todo("Answers::expr_infer expansion in dict literal", x);
+                            self.todo("Answers::expr_infer expansion in dict literal", x);
                         }
                     });
                     hint.to_type(self.stdlib)
@@ -1015,7 +1018,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             value_tys.push(value_t);
                         }
                         None => {
-                            self.error_todo("Answers::expr_infer expansion in dict literal", x);
+                            self.todo("Answers::expr_infer expansion in dict literal", x);
                         }
                     });
                     let key_ty = self.unions(&key_tys);
@@ -1180,18 +1183,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     })
                 }
             }
-            Expr::FString(x) => {
-                if let Some(lit) = Lit::from_fstring(x) {
-                    lit.to_type()
-                } else {
-                    self.stdlib.str().to_type()
-                }
-            }
+            Expr::FString(x) => match Lit::from_fstring(x) {
+                Some(lit) => lit.to_type(),
+                _ => self.stdlib.str().to_type(),
+            },
             Expr::StringLiteral(x) => Lit::from_string_literal(x).to_type(),
             Expr::BytesLiteral(x) => Lit::from_bytes_literal(x).to_type(),
-            Expr::NumberLiteral(x) => {
-                Lit::from_number_literal(x, self.module_info(), self.errors()).to_type()
-            }
+            Expr::NumberLiteral(x) => match &x.value {
+                Number::Int(x) => match Lit::from_int(x) {
+                    Some(lit) => lit.to_type(),
+                    None => self.stdlib.int().to_type(),
+                },
+                Number::Float(_) => self.stdlib.float().to_type(),
+                Number::Complex { .. } => self.stdlib.complex().to_type(),
+            },
             Expr::BooleanLiteral(x) => Lit::from_boolean_literal(x).to_type(),
             Expr::NoneLiteral(_) => Type::None,
             Expr::EllipsisLiteral(_) => Type::Ellipsis,
@@ -1290,7 +1295,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                         elts[lower as usize..upper as usize].to_vec(),
                                     ))
                                 }
-                                _ => self.error_todo("tuple slice", x),
+                                _ => self.todo("tuple slice", x),
                             }
                         }
                         _ => {
@@ -1375,7 +1380,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     ),
                 }
             }
-            Expr::Starred(_) => self.error_todo("Answers::expr_infer", x),
+            Expr::Starred(_) => self.todo("Answers::expr_infer", x),
             Expr::Name(x) => match x.id.as_str() {
                 "Any" => Type::type_form(Type::any_explicit()),
                 _ => self
@@ -1387,7 +1392,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let int = self.stdlib.int().to_type();
                 self.stdlib.slice(int.clone(), int.clone(), int).to_type()
             }
-            Expr::IpyEscapeCommand(_) => self.error_todo("Answers::expr_infer", x),
+            Expr::IpyEscapeCommand(x) => {
+                self.error(x.range, "IPython escapes are not supported".to_owned())
+            }
         }
     }
 }
