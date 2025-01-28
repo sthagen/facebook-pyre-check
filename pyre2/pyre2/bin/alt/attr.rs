@@ -7,6 +7,7 @@
 
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
+use ruff_python_ast::Expr;
 use ruff_text_size::TextRange;
 
 use crate::alt::answers::AnswersSolver;
@@ -39,10 +40,10 @@ pub struct Attribute(AttributeAccess);
 /// The operation is either permitted with an attribute `Type`, or is not allowed
 /// and has a reason.
 #[derive(Clone)]
-pub struct AttributeAccess(pub Result<Type, AccessNotAllowed>);
+struct AttributeAccess(Result<Type, AccessNotAllowed>);
 
 impl AttributeAccess {
-    pub fn allowed(ty: Type) -> Self {
+    fn allowed(ty: Type) -> Self {
         AttributeAccess(Ok(ty))
     }
 
@@ -80,7 +81,11 @@ impl Attribute {
         Attribute(AttributeAccess::not_allowed(reason))
     }
 
-    pub fn get(self) -> AttributeAccess {
+    fn get(self) -> AttributeAccess {
+        self.0
+    }
+
+    fn set(self) -> AttributeAccess {
         self.0
     }
 
@@ -190,13 +195,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// error and return `Any`. Use this to infer the type of a direct attribute fetch.
     pub fn type_of_attr_get(
         &self,
-        ty: Type,
+        base: Type,
         attr_name: &Name,
         range: TextRange,
         todo_ctx: &str,
     ) -> Type {
         match self
-            .lookup_attr(ty, attr_name)
+            .lookup_attr(base, attr_name)
             .get_type_or_conflated_error_msg(attr_name, todo_ctx)
         {
             Ok(ty) => ty,
@@ -209,12 +214,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// to infer special methods where we can fall back if it is missing (for example binary operators).
     pub fn type_of_attr_get_if_found(
         &self,
-        ty: Type,
+        base: Type,
         attr_name: &Name,
         range: TextRange,
         todo_ctx: &str,
     ) -> Option<Type> {
-        match self.lookup_attr(ty, attr_name) {
+        match self.lookup_attr(base, attr_name) {
             LookupResult::Found(attr) => match attr.get() {
                 AttributeAccess(Ok(ty)) => Some(ty),
                 AttributeAccess(Err(e)) => Some(self.error(range, e.to_error_msg(attr_name))),
@@ -233,15 +238,83 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// Compute the get (i.e. read) type of an attribute if it is gettable. If it is not found or
     /// access is denied, return `None`; never produce a type error. Used for internal special cases
     /// like checking enum values.
-    pub fn type_of_attr_get_if_gettable(&self, ty: Type, attr_name: &Name) -> Option<Type> {
-        match self.lookup_attr(ty, attr_name) {
+    pub fn type_of_attr_get_if_gettable(&self, base: Type, attr_name: &Name) -> Option<Type> {
+        match self.lookup_attr(base, attr_name) {
             LookupResult::Found(attr) => attr.get_type(),
             _ => None,
         }
     }
 
-    fn lookup_attr(&self, ty: Type, attr_name: &Name) -> LookupResult {
-        match self.as_attribute_base(ty.clone(), self.stdlib) {
+    // Note: no closed form for the set type is guaranteed to exist: asking
+    // whether a an attribute set is legal can require synthesizing a call (e.g.
+    // for preoperties with setters, descriptors, or `__setattr__` fallback).
+    //
+    // As a result, no function with this api can be relied upon for valldating
+    // attribute set actions in the general case, use the `check_attr_set.*`
+    // functions instead.
+    fn set_type_or_error(
+        &self,
+        base: Type,
+        attr_name: &Name,
+        range: TextRange,
+        todo_ctx: &str,
+    ) -> Option<Type> {
+        match self.lookup_attr(base, attr_name) {
+            LookupResult::Found(attr) => match attr.set() {
+                AttributeAccess(Ok(ty)) => Some(ty),
+                AttributeAccess(Err(e)) => {
+                    self.error(range, e.to_error_msg(attr_name));
+                    None
+                }
+            },
+            LookupResult::InternalError(e) => {
+                self.error(range, e.to_error_msg(attr_name, todo_ctx));
+                None
+            }
+            LookupResult::NotFound(e) => {
+                self.error(range, e.to_error_msg(attr_name));
+                None
+            }
+        }
+    }
+
+    pub fn check_attr_set_with_expr(
+        &self,
+        base: Type,
+        attr_name: &Name,
+        got: &Expr,
+        range: TextRange,
+        todo_ctx: &str,
+    ) {
+        let want = self.set_type_or_error(base, attr_name, range, todo_ctx);
+        self.expr(got, want.as_ref());
+    }
+
+    pub fn check_attr_set_with_type(
+        &self,
+        base: Type,
+        attr_name: &Name,
+        got: &Type,
+        range: TextRange,
+        todo_ctx: &str,
+    ) {
+        if let Some(want) = self.set_type_or_error(base, attr_name, range, todo_ctx) {
+            if !self.solver().is_subset_eq(got, &want, self.type_order()) {
+                self.error(
+                    range,
+                    format!(
+                        "Could not assign type `{}` to attribute `{}` with type `{}`",
+                        got.clone().deterministic_printing(),
+                        attr_name,
+                        want.deterministic_printing(),
+                    ),
+                );
+            }
+        }
+    }
+
+    fn lookup_attr(&self, base: Type, attr_name: &Name) -> LookupResult {
+        match self.as_attribute_base(base.clone(), self.stdlib) {
             Some(AttributeBase::ClassInstance(class)) => {
                 match self.get_instance_attribute(&class, attr_name) {
                     Some(attr) => LookupResult::Found(attr),
@@ -294,7 +367,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Some(AttributeBase::Any(style)) => LookupResult::found_type(style.propagate()),
             Some(AttributeBase::Never) => LookupResult::found_type(Type::never()),
-            None => LookupResult::InternalError(InternalError::AttributeBaseUndefined(ty)),
+            None => LookupResult::InternalError(InternalError::AttributeBaseUndefined(base)),
         }
     }
 

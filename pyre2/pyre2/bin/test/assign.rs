@@ -477,3 +477,14 @@ x = y  # this should be an error
 y = 42
     "#,
 );
+
+testcase_with_bug!(
+    "We never validate that assignments to unpacked targets are valid",
+    test_assign_unpacked_with_existing_annotations,
+    r#"
+x: int
+y: str
+z: tuple[bool, ...]
+x, *z, y = True, 1, 2, "test"
+    "#,
+);

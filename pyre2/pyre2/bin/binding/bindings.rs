@@ -706,7 +706,7 @@ impl<'a> BindingsBuilder<'a> {
         for comp in comprehensions.iter() {
             self.scopes.last_mut().stat.expr_lvalue(&comp.target);
             let make_binding = |k| Binding::IterableValue(k, comp.iter.clone());
-            self.bind_target(&comp.target, &make_binding);
+            self.bind_target(&comp.target, &make_binding, None);
         }
     }
 
@@ -786,7 +786,7 @@ impl<'a> BindingsBuilder<'a> {
             Expr::Named(x) => {
                 self.scopes.last_mut().stat.expr_lvalue(&x.target);
                 let make_binding = |k| Binding::Expr(k, (*x.value).clone());
-                self.bind_target(&x.target, &make_binding);
+                self.bind_target(&x.target, &make_binding, None);
                 false
             }
             Expr::ListComp(x) => {
@@ -919,14 +919,14 @@ impl<'a> BindingsBuilder<'a> {
                     splat = true;
                     // Counts how many elements are after the splat.
                     let j = elts.len() - i - 1;
-                    let make_nested_binding = |ann: Option<Idx<KeyAnnotation>>| {
+                    let make_nested_binding = |_: Option<Idx<KeyAnnotation>>| {
                         Binding::UnpackedValue(
-                            Box::new(make_binding(ann)),
+                            Box::new(make_binding(None)),
                             range,
                             UnpackedPosition::Slice(i, j),
                         )
                     };
-                    self.bind_target(&e.value, &make_nested_binding);
+                    self.bind_target(&e.value, &make_nested_binding, None);
                 }
                 _ => {
                     let idx = if splat {
@@ -936,10 +936,10 @@ impl<'a> BindingsBuilder<'a> {
                     } else {
                         UnpackedPosition::Index(i)
                     };
-                    let make_nested_binding = |ann: Option<Idx<KeyAnnotation>>| {
-                        Binding::UnpackedValue(Box::new(make_binding(ann)), range, idx)
+                    let make_nested_binding = |_: Option<Idx<KeyAnnotation>>| {
+                        Binding::UnpackedValue(Box::new(make_binding(None)), range, idx)
                     };
-                    self.bind_target(e, &make_nested_binding);
+                    self.bind_target(e, &make_nested_binding, None);
                 }
             }
         }
@@ -984,10 +984,34 @@ impl<'a> BindingsBuilder<'a> {
         false
     }
 
+    /// Bind the LHS of a target in a syntactic form (e.g. assignments, variables
+    /// bound in a `for`` loop header, variables defined by a `with` statement header).
+    ///
+    /// The `target` is the LHS. It is an `Expr`, but in fact only a handful of forms
+    /// are legal because targets can only be names, attributes, subscripts, or unpackings. An
+    /// example target illustrating all of the cases is `(x.y, d["k"], [z, *w, q])`
+    ///
+    /// The `make_binding` function is a callback to the caller, who is responsible for constructing
+    /// a binding that provides the value of the RHS. To handle cases where the type of the LHS
+    /// is restricted, it takes an optional `KeyAnnotation` which should be the annotation for the
+    /// target when one is available.
+    ///
+    /// The `value` argument is only provided when handling top-level assignment targets;
+    /// it enables contextual typing. At the moment it is only used in the attribute case (because
+    /// the other cases instead rely on `make_binding` to handle contextual typing, which works
+    /// when the form is not an unpacking but results in false negatives when it is).
+    ///
+    /// TODO(stroxler): The way this is wired up does not work well in
+    /// the general case of an unpacking. The attempt to pass around a `make_binding`
+    /// callable for both inference and checking does not compose properly with `bind_unpacking`,
+    /// because for an unpack target there is no annotation for the entire RHS.
+    /// As a result, for all cases except attributes we wind up ignoring type errors
+    /// when the target is an unpacking pattern.
     fn bind_target(
         &mut self,
         target: &Expr,
         make_binding: &dyn Fn(Option<Idx<KeyAnnotation>>) -> Binding,
+        value: Option<&Expr>,
     ) {
         match target {
             Expr::Name(name) => {
@@ -997,13 +1021,32 @@ impl<'a> BindingsBuilder<'a> {
                 self.table.types.1.insert(idx, make_binding(ann));
             }
             Expr::Attribute(x) => {
-                let ann = self.table.insert(
-                    KeyAnnotation::AttrAnnotation(x.range),
-                    BindingAnnotation::AttrType(x.clone()),
-                );
-                let binding = make_binding(Some(ann));
-                self.bind_attr_if_self(x, binding.clone(), None);
-                self.table.insert(Key::Anon(x.range), binding);
+                // `make_binding` will give us a binding for inferring the value type, which we
+                // *might* use to compute the attribute type if there are no explicit annotations.
+                // Note that this binding uses non-contextual typing.
+                let value_binding = make_binding(None);
+                // Create a check binding to verify that the assignment is valid.
+                if let Some(value) = value {
+                    // If this is not an unpacked assignment, we can use contextual typing on the
+                    // expression itself.
+                    self.table.insert(
+                        Key::Anon(x.range),
+                        Binding::CheckAssignExprToAttribute(Box::new((x.clone(), value.clone()))),
+                    );
+                } else {
+                    // Handle an unpacked assignment, where we don't have easy access to the expression.
+                    // Note that contextual typing will not be used in this case.
+                    self.table.insert(
+                        Key::Anon(x.range),
+                        Binding::CheckAssignTypeToAttribute(Box::new((
+                            x.clone(),
+                            value_binding.clone(),
+                        ))),
+                    );
+                }
+                // If this is a self-assignment, record it because we may use it to infer
+                // the existance of an instance-only attribute.
+                self.bind_attr_if_self(x, value_binding, None);
             }
             Expr::Subscript(x) => {
                 let binding = make_binding(None);
@@ -1427,7 +1470,7 @@ impl<'a> BindingsBuilder<'a> {
         if let ScopeKind::ClassBody(body) = last_scope.kind {
             for (method_name, instance_attributes) in body.instance_attributes_by_method {
                 if method_name == dunder::INIT {
-                    for (name, attribute) in instance_attributes {
+                    for (name, InstanceAttribute(value, annotation, range)) in instance_attributes {
                         if !fields.contains(&name) {
                             fields.insert(name.clone());
                             self.table.insert(
@@ -1435,12 +1478,14 @@ impl<'a> BindingsBuilder<'a> {
                                 BindingClassField {
                                     class: definition_key,
                                     name,
-                                    value: attribute.0,
-                                    annotation: attribute.1,
-                                    range: attribute.2,
+                                    value,
+                                    annotation,
+                                    range,
                                     initialization: ClassFieldInitialization::Instance,
                                 },
                             );
+                        } else if annotation.is_some() {
+                            self.error(range, format!("Attribute `{name}` is declared in the class body, so the assignment here should not have an annotation."));
                         }
                     }
                 }
@@ -1824,7 +1869,7 @@ impl<'a> BindingsBuilder<'a> {
                                 Binding::Expr(k, value.clone())
                             }
                         };
-                        self.bind_target(&target, &make_binding);
+                        self.bind_target(&target, &make_binding, Some(&value));
                         self.ensure_expr(&target);
                     }
                 }
@@ -1833,7 +1878,7 @@ impl<'a> BindingsBuilder<'a> {
                 self.ensure_expr(&x.target);
                 self.ensure_expr(&x.value);
                 let make_binding = |_: Option<Idx<KeyAnnotation>>| Binding::AugAssign(x.clone());
-                self.bind_target(&x.target, &make_binding);
+                self.bind_target(&x.target, &make_binding, None);
             }
             Stmt::AnnAssign(mut x) => match *x.target {
                 Expr::Name(name) => {
@@ -1886,26 +1931,15 @@ impl<'a> BindingsBuilder<'a> {
                 Expr::Attribute(attr) => {
                     self.ensure_expr(&attr.value);
                     self.ensure_type(&mut x.annotation, &mut None);
-                    // This is the type of the attribute.
-                    let attr_key = self.table.insert(
-                        KeyAnnotation::AttrAnnotation(attr.range),
-                        BindingAnnotation::AttrType(attr.clone()),
-                    );
-                    // This is the type annotation on the assignment.
                     let ann_key = self.table.insert(
                         KeyAnnotation::AttrAnnotation(x.annotation.range()),
                         BindingAnnotation::AnnotateExpr(*x.annotation, None),
                     );
-                    let value_type = match &x.value {
+                    let value_binding = match &x.value {
                         Some(v) => Binding::Expr(None, *v.clone()),
                         None => Binding::AnyType(AnyStyle::Implicit),
                     };
-                    if self.bind_attr_if_self(&attr, value_type, Some(ann_key)) {
-                        self.table.insert(
-                            Key::Expect(attr.range),
-                            Binding::Eq(ann_key, attr_key, attr.attr.id),
-                        );
-                    } else {
+                    if !self.bind_attr_if_self(&attr, value_binding, Some(ann_key)) {
                         self.errors.add(
                             &self.module_info,
                             x.range,
@@ -1916,10 +1950,12 @@ impl<'a> BindingsBuilder<'a> {
                             ),
                         );
                     }
-                    if let Some(v) = x.value {
+                    if let Some(box v) = x.value {
                         self.ensure_expr(&v);
-                        self.table
-                            .insert(Key::Anon(v.range()), Binding::Expr(Some(ann_key), *v));
+                        self.table.insert(
+                            Key::Anon(v.range()),
+                            Binding::CheckAssignExprToAttribute(Box::new((attr, v))),
+                        );
                     }
                 }
                 _ => self.todo("Bindings::stmt AnnAssign", &x),
@@ -1940,7 +1976,7 @@ impl<'a> BindingsBuilder<'a> {
                 self.setup_loop(x.range, &NarrowOps::new());
                 self.ensure_expr(&x.iter);
                 let make_binding = |k| Binding::IterableValue(k, *x.iter.clone());
-                self.bind_target(&x.target, &make_binding);
+                self.bind_target(&x.target, &make_binding, None);
                 self.ensure_expr(&x.target);
                 self.stmts(x.body);
                 self.teardown_loop(x.range, &NarrowOps::new(), x.orelse);
@@ -2009,7 +2045,7 @@ impl<'a> BindingsBuilder<'a> {
                         let make_binding = |k: Option<Idx<KeyAnnotation>>| {
                             Binding::ContextValue(k, item.context_expr.clone(), kind)
                         };
-                        self.bind_target(&opts, &make_binding);
+                        self.bind_target(&opts, &make_binding, None);
                         self.ensure_expr(&opts);
                     } else {
                         self.table.insert(

@@ -7,6 +7,7 @@
 
 use crate::test::util::TestEnv;
 use crate::testcase;
+use crate::testcase_with_bug;
 
 testcase!(
     test_set_attribute,
@@ -16,6 +17,18 @@ class A:
 def f(a: A):
     a.x = 1  # OK
     a.x = "oops"  # E: EXPECTED Literal['oops'] <: int
+    "#,
+);
+
+testcase_with_bug!(
+    "We never validate that assignments to unpacked targets are valid",
+    test_set_attribute_in_unpacked_assign,
+    r#"
+class A:
+    x: int
+    y: str
+def f(a: A):
+    a.x, a.y = "x", "y"  # E: Could not assign type `Literal['x']` to attribute `x` with type `int`
     "#,
 );
 
@@ -85,11 +98,13 @@ def f(a: A):
 testcase!(
     test_self_attribute_annotated_twice,
     r#"
-from typing import assert_type, Literal
+from typing import assert_type, Literal, Final
 class A:
     x: int
+    y: str
     def __init__(self):
-        self.x: Literal[1] = 1  # E: Inconsistent type annotations for x: Literal[1], int
+        self.x: Literal[1] = 1  # E: Attribute `x` is declared in the class body, so the assignment here should not have an annotation.
+        self.y: Final = "y"  # E: Attribute `y` is declared in the class body, so the assignment here should not have an annotation.
 def f(a: A):
     assert_type(a.x, int)
     "#,

@@ -635,11 +635,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Arc::new(ann)
             }
             BindingAnnotation::Type(x) => Arc::new(Annotation::new_type(x.clone())),
-            BindingAnnotation::AttrType(attr) => {
-                let e = Expr::Attribute(attr.clone());
-                let t = self.expr(&e, None);
-                Arc::new(Annotation::new_type(t))
-            }
             BindingAnnotation::Forward(k) => {
                 Arc::new(Annotation::new_type(self.get_idx(*k).arc_clone()))
             }
@@ -1546,6 +1541,29 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         ),
                     );
                 }
+                Type::None // Unused
+            }
+            Binding::CheckAssignTypeToAttribute(box (attr, got)) => {
+                let base = self.expr(&attr.value, None);
+                let got = self.solve_binding(got);
+                self.check_attr_set_with_type(
+                    base,
+                    &attr.attr.id,
+                    &got,
+                    attr.range,
+                    "Answers::solve_binding_inner::CheckAssignTypeToAttribute",
+                );
+                Type::None // Unused
+            }
+            Binding::CheckAssignExprToAttribute(box (attr, value)) => {
+                let base = self.expr(&attr.value, None);
+                self.check_attr_set_with_expr(
+                    base,
+                    &attr.attr.id,
+                    value,
+                    attr.range,
+                    "Answers::solve_binding_inner::CheckAssignExprToAttribute",
+                );
                 Type::None // Unused
             }
             Binding::NameAssign(name, annot_key, expr) => {
