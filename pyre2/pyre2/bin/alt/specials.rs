@@ -75,6 +75,24 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 Type::type_form(self.unions(&literals))
             }
+            SpecialForm::Concatenate => {
+                if arguments.len() < 2 {
+                    self.error(
+                        range,
+                        format!(
+                            "`Concatenate` must take at least two arguments, got {}",
+                            arguments.len()
+                        ),
+                    )
+                } else {
+                    let args = arguments[0..arguments.len() - 1]
+                        .iter()
+                        .map(|x| self.expr_untype(x))
+                        .collect();
+                    let pspec = self.expr_untype(arguments.last().unwrap());
+                    Type::type_form(Type::Concatenate(args, Box::new(pspec)))
+                }
+            }
             SpecialForm::Callable if arguments.len() == 2 => {
                 let ret = self.expr_untype(&arguments[1]);
                 match &arguments[0] {
@@ -88,6 +106,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     name @ Expr::Name(_) => {
                         let ty = self.expr_untype(name);
                         Type::type_form(Type::callable_param_spec(ty, ret))
+                    }
+                    x @ Expr::Subscript(_) => {
+                        let ty = self.expr_untype(x);
+                        match ty {
+                            Type::Concatenate(args, pspec) => {
+                                Type::type_form(Type::callable_concatenate(args , *pspec, ret))
+                            }
+                            _ => self.error(x.range(), format!("Callable types can only have `Concatenate` in this position, got `{}`", ty.deterministic_printing())),
+                        }
                     }
                     x => self.todo("expr_infer, Callable type", x),
                 }

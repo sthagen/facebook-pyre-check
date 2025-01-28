@@ -25,6 +25,8 @@ use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
+use crate::alt::attr::AccessNotAllowed;
+use crate::alt::attr::Attribute;
 use crate::ast::Ast;
 use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::Key;
@@ -58,9 +60,38 @@ use crate::util::prelude::SliceExt;
 /// both visibility rules and whether method binding should be performed.
 #[derive(Debug, Clone)]
 pub struct ClassField {
-    pub ty: Type,
-    pub annotation: Option<Annotation>,
-    pub initialization: ClassFieldInitialization,
+    ty: Type,
+    annotation: Option<Annotation>,
+    initialization: ClassFieldInitialization,
+}
+
+impl ClassField {
+    pub fn new(
+        ty: Type,
+        annotation: Option<Annotation>,
+        initialization: ClassFieldInitialization,
+    ) -> Self {
+        Self {
+            ty,
+            annotation,
+            initialization,
+        }
+    }
+
+    pub fn recursive() -> Self {
+        Self {
+            ty: Type::any_implicit(),
+            annotation: None,
+            initialization: ClassFieldInitialization::Class,
+        }
+    }
+
+    pub fn visit_type_mut(&mut self, mut f: &mut dyn FnMut(&mut Type)) {
+        f(&mut self.ty);
+        for a in self.annotation.iter_mut() {
+            a.visit_type_mut(&mut f);
+        }
+    }
 }
 
 impl Display for ClassField {
@@ -73,26 +104,18 @@ impl Display for ClassField {
     }
 }
 
-/// Provide a root cause for why a class attribute lookup failed, which can
-/// be used to produce better error messages.
-pub enum NoClassAttribute {
-    NoClassMember,
-    InstanceOnlyAttribute,
-    IsGenericMember,
-}
-
-/// Result of attribute lookup
-pub struct Attribute {
-    /// The attribute
-    pub value: Type,
-    /// The class that defines the attribute, which may be different from the one the attribute is
-    /// looked up on. For example, given `class A: x: int; class B(A): pass`, the defining class
-    /// for attribute `x` is `A` even when `x` is looked up on `B`.
+/// Result of looking up a member of a class in the MRO, including a handle to the defining
+/// class which may be some ancestor.
+///
+/// For example, given `class A: x: int; class B(A): pass`, the defining class
+/// for attribute `x` is `A` even when `x` is looked up on `B`.
+struct WithDefiningClass<T> {
+    value: T,
     defining_class: Class,
 }
 
-impl Attribute {
-    pub fn defined_on(&self, cls: &Class) -> bool {
+impl<T> WithDefiningClass<T> {
+    fn defined_on(&self, cls: &Class) -> bool {
         self.defining_class == *cls
     }
 }
@@ -697,7 +720,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     // Get every member of a class, including those declared in parent classes.
-    pub fn get_all_members(&self, cls: &Class) -> SmallMap<Name, (ClassField, Class)> {
+    fn get_all_members(&self, cls: &Class) -> SmallMap<Name, (ClassField, Class)> {
         let mut members = SmallMap::new();
         for name in cls.fields() {
             if let Some(field) = self.get_class_field(cls, name) {
@@ -717,7 +740,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         members
     }
 
-    pub fn get_instance_attribute(&self, cls: &ClassType, name: &Name) -> Option<Attribute> {
+    pub fn get_all_member_names(&self, cls: &Class) -> SmallSet<Name> {
+        self.get_all_members(cls)
+            .keys()
+            .cloned()
+            .collect::<SmallSet<_>>()
+    }
+
+    fn get_instance_attribute_with_defining_class(
+        &self,
+        cls: &ClassType,
+        name: &Name,
+    ) -> Option<WithDefiningClass<Type>> {
         self.get_class_member(cls.class_object(), name)
             .map(|(member, defining_class)| {
                 let instantiated_ty = cls.instantiate_member(member.ty);
@@ -727,11 +761,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     ClassFieldInitialization::Instance => instantiated_ty,
                 };
-                Attribute {
+                WithDefiningClass {
                     value: ty,
                     defining_class,
                 }
             })
+    }
+
+    pub fn get_instance_attribute(&self, cls: &ClassType, name: &Name) -> Option<Attribute> {
+        self.get_instance_attribute_with_defining_class(cls, name)
+            .map(|attr| Attribute::access_allowed(attr.value))
     }
 
     fn depends_on_class_type_parameter(&self, cls: &Class, ty: &Type) -> bool {
@@ -741,38 +780,31 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         tparams.quantified().any(|q| qs.contains(&q))
     }
 
-    /// Gets an attribute from a class definition. Returns an error if the attribute is not found
-    /// or if its type contains a class-scoped type parameter - e.g., `class A[T]: x: T`.
-    pub fn get_class_attribute(
-        &self,
-        cls: &Class,
-        name: &Name,
-    ) -> Result<Attribute, NoClassAttribute> {
-        match self.get_class_member(cls, name) {
-            None => Err(NoClassAttribute::NoClassMember),
-            Some((member, defining_class)) => {
-                if self.depends_on_class_type_parameter(cls, &member.ty) {
-                    Err(NoClassAttribute::IsGenericMember)
-                } else {
-                    match member.initialization {
-                        ClassFieldInitialization::Instance => {
-                            Err(NoClassAttribute::InstanceOnlyAttribute)
-                        }
-                        ClassFieldInitialization::Class => {
-                            if let Some(e) = self.get_enum(&self.promote_silently(cls))
-                                && let Some(member) = e.get_member(name)
-                            {
-                                Ok(Attribute {
-                                    value: Type::Literal(member),
-                                    defining_class,
-                                })
-                            } else {
-                                Ok(Attribute {
-                                    value: member.ty,
-                                    defining_class,
-                                })
-                            }
-                        }
+    /// Gets an attribute from a class definition.
+    ///
+    /// Returns `None` if there is no such attribute, otherwise an `Attribute` object
+    /// that describes whether access is allowed and the type if so.
+    ///
+    /// Access is disallowed for instance-only attributes and for attributes whose
+    /// type contains a class-scoped type parameter - e.g., `class A[T]: x: T`.
+    pub fn get_class_attribute(&self, cls: &Class, name: &Name) -> Option<Attribute> {
+        let (member, _) = self.get_class_member(cls, name)?;
+        if self.depends_on_class_type_parameter(cls, &member.ty) {
+            Some(Attribute::access_not_allowed(
+                AccessNotAllowed::ClassAttributeIsGeneric(cls.clone()),
+            ))
+        } else {
+            match member.initialization {
+                ClassFieldInitialization::Instance => Some(Attribute::access_not_allowed(
+                    AccessNotAllowed::ClassUseOfInstanceAttribute(cls.clone()),
+                )),
+                ClassFieldInitialization::Class => {
+                    if let Some(e) = self.get_enum(&self.promote_silently(cls))
+                        && let Some(member) = e.get_member(name)
+                    {
+                        Some(Attribute::access_allowed(Type::Literal(member)))
+                    } else {
+                        Some(Attribute::access_allowed(member.ty))
                     }
                 }
             }
@@ -783,7 +815,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn get_dunder_new(&self, cls: &ClassType) -> Option<Type> {
         let new_attr = self
             .get_class_member(cls.class_object(), &dunder::NEW)
-            .map(|(member, defining_class)| Attribute {
+            .map(|(member, defining_class)| WithDefiningClass {
                 value: cls.instantiate_member(member.ty),
                 defining_class,
             })?;
@@ -795,11 +827,27 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         Some(new_attr.value)
     }
 
+    /// Get the class's `__init__` method, if we should analyze it
+    /// We skip analyzing the call to `__init__` if:
+    /// (1) it isn't defined (possible if we've been passed a custom typeshed), or
+    /// (2) the class overrides `object.__new__` but not `object.__init__`, in wich case the
+    ///     `__init__` call always succeeds at runtime.
+    pub fn get_dunder_init(&self, cls: &ClassType, overrides_new: bool) -> Option<Type> {
+        let init_method = self.get_instance_attribute_with_defining_class(cls, &dunder::INIT)?;
+        if !(overrides_new
+            && init_method.defined_on(self.stdlib.object_class_type().class_object()))
+        {
+            Some(init_method.value)
+        } else {
+            None
+        }
+    }
+
     /// Get the metaclass `__call__` method.
     pub fn get_metaclass_dunder_call(&self, cls: &ClassType) -> Option<Type> {
         let metadata = self.get_metadata_for_class(cls.class_object());
         let metaclass = metadata.metaclass()?;
-        let attr = self.get_instance_attribute(metaclass, &dunder::CALL)?;
+        let attr = self.get_instance_attribute_with_defining_class(metaclass, &dunder::CALL)?;
         if attr.defined_on(self.stdlib.builtins_type().class_object()) {
             // The behavior of `type.__call__` is already baked into our implementation of constructors,
             // so we can skip analyzing it at the type level.

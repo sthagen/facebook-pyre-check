@@ -26,6 +26,7 @@ use crate::types::simplify::unions;
 use crate::types::types::Quantified;
 use crate::types::types::Type;
 use crate::types::types::Var;
+use crate::util::prelude::SliceExt;
 use crate::util::recurser::Recurser;
 use crate::util::uniques::UniqueFactory;
 
@@ -211,7 +212,13 @@ impl Solver {
         t: Type,
         uniques: &UniqueFactory,
     ) -> (Vec<Var>, Type) {
-        let (vs, t) = t.instantiate_fresh(qs, uniques);
+        let vs = qs.map(|_| Var::new(uniques));
+        let t = t.subst(
+            &qs.iter()
+                .copied()
+                .zip(vs.iter().map(|x| x.to_type()))
+                .collect(),
+        );
         let mut lock = self.variables.write().unwrap();
         for v in &vs {
             lock.insert(*v, Variable::Quantified);

@@ -50,7 +50,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                 Type::Callable(_, _),
             ) if !params.is_empty() => {
                 let l_no_self = Type::Callable(
-                    Box::new(Callable::list(params[1..].to_vec(), ret.clone())),
+                    Box::new(Callable::list(params.tail(), ret.clone())),
                     Kind::Anon,
                 );
                 self.is_subset_eq_impl(&l_no_self, want)
@@ -60,8 +60,8 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                     && match (&l.params, &u.params) {
                         (Params::Ellipsis, _) | (_, Params::Ellipsis) => true,
                         (Params::List(l_args), Params::List(u_args)) => {
-                            let mut l_args_iter = l_args.iter();
-                            let mut u_args_iter = u_args.iter();
+                            let mut l_args_iter = l_args.items().iter();
+                            let mut u_args_iter = u_args.items().iter();
                             let mut l_arg = l_args_iter.next();
                             let mut u_arg = u_args_iter.next();
                             loop {
@@ -102,7 +102,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                                 }
                             }
                         }
-                        (Params::ParamSpec(_), _) | (_, Params::ParamSpec(_)) => {
+                        (Params::ParamSpec(_, _), _) | (_, Params::ParamSpec(_, _)) => {
                             // TODO: need instantiation for param spec
                             false
                         }
@@ -146,9 +146,10 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                     Some(got) => self.check_targs(got.targs(), want.targs(), want.tparams()),
                     // Structural checking for assigning to protocols
                     None if want_is_protocol => {
-                        let want_members = self.type_order.get_all_members(want.class_object());
-                        for name in want_members.keys() {
-                            if self.type_order.get_instance_attribute(got, name).is_some() {
+                        let want_members =
+                            self.type_order.get_all_member_names(want.class_object());
+                        for name in want_members {
+                            if self.type_order.get_instance_attribute(got, &name).is_some() {
                                 // TODO: check types of attributes
                                 continue;
                             } else {

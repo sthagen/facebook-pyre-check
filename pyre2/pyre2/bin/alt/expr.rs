@@ -13,6 +13,7 @@ use ruff_python_ast::Comprehension;
 use ruff_python_ast::Decorator;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprBinOp;
+use ruff_python_ast::ExprNoneLiteral;
 use ruff_python_ast::ExprSlice;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Keyword;
@@ -28,16 +29,15 @@ use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::Iterable;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::answers::UNKNOWN;
-use crate::alt::attr::LookupResult;
 use crate::alt::unwrap::UnwrappedDict;
 use crate::ast::Ast;
 use crate::binding::binding::Key;
 use crate::dunder;
-use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::callable::Callable;
 use crate::types::callable::Kind;
 use crate::types::callable::Param;
+use crate::types::callable::ParamList;
 use crate::types::callable::Params;
 use crate::types::callable::Required;
 use crate::types::class::ClassType;
@@ -291,7 +291,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::TypeAlias(ta) => self.as_call_target(ta.as_value(self.stdlib)),
             Type::ClassType(cls) => self
                 .get_instance_attribute(&cls, &dunder::CALL)
-                .and_then(|a| self.as_call_target(a.value)),
+                .and_then(|attr| attr.get_type())
+                .and_then(|ty| self.as_call_target(ty)),
             _ => None,
         }
     }
@@ -331,17 +332,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         args: &[CallArg],
         keywords: &[Keyword],
     ) -> Option<Type> {
-        let call_target = match self.lookup_attr(ty.clone(), method_name) {
-            LookupResult::NotFound(_) => {
-                return None;
-            }
-            LookupResult::Error(e) => {
-                self.error_call_target(range, e.to_error_msg(method_name, "Expr::call_method"))
-            }
-            LookupResult::Found(attr) => {
-                self.as_call_target_or_error(attr, CallStyle::Method(method_name), range)
-            }
-        };
+        let callee_ty =
+            self.type_of_attr_get_if_found(ty.clone(), method_name, range, "Expr::call_method")?;
+        let call_target =
+            self.as_call_target_or_error(callee_ty, CallStyle::Method(method_name), range);
         Some(self.call_infer(call_target, args, keywords, range))
     }
 
@@ -426,7 +420,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let iargs = self_arg.iter().chain(args.iter());
         let ret = match callable.params {
             Params::List(params) => {
-                let mut iparams = params.iter().enumerate().peekable();
+                let mut iparams = params.items().iter().enumerate().peekable();
                 let mut num_positional_params = 0;
                 let mut num_positional_args = 0;
                 let mut seen_names: SmallMap<Name, usize> = SmallMap::new();
@@ -561,10 +555,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     kw.range,
                                     format!("Multiple values for argument '{}'", id.id),
                                 );
-                                params[p_idx].visit(|ty| hint = Some(ty));
+                                params.items()[p_idx].visit(|ty| hint = Some(ty));
                             } else if let Some(&p_idx) = kwparams.get(&id.id) {
                                 seen_names.insert(id.id.clone(), p_idx);
-                                params[p_idx].visit(|ty| hint = Some(ty));
+                                params.items()[p_idx].visit(|ty| hint = Some(ty));
                             } else if kwargs.is_none() {
                                 self.error(
                                     kw.range,
@@ -577,7 +571,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 for (name, &p_idx) in kwparams.iter() {
                     if !seen_names.contains_key(name) {
-                        let param = &params[p_idx];
+                        let param = &params.items()[p_idx];
                         if splat_kwargs.is_empty() && param.is_required() {
                             self.error(range, format!("Missing argument '{}'", name));
                         }
@@ -643,21 +637,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             false
         };
-        let init_method = self.get_instance_attribute(&cls, &dunder::INIT);
-        // We skip calling `__init__` if:
-        // (1) it isn't defined (possible if we've been passed a custom typeshed), or
-        // (2) the class overrides `object.__new__` but not `object.__init__`, in wich case the
-        //     `__init__` call always succeeds at runtime.
-        if let Some(init_method) = init_method
-            && !(overrides_new
-                && init_method.defined_on(self.stdlib.object_class_type().class_object()))
-        {
+        if let Some(init_method) = self.get_dunder_init(&cls, overrides_new) {
             self.call_infer(
-                self.as_call_target_or_error(
-                    init_method.value,
-                    CallStyle::Method(&dunder::INIT),
-                    range,
-                ),
+                self.as_call_target_or_error(init_method, CallStyle::Method(&dunder::INIT), range),
                 args,
                 keywords,
                 range,
@@ -689,9 +671,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     pub fn attr_infer(&self, obj: &Type, attr_name: &Name, range: TextRange) -> Type {
         self.distribute_over_union(obj, |obj| {
-            self.lookup_attr(obj.clone(), attr_name)
-                .ok_or_conflated_error_msg(attr_name, "Expr::attr_infer")
-                .unwrap_or_else(|msg| self.error(range, msg))
+            self.type_of_attr_get(obj.clone(), attr_name, range, "Expr::attr_infer")
         })
     }
 
@@ -828,13 +808,23 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.expr_infer_with_hint(x, None)
     }
 
+    fn yield_expr(&self, x: Expr) -> Expr {
+        match x {
+            Expr::Yield(x) => match x.value {
+                Some(x) => *x,
+                None => Expr::NoneLiteral(ExprNoneLiteral { range: x.range() }),
+            },
+            // This case should be unreachable.
+            _ => unreachable!("yield or yield from expression expected"),
+        }
+    }
+
     /// Apply a decorator. This effectively synthesizes a function call.
-    pub fn apply_decorator(&self, decorator: &Decorator, decoratee: Idx<Key>) -> Type {
-        let ty_decoratee = self.get_idx(decoratee);
-        if matches!(&*ty_decoratee, Type::ClassDef(cls) if cls.has_qname("typing", "TypeVar")) {
+    pub fn apply_decorator(&self, decorator: &Decorator, decoratee: Type) -> Type {
+        if matches!(&decoratee, Type::ClassDef(cls) if cls.has_qname("typing", "TypeVar")) {
             // Avoid recursion in TypeVar, which is decorated with `@final`, whose type signature
             // itself depends on a TypeVar.
-            return ty_decoratee.arc_clone();
+            return decoratee;
         }
         let ty_decorator = self.expr(&decorator.expression, None);
         match ty_decorator.function_kind() {
@@ -843,13 +833,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             _ => {}
         }
-        if matches!(ty_decoratee.as_ref(), Type::ClassDef(_)) {
+        if matches!(&decoratee, Type::ClassDef(_)) {
             // TODO: don't blanket ignore class decorators.
-            return ty_decoratee.arc_clone();
+            return decoratee;
         }
         let call_target =
             { self.as_call_target_or_error(ty_decorator, CallStyle::FreeForm, decorator.range) };
-        let arg = CallArg::Type(ty_decoratee.as_ref(), decorator.range);
+        let arg = CallArg::Type(&decoratee, decorator.range);
         self.call_infer(call_target, &[arg], &[], decorator.range)
     }
 
@@ -914,7 +904,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 if let Some(callable) = hint_callable {
                     let inferred_callable = Type::Callable(
                         Box::new(Callable {
-                            params: Params::List(parameters),
+                            params: Params::List(ParamList::new(parameters)),
                             ret: self.expr(&lambda.body, Some(&callable.ret)),
                         }),
                         Kind::Anon,
@@ -925,7 +915,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 } else {
                     Type::Callable(
                         Box::new(Callable {
-                            params: Params::List(parameters),
+                            params: Params::List(ParamList::new(parameters)),
                             ret: self.expr_infer(&lambda.body),
                         }),
                         Kind::Anon,
@@ -1092,8 +1082,34 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None => self.error(x.range, "Expression is not awaitable".to_owned()),
                 }
             }
-            Expr::Yield(_) => self.get(&Key::SendTypeOfYield(x.range())).arc_clone(),
-            Expr::YieldFrom(_) => self.get(&Key::ReturnTypeOfYield(x.range())).arc_clone(),
+            Expr::Yield(_) => {
+                let yield_expr_type = &self
+                    .get(&Key::YieldTypeOfYieldAnnotation(x.clone().range()))
+                    .arc_clone();
+                let yield_value = self.yield_expr(x.clone());
+                let inferred_expr_type = &self.expr_infer(&yield_value);
+
+                if !self.solver().is_subset_eq(
+                    inferred_expr_type,
+                    yield_expr_type,
+                    self.type_order(),
+                ) {
+                    self.error(
+                        x.range(),
+                        format!(
+                            "type {} is not assignable to {}",
+                            inferred_expr_type.clone().deterministic_printing(),
+                            yield_expr_type.clone().deterministic_printing()
+                        ),
+                    );
+                }
+
+                self.get(&Key::SendTypeOfYieldAnnotation(x.range()))
+                    .arc_clone()
+            }
+            Expr::YieldFrom(_) => self
+                .get(&Key::ReturnTypeOfYieldAnnotation(x.range()))
+                .arc_clone(),
             Expr::Compare(x) => {
                 let _ty = self.expr_infer(&x.left);
                 let _tys = x.comparators.map(|x| self.expr_infer(x));

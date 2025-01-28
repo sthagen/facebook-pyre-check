@@ -96,3 +96,21 @@ from typing import MutableSequence
 x: MutableSequence[int]
     "#,
 );
+
+// A regression test for a bug where we were not correctly handling the anywhere
+// type for a decorated function.
+testcase!(
+    test_decorator_general_type,
+    r#"
+from typing import assert_type, Callable
+
+def decorator(f: Callable[[int], int]) -> int: ...
+
+def anywhere():
+    assert_type(decorated, int)
+
+@decorator
+def decorated(x: int) -> int:
+   return x
+    "#,
+);

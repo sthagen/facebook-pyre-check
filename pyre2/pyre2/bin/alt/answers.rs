@@ -22,7 +22,6 @@ use starlark_map::ordered_set::OrderedSet;
 use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 
-use crate::alt::attr::LookupResult;
 use crate::alt::classes::ClassField;
 use crate::alt::expr::CallArg;
 use crate::ast::Ast;
@@ -69,6 +68,7 @@ use crate::types::annotation::Qualifier;
 use crate::types::callable::Callable;
 use crate::types::callable::Kind;
 use crate::types::callable::Param;
+use crate::types::callable::ParamList;
 use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class_metadata::ClassMetadata;
@@ -231,14 +231,10 @@ impl SolveRecursive for KeyClassField {
     fn promote_recursive(_: Self::Recursive) -> Self::Answer {
         // TODO(stroxler) Revisit the recursive handling, which needs changes in the plumbing
         // to work correctly; what we have here is a fallback to permissive gradual typing.
-        ClassField {
-            ty: Type::any_implicit(),
-            annotation: None,
-            initialization: ClassFieldInitialization::Class,
-        }
+        ClassField::recursive()
     }
     fn visit_type_mut(v: &mut ClassField, f: &mut dyn FnMut(&mut Type)) {
-        f(&mut v.ty);
+        v.visit_type_mut(f);
     }
 }
 impl SolveRecursive for KeyAnnotation {
@@ -1010,9 +1006,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.error(field.range, format!("Enum member `{}` may not be annotated directly. Instead, annotate the _value_ attribute.", field.name));
             }
 
-            if let LookupResult::Found(enum_value_ty) =
-                self.lookup_attr(Type::ClassType(enum_.cls), &Name::new_static("_value_"))
-            {
+            if let Some(enum_value_ty) = self.type_of_attr_get_if_gettable(
+                Type::ClassType(enum_.cls),
+                &Name::new_static("_value_"),
+            ) {
                 if !matches!(*value_ty, Type::Tuple(_))
                     && !self
                         .solver()
@@ -1041,11 +1038,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             (value_ty, None)
         };
-        Arc::new(ClassField {
-            ty: ty.deref().clone(),
-            annotation: ann.map(|ann| ann.deref().clone()),
-            initialization: field.initialization,
-        })
+        Arc::new(ClassField::new(
+            ty.deref().clone(),
+            ann.map(|ann| ann.deref().clone()),
+            field.initialization,
+        ))
     }
 
     fn solve_binding_inner(&self, binding: &Binding) -> Type {
@@ -1061,7 +1058,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .generator(yield_type, Type::any_implicit(), return_type)
                     .to_type()
             }
-            Binding::SendTypeOfYield(ann, range) => {
+            Binding::SendTypeOfYieldAnnotation(ann, range) => {
                 let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 match gen_ann {
                     Some(gen_ann) => {
@@ -1077,7 +1074,23 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None => Type::any_explicit(),
                 }
             }
-            Binding::ReturnTypeOfYield(ann, range) => {
+            Binding::YieldTypeOfYieldAnnotation(ann, range) => {
+                let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
+                match gen_ann {
+                    Some(gen_ann) => {
+                        let gen_type = gen_ann.get_type();
+
+                        if let Some((yield_type, _, _)) = self.decompose_generator(gen_type) {
+                            yield_type
+                        } else {
+                            self.error(*range, format!("Yield expression found but the function has an incompatible annotation `{gen_type}`"))
+                        }
+                    }
+
+                    None => Type::any_explicit(),
+                }
+            }
+            Binding::ReturnTypeOfYieldAnnotation(ann, range) => {
                 let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 match gen_ann {
                     Some(gen_ann) => {
@@ -1093,13 +1106,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None => Type::any_explicit(),
                 }
             }
-            Binding::YieldTypeOfYield(x) => match x.clone() {
-                Expr::Yield(x) => match x.value {
-                    Some(x) => self.expr(&x, None),
-                    None => self.expr(
-                        &Expr::NoneLiteral(ExprNoneLiteral { range: x.range() }),
-                        None,
-                    ),
+            Binding::YieldTypeOfYield(x) => match x {
+                Expr::Yield(x) => match &x.value {
+                    Some(x) => self.expr(x, None),
+                    None => self.expr(&Expr::NoneLiteral(ExprNoneLiteral { range: x.range }), None),
                 },
                 Expr::YieldFrom(x) => {
                     let gen_type = self.expr(&x.value, None);
@@ -1128,7 +1138,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.expr(e, hint)
                 }
             }
-            Binding::DecoratorApplication(d, k) => self.apply_decorator(d, *k),
             Binding::ExceptionHandler(box ann, is_star) => {
                 let base_exception_type = self.stdlib.base_exception().to_type();
                 let base_exception_group_any_type = if *is_star {
@@ -1361,7 +1370,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 Type::None // Unused
             }
-            Binding::Function(x, kind, legacy_tparam_keys) => {
+            Binding::Function(x, kind, decorators, legacy_tparam_keys) => {
                 let check_default = |default: &Option<Box<Expr>>, ty: &Type| {
                     let mut required = Required::Required;
                     if let Some(default) = default {
@@ -1426,16 +1435,25 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .filter_map(|key| self.get_idx(*key).deref().parameter().cloned());
                 tparams.extend(legacy_tparams);
                 let callable = Type::Callable(
-                    Box::new(Callable::list(params, ret)),
+                    Box::new(Callable::list(ParamList::new(params), ret)),
                     Kind::from_name(self.module_info().name(), &x.name.id),
                 );
-                callable.forall(self.type_params(x.range, tparams))
+                let mut ty = callable.forall(self.type_params(x.range, tparams));
+                for x in decorators.iter().rev() {
+                    ty = self.apply_decorator(x, ty)
+                }
+                ty
             }
             Binding::Import(m, name) => self
                 .get_from_module(*m, &KeyExport(name.clone()))
                 .arc_clone(),
-            Binding::ClassDef(box (x, fields), bases, legacy_tparams) => {
-                Type::ClassDef(self.class_definition(x, fields.clone(), bases, legacy_tparams))
+            Binding::ClassDef(box (x, fields), bases, decorators, legacy_tparams) => {
+                let mut ty =
+                    Type::ClassDef(self.class_definition(x, fields.clone(), bases, legacy_tparams));
+                for x in decorators.iter().rev() {
+                    ty = self.apply_decorator(x, ty)
+                }
+                ty
             }
             Binding::FunctionalClassDef(x, fields) => {
                 Type::ClassDef(self.functional_class_definition(x, fields))

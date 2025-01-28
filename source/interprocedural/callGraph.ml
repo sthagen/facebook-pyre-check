@@ -509,6 +509,13 @@ module Unresolved = struct
     | False -> `Bool false
 end
 
+module AllTargetsUseCase = struct
+  type t =
+    | TaintAnalysisDependency
+    | CallGraphDependency
+    | Everything
+end
+
 (** Information about an argument being a callable. *)
 module HigherOrderParameter = struct
   type t = {
@@ -520,9 +527,7 @@ module HigherOrderParameter = struct
   }
   [@@deriving eq, show { with_path = false }]
 
-  let all_targets ~exclude_reference_only:_ { call_targets; _ } =
-    List.map ~f:CallTarget.target call_targets
-
+  let all_targets ~use_case:_ { call_targets; _ } = List.map ~f:CallTarget.target call_targets
 
   let equal_ignoring_types
       { index = index_left; call_targets = call_targets_left; unresolved = unresolved_left }
@@ -588,12 +593,10 @@ module HigherOrderParameterMap = struct
 
   let deduplicate map = Map.map HigherOrderParameter.deduplicate map
 
-  let all_targets ~exclude_reference_only map =
+  let all_targets ~use_case map =
     Map.fold
       (fun _ higher_order_parameter targets ->
-        List.rev_append
-          targets
-          (HigherOrderParameter.all_targets ~exclude_reference_only higher_order_parameter))
+        List.rev_append targets (HigherOrderParameter.all_targets ~use_case higher_order_parameter))
       map
       []
 
@@ -755,7 +758,7 @@ module CallCallees = struct
 
 
   let all_targets
-      ~exclude_reference_only
+      ~use_case
       { call_targets; new_targets; init_targets; higher_order_parameters; decorated_targets; _ }
     =
     call_targets
@@ -763,8 +766,7 @@ module CallCallees = struct
     |> List.rev_append init_targets
     |> List.rev_append decorated_targets
     |> List.map ~f:CallTarget.target
-    |> List.rev_append
-         (HigherOrderParameterMap.all_targets ~exclude_reference_only higher_order_parameters)
+    |> List.rev_append (HigherOrderParameterMap.all_targets ~use_case higher_order_parameters)
 
 
   let equal_ignoring_types
@@ -997,16 +999,19 @@ module AttributeAccessCallees = struct
 
 
   let all_targets
-      ~exclude_reference_only
+      ~use_case
       { property_targets; global_targets; callable_targets; is_attribute = _; decorated_targets }
     =
-    (if exclude_reference_only then
-       global_targets |> List.rev_append property_targets |> List.rev_append decorated_targets
-    else
-      global_targets
-      |> List.rev_append property_targets
-      |> List.rev_append callable_targets
-      |> List.rev_append decorated_targets)
+    (match use_case with
+    | AllTargetsUseCase.CallGraphDependency ->
+        (* A property could (in theory) return a callable. *)
+        List.rev_append property_targets decorated_targets
+    | AllTargetsUseCase.TaintAnalysisDependency -> List.rev_append property_targets global_targets
+    | AllTargetsUseCase.Everything ->
+        global_targets
+        |> List.rev_append property_targets
+        |> List.rev_append callable_targets
+        |> List.rev_append decorated_targets)
     |> List.map ~f:CallTarget.target
 
 
@@ -1120,16 +1125,17 @@ module IdentifierCallees = struct
 
 
   let all_targets
-      ~exclude_reference_only
+      ~use_case
       { global_targets; nonlocal_targets; callable_targets; decorated_targets }
     =
-    (if exclude_reference_only then
-       decorated_targets
-    else
-      nonlocal_targets
-      |> List.rev_append global_targets
-      |> List.rev_append callable_targets
-      |> List.rev_append decorated_targets)
+    (match use_case with
+    | AllTargetsUseCase.CallGraphDependency -> decorated_targets
+    | AllTargetsUseCase.TaintAnalysisDependency -> []
+    | AllTargetsUseCase.Everything ->
+        nonlocal_targets
+        |> List.rev_append global_targets
+        |> List.rev_append callable_targets
+        |> List.rev_append decorated_targets)
     |> List.map ~f:CallTarget.target
 
 
@@ -1180,11 +1186,11 @@ module StringFormatCallees = struct
     }
 
 
-  let all_targets ~exclude_reference_only { stringify_targets; f_string_targets } =
-    (if exclude_reference_only then
-       stringify_targets
-    else
-      List.rev_append f_string_targets stringify_targets)
+  let all_targets ~use_case { stringify_targets; f_string_targets } =
+    (match use_case with
+    | AllTargetsUseCase.CallGraphDependency -> []
+    | AllTargetsUseCase.TaintAnalysisDependency -> stringify_targets
+    | AllTargetsUseCase.Everything -> List.rev_append f_string_targets stringify_targets)
     |> List.map ~f:CallTarget.target
 
 
@@ -1263,24 +1269,16 @@ module ExpressionCallees = struct
     }
 
 
-  let all_targets ~exclude_reference_only { call; attribute_access; identifier; string_format } =
-    let call_targets =
-      call >>| CallCallees.all_targets ~exclude_reference_only |> Option.value ~default:[]
-    in
+  let all_targets ~use_case { call; attribute_access; identifier; string_format } =
+    let call_targets = call >>| CallCallees.all_targets ~use_case |> Option.value ~default:[] in
     let attribute_access_targets =
-      attribute_access
-      >>| AttributeAccessCallees.all_targets ~exclude_reference_only
-      |> Option.value ~default:[]
+      attribute_access >>| AttributeAccessCallees.all_targets ~use_case |> Option.value ~default:[]
     in
     let identifier_targets =
-      identifier
-      >>| IdentifierCallees.all_targets ~exclude_reference_only
-      |> Option.value ~default:[]
+      identifier >>| IdentifierCallees.all_targets ~use_case |> Option.value ~default:[]
     in
     let string_format_targets =
-      string_format
-      >>| StringFormatCallees.all_targets ~exclude_reference_only
-      |> Option.value ~default:[]
+      string_format >>| StringFormatCallees.all_targets ~use_case |> Option.value ~default:[]
     in
     call_targets
     |> List.rev_append attribute_access_targets
@@ -1647,15 +1645,14 @@ module DefineCallGraph = struct
     Location.SerializableMap.map (LocationCallees.Map.map ExpressionCallees.drop_decorated_targets)
 
 
-  (** Return all callees of the call graph, as a sorted list. Setting `exclude_reference_only` to
-      true excludes the targets that are not required in building the dependency graph. *)
-  let all_targets ~exclude_reference_only call_graph =
+  (** Return all callees of the call graph, depending on the use case. *)
+  let all_targets ~use_case call_graph =
     call_graph
     |> Location.SerializableMap.data
     |> List.concat_map ~f:(fun map ->
            map
            |> LocationCallees.Map.data
-           |> List.concat_map ~f:(ExpressionCallees.all_targets ~exclude_reference_only))
+           |> List.concat_map ~f:(ExpressionCallees.all_targets ~use_case))
     |> List.dedup_and_sort ~compare:Target.compare
 
 
@@ -1767,11 +1764,7 @@ let rec is_all_names = function
 
 module CalleeKind = struct
   type t =
-    | Method of {
-        is_direct_call: bool;
-        is_class_method: bool;
-        is_static_method: bool;
-      }
+    | Method of { is_direct_call: bool }
     | Function
 
   let rec from_callee ~pyre_in_context callee callee_type =
@@ -1786,41 +1779,10 @@ module CalleeKind = struct
       in
       is_super callee
     in
-    let is_static_method, is_class_method =
-      (* TODO(T171340051): A better implementation that uses `Annotation`. *)
-      match
-        PyrePysaEnvironment.ReadOnly.get_define_body
-          pyre_api
-          (callee |> Expression.show |> Reference.create)
-      with
-      | Some define_body ->
-          let define = Node.value define_body in
-          ( List.exists static_method_decorators ~f:(Ast.Statement.Define.has_decorator define),
-            List.exists class_method_decorators ~f:(Ast.Statement.Define.has_decorator define) )
-      | None -> false, false
-    in
     match callee_type with
-    | _ when is_super_call -> Method { is_direct_call = true; is_static_method; is_class_method }
-    | Type.Parametric { name = "BoundMethod"; arguments = [Single _; Single receiver_type] } ->
-        let is_class_method =
-          (* Sometimes the define body of the callee is unavailable, in which case we identify calls
-             to class methods via the receiver type. The callee is a class method, if the callee
-             type is `BoundMethod` and the receiver type is the type of a class type.
-
-             TODO(T171340051): We can delete this pattern matching case if using a better
-             implementation. *)
-          let type_, parameters = Type.split receiver_type in
-          match Type.primitive_name type_, parameters with
-          | Some "type", [Type.Record.Argument.Single (Type.Primitive _)]
-          | Some "type", [Type.Record.Argument.Single (Type.Parametric _)] ->
-              true
-          | _ -> false
-        in
-        Method
-          { is_direct_call = is_all_names (Node.value callee); is_static_method; is_class_method }
+    | _ when is_super_call -> Method { is_direct_call = true }
     | Type.Parametric { name = "BoundMethod"; _ } ->
-        Method
-          { is_direct_call = is_all_names (Node.value callee); is_static_method; is_class_method }
+        Method { is_direct_call = is_all_names (Node.value callee) }
     | Type.Callable _ -> (
         match Node.value callee with
         | Expression.Name (Name.Attribute { base; _ }) ->
@@ -1832,26 +1794,16 @@ module CalleeKind = struct
               |> Option.is_some
             in
             if Type.is_class_type parent_type then
-              Method { is_direct_call = true; is_static_method; is_class_method }
+              Method { is_direct_call = true }
             else if is_class () then
-              Method { is_direct_call = false; is_static_method; is_class_method }
+              Method { is_direct_call = false }
             else
               Function
         | _ -> Function)
     | Type.Union (callee_type :: _) -> from_callee ~pyre_in_context callee callee_type
     | _ ->
         (* We must be dealing with a callable class. *)
-        Method { is_direct_call = false; is_static_method; is_class_method }
-
-
-  let is_class_method = function
-    | Method { is_class_method; _ } -> is_class_method
-    | _ -> false
-
-
-  let is_static_method = function
-    | Method { is_static_method; _ } -> is_static_method
-    | _ -> false
+        Method { is_direct_call = false }
 end
 
 let strip_optional annotation = Type.optional_value annotation |> Option.value ~default:annotation
@@ -1949,6 +1901,19 @@ let compute_indirect_targets ~pyre_in_context ~override_graph ~receiver_type imp
         implementation_target :: override_targets
 
 
+let get_method_kind ~pyre_api target =
+  let target = target |> Target.get_regular |> Target.Regular.override_to_method in
+  match target with
+  | Target.Regular.Method { method_name = "__new__"; _ } -> false, true
+  | Target.Regular.Method _ as target ->
+      Target.get_module_and_definition ~pyre_api (Target.from_regular target)
+      >>| (fun (_, { Node.value = define; _ }) ->
+            ( List.exists class_method_decorators ~f:(Ast.Statement.Define.has_decorator define),
+              List.exists static_method_decorators ~f:(Ast.Statement.Define.has_decorator define) ))
+      |> Option.value ~default:(false, false)
+  | _ -> false, false
+
+
 let rec resolve_callees_from_type
     ~debug
     ~pyre_in_context
@@ -1991,13 +1956,14 @@ let rec resolve_callees_from_type
           let targets =
             List.map
               ~f:(fun target ->
+                let is_class_method, is_static_method = get_method_kind ~pyre_api target in
                 CallTargetIndexer.create_target
                   call_indexer
                   ~implicit_dunder_call:dunder_call
                   ~return_type:(Some return_type)
                   ~receiver_type
-                  ~is_class_method:(CalleeKind.is_class_method callee_kind)
-                  ~is_static_method:(CalleeKind.is_static_method callee_kind)
+                  ~is_class_method
+                  ~is_static_method
                   target)
               targets
           in
@@ -2008,6 +1974,7 @@ let rec resolve_callees_from_type
             | Method _ -> Target.create_method name
             | _ -> Target.create_function name
           in
+          let is_class_method, is_static_method = get_method_kind ~pyre_api target in
           CallCallees.create
             ~call_targets:
               [
@@ -2016,8 +1983,8 @@ let rec resolve_callees_from_type
                   ~explicit_receiver:true
                   ~implicit_dunder_call:dunder_call
                   ~return_type:(Some return_type)
-                  ~is_class_method:(CalleeKind.is_class_method callee_kind)
-                  ~is_static_method:(CalleeKind.is_static_method callee_kind)
+                  ~is_class_method
+                  ~is_static_method
                   ?receiver_type
                   target;
               ]
@@ -2106,6 +2073,7 @@ let rec resolve_callees_from_type
                     }
                   |> Target.from_regular
                 in
+                let is_class_method, is_static_method = get_method_kind ~pyre_api target in
                 CallCallees.create
                   ~call_targets:
                     [
@@ -2113,8 +2081,8 @@ let rec resolve_callees_from_type
                         call_indexer
                         ~implicit_dunder_call:true
                         ~return_type:(Some return_type)
-                        ~is_class_method:(CalleeKind.is_class_method callee_kind)
-                        ~is_static_method:(CalleeKind.is_static_method callee_kind)
+                        ~is_class_method
+                        ~is_static_method
                         ?receiver_type
                         target;
                     ]
@@ -2191,8 +2159,7 @@ and resolve_constructor_callee ~debug ~pyre_in_context ~override_graph ~call_ind
           ~call_indexer
           ~receiver_type:meta_type
           ~return_type:(lazy class_type)
-          ~callee_kind:
-            (Method { is_direct_call = true; is_static_method = true; is_class_method = false })
+          ~callee_kind:(Method { is_direct_call = true })
             (* __new__() is a static method. See
                https://docs.python.org/3/reference/datamodel.html#object.__new__ *)
           new_callable_type
@@ -2205,8 +2172,7 @@ and resolve_constructor_callee ~debug ~pyre_in_context ~override_graph ~call_ind
           ~call_indexer
           ~receiver_type:meta_type
           ~return_type:(lazy Type.none)
-          ~callee_kind:
-            (Method { is_direct_call = true; is_static_method = false; is_class_method = false })
+          ~callee_kind:(Method { is_direct_call = true })
           init_callable_type
       in
       (* Technically, `object.__new__` returns `object` and `C.__init__` returns None.
@@ -2309,9 +2275,7 @@ let resolve_callee_from_defining_expression
                ~call_indexer
                ~return_type
                ~receiver_type:implementing_class
-               ~callee_kind:
-                 (Method
-                    { is_direct_call = false; is_class_method = false; is_static_method = false })
+               ~callee_kind:(Method { is_direct_call = false })
                callable_type)
       | _ -> None)
 
@@ -4341,75 +4305,89 @@ module HigherOrderCallGraph = struct
 
       let analyze_statement ~state ~statement =
         log "Analyzing statement `%a` with state `%a`" Statement.pp statement State.pp state;
-        match Node.value statement with
-        | Statement.Assign { Assign.target = _; value = Some _; _ } -> state
-        | Assign { Assign.target = _; value = None; _ } -> state
-        | AugmentedAssign _ -> state
-        | Assert _ -> state
-        | Break
-        | Class _
-        | Continue ->
-            state
-        | Define ({ Define.signature = { name; _ }; _ } as define) ->
-            let regular_target =
-              define |> Target.create (Reference.delocalize name) |> Target.as_regular_exn
-            in
-            let callees =
-              if State.is_bottom state then
-                regular_target
-                |> Target.from_regular
-                |> CallTarget.create
-                |> CallTarget.Set.singleton
-              else
-                let parameters_roots, parameters_targets =
-                  state
-                  |> State.to_alist
-                  |> List.map ~f:(fun (variable, call_targets) ->
-                         ( variable,
-                           call_targets |> CallTarget.Set.elements |> List.map ~f:CallTarget.target
-                         ))
-                  |> List.unzip
-                in
-                parameters_targets
-                |> Algorithms.cartesian_product
-                |> List.map ~f:(fun parameters_targets ->
-                       Target.Parameterized
-                         {
-                           regular = regular_target;
-                           parameters =
-                             parameters_targets
-                             |> List.zip_exn parameters_roots
-                             |> Target.ParameterMap.of_alist_exn;
-                         }
-                       |> CallTarget.create)
-                |> CallTarget.Set.of_list
-            in
-            store_callees
-              ~weak:false
-              ~root:(name |> Reference.show |> State.create_root_from_identifier)
-              ~callees
+        let state =
+          match Node.value statement with
+          | Statement.Assign { Assign.target; value = Some value; _ } -> (
+              match TaintAccessPath.of_expression ~self_variable:None target with
+              | None -> state
+              | Some { root; path = _ } ->
+                  let callees, state = analyze_expression ~state ~expression:value in
+                  store_callees ~weak:false ~root ~callees state)
+          | Assign { Assign.target; value = None; _ } -> (
+              match TaintAccessPath.of_expression ~self_variable:None target with
+              | None -> state
+              | Some { root; path = _ } ->
+                  store_callees ~weak:false ~root ~callees:CallTarget.Set.bottom state)
+          | AugmentedAssign _ -> state
+          | Assert _ -> state
+          | Break
+          | Class _
+          | Continue ->
               state
-        | Delete _ -> state
-        | Expression expression -> analyze_expression ~state ~expression |> Core.snd
-        | For _
-        | Global _
-        | If _
-        | Import _
-        | Match _
-        | Nonlocal _
-        | Pass
-        | Raise { expression = None; _ } ->
-            state
-        | Raise { expression = Some _; _ } -> state
-        | Return { expression = Some expression; _ } ->
-            let callees, state = analyze_expression ~state ~expression in
-            store_callees ~weak:true ~root:TaintAccessPath.Root.LocalResult ~callees state
-        | Return { expression = None; _ }
-        | Try _
-        | TypeAlias _
-        | With _
-        | While _ ->
-            state
+          | Define ({ Define.signature = { name; _ }; _ } as define) ->
+              let regular_target =
+                define |> Target.create (Reference.delocalize name) |> Target.as_regular_exn
+              in
+              let callees =
+                if State.is_bottom state then
+                  regular_target
+                  |> Target.from_regular
+                  |> CallTarget.create
+                  |> CallTarget.Set.singleton
+                else
+                  let parameters_roots, parameters_targets =
+                    state
+                    |> State.to_alist
+                    |> List.map ~f:(fun (variable, call_targets) ->
+                           ( variable,
+                             call_targets
+                             |> CallTarget.Set.elements
+                             |> List.map ~f:CallTarget.target ))
+                    |> List.unzip
+                  in
+                  parameters_targets
+                  |> Algorithms.cartesian_product
+                  |> List.map ~f:(fun parameters_targets ->
+                         Target.Parameterized
+                           {
+                             regular = regular_target;
+                             parameters =
+                               parameters_targets
+                               |> List.zip_exn parameters_roots
+                               |> Target.ParameterMap.of_alist_exn;
+                           }
+                         |> CallTarget.create)
+                  |> CallTarget.Set.of_list
+              in
+              store_callees
+                ~weak:false
+                ~root:(name |> Reference.show |> State.create_root_from_identifier)
+                ~callees
+                state
+          | Delete _ -> state
+          | Expression expression -> analyze_expression ~state ~expression |> Core.snd
+          | For _
+          | Global _
+          | If _
+          | Import _
+          | Match _
+          | Nonlocal _
+          | Pass
+          | Raise { expression = None; _ } ->
+              state
+          | Raise { expression = Some _; _ } -> state
+          | Return { expression = Some expression; _ } ->
+              let callees, state = analyze_expression ~state ~expression in
+              store_callees ~weak:true ~root:TaintAccessPath.Root.LocalResult ~callees state
+          | Return { expression = None; _ }
+          | Try _
+          | TypeAlias _
+          | With _
+          | While _ ->
+              state
+        in
+        log "Finished analyzing statement `%a`: `%a`" Statement.pp statement State.pp state;
+        state
 
 
       let forward ~statement_key:_ state ~statement = analyze_statement ~state ~statement
@@ -4721,7 +4699,9 @@ module SharedMemory = struct
               whole_program_call_graph
               ~callable
               ~callees:
-                (DefineCallGraph.all_targets ~exclude_reference_only:true callable_call_graph)
+                (DefineCallGraph.all_targets
+                   ~use_case:AllTargetsUseCase.TaintAnalysisDependency
+                   callable_call_graph)
           in
           define_call_graphs, whole_program_call_graph
       in

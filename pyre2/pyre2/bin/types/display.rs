@@ -183,6 +183,7 @@ impl<'a> TypeDisplayContext<'a> {
             Type::Literal(lit) => write!(f, "Literal[{}]", lit),
             Type::LiteralString => write!(f, "LiteralString"),
             Type::Callable(c, _) => c.fmt_with_type(f, &|t| self.display(t)),
+            Type::ParamSpecValue(x) => x.fmt_with_type(f, &|t| self.display(t)),
             Type::BoundMethod(obj, func) => {
                 write!(
                     f,
@@ -235,6 +236,11 @@ impl<'a> TypeDisplayContext<'a> {
             Type::TypeGuard(ty) => write!(f, "TypeGuard[{}]", self.display(ty)),
             Type::TypeIs(ty) => write!(f, "TypeIs[{}]", self.display(ty)),
             Type::Unpack(ty) => write!(f, "Unpack[{}]", self.display(ty)),
+            Type::Concatenate(args, pspec) => write!(
+                f,
+                "Concatenate[{}]",
+                commas_iter(|| append(args.iter(), [pspec]))
+            ),
             Type::Module(m) => write!(f, "Module[{m}]"),
             Type::Var(var) => write!(f, "{var}"),
             Type::Quantified(var) => self.fmt_quantified(var, f),
@@ -289,6 +295,7 @@ mod tests {
     use crate::types::callable::Callable;
     use crate::types::callable::Kind;
     use crate::types::callable::Param;
+    use crate::types::callable::ParamList;
     use crate::types::callable::Required;
     use crate::types::class::Class;
     use crate::types::class::ClassType;
@@ -449,7 +456,7 @@ mod tests {
     fn test_display_callable() {
         let param1 = Param::Pos(Name::new("hello"), Type::None, Required::Required);
         let param2 = Param::KwOnly(Name::new("world"), Type::None, Required::Required);
-        let callable = Callable::list(vec![param1, param2], Type::None);
+        let callable = Callable::list(ParamList::new(vec![param1, param2]), Type::None);
         assert_eq!(
             Type::Callable(Box::new(callable), Kind::Anon).to_string(),
             "(hello: None, *, world: None) -> None"

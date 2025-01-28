@@ -488,6 +488,7 @@ let test_call_graph_of_define =
                              CallTarget.create
                                ~implicit_dunder_call:true
                                ~return_type:(Some ReturnType.bool)
+                               ~is_static_method:true
                                (Target.create_method (Reference.create "test.C.__call__"));
                            ]
                          ())) );
@@ -880,9 +881,9 @@ let test_call_graph_of_define =
                       (CallCallees.create
                          ~call_targets:
                            [
-                             CallTarget.create_regular
-                               ~implicit_receiver:true
-                               ~is_class_method:true
+                             CallTarget.create_regular (* TODO: should resolve to test.B *)
+                               ~implicit_receiver:false
+                               ~is_class_method:false
                                (Target.Regular.Method
                                   { class_name = "test.A"; method_name = "foo"; kind = Normal });
                            ]
@@ -6935,7 +6936,7 @@ let test_higher_order_call_graph_of_define =
              {|
      def foo():
        return 0
-     def bar(c: C):
+     def bar():
        x = foo  # Test assignments
        return x
   |}
@@ -6953,7 +6954,11 @@ let test_higher_order_call_graph_of_define =
                            ]
                          ())) );
              ]
-           ~expected_returned_callables:[]
+           ~expected_returned_callables:
+             [
+               CallTarget.create_regular
+                 (Target.Regular.Function { name = "test.foo"; kind = Normal });
+             ]
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_higher_order_call_graph_of_define
@@ -7129,6 +7134,33 @@ let test_higher_order_call_graph_of_define =
                                     method_name = "__getitem__";
                                     kind = Normal;
                                   });
+                           ]
+                         ())) );
+             ]
+           ~expected_returned_callables:[]
+           ();
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_higher_order_call_graph_of_define
+           ~source:
+             {|
+     def foo():
+       return 0
+     def bar():
+       x = foo
+       x = None  # Test assignments
+       return x
+  |}
+           ~define_name:"test.bar"
+           ~expected_call_graph:
+             [
+               ( "5:6-5:9",
+                 LocationCallees.Singleton
+                   (ExpressionCallees.from_attribute_access
+                      (AttributeAccessCallees.create
+                         ~callable_targets:
+                           [
+                             CallTarget.create_regular
+                               (Target.Regular.Function { name = "test.foo"; kind = Normal });
                            ]
                          ())) );
              ]

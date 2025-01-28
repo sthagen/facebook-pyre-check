@@ -20,6 +20,7 @@ use static_assertions::assert_eq_size;
 use crate::types::callable::Callable;
 use crate::types::callable::Kind;
 use crate::types::callable::Param;
+use crate::types::callable::ParamList;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
 use crate::types::class::TArgs;
@@ -409,6 +410,9 @@ pub enum Type {
     ParamSpec(ParamSpec),
     TypeVarTuple(TypeVarTuple),
     SpecialForm(SpecialForm),
+    Concatenate(Box<[Type]>, Box<Type>),
+    #[expect(dead_code)]
+    ParamSpecValue(ParamList),
     /// Used to represent `P.args`. The spec describes it as an annotation,
     /// but it's easier to think of it as a type that can't occur in nested positions.
     Args(Quantified),
@@ -490,7 +494,10 @@ impl Type {
     }
 
     pub fn callable(params: Vec<Param>, ret: Type) -> Self {
-        Type::Callable(Box::new(Callable::list(params, ret)), Kind::Anon)
+        Type::Callable(
+            Box::new(Callable::list(ParamList::new(params), ret)),
+            Kind::Anon,
+        )
     }
 
     pub fn callable_ellipsis(ret: Type) -> Self {
@@ -499,6 +506,13 @@ impl Type {
 
     pub fn callable_param_spec(p: Type, ret: Type) -> Self {
         Type::Callable(Box::new(Callable::param_spec(p, ret)), Kind::Anon)
+    }
+
+    pub fn callable_concatenate(args: Box<[Type]>, param_spec: Type, ret: Type) -> Self {
+        Type::Callable(
+            Box::new(Callable::concatenate(args, param_spec, ret)),
+            Kind::Anon,
+        )
     }
 
     pub fn forall(self, tparams: TParams) -> Self {
@@ -576,19 +590,6 @@ impl Type {
                 *x = self_type.clone()
             }
         });
-    }
-
-    pub fn instantiate_fresh(
-        self,
-        gargs: &[Quantified],
-        uniques: &UniqueFactory,
-    ) -> (Vec<Var>, Self) {
-        let mp: SmallMap<Quantified, Type> = gargs
-            .iter()
-            .map(|x| (*x, Var::new(uniques).to_type()))
-            .collect();
-        let res = self.subst(&mp);
-        (mp.into_values().map(|x| x.as_var().unwrap()).collect(), res)
     }
 
     pub fn for_each_quantified(&self, f: &mut impl FnMut(Quantified)) {
@@ -678,6 +679,13 @@ impl Type {
             Type::ClassType(x) => x.visit(f),
             Type::Tuple(t) => t.visit(f),
             Type::Forall(_, x) => f(x),
+            Type::Concatenate(args, pspec) => {
+                for a in args {
+                    f(a)
+                }
+                f(pspec);
+            }
+            Type::ParamSpecValue(x) => x.visit(f),
             Type::Type(x)
             | Type::TypeGuard(x)
             | Type::TypeIs(x)
@@ -714,6 +722,13 @@ impl Type {
             Type::ClassType(x) => x.visit_mut(f),
             Type::Tuple(t) => t.visit_mut(f),
             Type::Forall(_, x) => f(x),
+            Type::Concatenate(args, pspec) => {
+                for a in args {
+                    f(a)
+                }
+                f(pspec);
+            }
+            Type::ParamSpecValue(x) => x.visit_mut(f),
             Type::Type(x)
             | Type::TypeGuard(x)
             | Type::TypeIs(x)

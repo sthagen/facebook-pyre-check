@@ -20,10 +20,61 @@ pub struct Callable {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ParamList(Vec<Param>);
+
+impl ParamList {
+    pub fn new(xs: Vec<Param>) -> Self {
+        Self(xs)
+    }
+
+    pub fn fmt_with_type<'a, D: Display + 'a>(
+        &'a self,
+        f: &mut fmt::Formatter<'_>,
+        wrap: &'a impl Fn(&'a Type) -> D,
+    ) -> fmt::Result {
+        let mut kwonly = false;
+        for (i, param) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            if !kwonly && matches!(param, Param::KwOnly(..)) {
+                kwonly = true;
+                write!(f, "*, ")?;
+            }
+            param.fmt_with_type(f, wrap)?;
+        }
+        Ok(())
+    }
+
+    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
+        self.0.iter().for_each(|x| x.visit(&mut f));
+    }
+
+    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
+        self.0.iter_mut().for_each(|x| x.visit_mut(&mut f));
+    }
+
+    pub fn items(&self) -> &[Param] {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn tail(&self) -> ParamList {
+        Self(self.0[1..].to_vec())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Params {
-    List(Vec<Param>),
+    List(ParamList),
     Ellipsis,
-    ParamSpec(Type),
+    /// Any arguments to Concatenate, followed by a ParamSpec.
+    /// E.g. `Concatenate[int, str, P]` would be `ParamSpec([int, str], P)`,
+    /// while `P` alone would be `ParamSpec([], P)`.
+    ParamSpec(Box<[Type]>, Type),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -59,27 +110,21 @@ impl Callable {
         match &self.params {
             Params::List(params) => {
                 write!(f, "(")?;
-                let mut kwonly = false;
-                for (i, param) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    if !kwonly && matches!(param, Param::KwOnly(..)) {
-                        kwonly = true;
-                        write!(f, "*, ")?;
-                    }
-                    param.fmt_with_type(f, wrap)?;
-                }
+                params.fmt_with_type(f, wrap)?;
                 write!(f, ") -> {}", wrap(&self.ret))
             }
             Params::Ellipsis => write!(f, "(...) -> {}", wrap(&self.ret)),
-            Params::ParamSpec(ty) => {
-                write!(f, "(ParamSpec({})) -> {}", wrap(ty), wrap(&self.ret))
+            Params::ParamSpec(args, pspec) => {
+                write!(f, "(")?;
+                for a in args {
+                    write!(f, "{}, ", wrap(a))?;
+                }
+                write!(f, "ParamSpec({})) -> {}", wrap(pspec), wrap(&self.ret))
             }
         }
     }
 
-    pub fn list(params: Vec<Param>, ret: Type) -> Self {
+    pub fn list(params: ParamList, ret: Type) -> Self {
         Self {
             params: Params::List(params),
             ret,
@@ -95,7 +140,14 @@ impl Callable {
 
     pub fn param_spec(p: Type, ret: Type) -> Self {
         Self {
-            params: Params::ParamSpec(p),
+            params: Params::ParamSpec(Box::default(), p),
+            ret,
+        }
+    }
+
+    pub fn concatenate(args: Box<[Type]>, param_spec: Type, ret: Type) -> Self {
+        Self {
+            params: Params::ParamSpec(args, param_spec),
             ret,
         }
     }
@@ -114,17 +166,23 @@ impl Callable {
 impl Params {
     pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
         match &self {
-            Params::List(params) => params.iter().for_each(|x| x.visit(&mut f)),
+            Params::List(params) => params.visit(f),
             Params::Ellipsis => {}
-            Params::ParamSpec(ty) => f(ty),
+            Params::ParamSpec(args, pspec) => {
+                args.iter().for_each(&mut f);
+                f(pspec);
+            }
         }
     }
 
     pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
         match self {
-            Params::List(params) => params.iter_mut().for_each(|x| x.visit_mut(&mut f)),
+            Params::List(params) => params.visit_mut(f),
             Params::Ellipsis => {}
-            Params::ParamSpec(ty) => f(ty),
+            Params::ParamSpec(args, pspec) => {
+                args.iter_mut().for_each(&mut f);
+                f(pspec);
+            }
         }
     }
 }
