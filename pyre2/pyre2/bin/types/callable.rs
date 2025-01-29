@@ -12,11 +12,18 @@ use ruff_python_ast::name::Name;
 
 use crate::module::module_name::ModuleName;
 use crate::types::types::Type;
+use crate::util::display::commas_iter;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Callable {
     pub params: Params,
     pub ret: Type,
+}
+
+impl Display for Callable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_with_type(f, &|t| t)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -115,11 +122,22 @@ impl Callable {
             }
             Params::Ellipsis => write!(f, "(...) -> {}", wrap(&self.ret)),
             Params::ParamSpec(args, pspec) => {
-                write!(f, "(")?;
-                for a in args {
-                    write!(f, "{}, ", wrap(a))?;
+                write!(f, "({}", commas_iter(|| args.iter().map(wrap)))?;
+                match pspec {
+                    Type::ParamSpecValue(params) => {
+                        if !args.is_empty() && !params.is_empty() {
+                            write!(f, ", ")?;
+                        }
+                        params.fmt_with_type(f, wrap)?;
+                    }
+                    _ => {
+                        if !args.is_empty() {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "ParamSpec({})", wrap(pspec))?;
+                    }
                 }
-                write!(f, "ParamSpec({})) -> {}", wrap(pspec), wrap(&self.ret))
+                write!(f, ") -> {}", wrap(&self.ret))
             }
         }
     }

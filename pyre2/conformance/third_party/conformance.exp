@@ -1501,8 +1501,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "type Literal[3] is not assignable to A",
-      "description": "type Literal[3] is not assignable to A",
+      "concise_description": "EXPECTED Literal[3] <: A",
+      "description": "EXPECTED Literal[3] <: A",
       "line": 57,
       "name": "PyreError",
       "stop_column": 16,
@@ -1511,8 +1511,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "type Literal[3] is not assignable to A",
-      "description": "type Literal[3] is not assignable to A",
+      "concise_description": "EXPECTED Literal[3] <: A",
+      "description": "EXPECTED Literal[3] <: A",
       "line": 66,
       "name": "PyreError",
       "stop_column": 16,
@@ -1531,8 +1531,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "type B is not assignable to A",
-      "description": "type B is not assignable to A",
+      "concise_description": "EXPECTED B <: A",
+      "description": "EXPECTED B <: A",
       "line": 75,
       "name": "PyreError",
       "stop_column": 14,
@@ -1551,28 +1551,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "YieldFrom expression found but the function has an incompatible annotation `int`",
-      "description": "YieldFrom expression found but the function has an incompatible annotation `int`",
-      "line": 87,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 87
-    },
-    {
-      "code": -2,
-      "column": 5,
       "concise_description": "Yield expression found but the function has an incompatible annotation `int`",
       "description": "Yield expression found but the function has an incompatible annotation `int`",
-      "line": 92,
-      "name": "PyreError",
-      "stop_column": 15,
-      "stop_line": 92
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "YieldFrom expression found but the function has an incompatible annotation `int`",
-      "description": "YieldFrom expression found but the function has an incompatible annotation `int`",
       "line": 92,
       "name": "PyreError",
       "stop_column": 15,
@@ -1591,16 +1571,6 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "YieldFrom expression found but the function has an incompatible annotation `IntIterator`",
-      "description": "YieldFrom expression found but the function has an incompatible annotation `IntIterator`",
-      "line": 101,
-      "name": "PyreError",
-      "stop_column": 12,
-      "stop_line": 101
-    },
-    {
-      "code": -2,
-      "column": 5,
       "concise_description": "Yield expression found but the function has an incompatible annotation `AsyncIntIterator`",
       "description": "Yield expression found but the function has an incompatible annotation `AsyncIntIterator`",
       "line": 110,
@@ -1611,12 +1581,32 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "YieldFrom expression found but the function has an incompatible annotation `AsyncIntIterator`",
-      "description": "YieldFrom expression found but the function has an incompatible annotation `AsyncIntIterator`",
-      "line": 110,
+      "concise_description": "EXPECTED Iterator[A] <: Iterator[B]",
+      "description": "EXPECTED Iterator[A] <: Iterator[B]",
+      "line": 118,
       "name": "PyreError",
-      "stop_column": 12,
-      "stop_line": 110
+      "stop_column": 29,
+      "stop_line": 118
+    },
+    {
+      "code": -2,
+      "column": 5,
+      "concise_description": "EXPECTED list[int] <: Iterator[B]",
+      "description": "EXPECTED list[int] <: Iterator[B]",
+      "line": 119,
+      "name": "PyreError",
+      "stop_column": 19,
+      "stop_line": 119
+    },
+    {
+      "code": -2,
+      "column": 5,
+      "concise_description": "EXPECTED Generator[None, float, None] <: Generator[None, int, None]",
+      "description": "EXPECTED Generator[None, float, None] <: Generator[None, int, None]",
+      "line": 127,
+      "name": "PyreError",
+      "stop_column": 29,
+      "stop_line": 127
     },
     {
       "code": -2,
@@ -1631,6 +1621,16 @@
     {
       "code": -2,
       "column": 5,
+      "concise_description": "EXPECTED Generator[None, int, None] <: Generator[None, str, None]",
+      "description": "EXPECTED Generator[None, int, None] <: Generator[None, str, None]",
+      "line": 135,
+      "name": "PyreError",
+      "stop_column": 29,
+      "stop_line": 135
+    },
+    {
+      "code": -2,
+      "column": 5,
       "concise_description": "Yield expression found but the function has an incompatible annotation `AsyncIterable[str]`",
       "description": "Yield expression found but the function has an incompatible annotation `AsyncIterable[str]`",
       "line": 145,
@@ -1641,12 +1641,22 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "YieldFrom expression found but the function has an incompatible annotation `AsyncIterable[str]`",
-      "description": "YieldFrom expression found but the function has an incompatible annotation `AsyncIterable[str]`",
-      "line": 145,
+      "concise_description": "EXPECTED list[int] <: Generator[int, None, None]",
+      "description": "EXPECTED list[int] <: Generator[int, None, None]",
+      "line": 149,
       "name": "PyreError",
-      "stop_column": 13,
-      "stop_line": 145
+      "stop_column": 21,
+      "stop_line": 149
+    },
+    {
+      "code": -2,
+      "column": 5,
+      "concise_description": "EXPECTED list[int] <: Generator[int, None, None]",
+      "description": "EXPECTED list[int] <: Generator[int, None, None]",
+      "line": 150,
+      "name": "PyreError",
+      "stop_column": 21,
+      "stop_line": 150
     },
     {
       "code": -2,
@@ -1693,16 +1703,6 @@
       "column": 9,
       "concise_description": "Yield expression found but the function has an incompatible annotation `AsyncGenerator[str, None]`",
       "description": "Yield expression found but the function has an incompatible annotation `AsyncGenerator[str, None]`",
-      "line": 161,
-      "name": "PyreError",
-      "stop_column": 35,
-      "stop_line": 161
-    },
-    {
-      "code": -2,
-      "column": 9,
-      "concise_description": "YieldFrom expression found but the function has an incompatible annotation `AsyncGenerator[str, None]`",
-      "description": "YieldFrom expression found but the function has an incompatible annotation `AsyncGenerator[str, None]`",
       "line": 161,
       "name": "PyreError",
       "stop_column": 35,
@@ -1763,16 +1763,6 @@
       "column": 5,
       "concise_description": "Yield expression found but the function has an incompatible annotation `AsyncIterator[int]`",
       "description": "Yield expression found but the function has an incompatible annotation `AsyncIterator[int]`",
-      "line": 187,
-      "name": "PyreError",
-      "stop_column": 10,
-      "stop_line": 187
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "YieldFrom expression found but the function has an incompatible annotation `AsyncIterator[int]`",
-      "description": "YieldFrom expression found but the function has an incompatible annotation `AsyncIterator[int]`",
       "line": 187,
       "name": "PyreError",
       "stop_column": 10,

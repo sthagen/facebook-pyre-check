@@ -22,8 +22,8 @@ use starlark_map::ordered_set::OrderedSet;
 use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 
+use crate::alt::callable::CallArg;
 use crate::alt::classes::ClassField;
-use crate::alt::expr::CallArg;
 use crate::ast::Ast;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
@@ -1014,9 +1014,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
         }
-        if self
-            .get_typed_dict_from_key(field.class.to_owned())
-            .is_some()
+        if self.is_key_typed_dict(field.class)
             && matches!(field.initialization, ClassFieldInitialization::Class)
         {
             self.error(

@@ -329,6 +329,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> ClassMetadata {
         let mut is_typed_dict = false;
         let mut is_named_tuple = false;
+        let mut is_enum = false;
         let bases: Vec<BaseClass> = bases.iter().map(|x| self.base_class_of(x)).collect();
         let is_protocol = bases.iter().any(|x| matches!(x, BaseClass::Protocol(_)));
         let bases_with_metadata: Vec<_> = bases
@@ -386,14 +387,29 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 "metaclass" => Either::Left(x),
                 _ => Either::Right((n.clone(), self.expr(x, None))),
             });
+
+        let base_metaclasses: Vec<_> = bases_with_metadata
+            .iter()
+            .filter_map(|(b, metadata)| metadata.metaclass().map(|m| (&b.name().id, m)))
+            .collect();
         let metaclass =
-            self.calculate_metaclass(cls, metaclasses.into_iter().next(), &bases_with_metadata);
-        if is_typed_dict && metaclass.is_some() {
-            self.error(
-                cls.name().range,
-                "Typed dictionary definitions may not specify a metaclass.".to_owned(),
+            self.calculate_metaclass(cls, metaclasses.into_iter().next(), &base_metaclasses);
+
+        if let Some(metaclass) = &metaclass {
+            self.check_base_class_metaclasses(cls, metaclass, &base_metaclasses);
+            is_enum = self.solver().is_subset_eq(
+                &Type::ClassType(metaclass.clone()),
+                &Type::ClassType(self.stdlib.enum_meta()),
+                self.type_order(),
             );
+            if is_typed_dict {
+                self.error(
+                    cls.name().range,
+                    "Typed dictionary definitions may not specify a metaclass.".to_owned(),
+                );
+            }
         }
+
         ClassMetadata::new(
             cls,
             bases_with_metadata,
@@ -401,6 +417,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             keywords,
             is_typed_dict,
             is_named_tuple,
+            is_enum,
             is_protocol,
             self.errors(),
         )
@@ -410,14 +427,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         &self,
         cls: &Class,
         raw_metaclass: Option<&Expr>,
-        bases_with_metadata: &[(ClassType, Arc<ClassMetadata>)],
+        base_metaclasses: &[(&Name, &ClassType)],
     ) -> Option<ClassType> {
         let direct_meta = raw_metaclass.and_then(|x| self.direct_metaclass(cls, x));
-        let base_metaclasses: Vec<_> = bases_with_metadata
-            .iter()
-            .filter_map(|(b, metadata)| metadata.metaclass().map(|m| (&b.name().id, m)))
-            .collect();
-        let metaclass = if let Some(metaclass) = direct_meta {
+
+        if let Some(metaclass) = direct_meta {
             Some(metaclass)
         } else {
             let mut inherited_meta: Option<ClassType> = None;
@@ -436,33 +450,37 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             inherited_meta
-        };
+        }
+    }
+
+    fn check_base_class_metaclasses(
+        &self,
+        cls: &Class,
+        metaclass: &ClassType,
+        base_metaclasses: &[(&Name, &ClassType)],
+    ) {
         // It is a runtime error to define a class whose metaclass (whether
         // specified directly or through inheritance) is not a subtype of all
         // base class metaclasses.
-        if let Some(metaclass) = &metaclass {
-            let metaclass_type = Type::ClassType(metaclass.clone());
-            for (base_name, m) in base_metaclasses.iter() {
-                let base_metaclass_type = Type::ClassType((*m).clone());
-                if !self.solver().is_subset_eq(
-                    &metaclass_type,
-                    &base_metaclass_type,
-                    self.type_order(),
-                ) {
-                    self.error(
-                            cls.name().range,
-                            format!(
-                                "Class `{}` has metaclass `{}` which is not a subclass of metaclass `{}` from base class `{}`",
-                                cls.name().id,
-                                metaclass_type,
-                                base_metaclass_type,
-                                base_name,
-                            )
-                        );
-                }
+        let metaclass_type = Type::ClassType(metaclass.clone());
+        for (base_name, m) in base_metaclasses.iter() {
+            let base_metaclass_type = Type::ClassType((*m).clone());
+            if !self
+                .solver()
+                .is_subset_eq(&metaclass_type, &base_metaclass_type, self.type_order())
+            {
+                self.error(
+                    cls.name().range,
+                    format!(
+                        "Class `{}` has metaclass `{}` which is not a subclass of metaclass `{}` from base class `{}`",
+                        cls.name().id,
+                        metaclass_type,
+                        base_metaclass_type,
+                        base_name,
+                    )
+                );
             }
         }
-        metaclass
     }
 
     fn direct_metaclass(&self, cls: &Class, raw_metaclass: &Expr) -> Option<ClassType> {
@@ -505,27 +523,25 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     fn get_enum_from_class(&self, cls: &Class) -> Option<Enum> {
-        let metadata = self.get_metadata_for_class(cls);
-        if metadata.is_typed_dict() {
-            return None;
-        }
-        let targs = self.create_default_targs(cls, None);
-        self.get_enum_from_class_type(&ClassType::new(cls.dupe(), targs))
+        self.get_enum_from_class_and_targs(cls.dupe(), self.create_default_targs(cls, None))
     }
 
-    pub fn get_enum_from_class_type(&self, cls: &ClassType) -> Option<Enum> {
-        let metadata = self.get_metadata_for_class(cls.class_object());
-        metadata.metaclass().and_then(|m| {
-            if self.solver().is_subset_eq(
-                &Type::ClassType(m.clone()),
-                &Type::ClassType(self.stdlib.enum_meta()),
-                self.type_order(),
-            ) {
-                Some(Enum { cls: cls.clone() })
-            } else {
-                None
-            }
-        })
+    pub fn get_enum_from_class_type(&self, class_type: &ClassType) -> Option<Enum> {
+        self.get_enum_from_class_and_targs(
+            class_type.class_object().dupe(),
+            class_type.targs().clone(),
+        )
+    }
+
+    fn get_enum_from_class_and_targs(&self, cls: Class, targs: TArgs) -> Option<Enum> {
+        let metadata = self.get_metadata_for_class(&cls);
+        if metadata.is_enum() {
+            Some(Enum {
+                cls: ClassType::new(cls, targs),
+            })
+        } else {
+            None
+        }
     }
 
     fn check_and_create_targs(&self, cls: &Class, targs: Vec<Type>, range: TextRange) -> TArgs {
@@ -583,17 +599,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    fn typed_dict(&self, cls: &Class, targs: TArgs) -> Type {
+        let fields = self.get_typed_dict_fields(cls, &targs);
+        Type::TypedDict(TypedDict::new(cls.dupe(), targs, fields))
+    }
+
     /// Given a class or typed dictionary and some (explicit) type arguments, construct a `Type`
     /// that represents the type of an instance of the class or typed dictionary with those `targs`.
     pub fn specialize(&self, cls: &Class, targs: Vec<Type>, range: TextRange) -> Type {
         let targs = self.check_and_create_targs(cls, targs, range);
         let metadata = self.get_metadata_for_class(cls);
         if metadata.is_typed_dict() {
-            Type::TypedDict(TypedDict::new(
-                cls.dupe(),
-                targs.clone(),
-                self.get_typed_dict_fields(cls, &targs),
-            ))
+            self.typed_dict(cls, targs)
         } else {
             Type::ClassType(ClassType::new(cls.dupe(), targs))
         }
@@ -611,11 +628,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let metadata = self.get_metadata_for_class(cls);
         let targs = self.create_default_targs(cls, Some(range));
         if metadata.is_typed_dict() {
-            Type::TypedDict(TypedDict::new(
-                cls.dupe(),
-                targs.clone(),
-                self.get_typed_dict_fields(cls, &targs),
-            ))
+            self.typed_dict(cls, targs)
         } else {
             Type::ClassType(ClassType::new(cls.dupe(), targs))
         }
@@ -627,11 +640,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let metadata = self.get_metadata_for_class(cls);
         let targs = self.create_default_targs(cls, None);
         if metadata.is_typed_dict() {
-            Type::TypedDict(TypedDict::new(
-                cls.dupe(),
-                targs.clone(),
-                self.get_typed_dict_fields(cls, &targs),
-            ))
+            self.typed_dict(cls, targs)
         } else {
             Type::ClassType(ClassType::new(cls.dupe(), targs))
         }
@@ -651,11 +660,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let qs = cls.tparams().quantified().collect::<Vec<_>>();
         let targs = TArgs::new(qs.map(|q| Type::Quantified(*q)));
         let promoted_cls = if metadata.is_typed_dict() {
-            Type::type_form(Type::TypedDict(TypedDict::new(
-                cls.dupe(),
-                targs.clone(),
-                self.get_typed_dict_fields(cls, &targs),
-            )))
+            Type::type_form(self.typed_dict(cls, targs))
         } else {
             Type::type_form(Type::ClassType(ClassType::new(cls.dupe(), targs)))
         };
@@ -877,13 +882,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    pub fn get_typed_dict_from_key(&self, key: Idx<Key>) -> Option<TypedDict> {
+    pub fn is_key_typed_dict(&self, key: Idx<Key>) -> bool {
         match self.get_idx(key).deref() {
-            Type::ClassDef(cls) => match self.promote_silently(cls) {
-                Type::TypedDict(typed_dict) => Some(typed_dict),
-                _ => None,
-            },
-            _ => None,
+            Type::ClassDef(cls) => self.get_metadata_for_class(cls).is_typed_dict(),
+            _ => false,
         }
     }
 
