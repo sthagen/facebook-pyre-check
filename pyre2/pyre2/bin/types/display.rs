@@ -25,7 +25,6 @@ use crate::types::types::Decoration;
 use crate::types::types::NeverStyle;
 use crate::types::types::Quantified;
 use crate::types::types::Type;
-use crate::types::types::TypeAliasStyle;
 use crate::util::display::append;
 use crate::util::display::commas_iter;
 use crate::util::display::Fmt;
@@ -149,6 +148,9 @@ impl<'a> TypeDisplayContext<'a> {
 
     fn fmt_decoration(&self, decoration: &Decoration, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match decoration {
+            Decoration::StaticMethod(box ty) => {
+                write!(f, "staticmethod[{}]", self.display(ty))
+            }
             Decoration::ClassMethod(box ty) => {
                 write!(f, "classmethod[{}]", self.display(ty))
             }
@@ -192,7 +194,11 @@ impl<'a> TypeDisplayContext<'a> {
             Type::Literal(lit) => write!(f, "Literal[{}]", lit),
             Type::LiteralString => write!(f, "LiteralString"),
             Type::Callable(c, _) => c.fmt_with_type(f, &|t| self.display(t)),
-            Type::ParamSpecValue(x) => x.fmt_with_type(f, &|t| self.display(t)),
+            Type::ParamSpecValue(x) => {
+                write!(f, "(")?;
+                x.fmt_with_type(f, &|t| self.display(t))?;
+                write!(f, ")")
+            }
             Type::BoundMethod(obj, func) => {
                 write!(
                     f,
@@ -271,12 +277,13 @@ impl<'a> TypeDisplayContext<'a> {
                 AnyStyle::Error => write!(f, "Error"),
             },
             Type::TypeAlias(ta) => {
-                let desc = match ta.style {
-                    TypeAliasStyle::Scoped => "ScopedTypeAlias",
-                    TypeAliasStyle::LegacyExplicit => "LegacyExplicitTypeAlias",
-                    TypeAliasStyle::LegacyImplicit => "LegacyImplicitTypeAlias",
-                };
-                write!(f, "{}[{}, {}]", desc, ta.name, self.display(&ta.as_type()))
+                write!(
+                    f,
+                    "{}[{}, {}]",
+                    ta.style,
+                    ta.name,
+                    self.display(&ta.as_type())
+                )
             }
             Type::Decoration(d) => self.fmt_decoration(d, f),
             Type::None => write!(f, "None"),

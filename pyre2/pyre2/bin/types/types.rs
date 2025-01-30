@@ -81,6 +81,16 @@ pub enum QuantifiedKind {
     TypeVarTuple,
 }
 
+impl QuantifiedKind {
+    pub fn empty_value(self) -> Type {
+        match self {
+            QuantifiedKind::TypeVar => Type::any_implicit(),
+            QuantifiedKind::ParamSpec => Type::ParamSpecValue(ParamList::everything()),
+            QuantifiedKind::TypeVarTuple => Type::any_implicit(), // TODO
+        }
+    }
+}
+
 impl Display for Quantified {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "?_")
@@ -279,13 +289,16 @@ impl AnyStyle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Display)]
 pub enum TypeAliasStyle {
     /// A type alias declared with the `type` keyword
+    #[display("ScopedTypeAlias")]
     Scoped,
     /// A type alias declared with a `: TypeAlias` annotation
+    #[display("LegacyExplicitTypeAlias")]
     LegacyExplicit,
     /// An unannotated assignment that may be either an implicit type alias or an untyped value
+    #[display("LegacyImplicitTypeAlias")]
     LegacyImplicit,
 }
 
@@ -403,6 +416,8 @@ assert_eq_size!(Type, [usize; 4]);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Decoration {
+    // The result of applying the `@staticmethod` decorator.
+    StaticMethod(Box<Type>),
     // The result of applying the `@classmethod` decorator.
     ClassMethod(Box<Type>),
 }
@@ -410,11 +425,13 @@ pub enum Decoration {
 impl Decoration {
     pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
         match self {
+            Self::StaticMethod(ty) => f(ty),
             Self::ClassMethod(ty) => f(ty),
         }
     }
     pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
         match self {
+            Self::StaticMethod(ty) => f(ty),
             Self::ClassMethod(ty) => f(ty),
         }
     }
@@ -468,7 +485,6 @@ pub enum Type {
     TypeVarTuple(TypeVarTuple),
     SpecialForm(SpecialForm),
     Concatenate(Box<[Type]>, Box<Type>),
-    #[expect(dead_code)]
     ParamSpecValue(ParamList),
     /// Used to represent `P.args`. The spec describes it as an annotation,
     /// but it's easier to think of it as a type that can't occur in nested positions.

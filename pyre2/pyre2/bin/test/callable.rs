@@ -342,19 +342,6 @@ def test_sync() -> Callable[[int], int]:
 "#,
 );
 
-testcase_with_bug!(
-    "TODO",
-    test_callable_param_spec,
-    r#"
-from typing import Callable, ParamSpec
-P = ParamSpec("P")
-def test(f: Callable[P, None]) -> Callable[P, None]:
-    def inner(*args: P.args, **kwargs: P.kwargs) -> None:
-        f(*args, **kwargs) # E: Answers::expr_infer wrong number of arguments to call
-    return inner # E: EXPECTED (*Args[?_], **Kwargs[?_]) -> None <: (ParamSpec(?_)) -> None
-"#,
-);
-
 testcase!(
     test_function_vs_callable,
     r#"
@@ -365,14 +352,4 @@ def f(x: int) -> int:
 # This test verifies that we produce a sensible error message that shows the mismatch.
 assert_type(f, Callable[[int], int])  # E: assert_type((x: int) -> int, (int) -> int) failed
     "#,
-);
-
-testcase!(
-    test_function_concatenate,
-    r#"
-from typing import Callable, ParamSpec, Concatenate
-P = ParamSpec("P")
-def f(t: Callable[Concatenate[int, P], int]):
-    pass
-"#,
 );

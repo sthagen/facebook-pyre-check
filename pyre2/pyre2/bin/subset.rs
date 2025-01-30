@@ -12,6 +12,7 @@ use crate::solver::Subset;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
 use crate::types::callable::Param;
+use crate::types::callable::ParamList;
 use crate::types::callable::Params;
 use crate::types::callable::Required;
 use crate::types::class::TArgs;
@@ -42,6 +43,17 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                     }
                 }
                 (
+                    Some(Param::Pos(l_name, l, Required::Required)),
+                    Some(Param::Pos(u_name, u, Required::Required)),
+                ) if l_name == u_name => {
+                    if self.is_subset_eq(u, l) {
+                        l_arg = l_args_iter.next();
+                        u_arg = u_args_iter.next();
+                    } else {
+                        return false;
+                    }
+                }
+                (
                     Some(
                         Param::PosOnly(_, Required::Optional)
                         | Param::Pos(_, _, Required::Optional)
@@ -58,6 +70,15 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                     }
                 }
                 (Some(Param::Kwargs(_)), None) => return true,
+                (Some(Param::VarArg(l)), Some(Param::VarArg(u)))
+                | (Some(Param::Kwargs(l)), Some(Param::Kwargs(u))) => {
+                    if self.is_subset_eq(u, l) {
+                        l_arg = l_args_iter.next();
+                        u_arg = u_args_iter.next();
+                    } else {
+                        return false;
+                    }
+                }
                 _ => return false,
             }
         }
@@ -102,6 +123,54 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                         (Params::Ellipsis, _) | (_, Params::Ellipsis) => true,
                         (Params::List(l_args), Params::List(u_args)) => {
                             self.is_subset_param_list(l_args.items(), u_args.items())
+                        }
+                        (Params::List(ls), Params::ParamSpec(args, Type::Var(v))) => {
+                            match self.lookup_param_spec_var(*v) {
+                                Some(v) => match v {
+                                    Type::ParamSpecValue(value) => self.is_subset_param_list(
+                                        ls.items(),
+                                        value.prepend_types(args).items(),
+                                    ),
+                                    _ => false,
+                                },
+                                None => {
+                                    let args = ParamList::new_types(args);
+                                    if ls.len() < args.len() {
+                                        return false;
+                                    }
+                                    let (pre, post) = ls.items().split_at(args.len());
+                                    if !self.is_subset_param_list(pre, args.items()) {
+                                        return false;
+                                    }
+                                    self.set_param_spec_var(*v, ParamList::new(post.to_vec()));
+                                    true
+                                }
+                            }
+                        }
+                        (Params::List(ls), Params::ParamSpec(args, Type::Quantified(q))) => {
+                            // Must be: ls = args + [Args[q], KWargs[q]]
+                            let args = ParamList::new_types(args);
+                            let args = args
+                                .items()
+                                .iter()
+                                .cloned()
+                                .chain(vec![
+                                    Param::VarArg(Type::Args(*q)),
+                                    Param::Kwargs(Type::Kwargs(*q)),
+                                ])
+                                .collect::<Vec<_>>();
+                            self.is_subset_param_list(ls.items(), &args)
+                        }
+                        (Params::ParamSpec(ls, p1), Params::ParamSpec(us, p2)) if p1 == p2 => {
+                            if ls.len() != us.len() {
+                                return false;
+                            }
+                            for (l, u) in ls.iter().zip(us.iter()) {
+                                if !self.is_subset_eq(u, l) {
+                                    return false;
+                                }
+                            }
+                            true
                         }
                         (Params::ParamSpec(_, _), _) | (_, Params::ParamSpec(_, _)) => {
                             // TODO: need instantiation for param spec

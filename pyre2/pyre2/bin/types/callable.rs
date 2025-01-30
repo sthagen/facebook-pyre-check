@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::borrow::Cow;
 use std::fmt;
 use std::fmt::Display;
 
@@ -13,6 +14,7 @@ use ruff_python_ast::name::Name;
 use crate::module::module_name::ModuleName;
 use crate::types::types::Type;
 use crate::util::display::commas_iter;
+use crate::util::prelude::SliceExt;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Callable {
@@ -26,12 +28,31 @@ impl Display for Callable {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParamList(Vec<Param>);
 
 impl ParamList {
     pub fn new(xs: Vec<Param>) -> Self {
         Self(xs)
+    }
+
+    /// Create a new ParamList from a list of types, as required position-only parameters.
+    pub fn new_types(xs: &[Type]) -> Self {
+        Self(xs.map(|t| Param::PosOnly(t.clone(), Required::Required)))
+    }
+
+    /// Prepend some required position-only parameters.
+    pub fn prepend_types(&self, pre: &[Type]) -> Cow<ParamList> {
+        if pre.is_empty() {
+            Cow::Borrowed(self)
+        } else {
+            Cow::Owned(ParamList(
+                pre.iter()
+                    .map(|t| Param::PosOnly(t.clone(), Required::Required))
+                    .chain(self.0.iter().cloned())
+                    .collect(),
+            ))
+        }
     }
 
     pub fn fmt_with_type<'a, D: Display + 'a>(
@@ -65,12 +86,24 @@ impl ParamList {
         &self.0
     }
 
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
     pub fn tail(&self) -> ParamList {
         Self(self.0[1..].to_vec())
+    }
+
+    /// Type signature that permits everything, namely `*args, **kwargs`.
+    pub fn everything() -> ParamList {
+        ParamList(vec![
+            Param::VarArg(Type::any_implicit()),
+            Param::Kwargs(Type::any_implicit()),
+        ])
     }
 }
 
@@ -140,6 +173,33 @@ impl Callable {
                 }
                 write!(f, ") -> {}", wrap(&self.ret))
             }
+        }
+    }
+
+    /// Like `list`, but if the last two arguments are
+    /// `*args: P.args, **kwargs: P.kwargs` it produces a `concatenate` type.
+    pub fn make(params: Vec<Param>, ret: Type) -> Self {
+        if params.len() >= 2
+            && let Param::VarArg(Type::Args(q1)) = params[params.len() - 2]
+            && let Param::Kwargs(Type::Kwargs(q2)) = params[params.len() - 1]
+            && q1 == q2
+        {
+            let len = params.len() - 2;
+            let args = params
+                .into_iter()
+                .take(len)
+                .map(|x| match x {
+                    Param::PosOnly(ty, _) => ty,
+                    Param::Pos(_, ty, _) => ty,
+                    // TODO: Probably these are errors?
+                    Param::VarArg(ty) => ty,
+                    Param::KwOnly(_, ty, _) => ty,
+                    Param::Kwargs(ty) => ty,
+                })
+                .collect();
+            Self::concatenate(args, Type::Quantified(q1), ret)
+        } else {
+            Self::list(ParamList(params), ret)
         }
     }
 

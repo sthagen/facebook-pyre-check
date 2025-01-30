@@ -12,6 +12,7 @@ use std::iter;
 use std::sync::Arc;
 
 use ruff_python_ast::name::Name;
+use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use vec1::Vec1;
 
@@ -33,6 +34,7 @@ pub struct ClassMetadata {
     is_named_tuple: bool,
     enum_metadata: Option<EnumMetadata>,
     is_protocol: bool,
+    dataclass_metadata: Option<DataclassMetadata>,
 }
 
 impl Display for ClassMetadata {
@@ -51,6 +53,7 @@ impl ClassMetadata {
         is_named_tuple: bool,
         enum_metadata: Option<EnumMetadata>,
         is_protocol: bool,
+        dataclass_metadata: Option<DataclassMetadata>,
         errors: &ErrorCollector,
     ) -> ClassMetadata {
         ClassMetadata {
@@ -61,6 +64,7 @@ impl ClassMetadata {
             is_named_tuple,
             enum_metadata,
             is_protocol,
+            dataclass_metadata,
         }
     }
 
@@ -73,6 +77,7 @@ impl ClassMetadata {
             is_named_tuple: false,
             enum_metadata: None,
             is_protocol: false,
+            dataclass_metadata: None,
         }
     }
 
@@ -107,6 +112,10 @@ impl ClassMetadata {
 
     pub fn is_protocol(&self) -> bool {
         self.is_protocol
+    }
+
+    pub fn dataclass_metadata(&self) -> Option<&DataclassMetadata> {
+        self.dataclass_metadata.as_ref()
     }
 
     pub fn ancestors<'a>(&'a self, stdlib: &'a Stdlib) -> impl Iterator<Item = &'a ClassType> {
@@ -193,6 +202,12 @@ impl EnumMetadata {
             .filter_map(|f| self.get_member(f))
             .collect()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataclassMetadata {
+    pub fields: Vec<Name>,
+    pub synthesized_methods: SmallMap<Name, Type>,
 }
 
 /// A struct representing a class's ancestors, in method resolution order (MRO)

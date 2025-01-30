@@ -15,6 +15,7 @@ use itertools::Either;
 use itertools::EitherOrBoth;
 use itertools::Itertools;
 use ruff_python_ast::name::Name;
+use ruff_python_ast::Decorator;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::StmtClassDef;
@@ -22,6 +23,7 @@ use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
+use starlark_map::smallmap;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
@@ -38,15 +40,23 @@ use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
+use crate::types::callable::Callable;
+use crate::types::callable::CallableKind;
+use crate::types::callable::Param;
+use crate::types::callable::ParamList;
+use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
 use crate::types::class::Substitution;
 use crate::types::class::TArgs;
 use crate::types::class_metadata::ClassMetadata;
+use crate::types::class_metadata::DataclassMetadata;
 use crate::types::class_metadata::EnumMetadata;
 use crate::types::literal::Lit;
 use crate::types::special_form::SpecialForm;
 use crate::types::type_var::Variance;
+use crate::types::types::CalleeKind;
+use crate::types::types::Decoration;
 use crate::types::types::TParamInfo;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -131,11 +141,95 @@ impl ClassField {
         tparams.quantified().any(|q| qs.contains(&q))
     }
 
-    fn ty(self) -> Type {
-        match self.0 {
-            ClassFieldInner::Simple { ty, .. } => ty,
+    fn as_raw_special_method_type(self, cls: &ClassType) -> Option<Type> {
+        match self.instantiate_for(cls).0 {
+            ClassFieldInner::Simple { ty, .. } => match self.initialization() {
+                ClassFieldInitialization::Class => Some(ty),
+                ClassFieldInitialization::Instance => None,
+            },
         }
     }
+
+    fn as_special_method_type(self, cls: &ClassType) -> Option<Type> {
+        self.as_raw_special_method_type(cls)
+            .map(|ty| bind_instance_attribute(cls, ty))
+    }
+
+    fn as_instance_attribute(self, cls: &ClassType) -> Attribute {
+        match self.instantiate_for(cls).0 {
+            ClassFieldInner::Simple { ty, .. } => match self.initialization() {
+                ClassFieldInitialization::Class => {
+                    Attribute::access_allowed(bind_instance_attribute(cls, ty))
+                }
+                ClassFieldInitialization::Instance => Attribute::access_allowed(ty),
+            },
+        }
+    }
+
+    fn as_class_attribute(self, cls: &Class) -> Attribute {
+        match &self.0 {
+            ClassFieldInner::Simple {
+                initialization: ClassFieldInitialization::Instance,
+                ..
+            } => Attribute::access_not_allowed(NoAccessReason::ClassUseOfInstanceAttribute(
+                cls.clone(),
+            )),
+            ClassFieldInner::Simple {
+                initialization: ClassFieldInitialization::Class,
+                ty,
+                ..
+            } => {
+                if self.depends_on_class_type_parameter(cls) {
+                    Attribute::access_not_allowed(NoAccessReason::ClassAttributeIsGeneric(
+                        cls.clone(),
+                    ))
+                } else {
+                    Attribute::access_allowed(bind_class_attribute(cls, ty.clone()))
+                }
+            }
+        }
+    }
+}
+
+fn is_unbound_function(ty: &Type) -> bool {
+    match ty {
+        Type::Forall(_, t) => is_unbound_function(t),
+        Type::Callable(_, _) => true,
+        _ => false,
+    }
+}
+
+fn bind_class_attribute(cls: &Class, attr: Type) -> Type {
+    match attr {
+        Type::Decoration(Decoration::StaticMethod(box attr)) => attr,
+        Type::Decoration(Decoration::ClassMethod(box attr)) => {
+            make_bound_method(Type::ClassDef(cls.dupe()), attr)
+        }
+        attr => attr,
+    }
+}
+
+fn bind_instance_attribute(cls: &ClassType, attr: Type) -> Type {
+    match attr {
+        Type::Decoration(Decoration::StaticMethod(box attr)) => attr,
+        Type::Decoration(Decoration::ClassMethod(box attr)) => {
+            make_bound_method(Type::ClassDef(cls.class_object().dupe()), attr)
+        }
+        attr => {
+            if is_unbound_function(&attr) {
+                make_bound_method(cls.self_type(), attr)
+            } else {
+                attr
+            }
+        }
+    }
+}
+
+fn make_bound_method(obj: Type, attr: Type) -> Type {
+    // TODO(stroxler): Think about what happens if `attr` is not callable. This
+    // can happen with the current logic if a decorator spits out a non-callable
+    // type that gets wrapped in `@classmethod`.
+    Type::BoundMethod(Box::new(obj), Box::new(attr))
 }
 
 impl Display for ClassField {
@@ -195,23 +289,6 @@ impl BaseClass {
         }
     }
 }
-
-fn is_unbound_function(ty: &Type) -> bool {
-    match ty {
-        Type::Forall(_, t) => is_unbound_function(t),
-        Type::Callable(_, _) => true,
-        _ => false,
-    }
-}
-
-fn bind_attribute(obj: Type, attr: Type) -> Type {
-    if is_unbound_function(&attr) {
-        Type::BoundMethod(Box::new(obj), Box::new(attr))
-    } else {
-        attr
-    }
-}
-
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn class_definition(
         &self,
@@ -376,13 +453,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         cls: &Class,
         bases: &[Expr],
         keywords: &[(Name, Expr)],
+        decorators: &[Decorator],
     ) -> ClassMetadata {
         let mut is_typed_dict = false;
         let mut is_named_tuple = false;
         let mut enum_metadata = None;
+        let mut dataclass_metadata = None;
         let bases: Vec<BaseClass> = bases.iter().map(|x| self.base_class_of(x)).collect();
         let is_protocol = bases.iter().any(|x| matches!(x, BaseClass::Protocol(_)));
-        let bases_with_metadata: Vec<_> = bases
+        let bases_with_metadata = bases
             .iter()
             .filter_map(|x| match x {
                 BaseClass::Expr(x) => match self.expr_untype(x) {
@@ -402,6 +481,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 x.range(),
                                 "If `Protocol` is included as a base class, all other bases must be protocols.".to_owned(),
                             );
+                        }
+                        if dataclass_metadata.is_none() && let Some(base_dataclass) = class_metadata.dataclass_metadata() {
+                            // If we inherit from a dataclass, copy its fields. Note that if this class is
+                            // itself decorated with @dataclass, we'll recompute the fields and overwrite this.
+                            dataclass_metadata = Some(DataclassMetadata {
+                                fields: base_dataclass.fields.clone(),
+                                synthesized_methods: SmallMap::new(),
+                            });
                         }
                         Some((c, class_metadata))
                     }
@@ -425,7 +512,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 _ => None,
             })
-            .collect();
+            .collect::<Vec<_>>();
         if is_named_tuple && bases_with_metadata.len() > 1 {
             self.error(
                 cls.name().range,
@@ -438,10 +525,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 _ => Either::Right((n.clone(), self.expr(x, None))),
             });
 
-        let base_metaclasses: Vec<_> = bases_with_metadata
+        let base_metaclasses = bases_with_metadata
             .iter()
             .filter_map(|(b, metadata)| metadata.metaclass().map(|m| (&b.name().id, m)))
-            .collect();
+            .collect::<Vec<_>>();
         let metaclass =
             self.calculate_metaclass(cls, metaclasses.into_iter().next(), &base_metaclasses);
         if let Some(metaclass) = &metaclass {
@@ -466,6 +553,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 );
             }
         }
+        for decorator in decorators {
+            let ty_decorator = self.expr(&decorator.expression, None);
+            if matches!(
+                ty_decorator.callee_kind(),
+                Some(CalleeKind::Callable(CallableKind::Dataclass))
+            ) {
+                let fields = self.get_dataclass_fields(cls, &bases_with_metadata);
+                let init = self.get_dataclass_init(cls, &fields);
+                dataclass_metadata = Some(DataclassMetadata {
+                    fields: fields.into_keys().collect(),
+                    synthesized_methods: smallmap! { dunder::INIT => init },
+                });
+            }
+        }
         if is_typed_dict
             && let Some(bad) = bases_with_metadata.iter().find(|x| !x.1.is_typed_dict())
         {
@@ -483,6 +584,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             is_named_tuple,
             enum_metadata,
             is_protocol,
+            dataclass_metadata,
             self.errors(),
         )
     }
@@ -800,7 +902,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     fn get_class_field(&self, cls: &Class, name: &Name) -> Option<ClassField> {
-        if cls.contains(name) {
+        let metadata = self.get_metadata_for_class(cls);
+        if let Some(dataclass) = metadata.dataclass_metadata()
+            && let Some(method) = dataclass.synthesized_methods.get(name)
+        {
+            Some(ClassField::new(
+                method.clone(),
+                None,
+                ClassFieldInitialization::Class,
+            ))
+        } else if cls.contains(name) {
             let field = self.get_from_class(
                 cls,
                 &KeyClassField(ShortIdentifier::new(cls.name()), name.clone()),
@@ -811,19 +922,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn get_class_member(&self, cls: &Class, name: &Name) -> Option<(ClassField, Class)> {
+    fn get_class_member(&self, cls: &Class, name: &Name) -> Option<WithDefiningClass<ClassField>> {
         if let Some(field) = self.get_class_field(cls, name) {
-            Some((field, cls.dupe()))
+            Some(WithDefiningClass {
+                value: field,
+                defining_class: cls.dupe(),
+            })
         } else {
             self.get_metadata_for_class(cls)
                 .ancestors(self.stdlib)
                 .filter_map(|ancestor| {
                     self.get_class_field(ancestor.class_object(), name)
-                        .map(|field| {
-                            (
-                                field.instantiate_for(ancestor),
-                                ancestor.class_object().dupe(),
-                            )
+                        .map(|field| WithDefiningClass {
+                            value: field.instantiate_for(ancestor),
+                            defining_class: ancestor.class_object().dupe(),
                         })
                 })
                 .next()
@@ -863,28 +975,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             .collect::<SmallSet<_>>()
     }
 
-    fn get_instance_attribute_with_defining_class(
-        &self,
-        cls: &ClassType,
-        name: &Name,
-    ) -> Option<WithDefiningClass<Type>> {
-        self.get_class_member(cls.class_object(), name)
-            .map(|(field, defining_class)| {
-                let member = field.instantiate_for(cls);
-                let ty = match member.initialization() {
-                    ClassFieldInitialization::Class => bind_attribute(cls.self_type(), member.ty()),
-                    ClassFieldInitialization::Instance => member.ty(),
-                };
-                WithDefiningClass {
-                    value: ty,
-                    defining_class,
-                }
-            })
-    }
-
     pub fn get_instance_attribute(&self, cls: &ClassType, name: &Name) -> Option<Attribute> {
-        self.get_instance_attribute_with_defining_class(cls, name)
-            .map(|attr| Attribute::access_allowed(attr.value))
+        self.get_class_member(cls.class_object(), name)
+            .map(|member| member.value.as_instance_attribute(cls))
     }
 
     /// Gets an attribute from a class definition.
@@ -895,46 +988,30 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// Access is disallowed for instance-only attributes and for attributes whose
     /// type contains a class-scoped type parameter - e.g., `class A[T]: x: T`.
     pub fn get_class_attribute(&self, cls: &Class, name: &Name) -> Option<Attribute> {
-        let (member, _) = self.get_class_member(cls, name)?;
-        if member.depends_on_class_type_parameter(cls) {
-            Some(Attribute::access_not_allowed(
-                NoAccessReason::ClassAttributeIsGeneric(cls.clone()),
-            ))
+        if let Some(e) = self.get_enum_from_class(cls)
+            && let Some(enum_member) = e.get_member(name)
+        {
+            Some(Attribute::access_allowed(Type::Literal(enum_member)))
         } else {
-            match member.initialization() {
-                ClassFieldInitialization::Instance => Some(Attribute::access_not_allowed(
-                    NoAccessReason::ClassUseOfInstanceAttribute(cls.clone()),
-                )),
-                ClassFieldInitialization::Class => {
-                    if let Some(e) = self.get_enum_from_class(cls)
-                        && let Some(member) = e.get_member(name)
-                    {
-                        Some(Attribute::access_allowed(Type::Literal(member)))
-                    } else {
-                        Some(Attribute::access_allowed(member.ty()))
-                    }
-                }
-            }
+            let member = self.get_class_member(cls, name)?.value;
+            Some(member.as_class_attribute(cls))
         }
     }
 
     /// Get the class's `__new__` method.
+    ///
+    /// This lookup skips normal method binding logic (it behaves like a cross
+    /// between a classmethod and a constructor; downstream code handles this
+    /// using the raw callable type).
     pub fn get_dunder_new(&self, cls: &ClassType) -> Option<Type> {
-        let new_attr = self
-            .get_class_member(cls.class_object(), &dunder::NEW)
-            .map(|(member, defining_class)| {
-                let member = member.instantiate_for(cls);
-                WithDefiningClass {
-                    value: member.ty(),
-                    defining_class,
-                }
-            })?;
-        if new_attr.defined_on(self.stdlib.object_class_type().class_object()) {
+        let new_member = self.get_class_member(cls.class_object(), &dunder::NEW)?;
+        if new_member.defined_on(self.stdlib.object_class_type().class_object()) {
             // The default behavior of `object.__new__` is already baked into our implementation of
             // class construction; we only care about `__new__` if it is overridden.
-            return None;
+            None
+        } else {
+            new_member.value.as_raw_special_method_type(cls)
         }
-        Some(new_attr.value)
     }
 
     /// Get the class's `__init__` method, if we should analyze it
@@ -943,11 +1020,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// (2) the class overrides `object.__new__` but not `object.__init__`, in wich case the
     ///     `__init__` call always succeeds at runtime.
     pub fn get_dunder_init(&self, cls: &ClassType, overrides_new: bool) -> Option<Type> {
-        let init_method = self.get_instance_attribute_with_defining_class(cls, &dunder::INIT)?;
+        let init_method = self.get_class_member(cls.class_object(), &dunder::INIT)?;
         if !(overrides_new
             && init_method.defined_on(self.stdlib.object_class_type().class_object()))
         {
-            Some(init_method.value)
+            init_method.value.as_special_method_type(cls)
         } else {
             None
         }
@@ -957,13 +1034,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn get_metaclass_dunder_call(&self, cls: &ClassType) -> Option<Type> {
         let metadata = self.get_metadata_for_class(cls.class_object());
         let metaclass = metadata.metaclass()?;
-        let attr = self.get_instance_attribute_with_defining_class(metaclass, &dunder::CALL)?;
+        let attr = self.get_class_member(metaclass.class_object(), &dunder::CALL)?;
         if attr.defined_on(self.stdlib.builtins_type().class_object()) {
             // The behavior of `type.__call__` is already baked into our implementation of constructors,
             // so we can skip analyzing it at the type level.
             None
         } else {
-            Some(attr.value)
+            attr.value.as_special_method_type(metaclass)
         }
     }
 
@@ -1023,5 +1100,65 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             })
             .collect()
+    }
+
+    /// Gets dataclass fields for an `@dataclass`-decorated class.
+    fn get_dataclass_fields(
+        &self,
+        cls: &Class,
+        bases_with_metadata: &[(ClassType, Arc<ClassMetadata>)],
+    ) -> SmallMap<Name, ClassField> {
+        let mut all_fields = SmallMap::new();
+        for (base, metadata) in bases_with_metadata.iter().rev() {
+            if let Some(dataclass) = metadata.dataclass_metadata() {
+                for name in &dataclass.fields {
+                    if let Some((field, _)) = self.get_class_member(base.class_object(), name) {
+                        all_fields.insert(name.clone(), field.instantiate_for(base));
+                    }
+                }
+            }
+        }
+        for name in cls.fields() {
+            if let Some(
+                field @ ClassField(ClassFieldInner::Simple {
+                    annotation: Some(Annotation { ty: Some(_), .. }),
+                    ..
+                }),
+            ) = self.get_class_field(cls, name)
+            {
+                all_fields.insert(name.clone(), field);
+            }
+        }
+        all_fields
+    }
+
+    /// Gets a dataclass field as a function param.
+    fn get_dataclass_param(&self, name: &Name, field: &ClassField) -> Param {
+        let ClassField(ClassFieldInner::Simple {
+            ty,
+            annotation: _,
+            initialization,
+        }) = field;
+        let required = match initialization {
+            ClassFieldInitialization::Class => Required::Required,
+            ClassFieldInitialization::Instance => Required::Optional,
+        };
+        Param::Pos(name.clone(), ty.clone(), required)
+    }
+
+    /// Gets __init__ method for an `@dataclass`-decorated class.
+    fn get_dataclass_init(&self, cls: &Class, fields: &SmallMap<Name, ClassField>) -> Type {
+        let mut params = vec![Param::Pos(
+            Name::new("self"),
+            cls.self_type(),
+            Required::Required,
+        )];
+        for (name, field) in fields {
+            params.push(self.get_dataclass_param(name, field));
+        }
+        Type::Callable(
+            Box::new(Callable::list(ParamList::new(params), Type::None)),
+            CallableKind::Def,
+        )
     }
 }
