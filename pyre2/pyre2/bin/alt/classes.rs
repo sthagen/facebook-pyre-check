@@ -25,8 +25,8 @@ use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
-use crate::alt::attr::AccessNotAllowed;
 use crate::alt::attr::Attribute;
+use crate::alt::attr::NoAccessReason;
 use crate::ast::Ast;
 use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::Key;
@@ -43,7 +43,7 @@ use crate::types::class::ClassType;
 use crate::types::class::Substitution;
 use crate::types::class::TArgs;
 use crate::types::class_metadata::ClassMetadata;
-use crate::types::literal::Enum;
+use crate::types::class_metadata::EnumMetadata;
 use crate::types::literal::Lit;
 use crate::types::special_form::SpecialForm;
 use crate::types::type_var::Variance;
@@ -59,48 +59,98 @@ use crate::util::prelude::SliceExt;
 /// know whether it is initialized in the class body in order to determine
 /// both visibility rules and whether method binding should be performed.
 #[derive(Debug, Clone)]
-pub struct ClassField {
-    ty: Type,
-    annotation: Option<Annotation>,
-    initialization: ClassFieldInitialization,
+pub struct ClassField(ClassFieldInner);
+
+#[derive(Debug, Clone)]
+pub enum ClassFieldInner {
+    Simple {
+        ty: Type,
+        annotation: Option<Annotation>,
+        initialization: ClassFieldInitialization,
+    },
 }
 
 impl ClassField {
-    pub fn new(
+    fn new(
         ty: Type,
         annotation: Option<Annotation>,
         initialization: ClassFieldInitialization,
     ) -> Self {
-        Self {
+        Self(ClassFieldInner::Simple {
             ty,
             annotation,
             initialization,
-        }
+        })
     }
 
     pub fn recursive() -> Self {
-        Self {
+        Self(ClassFieldInner::Simple {
             ty: Type::any_implicit(),
             annotation: None,
             initialization: ClassFieldInitialization::Class,
-        }
+        })
     }
 
     pub fn visit_type_mut(&mut self, mut f: &mut dyn FnMut(&mut Type)) {
-        f(&mut self.ty);
-        for a in self.annotation.iter_mut() {
-            a.visit_type_mut(&mut f);
+        match &mut self.0 {
+            ClassFieldInner::Simple { ty, annotation, .. } => {
+                f(ty);
+                for a in annotation.iter_mut() {
+                    a.visit_type_mut(&mut f);
+                }
+            }
+        }
+    }
+
+    fn initialization(&self) -> ClassFieldInitialization {
+        match &self.0 {
+            ClassFieldInner::Simple { initialization, .. } => *initialization,
+        }
+    }
+
+    fn instantiate_for(&self, cls: &ClassType) -> Self {
+        match &self.0 {
+            ClassFieldInner::Simple {
+                ty,
+                annotation,
+                initialization,
+            } => Self(ClassFieldInner::Simple {
+                ty: cls.instantiate_member(ty.clone()),
+                annotation: annotation.clone(),
+                initialization: *initialization,
+            }),
+        }
+    }
+
+    fn depends_on_class_type_parameter(&self, cls: &Class) -> bool {
+        let tparams = cls.tparams();
+        let mut qs = SmallSet::new();
+        match &self.0 {
+            ClassFieldInner::Simple { ty, .. } => ty.collect_quantifieds(&mut qs),
+        };
+        tparams.quantified().any(|q| qs.contains(&q))
+    }
+
+    fn ty(self) -> Type {
+        match self.0 {
+            ClassFieldInner::Simple { ty, .. } => ty,
         }
     }
 }
 
 impl Display for ClassField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let initialized = match self.initialization {
-            ClassFieldInitialization::Class => "initialized in body",
-            ClassFieldInitialization::Instance => "not initialized in body",
-        };
-        write!(f, "@{} ({})", self.ty, initialized)
+        match &self.0 {
+            ClassFieldInner::Simple {
+                ty, initialization, ..
+            } => {
+                let initialized = match initialization {
+                    ClassFieldInitialization::Class => "initialized in body",
+                    ClassFieldInitialization::Instance => "not initialized in body",
+                };
+                write!(f, "@{} ({})", ty, initialized)
+            }
+        }
     }
 }
 
@@ -329,7 +379,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> ClassMetadata {
         let mut is_typed_dict = false;
         let mut is_named_tuple = false;
-        let mut is_enum = false;
+        let mut enum_metadata = None;
         let bases: Vec<BaseClass> = bases.iter().map(|x| self.base_class_of(x)).collect();
         let is_protocol = bases.iter().any(|x| matches!(x, BaseClass::Protocol(_)));
         let bases_with_metadata: Vec<_> = bases
@@ -394,14 +444,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             .collect();
         let metaclass =
             self.calculate_metaclass(cls, metaclasses.into_iter().next(), &base_metaclasses);
-
         if let Some(metaclass) = &metaclass {
             self.check_base_class_metaclasses(cls, metaclass, &base_metaclasses);
-            is_enum = self.solver().is_subset_eq(
+            if self.solver().is_subset_eq(
                 &Type::ClassType(metaclass.clone()),
                 &Type::ClassType(self.stdlib.enum_meta()),
                 self.type_order(),
-            );
+            ) {
+                if !cls.tparams().is_empty() {
+                    self.error(cls.name().range, "Enums may not be generic.".to_owned());
+                }
+                enum_metadata = Some(EnumMetadata {
+                    // A generic enum is an error, but we create Any type args anyway to handle it gracefully.
+                    cls: ClassType::new(cls.clone(), self.create_default_targs(cls, None)),
+                })
+            }
             if is_typed_dict {
                 self.error(
                     cls.name().range,
@@ -409,7 +466,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 );
             }
         }
-
+        if is_typed_dict
+            && let Some(bad) = bases_with_metadata.iter().find(|x| !x.1.is_typed_dict())
+        {
+            self.error(
+                cls.name().range,
+                format!("`{}` is not a typed dictionary. Typed dictionary definitions may only extend other typed dictionaries.", bad.0),
+            );
+        }
         ClassMetadata::new(
             cls,
             bases_with_metadata,
@@ -417,7 +481,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             keywords,
             is_typed_dict,
             is_named_tuple,
-            is_enum,
+            enum_metadata,
             is_protocol,
             self.errors(),
         )
@@ -522,25 +586,30 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.get_from_class(cls, &KeyClassMetadata(ShortIdentifier::new(cls.name())))
     }
 
-    fn get_enum_from_class(&self, cls: &Class) -> Option<Enum> {
-        self.get_enum_from_class_and_targs(cls.dupe(), self.create_default_targs(cls, None))
+    fn get_enum_from_class(&self, cls: &Class) -> Option<EnumMetadata> {
+        self.get_metadata_for_class(cls).enum_metadata().cloned()
     }
 
-    pub fn get_enum_from_class_type(&self, class_type: &ClassType) -> Option<Enum> {
-        self.get_enum_from_class_and_targs(
-            class_type.class_object().dupe(),
-            class_type.targs().clone(),
+    pub fn get_enum_from_class_type(&self, class_type: &ClassType) -> Option<EnumMetadata> {
+        self.get_enum_from_class(class_type.class_object())
+    }
+
+    /// Given an identifier, see whether it is bound to an enum class. If so,
+    /// return the enum, otherwise return `None`.
+    pub fn get_enum_from_name(&self, name: Identifier) -> Option<EnumMetadata> {
+        self.get_enum_from_key(
+            self.bindings()
+                .key_to_idx(&Key::Usage(ShortIdentifier::new(&name))),
         )
     }
 
-    fn get_enum_from_class_and_targs(&self, cls: Class, targs: TArgs) -> Option<Enum> {
-        let metadata = self.get_metadata_for_class(&cls);
-        if metadata.is_enum() {
-            Some(Enum {
-                cls: ClassType::new(cls, targs),
-            })
-        } else {
-            None
+    pub fn get_enum_from_key(&self, key: Idx<Key>) -> Option<EnumMetadata> {
+        // TODO(stroxler): Eventually, we should raise type errors on generic Enum because
+        // this doesn't make semantic sense. But in the meantime we need to be robust against
+        // this possibility.
+        match self.get_idx(key).deref() {
+            Type::ClassDef(class) => self.get_enum_from_class(class),
+            _ => None,
         }
     }
 
@@ -599,21 +668,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn typed_dict(&self, cls: &Class, targs: TArgs) -> Type {
-        let fields = self.get_typed_dict_fields(cls, &targs);
-        Type::TypedDict(TypedDict::new(cls.dupe(), targs, fields))
+    fn type_of_instance(&self, cls: &Class, targs: TArgs) -> Type {
+        let metadata = self.get_metadata_for_class(cls);
+        if metadata.is_typed_dict() {
+            let fields = self.get_typed_dict_fields(cls, &targs);
+            Type::TypedDict(TypedDict::new(cls.dupe(), targs, fields))
+        } else {
+            Type::ClassType(ClassType::new(cls.dupe(), targs))
+        }
     }
 
     /// Given a class or typed dictionary and some (explicit) type arguments, construct a `Type`
     /// that represents the type of an instance of the class or typed dictionary with those `targs`.
     pub fn specialize(&self, cls: &Class, targs: Vec<Type>, range: TextRange) -> Type {
         let targs = self.check_and_create_targs(cls, targs, range);
-        let metadata = self.get_metadata_for_class(cls);
-        if metadata.is_typed_dict() {
-            self.typed_dict(cls, targs)
-        } else {
-            Type::ClassType(ClassType::new(cls.dupe(), targs))
-        }
+        self.type_of_instance(cls, targs)
     }
 
     /// Given a class or typed dictionary, create a `Type` that represents to an instance annotated
@@ -625,25 +694,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// We require a range because depending on the configuration we may raise
     /// a type error when a generic class or typed dictionary is promoted using gradual types.
     pub fn promote(&self, cls: &Class, range: TextRange) -> Type {
-        let metadata = self.get_metadata_for_class(cls);
         let targs = self.create_default_targs(cls, Some(range));
-        if metadata.is_typed_dict() {
-            self.typed_dict(cls, targs)
-        } else {
-            Type::ClassType(ClassType::new(cls.dupe(), targs))
-        }
+        self.type_of_instance(cls, targs)
     }
 
     /// Private version of `promote` that does not potentially
     /// raise strict mode errors. Should only be used for unusual scenarios.
     fn promote_silently(&self, cls: &Class) -> Type {
-        let metadata = self.get_metadata_for_class(cls);
         let targs = self.create_default_targs(cls, None);
-        if metadata.is_typed_dict() {
-            self.typed_dict(cls, targs)
-        } else {
-            Type::ClassType(ClassType::new(cls.dupe(), targs))
-        }
+        self.type_of_instance(cls, targs)
     }
 
     pub fn unwrap_class_object_silently(&self, ty: &Type) -> Option<Type> {
@@ -656,14 +715,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     /// Creates a type from the class with fresh variables for its type parameters.
     pub fn instantiate_fresh(&self, cls: &Class) -> Type {
-        let metadata = self.get_metadata_for_class(cls);
         let qs = cls.tparams().quantified().collect::<Vec<_>>();
         let targs = TArgs::new(qs.map(|q| Type::Quantified(*q)));
-        let promoted_cls = if metadata.is_typed_dict() {
-            Type::type_form(self.typed_dict(cls, targs))
-        } else {
-            Type::type_form(Type::ClassType(ClassType::new(cls.dupe(), targs)))
-        };
+        let promoted_cls = Type::type_form(self.type_of_instance(cls, targs));
         self.solver()
             .fresh_quantified(qs.as_slice(), promoted_cls, self.uniques)
             .1
@@ -696,6 +750,55 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    pub fn calculate_class_field(
+        &self,
+        name: &Name,
+        value_ty: &Type,
+        annotation: Option<&Annotation>,
+        initialization: ClassFieldInitialization,
+        class_key: Idx<Key>,
+        range: TextRange,
+    ) -> ClassField {
+        if let Some(enum_) = self.get_enum_from_key(class_key)
+            && enum_.get_member(name).is_some()
+            && matches!(initialization, ClassFieldInitialization::Class)
+        {
+            if annotation.is_some() {
+                self.error(range, format!("Enum member `{}` may not be annotated directly. Instead, annotate the _value_ attribute.", name));
+            }
+
+            if let Some(enum_value_ty) = self.type_of_attr_get_if_gettable(
+                Type::ClassType(enum_.cls),
+                &Name::new_static("_value_"),
+            ) {
+                if !matches!(value_ty, Type::Tuple(_))
+                    && !self
+                        .solver()
+                        .is_subset_eq(value_ty, &enum_value_ty, self.type_order())
+                {
+                    self.error(range, format!("The value for enum member `{}` must match the annotation of the _value_ attribute.", name));
+                }
+            }
+        }
+        if self.is_key_typed_dict(class_key)
+            && matches!(initialization, ClassFieldInitialization::Class)
+        {
+            self.error(
+                range,
+                format!("TypedDict item `{}` may not be initialized.", name),
+            );
+        }
+        let (ty, ann) = if let Some(ann) = annotation {
+            match &ann.ty {
+                Some(ty) => (ty, Some(ann)),
+                None => (value_ty, Some(ann)),
+            }
+        } else {
+            (value_ty, None)
+        };
+        ClassField::new(ty.clone(), ann.cloned(), initialization)
+    }
+
     fn get_class_field(&self, cls: &Class, name: &Name) -> Option<ClassField> {
         if cls.contains(name) {
             let field = self.get_from_class(
@@ -716,9 +819,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .ancestors(self.stdlib)
                 .filter_map(|ancestor| {
                     self.get_class_field(ancestor.class_object(), name)
-                        .map(|mut field| {
-                            field.ty = ancestor.instantiate_member(field.ty);
-                            (field, ancestor.class_object().dupe())
+                        .map(|field| {
+                            (
+                                field.instantiate_for(ancestor),
+                                ancestor.class_object().dupe(),
+                            )
                         })
                 })
                 .next()
@@ -736,9 +841,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         for ancestor in self.get_metadata_for_class(cls).ancestors(self.stdlib) {
             for name in ancestor.class_object().fields() {
                 if !members.contains_key(name) {
-                    if let Some(mut field) = self.get_class_field(ancestor.class_object(), name) {
-                        field.ty = ancestor.instantiate_member(field.ty);
-                        members.insert(name.clone(), (field, ancestor.class_object().dupe()));
+                    if let Some(field) = self.get_class_field(ancestor.class_object(), name) {
+                        members.insert(
+                            name.clone(),
+                            (
+                                field.instantiate_for(ancestor),
+                                ancestor.class_object().dupe(),
+                            ),
+                        );
                     }
                 }
             }
@@ -759,13 +869,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         name: &Name,
     ) -> Option<WithDefiningClass<Type>> {
         self.get_class_member(cls.class_object(), name)
-            .map(|(member, defining_class)| {
-                let instantiated_ty = cls.instantiate_member(member.ty);
-                let ty = match member.initialization {
-                    ClassFieldInitialization::Class => {
-                        bind_attribute(cls.self_type(), instantiated_ty)
-                    }
-                    ClassFieldInitialization::Instance => instantiated_ty,
+            .map(|(field, defining_class)| {
+                let member = field.instantiate_for(cls);
+                let ty = match member.initialization() {
+                    ClassFieldInitialization::Class => bind_attribute(cls.self_type(), member.ty()),
+                    ClassFieldInitialization::Instance => member.ty(),
                 };
                 WithDefiningClass {
                     value: ty,
@@ -779,13 +887,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             .map(|attr| Attribute::access_allowed(attr.value))
     }
 
-    fn depends_on_class_type_parameter(&self, cls: &Class, ty: &Type) -> bool {
-        let tparams = cls.tparams();
-        let mut qs = SmallSet::new();
-        ty.collect_quantifieds(&mut qs);
-        tparams.quantified().any(|q| qs.contains(&q))
-    }
-
     /// Gets an attribute from a class definition.
     ///
     /// Returns `None` if there is no such attribute, otherwise an `Attribute` object
@@ -795,14 +896,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// type contains a class-scoped type parameter - e.g., `class A[T]: x: T`.
     pub fn get_class_attribute(&self, cls: &Class, name: &Name) -> Option<Attribute> {
         let (member, _) = self.get_class_member(cls, name)?;
-        if self.depends_on_class_type_parameter(cls, &member.ty) {
+        if member.depends_on_class_type_parameter(cls) {
             Some(Attribute::access_not_allowed(
-                AccessNotAllowed::ClassAttributeIsGeneric(cls.clone()),
+                NoAccessReason::ClassAttributeIsGeneric(cls.clone()),
             ))
         } else {
-            match member.initialization {
+            match member.initialization() {
                 ClassFieldInitialization::Instance => Some(Attribute::access_not_allowed(
-                    AccessNotAllowed::ClassUseOfInstanceAttribute(cls.clone()),
+                    NoAccessReason::ClassUseOfInstanceAttribute(cls.clone()),
                 )),
                 ClassFieldInitialization::Class => {
                     if let Some(e) = self.get_enum_from_class(cls)
@@ -810,7 +911,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     {
                         Some(Attribute::access_allowed(Type::Literal(member)))
                     } else {
-                        Some(Attribute::access_allowed(member.ty))
+                        Some(Attribute::access_allowed(member.ty()))
                     }
                 }
             }
@@ -821,9 +922,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn get_dunder_new(&self, cls: &ClassType) -> Option<Type> {
         let new_attr = self
             .get_class_member(cls.class_object(), &dunder::NEW)
-            .map(|(member, defining_class)| WithDefiningClass {
-                value: cls.instantiate_member(member.ty),
-                defining_class,
+            .map(|(member, defining_class)| {
+                let member = member.instantiate_for(cls);
+                WithDefiningClass {
+                    value: member.ty(),
+                    defining_class,
+                }
             })?;
         if new_attr.defined_on(self.stdlib.object_class_type().class_object()) {
             // The default behavior of `object.__new__` is already baked into our implementation of
@@ -863,26 +967,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    /// Given an identifier, see whether it is bound to an enum class. If so,
-    /// return the enum, otherwise return `None`.
-    pub fn get_enum_from_name(&self, name: Identifier) -> Option<Enum> {
-        self.get_enum_from_key(
-            self.bindings()
-                .key_to_idx(&Key::Usage(ShortIdentifier::new(&name))),
-        )
-    }
-
-    pub fn get_enum_from_key(&self, key: Idx<Key>) -> Option<Enum> {
-        // TODO(stroxler): Eventually, we should raise type errors on generic Enum because
-        // this doesn't make semantic sense. But in the meantime we need to be robust against
-        // this possibility.
-        match self.get_idx(key).deref() {
-            Type::ClassDef(class) => self.get_enum_from_class(class),
-            _ => None,
-        }
-    }
-
-    pub fn is_key_typed_dict(&self, key: Idx<Key>) -> bool {
+    fn is_key_typed_dict(&self, key: Idx<Key>) -> bool {
         match self.get_idx(key).deref() {
             Type::ClassDef(cls) => self.get_metadata_for_class(cls).is_typed_dict(),
             _ => false,
@@ -900,17 +985,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.get_all_members(cls)
             .iter()
             .filter_map(|(name, (field, cls))| {
-                if let ClassField {
+                let metadata = self.get_metadata_for_class(cls);
+                if !metadata.is_typed_dict() {
+                    return None;
+                }
+                if let ClassField(ClassFieldInner::Simple {
                     annotation:
                         Some(Annotation {
                             ty: Some(ty),
                             qualifiers,
                         }),
                     ..
-                } = field
+                }) = field
                 {
-                    let is_total = self
-                        .get_metadata_for_class(cls)
+                    let is_total = metadata
                         .get_keyword(&Name::new("total"))
                         .map_or(true, |ty| match ty {
                             Type::Literal(Lit::Bool(b)) => b,

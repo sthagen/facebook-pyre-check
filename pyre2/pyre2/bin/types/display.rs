@@ -21,6 +21,7 @@ use crate::module::module_name::ModuleName;
 use crate::types::class::TArgs;
 use crate::types::qname::QName;
 use crate::types::types::AnyStyle;
+use crate::types::types::Decoration;
 use crate::types::types::NeverStyle;
 use crate::types::types::Quantified;
 use crate::types::types::Type;
@@ -143,6 +144,14 @@ impl<'a> TypeDisplayContext<'a> {
         match self.quantifieds.get(quantified) {
             Some(name) => write!(f, "{name}"),
             None => write!(f, "{quantified}"),
+        }
+    }
+
+    fn fmt_decoration(&self, decoration: &Decoration, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match decoration {
+            Decoration::ClassMethod(box ty) => {
+                write!(f, "classmethod[{}]", self.display(ty))
+            }
         }
     }
 
@@ -269,6 +278,7 @@ impl<'a> TypeDisplayContext<'a> {
                 };
                 write!(f, "{}[{}, {}]", desc, ta.name, self.display(&ta.as_type()))
             }
+            Type::Decoration(d) => self.fmt_decoration(d, f),
             Type::None => write!(f, "None"),
         }
     }
@@ -293,7 +303,7 @@ mod tests {
     use super::*;
     use crate::module::module_info::ModuleInfo;
     use crate::types::callable::Callable;
-    use crate::types::callable::Kind;
+    use crate::types::callable::CallableKind;
     use crate::types::callable::Param;
     use crate::types::callable::ParamList;
     use crate::types::callable::Required;
@@ -458,7 +468,7 @@ mod tests {
         let param2 = Param::KwOnly(Name::new("world"), Type::None, Required::Required);
         let callable = Callable::list(ParamList::new(vec![param1, param2]), Type::None);
         assert_eq!(
-            Type::Callable(Box::new(callable), Kind::Anon).to_string(),
+            Type::Callable(Box::new(callable), CallableKind::Anon).to_string(),
             "(hello: None, *, world: None) -> None"
         );
     }

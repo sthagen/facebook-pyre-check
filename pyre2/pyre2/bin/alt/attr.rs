@@ -33,23 +33,15 @@ enum LookupResult {
 
 /// The result of looking up an attribute. We can analyze get and set actions
 /// on an attribute, each of which can be allowed with some type or disallowed.
-pub struct Attribute(AttributeAccess);
+pub struct Attribute(AttributeInner);
 
 /// The result of an attempt to access an attribute (with a get or set operation).
 ///
 /// The operation is either permitted with an attribute `Type`, or is not allowed
 /// and has a reason.
 #[derive(Clone)]
-struct AttributeAccess(Result<Type, AccessNotAllowed>);
-
-impl AttributeAccess {
-    fn allowed(ty: Type) -> Self {
-        AttributeAccess(Ok(ty))
-    }
-
-    pub fn not_allowed(reason: AccessNotAllowed) -> Self {
-        AttributeAccess(Err(reason))
-    }
+enum AttributeInner {
+    Simple(Result<Type, NoAccessReason>),
 }
 
 enum NotFound {
@@ -59,7 +51,7 @@ enum NotFound {
 }
 
 #[derive(Clone)]
-pub enum AccessNotAllowed {
+pub enum NoAccessReason {
     /// The attribute is only initialized on instances, but we saw an attempt
     /// to use it as a class attribute.
     ClassUseOfInstanceAttribute(Class),
@@ -75,38 +67,42 @@ enum InternalError {
 
 impl Attribute {
     pub fn access_allowed(ty: Type) -> Self {
-        Attribute(AttributeAccess::allowed(ty))
+        Attribute(AttributeInner::Simple(Ok(ty)))
     }
-    pub fn access_not_allowed(reason: AccessNotAllowed) -> Self {
-        Attribute(AttributeAccess::not_allowed(reason))
-    }
-
-    fn get(self) -> AttributeAccess {
-        self.0
+    pub fn access_not_allowed(reason: NoAccessReason) -> Self {
+        Attribute(AttributeInner::Simple(Err(reason)))
     }
 
-    fn set(self) -> AttributeAccess {
-        self.0
+    fn get(self) -> Result<Type, NoAccessReason> {
+        match self.0 {
+            AttributeInner::Simple(access_result) => access_result,
+        }
+    }
+
+    fn set(self) -> Result<Type, NoAccessReason> {
+        match self.0 {
+            AttributeInner::Simple(access_result) => access_result,
+        }
     }
 
     pub fn get_type(self) -> Option<Type> {
-        match self.0.0 {
-            Ok(ty) => Some(ty),
-            _ => None,
+        match self.0 {
+            AttributeInner::Simple(Ok(ty)) => Some(ty),
+            AttributeInner::Simple(Err(_)) => None,
         }
     }
 }
 
-impl AccessNotAllowed {
+impl NoAccessReason {
     pub fn to_error_msg(&self, attr_name: &Name) -> String {
         match self {
-            AccessNotAllowed::ClassUseOfInstanceAttribute(class) => {
+            NoAccessReason::ClassUseOfInstanceAttribute(class) => {
                 let class_name = class.name();
                 format!(
                     "Instance-only attribute `{attr_name}` of class `{class_name}` is not visible on the class"
                 )
             }
-            AccessNotAllowed::ClassAttributeIsGeneric(class) => {
+            NoAccessReason::ClassAttributeIsGeneric(class) => {
                 let class_name = class.name();
                 format!(
                     "Generic attribute `{attr_name}` of class `{class_name}` is not visible on the class"
@@ -136,8 +132,8 @@ impl LookupResult {
     ) -> Result<Type, String> {
         match self {
             LookupResult::Found(attr) => match &attr.get() {
-                AttributeAccess(Ok(ty)) => Ok(ty.clone()),
-                AttributeAccess(Err(err)) => Err(err.to_error_msg(attr_name)),
+                Ok(ty) => Ok(ty.clone()),
+                Err(err) => Err(err.to_error_msg(attr_name)),
             },
             LookupResult::NotFound(err) => Err(err.to_error_msg(attr_name)),
             LookupResult::InternalError(err) => Err(err.to_error_msg(attr_name, todo_ctx)),
@@ -221,8 +217,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Option<Type> {
         match self.lookup_attr(base, attr_name) {
             LookupResult::Found(attr) => match attr.get() {
-                AttributeAccess(Ok(ty)) => Some(ty),
-                AttributeAccess(Err(e)) => Some(self.error(range, e.to_error_msg(attr_name))),
+                Ok(ty) => Some(ty),
+                Err(e) => Some(self.error(range, e.to_error_msg(attr_name))),
             },
             LookupResult::InternalError(e) => {
                 Some(self.error(range, e.to_error_msg(attr_name, todo_ctx)))
@@ -261,8 +257,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Option<Type> {
         match self.lookup_attr(base, attr_name) {
             LookupResult::Found(attr) => match attr.set() {
-                AttributeAccess(Ok(ty)) => Some(ty),
-                AttributeAccess(Err(e)) => {
+                Ok(ty) => Some(ty),
+                Err(e) => {
                     self.error(range, e.to_error_msg(attr_name));
                     None
                 }
@@ -422,6 +418,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::Ellipsis => Some(AttributeBase::ClassInstance(stdlib.ellipsis_type())),
             Type::Forall(_, box base) => self.as_attribute_base(base, stdlib),
             Type::Var(v) => self.as_attribute_base(self.solver().force_var(v), stdlib),
+            // TODO(stroxler) This case will have to at least sometimes return non-None for property setters.
+            Type::Decoration(_) => None,
             // TODO: check to see which ones should have class representations
             Type::Union(_)
             | Type::SpecialForm(_)

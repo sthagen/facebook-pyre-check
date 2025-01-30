@@ -20,6 +20,52 @@ def foo(c: Coord) -> Mapping[str, object]:
 );
 
 testcase!(
+    test_typed_dict_invalid_inheritance,
+    r#"
+from typing import TypedDict
+class Coord(TypedDict, object):  # E: Typed dictionary definitions may only extend other typed dictionaries.
+    x: int
+    y: int
+    "#,
+);
+
+testcase!(
+    test_typed_dict_literal,
+    r#"
+from typing import TypedDict, NotRequired
+class Coord(TypedDict):
+    x: int
+    y: int
+    z: NotRequired[int]
+
+c1: Coord = {"x": 1, "y": 2}
+c2: Coord = {"x": 1, "y": 2, "z": 3}
+c3: Coord = {"x": 1, "y": 2, "a": 4}  # E: Key `a` is not defined in TypedDict `Coord`
+c4: Coord = {"x": 1, "y": "foo"}  # E: EXPECTED Literal['foo'] <: int
+c5: Coord = {"x": 1}  # E: Missing required key `y` for TypedDict `Coord`
+c6: Coord = {"x": 1, **{"y": 2, **{"z": 3}}}
+d: dict[str, int] = {}
+c7: Coord = {"x": 1, **d}  # E: EXPECTED dict[str, int] <: TypedDict[Coord]
+
+def foo(c: Coord) -> None:
+    pass
+foo({"x": 1, "y": 2})
+    "#,
+);
+
+testcase!(
+    test_typed_dict_callable,
+    r#"
+from typing import TypedDict
+
+class Movie(TypedDict):
+    name: str
+    year: int
+m = Movie(name='Blade Runner', year=1982)
+    "#,
+);
+
+testcase!(
     test_typed_dict_readonly,
     r#"
 from typing import TypedDict, ReadOnly

@@ -29,14 +29,17 @@ use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
+use crate::binding::binding::BindingExpect;
 use crate::binding::binding::BindingLegacyTypeParam;
-use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::ContextManagerKind;
+use crate::binding::binding::EmptyAnswer;
+use crate::binding::binding::FunctionBinding;
 use crate::binding::binding::FunctionKind;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
+use crate::binding::binding::KeyExpect;
 use crate::binding::binding::KeyExport;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::binding::binding::Keyed;
@@ -66,7 +69,7 @@ use crate::type_order::TypeOrder;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
 use crate::types::callable::Callable;
-use crate::types::callable::Kind;
+use crate::types::callable::CallableKind;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Required;
@@ -217,6 +220,13 @@ impl SolveRecursive for Key {
         f(v);
     }
 }
+impl SolveRecursive for KeyExpect {
+    type Recursive = ();
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        EmptyAnswer
+    }
+    fn visit_type_mut(_: &mut Self::Answer, _: &mut dyn FnMut(&mut Type)) {}
+}
 impl SolveRecursive for KeyExport {
     type Recursive = Var;
     fn promote_recursive(x: Self::Recursive) -> Self::Answer {
@@ -293,6 +303,14 @@ impl<Ans: LookupAnswer> Solve<Ans> for Key {
     ) {
         answers.record_recursive(key.range(), answer, recursive);
     }
+}
+
+impl<Ans: LookupAnswer> Solve<Ans> for KeyExpect {
+    fn solve(answers: &AnswersSolver<Ans>, binding: &BindingExpect) -> Arc<EmptyAnswer> {
+        answers.solve_expectation(binding)
+    }
+
+    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyExport {
@@ -991,50 +1009,112 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         )
     }
 
-    fn solve_class_field(&self, field: &BindingClassField) -> Arc<ClassField> {
-        let value_ty = self.solve_binding(&field.value);
-        if let Some(enum_) = self.get_enum_from_key(field.class.to_owned())
-            && enum_.get_member(&field.name).is_some()
-            && matches!(field.initialization, ClassFieldInitialization::Class)
-        {
-            if field.annotation.is_some() {
-                self.error(field.range, format!("Enum member `{}` may not be annotated directly. Instead, annotate the _value_ attribute.", field.name));
-            }
-
-            if let Some(enum_value_ty) = self.type_of_attr_get_if_gettable(
-                Type::ClassType(enum_.cls),
-                &Name::new_static("_value_"),
-            ) {
-                if !matches!(*value_ty, Type::Tuple(_))
-                    && !self
-                        .solver()
-                        .is_subset_eq(&value_ty, &enum_value_ty, self.type_order())
-                {
-                    self.error(field.range, format!("The value for enum member `{}` must match the annotation of the _value_ attribute.", field.name));
+    fn solve_expectation(&self, binding: &BindingExpect) -> Arc<EmptyAnswer> {
+        match binding {
+            BindingExpect::UnpackedLength(b, range, expect) => {
+                let iterable_ty = self.solve_binding_inner(b);
+                let iterables = self.iterate(&iterable_ty, *range);
+                for iterable in iterables {
+                    match iterable {
+                        Iterable::OfType(_) => {}
+                        Iterable::FixedLen(ts) => {
+                            let error = match expect {
+                                SizeExpectation::Eq(n) => {
+                                    if ts.len() == *n {
+                                        None
+                                    } else {
+                                        match n {
+                                            1 => Some(format!("{n} value")),
+                                            _ => Some(format!("{n} values")),
+                                        }
+                                    }
+                                }
+                                SizeExpectation::Ge(n) => {
+                                    if ts.len() >= *n {
+                                        None
+                                    } else {
+                                        Some(format!("{n}+ values"))
+                                    }
+                                }
+                            };
+                            match error {
+                                Some(expectation) => {
+                                    self.error(
+                                        *range,
+                                        format!(
+                                            "Cannot unpack {} (of size {}) into {}",
+                                            iterable_ty,
+                                            ts.len(),
+                                            expectation,
+                                        ),
+                                    );
+                                }
+                                None => {}
+                            }
+                        }
+                    }
                 }
             }
-        }
-        if self.is_key_typed_dict(field.class)
-            && matches!(field.initialization, ClassFieldInitialization::Class)
-        {
-            self.error(
-                field.range,
-                format!("TypedDict item `{}` may not be initialized.", field.name),
-            );
-        }
-        let (ty, ann) = if let Some(ann) = &field.annotation {
-            let ann = self.get_idx(*ann);
-            match &ann.ty {
-                Some(ty) => (Arc::new(ty.clone()), Some(ann)),
-                None => (value_ty, Some(ann)),
+            BindingExpect::CheckRaisedException(RaisedException::WithoutCause(exc)) => {
+                self.check_is_exception(exc, exc.range(), false);
             }
-        } else {
-            (value_ty, None)
-        };
-        Arc::new(ClassField::new(
-            ty.deref().clone(),
-            ann.map(|ann| ann.deref().clone()),
+            BindingExpect::CheckRaisedException(RaisedException::WithCause(box (exc, cause))) => {
+                self.check_is_exception(exc, exc.range(), false);
+                self.check_is_exception(cause, cause.range(), true);
+            }
+            BindingExpect::Eq(k1, k2, name) => {
+                let ann1 = self.get_idx(*k1);
+                let ann2 = self.get_idx(*k2);
+                if let Some(t1) = &ann1.ty
+                    && let Some(t2) = &ann2.ty
+                    && *t1 != *t2
+                {
+                    self.error(
+                        self.bindings().idx_to_key(*k1).range(),
+                        format!(
+                            "Inconsistent type annotations for {}: {}, {}",
+                            name,
+                            t1.clone().deterministic_printing(),
+                            t2.clone().deterministic_printing(),
+                        ),
+                    );
+                }
+            }
+            BindingExpect::CheckAssignTypeToAttribute(box (attr, got)) => {
+                let base = self.expr(&attr.value, None);
+                let got = self.solve_binding(got);
+                self.check_attr_set_with_type(
+                    base,
+                    &attr.attr.id,
+                    &got,
+                    attr.range,
+                    "Answers::solve_binding_inner::CheckAssignTypeToAttribute",
+                );
+            }
+            BindingExpect::CheckAssignExprToAttribute(box (attr, value)) => {
+                let base = self.expr(&attr.value, None);
+                self.check_attr_set_with_expr(
+                    base,
+                    &attr.attr.id,
+                    value,
+                    attr.range,
+                    "Answers::solve_binding_inner::CheckAssignExprToAttribute",
+                );
+            }
+        }
+        Arc::new(EmptyAnswer)
+    }
+
+    fn solve_class_field(&self, field: &BindingClassField) -> Arc<ClassField> {
+        let value_ty = self.solve_binding(&field.value);
+        let annotation = field.annotation.map(|a| self.get_idx(a));
+        Arc::new(self.calculate_class_field(
+            &field.name,
+            value_ty.as_ref(),
+            annotation.as_deref(),
             field.initialization,
+            field.class,
+            field.range,
         ))
     }
 
@@ -1049,6 +1129,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let return_type = self.solve_binding_inner(return_type);
                 self.stdlib
                     .generator(yield_type, Type::any_implicit(), return_type)
+                    .to_type()
+            }
+            Binding::AsyncGenerator(yield_type) => {
+                let yield_type = self.solve_binding_inner(yield_type);
+                self.stdlib
+                    .async_generator(yield_type, Type::any_implicit())
                     .to_type()
             }
             Binding::SendTypeOfYieldAnnotation(ann, range) => {
@@ -1318,122 +1404,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 self.unions(&values)
             }
-            Binding::UnpackedLength(b, range, expect) => {
-                let iterable_ty = self.solve_binding_inner(b);
-                let iterables = self.iterate(&iterable_ty, *range);
-                for iterable in iterables {
-                    match iterable {
-                        Iterable::OfType(_) => {}
-                        Iterable::FixedLen(ts) => {
-                            let error = match expect {
-                                SizeExpectation::Eq(n) => {
-                                    if ts.len() == *n {
-                                        None
-                                    } else {
-                                        match n {
-                                            1 => Some(format!("{n} value")),
-                                            _ => Some(format!("{n} values")),
-                                        }
-                                    }
-                                }
-                                SizeExpectation::Ge(n) => {
-                                    if ts.len() >= *n {
-                                        None
-                                    } else {
-                                        Some(format!("{n}+ values"))
-                                    }
-                                }
-                            };
-                            match error {
-                                Some(expectation) => {
-                                    self.error(
-                                        *range,
-                                        format!(
-                                            "Cannot unpack {} (of size {}) into {}",
-                                            iterable_ty,
-                                            ts.len(),
-                                            expectation,
-                                        ),
-                                    );
-                                }
-                                None => {}
-                            }
-                        }
-                    }
-                }
-                Type::None // Unused
-            }
-            Binding::Function(x, kind, decorators, legacy_tparam_keys) => {
-                let check_default = |default: &Option<Box<Expr>>, ty: &Type| {
-                    let mut required = Required::Required;
-                    if let Some(default) = default {
-                        required = Required::Optional;
-                        if *kind != FunctionKind::Stub
-                            || !matches!(default.as_ref(), Expr::EllipsisLiteral(_))
-                        {
-                            self.expr(default, Some(ty));
-                        }
-                    }
-                    required
-                };
-                let mut params = Vec::with_capacity(x.parameters.len());
-                params.extend(x.parameters.posonlyargs.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
-                        &x.parameter.name,
-                    )));
-                    let ty = annot.get_type();
-                    let required = check_default(&x.default, ty);
-                    Param::PosOnly(ty.clone(), required)
-                }));
-                params.extend(x.parameters.args.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
-                        &x.parameter.name,
-                    )));
-                    let ty = annot.get_type();
-                    let required = check_default(&x.default, ty);
-                    Param::Pos(x.parameter.name.id.clone(), ty.clone(), required)
-                }));
-                params.extend(x.parameters.vararg.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)));
-                    let ty = annot.get_type();
-                    Param::VarArg(ty.clone())
-                }));
-                params.extend(x.parameters.kwonlyargs.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
-                        &x.parameter.name,
-                    )));
-                    let ty = annot.get_type();
-                    let required = check_default(&x.default, ty);
-                    Param::KwOnly(x.parameter.name.id.clone(), ty.clone(), required)
-                }));
-                params.extend(x.parameters.kwarg.iter().map(|x| {
-                    let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)));
-                    let ty = annot.get_type();
-                    Param::Kwargs(ty.clone())
-                }));
-                let ret = self
-                    .get(&Key::ReturnType(ShortIdentifier::new(&x.name)))
-                    .arc_clone();
-
-                let ret = if x.is_async {
-                    self.stdlib
-                        .coroutine(Type::any_implicit(), Type::any_implicit(), ret)
-                        .to_type()
-                } else {
-                    ret
-                };
-                let mut tparams = self.scoped_type_params(x.type_params.as_deref());
-                let legacy_tparams = legacy_tparam_keys
-                    .iter()
-                    .filter_map(|key| self.get_idx(*key).deref().parameter().cloned());
-                tparams.extend(legacy_tparams);
-                let callable = Type::Callable(
-                    Box::new(Callable::list(ParamList::new(params), ret)),
-                    Kind::from_name(self.module_info().name(), &x.name.id),
-                );
-                let mut ty = callable.forall(self.type_params(x.range, tparams));
-                for x in decorators.iter().rev() {
-                    ty = self.apply_decorator(x, ty)
+            Binding::Function(x) => {
+                // Check every define, but only return the type of the last one.
+                // TODO: Combine the types of @overload-decorated defines.
+                let mut ty = Type::any_error();
+                for x in x {
+                    ty = self.function_def(x);
                 }
                 ty
             }
@@ -1468,15 +1444,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::Narrow(k, op) => self.narrow(&self.get_idx(*k), op),
-            Binding::CheckRaisedException(RaisedException::WithoutCause(exc)) => {
-                self.check_is_exception(exc, exc.range(), false);
-                Type::None // Unused
-            }
-            Binding::CheckRaisedException(RaisedException::WithCause(box (exc, cause))) => {
-                self.check_is_exception(exc, exc.range(), false);
-                self.check_is_exception(cause, cause.range(), true);
-                Type::None // Unused
-            }
             Binding::AnnotatedType(ann, val) => match &self.get_idx(*ann).ty {
                 Some(ty) => ty.clone(),
                 None => self.solve_binding_inner(val),
@@ -1521,48 +1488,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     LegacyTypeParameterLookup::NotParameter(ty) => ty.clone(),
                 }
-            }
-            Binding::Eq(k1, k2, name) => {
-                let ann1 = self.get_idx(*k1);
-                let ann2 = self.get_idx(*k2);
-                if let Some(t1) = &ann1.ty
-                    && let Some(t2) = &ann2.ty
-                    && *t1 != *t2
-                {
-                    self.error(
-                        self.bindings().idx_to_key(*k1).range(),
-                        format!(
-                            "Inconsistent type annotations for {}: {}, {}",
-                            name,
-                            t1.clone().deterministic_printing(),
-                            t2.clone().deterministic_printing(),
-                        ),
-                    );
-                }
-                Type::None // Unused
-            }
-            Binding::CheckAssignTypeToAttribute(box (attr, got)) => {
-                let base = self.expr(&attr.value, None);
-                let got = self.solve_binding(got);
-                self.check_attr_set_with_type(
-                    base,
-                    &attr.attr.id,
-                    &got,
-                    attr.range,
-                    "Answers::solve_binding_inner::CheckAssignTypeToAttribute",
-                );
-                Type::None // Unused
-            }
-            Binding::CheckAssignExprToAttribute(box (attr, value)) => {
-                let base = self.expr(&attr.value, None);
-                self.check_attr_set_with_expr(
-                    base,
-                    &attr.attr.id,
-                    value,
-                    attr.range,
-                    "Answers::solve_binding_inner::CheckAssignExprToAttribute",
-                );
-                Type::None // Unused
             }
             Binding::NameAssign(name, annot_key, expr) => {
                 let annot = annot_key.map(|k| self.get_idx(k));
@@ -1672,6 +1597,82 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.attr_infer(&binding_ty, &attr.id, attr.range)
             }
         }
+    }
+
+    fn function_def(&self, x: &FunctionBinding) -> Type {
+        let check_default = |default: &Option<Box<Expr>>, ty: &Type| {
+            let mut required = Required::Required;
+            if let Some(default) = default {
+                required = Required::Optional;
+                if x.kind != FunctionKind::Stub
+                    || !matches!(default.as_ref(), Expr::EllipsisLiteral(_))
+                {
+                    self.expr(default, Some(ty));
+                }
+            }
+            required
+        };
+        let mut params = Vec::with_capacity(x.def.parameters.len());
+        params.extend(x.def.parameters.posonlyargs.iter().map(|x| {
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
+                &x.parameter.name,
+            )));
+            let ty = annot.get_type();
+            let required = check_default(&x.default, ty);
+            Param::PosOnly(ty.clone(), required)
+        }));
+        params.extend(x.def.parameters.args.iter().map(|x| {
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
+                &x.parameter.name,
+            )));
+            let ty = annot.get_type();
+            let required = check_default(&x.default, ty);
+            Param::Pos(x.parameter.name.id.clone(), ty.clone(), required)
+        }));
+        params.extend(x.def.parameters.vararg.iter().map(|x| {
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)));
+            let ty = annot.get_type();
+            Param::VarArg(ty.clone())
+        }));
+        params.extend(x.def.parameters.kwonlyargs.iter().map(|x| {
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
+                &x.parameter.name,
+            )));
+            let ty = annot.get_type();
+            let required = check_default(&x.default, ty);
+            Param::KwOnly(x.parameter.name.id.clone(), ty.clone(), required)
+        }));
+        params.extend(x.def.parameters.kwarg.iter().map(|x| {
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)));
+            let ty = annot.get_type();
+            Param::Kwargs(ty.clone())
+        }));
+        let ret = self
+            .get(&Key::ReturnType(ShortIdentifier::new(&x.def.name)))
+            .arc_clone();
+
+        let ret = if x.def.is_async {
+            self.stdlib
+                .coroutine(Type::any_implicit(), Type::any_implicit(), ret)
+                .to_type()
+        } else {
+            ret
+        };
+        let mut tparams = self.scoped_type_params(x.def.type_params.as_deref());
+        let legacy_tparams = x
+            .legacy_tparams
+            .iter()
+            .filter_map(|key| self.get_idx(*key).deref().parameter().cloned());
+        tparams.extend(legacy_tparams);
+        let callable = Type::Callable(
+            Box::new(Callable::list(ParamList::new(params), ret)),
+            CallableKind::from_name(self.module_info().name(), &x.def.name.id),
+        );
+        let mut ty = callable.forall(self.type_params(x.def.range, tparams));
+        for x in x.decorators.iter().rev() {
+            ty = self.apply_decorator(x, ty)
+        }
+        ty
     }
 
     pub fn check_type(&self, want: &Type, got: &Type, loc: TextRange) -> Type {

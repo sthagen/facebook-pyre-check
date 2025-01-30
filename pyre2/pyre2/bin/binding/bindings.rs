@@ -52,14 +52,17 @@ use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
+use crate::binding::binding::BindingExpect;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::ContextManagerKind;
+use crate::binding::binding::FunctionBinding;
 use crate::binding::binding::FunctionKind;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
+use crate::binding::binding::KeyExpect;
 use crate::binding::binding::KeyExport;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::binding::binding::Keyed;
@@ -550,9 +553,29 @@ impl BindingTable {
 }
 
 impl<'a> BindingsBuilder<'a> {
-    fn stmts(&mut self, x: Vec<Stmt>) {
-        for x in x {
-            self.stmt(x);
+    fn stmts(&mut self, xs: Vec<Stmt>) {
+        let mut iter = xs.into_iter();
+        'outer: while let Some(x) = iter.next() {
+            if let Stmt::FunctionDef(x) = x {
+                let mut defs = Vec1::new(self.function_def(x));
+                for x in iter.by_ref() {
+                    if let Stmt::FunctionDef(x) = x {
+                        if defs.first().def.name.id == x.name.id {
+                            defs.push(self.function_def(x))
+                        } else {
+                            self.bind_function_defs(defs);
+                            defs = Vec1::new(self.function_def(x));
+                        }
+                    } else {
+                        self.bind_function_defs(defs);
+                        self.stmt_not_function(x);
+                        continue 'outer;
+                    }
+                }
+                self.bind_function_defs(defs);
+            } else {
+                self.stmt_not_function(x)
+            }
         }
     }
 
@@ -905,6 +928,11 @@ impl<'a> BindingsBuilder<'a> {
         idx
     }
 
+    fn bind_function_defs(&mut self, defs: Vec1<FunctionBinding>) {
+        let name = defs.last().def.name.clone();
+        self.bind_definition(&name, Binding::Function(defs), None);
+    }
+
     fn bind_unpacking(
         &mut self,
         elts: &[Expr],
@@ -949,8 +977,8 @@ impl<'a> BindingsBuilder<'a> {
             SizeExpectation::Eq(elts.len())
         };
         self.table.insert(
-            Key::Expect(range),
-            Binding::UnpackedLength(Box::new(make_binding(None)), range, expect),
+            KeyExpect(range),
+            BindingExpect::UnpackedLength(Box::new(make_binding(None)), range, expect),
         );
     }
 
@@ -1030,15 +1058,18 @@ impl<'a> BindingsBuilder<'a> {
                     // If this is not an unpacked assignment, we can use contextual typing on the
                     // expression itself.
                     self.table.insert(
-                        Key::Anon(x.range),
-                        Binding::CheckAssignExprToAttribute(Box::new((x.clone(), value.clone()))),
+                        KeyExpect(x.range),
+                        BindingExpect::CheckAssignExprToAttribute(Box::new((
+                            x.clone(),
+                            value.clone(),
+                        ))),
                     );
                 } else {
                     // Handle an unpacked assignment, where we don't have easy access to the expression.
                     // Note that contextual typing will not be used in this case.
                     self.table.insert(
-                        Key::Anon(x.range),
-                        Binding::CheckAssignTypeToAttribute(Box::new((
+                        KeyExpect(x.range),
+                        BindingExpect::CheckAssignTypeToAttribute(Box::new((
                             x.clone(),
                             value_binding.clone(),
                         ))),
@@ -1175,7 +1206,7 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
-    fn function_def(&mut self, mut x: StmtFunctionDef) {
+    fn function_def(&mut self, mut x: StmtFunctionDef) -> FunctionBinding {
         let body = mem::take(&mut x.body);
         let decorators = mem::take(&mut x.decorator_list);
         let kind = if is_ellipse(&body) {
@@ -1267,17 +1298,7 @@ impl<'a> BindingsBuilder<'a> {
             body.instance_attributes_by_method
                 .insert(method.name.id, method.instance_attributes);
         }
-
-        self.bind_definition(
-            &func_name,
-            Binding::Function(
-                Box::new(x),
-                kind,
-                decorators.into_boxed_slice(),
-                legacy_tparams.into_boxed_slice(),
-            ),
-            None,
-        );
+        let is_async = x.is_async;
 
         let mut return_exprs = Vec::new();
         while self.returns.len() > return_count {
@@ -1347,8 +1368,15 @@ impl<'a> BindingsBuilder<'a> {
                 Key::YieldTypeOfGenerator(ShortIdentifier::new(&func_name)),
                 yield_type.clone(),
             );
-            // combine the original (syntactic) return type and the yield type to analyze later and obtain the final return type.
-            return_type = Binding::Generator(Box::new(yield_type), Box::new(return_type));
+            if is_async {
+                // combine the original (syntactic) return type and the yield type to analyze later and obtain the final return type.
+                // for async, we should not be returning anything.
+                // Zeina TODO: i think the range here should be every return expression.
+                return_type = Binding::AsyncGenerator(Box::new(yield_type));
+            } else {
+                // combine the original (syntactic) return type and the yield type to analyze later and obtain the final return type.
+                return_type = Binding::Generator(Box::new(yield_type), Box::new(return_type));
+            }
         }
         if let Some(ann) = return_ann {
             return_type = Binding::AnnotatedType(ann, Box::new(return_type));
@@ -1361,6 +1389,13 @@ impl<'a> BindingsBuilder<'a> {
         for x in yield_exprs {
             self.table
                 .insert(Key::TypeOfYieldAnnotation(x.range()), return_type.clone());
+        }
+
+        FunctionBinding {
+            def: x,
+            kind,
+            decorators: decorators.into_boxed_slice(),
+            legacy_tparams: legacy_tparams.into_boxed_slice(),
         }
     }
 
@@ -1695,8 +1730,8 @@ impl<'a> BindingsBuilder<'a> {
                     SizeExpectation::Eq(num_patterns)
                 };
                 self.table.insert(
-                    Key::Expect(x.range),
-                    Binding::UnpackedLength(Box::new(Binding::Forward(key)), x.range, expect),
+                    KeyExpect(x.range),
+                    BindingExpect::UnpackedLength(Box::new(Binding::Forward(key)), x.range, expect),
                 );
                 narrow_ops
             }
@@ -1810,9 +1845,13 @@ impl<'a> BindingsBuilder<'a> {
 
     /// Evaluate the statements and update the bindings.
     /// Every statement should end up in the bindings, perhaps with a location that is never used.
-    fn stmt(&mut self, x: Stmt) {
+    /// Functions are coalesced into potential overloads in `fn stmts` and should not be passed in.
+    fn stmt_not_function(&mut self, x: Stmt) {
         match x {
-            Stmt::FunctionDef(x) => self.function_def(x),
+            Stmt::FunctionDef(_) => {
+                // We handle 1+ functions at a time in function_defs for overloads. See `fn stmts`
+                unreachable!("unexpected function definition")
+            }
             Stmt::ClassDef(x) => self.class_def(x),
             Stmt::Return(x) => {
                 self.ensure_expr_opt(x.value.as_deref());
@@ -1968,8 +2007,8 @@ impl<'a> BindingsBuilder<'a> {
                     if let Some(box v) = x.value {
                         self.ensure_expr(&v);
                         self.table.insert(
-                            Key::Anon(v.range()),
-                            Binding::CheckAssignExprToAttribute(Box::new((attr, v))),
+                            KeyExpect(v.range()),
+                            BindingExpect::CheckAssignExprToAttribute(Box::new((attr, v))),
                         );
                     }
                 }
@@ -2130,8 +2169,10 @@ impl<'a> BindingsBuilder<'a> {
                     } else {
                         RaisedException::WithoutCause(*exc)
                     };
-                    self.table
-                        .insert(Key::Expect(x.range), Binding::CheckRaisedException(raised));
+                    self.table.insert(
+                        KeyExpect(x.range),
+                        BindingExpect::CheckRaisedException(raised),
+                    );
                 } else {
                     // If there's no exception raised, don't bother checking the cause.
                 }
@@ -2405,8 +2446,8 @@ impl<'a> BindingsBuilder<'a> {
                     // But we only want to consider it when we join up `if` statements.
                     if !is_loop {
                         self.table.insert(
-                            Key::Expect(other_ann.1),
-                            Binding::Eq(other_ann.0, ann.0, name.clone()),
+                            KeyExpect(other_ann.1),
+                            BindingExpect::Eq(other_ann.0, ann.0, name.clone()),
                         );
                     }
                 }

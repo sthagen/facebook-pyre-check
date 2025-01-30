@@ -18,10 +18,13 @@ use starlark_map::small_set::SmallSet;
 use static_assertions::assert_eq_size;
 
 use crate::types::callable::Callable;
-use crate::types::callable::Kind;
+use crate::types::callable::CallableKind;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
+use crate::types::callable::Params;
+use crate::types::callable::Required;
 use crate::types::class::Class;
+use crate::types::class::ClassKind;
 use crate::types::class::ClassType;
 use crate::types::class::TArgs;
 use crate::types::literal::Lit;
@@ -71,7 +74,7 @@ pub struct Quantified {
     kind: QuantifiedKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Display)]
 pub enum QuantifiedKind {
     TypeVar,
     ParamSpec,
@@ -114,6 +117,10 @@ impl Quantified {
             QuantifiedKind::ParamSpec => stdlib.param_spec(),
             QuantifiedKind::TypeVarTuple => stdlib.type_var_tuple(),
         }
+    }
+
+    pub fn kind(&self) -> QuantifiedKind {
+        self.kind
     }
 
     pub fn is_param_spec(&self) -> bool {
@@ -367,17 +374,63 @@ impl TypedDict {
     pub fn targs(&self) -> &TArgs {
         &self.0.1
     }
+
+    pub fn as_callable(&self) -> Callable {
+        let params = self
+            .fields()
+            .iter()
+            .map(|(name, field)| {
+                Param::KwOnly(
+                    name.clone(),
+                    field.ty.clone(),
+                    if field.required {
+                        Required::Required
+                    } else {
+                        Required::Optional
+                    },
+                )
+            })
+            .collect();
+        Callable {
+            params: Params::List(ParamList::new(params)),
+            ret: Type::TypedDict(self.clone()),
+        }
+    }
 }
 
 // We have a lot of types, want to make sure they stay a reasonable size
 assert_eq_size!(Type, [usize; 4]);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Decoration {
+    // The result of applying the `@classmethod` decorator.
+    ClassMethod(Box<Type>),
+}
+
+impl Decoration {
+    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
+        match self {
+            Self::ClassMethod(ty) => f(ty),
+        }
+    }
+    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
+        match self {
+            Self::ClassMethod(ty) => f(ty),
+        }
+    }
+}
+
+pub enum CalleeKind {
+    Callable(CallableKind),
+    Class(ClassKind),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
     Literal(Lit),
     LiteralString,
     /// Note that the Kind metadata doesn't participate in subtyping, and thus two types with distinct metadata are still subtypes.
-    Callable(Box<Callable>, Kind),
+    Callable(Box<Callable>, CallableKind),
     /// A method of a class. The first `Box<Type>` is the self/cls argument,
     /// and the second is the function.
     BoundMethod(Box<Type>, Box<Type>),
@@ -397,6 +450,10 @@ pub enum Type {
     /// Instances of classes have this type, and a term of the form `C[arg1, arg2]`
     /// would have the form `Type::Type(box Type::ClassType(C, [arg1, arg2]))`.
     ClassType(ClassType),
+    /// Instances of TypedDicts have this type, and a term of the form `TD[arg1, arg2]`
+    /// would have the form `Type::Type(box Type::TypedDict(TD, [arg1, arg2]))`. Note
+    /// that TypedDict class definitions are still represented as `ClassDef(TD)`, just
+    /// like regular classes.
     TypedDict(TypedDict),
     Tuple(Tuple),
     Module(Module),
@@ -423,6 +480,10 @@ pub enum Type {
     Any(AnyStyle),
     Never(NeverStyle),
     TypeAlias(TypeAlias),
+    /// Used to represent decorator-related scenarios that cannot be easily
+    /// represented in terms of normal types - for example, builtin descriptors
+    /// like `@classmethod`, or the result of `@some_property.setter`.
+    Decoration(Decoration),
     None,
 }
 
@@ -496,22 +557,22 @@ impl Type {
     pub fn callable(params: Vec<Param>, ret: Type) -> Self {
         Type::Callable(
             Box::new(Callable::list(ParamList::new(params), ret)),
-            Kind::Anon,
+            CallableKind::Anon,
         )
     }
 
     pub fn callable_ellipsis(ret: Type) -> Self {
-        Type::Callable(Box::new(Callable::ellipsis(ret)), Kind::Anon)
+        Type::Callable(Box::new(Callable::ellipsis(ret)), CallableKind::Anon)
     }
 
     pub fn callable_param_spec(p: Type, ret: Type) -> Self {
-        Type::Callable(Box::new(Callable::param_spec(p, ret)), Kind::Anon)
+        Type::Callable(Box::new(Callable::param_spec(p, ret)), CallableKind::Anon)
     }
 
     pub fn callable_concatenate(args: Box<[Type]>, param_spec: Type, ret: Type) -> Self {
         Type::Callable(
             Box::new(Callable::concatenate(args, param_spec, ret)),
-            Kind::Anon,
+            CallableKind::Anon,
         )
     }
 
@@ -566,10 +627,11 @@ impl Type {
         matches!(self, Type::None)
     }
 
-    pub fn function_kind(&self) -> Option<&Kind> {
+    pub fn callee_kind(&self) -> Option<CalleeKind> {
         match self {
-            Type::Callable(_, kind) => Some(kind),
-            Type::Forall(_, t) => t.function_kind(),
+            Type::Callable(_, kind) => Some(CalleeKind::Callable(kind.clone())),
+            Type::ClassDef(c) => Some(CalleeKind::Class(c.kind())),
+            Type::Forall(_, t) => t.callee_kind(),
             _ => None,
         }
     }
@@ -650,7 +712,7 @@ impl Type {
     pub fn anon_callables(self) -> Self {
         self.transform(|ty| {
             if let Type::Callable(_, name) = ty {
-                *name = Kind::Anon;
+                *name = CallableKind::Anon;
             }
         })
     }
@@ -686,6 +748,7 @@ impl Type {
                 f(pspec);
             }
             Type::ParamSpecValue(x) => x.visit(f),
+            Type::Decoration(d) => d.visit(f),
             Type::Type(x)
             | Type::TypeGuard(x)
             | Type::TypeIs(x)
@@ -729,6 +792,7 @@ impl Type {
                 f(pspec);
             }
             Type::ParamSpecValue(x) => x.visit_mut(f),
+            Type::Decoration(d) => d.visit_mut(f),
             Type::Type(x)
             | Type::TypeGuard(x)
             | Type::TypeIs(x)

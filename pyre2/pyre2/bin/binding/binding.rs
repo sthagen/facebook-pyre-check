@@ -25,6 +25,7 @@ use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_set::SmallSet;
 use static_assertions::assert_eq_size;
+use vec1::Vec1;
 
 use crate::alt::classes::ClassField;
 use crate::binding::bindings::Bindings;
@@ -42,6 +43,7 @@ use crate::types::types::Type;
 use crate::util::display::DisplayWith;
 
 assert_eq_size!(Key, [usize; 5]);
+assert_eq_size!(KeyExpect, [usize; 1]);
 assert_eq_size!(KeyExport, [usize; 3]);
 assert_eq_size!(KeyClassField, [usize; 4]);
 assert_eq_size!(KeyAnnotation, [u8; 12]); // Equivalent to 1.5 usize
@@ -49,6 +51,7 @@ assert_eq_size!(KeyClassMetadata, [usize; 1]);
 assert_eq_size!(KeyLegacyTypeParam, [usize; 1]);
 
 assert_eq_size!(Binding, [usize; 9]);
+assert_eq_size!(BindingExpect, [usize; 8]);
 assert_eq_size!(BindingAnnotation, [usize; 9]);
 assert_eq_size!(BindingClassMetadata, [usize; 7]);
 assert_eq_size!(BindingClassField, [usize; 15]);
@@ -63,6 +66,10 @@ pub trait Keyed: Hash + Eq + Clone + DisplayWith<ModuleInfo> + Debug + Ranged + 
 impl Keyed for Key {
     type Value = Binding;
     type Answer = Type;
+}
+impl Keyed for KeyExpect {
+    type Value = BindingExpect;
+    type Answer = EmptyAnswer;
 }
 impl Keyed for KeyClassField {
     const EXPORTED: bool = true;
@@ -121,8 +128,6 @@ pub enum Key {
     /// I am an expression that does not have a simple name but needs its type inferred.
     /// For example, an attribute access.
     Anon(TextRange),
-    /// An expectation to be checked. For example, that a sequence is of an expected length.
-    Expect(TextRange),
     /// I am the result of joining several branches.
     Phi(Name, TextRange),
     /// I am the result of narrowing a type. The two ranges are the range at which the operation is
@@ -154,7 +159,6 @@ impl Ranged for Key {
             Self::ReturnType(x) => x.range(),
             Self::Usage(x) => x.range(),
             Self::Anon(r) => *r,
-            Self::Expect(r) => *r,
             Self::Phi(_, r) => *r,
             Self::Narrow(_, r, _) => *r,
             Self::Anywhere(_, r) => *r,
@@ -187,7 +191,6 @@ impl DisplayWith<ModuleInfo> for Key {
             }
             Self::Usage(x) => write!(f, "use {} {:?}", ctx.display(x), x.range()),
             Self::Anon(r) => write!(f, "anon {r:?}"),
-            Self::Expect(r) => write!(f, "expect {r:?}"),
             Self::Phi(n, r) => write!(f, "phi {n} {r:?}"),
             Self::Narrow(n, r1, r2) => write!(f, "narrow {n} {r1:?} {r2:?}"),
             Self::Anywhere(n, r) => write!(f, "anywhere {n} {r:?}"),
@@ -206,6 +209,99 @@ impl DisplayWith<ModuleInfo> for Key {
 impl DisplayWith<Bindings> for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
         write!(f, "{}", ctx.module_info().display(self))
+    }
+}
+
+/// An expectation to be checked. For example, that a sequence is of an expected length.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KeyExpect(pub TextRange);
+
+impl Ranged for KeyExpect {
+    fn range(&self) -> TextRange {
+        self.0
+    }
+}
+
+impl DisplayWith<ModuleInfo> for KeyExpect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, _: &ModuleInfo) -> fmt::Result {
+        write!(f, "expect {:?}", self.0)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum BindingExpect {
+    /// The expected number of values in an unpacked iterable expression.
+    UnpackedLength(Box<Binding>, TextRange, SizeExpectation),
+    /// An exception and its cause from a raise statement.
+    CheckRaisedException(RaisedException),
+    /// An expectation that the types are identical, with an associated name for error messages.
+    Eq(Idx<KeyAnnotation>, Idx<KeyAnnotation>, Name),
+    /// Verify that an attribute assignment or annotation is legal, given an expr for the
+    /// assignment (use this when an expr is available, to get bidirectional typing).
+    CheckAssignExprToAttribute(Box<(ExprAttribute, Expr)>),
+    /// Verify that an attribute assignment or annotation is legal, given a type for the
+    /// assignment (use this when no expr is available).
+    CheckAssignTypeToAttribute(Box<(ExprAttribute, Binding)>),
+}
+
+impl DisplayWith<Bindings> for BindingExpect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
+        let m = ctx.module_info();
+        match self {
+            Self::UnpackedLength(x, range, expect) => {
+                let expectation = match expect {
+                    SizeExpectation::Eq(n) => n.to_string(),
+                    SizeExpectation::Ge(n) => format!(">={n}"),
+                };
+                write!(
+                    f,
+                    "expect length {} for {} {:?}",
+                    expectation,
+                    x.display_with(ctx),
+                    range
+                )
+            }
+            Self::CheckRaisedException(RaisedException::WithoutCause(exc)) => {
+                write!(f, "raise {}", m.display(exc))
+            }
+            Self::CheckRaisedException(RaisedException::WithCause(box (exc, cause))) => {
+                write!(f, "raise {} from {}", m.display(exc), m.display(cause))
+            }
+            Self::Eq(k1, k2, name) => write!(
+                f,
+                "{} == {} on {}",
+                ctx.display(*k1),
+                ctx.display(*k2),
+                name
+            ),
+            Self::CheckAssignExprToAttribute(box (attr, value)) => {
+                write!(
+                    f,
+                    "check assign expr to attr {}.{} {}",
+                    m.display(attr.value.as_ref()),
+                    attr.attr,
+                    m.display(value),
+                )
+            }
+            Self::CheckAssignTypeToAttribute(box (attr, binding)) => {
+                write!(
+                    f,
+                    "check assign type to attr {}.{} ({})",
+                    m.display(attr.value.as_ref()),
+                    attr.attr,
+                    binding.display_with(ctx)
+                )
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EmptyAnswer;
+
+impl Display for EmptyAnswer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "()")
     }
 }
 
@@ -354,6 +450,14 @@ pub enum FunctionKind {
 }
 
 #[derive(Clone, Debug)]
+pub struct FunctionBinding {
+    pub def: StmtFunctionDef,
+    pub kind: FunctionKind,
+    pub decorators: Box<[Decorator]>,
+    pub legacy_tparams: Box<[Idx<KeyLegacyTypeParam>]>,
+}
+
+#[derive(Clone, Debug)]
 pub enum Binding {
     /// An expression, optionally with a Key saying what the type must be.
     /// The Key must be a type of types, e.g. `Type::Type`.
@@ -369,6 +473,8 @@ pub enum Binding {
     YieldTypeOfYieldAnnotation(Option<Idx<KeyAnnotation>>, TextRange),
     /// A grouping of both the yield expression types and the return type.
     Generator(Box<Binding>, Box<Binding>),
+    /// Yield expression type from an async generator
+    AsyncGenerator(Box<Binding>),
     /// Actual value of yield expression
     YieldTypeOfYield(Expr),
     /// A value in an iterable expression, e.g. IterableValue(\[1\]) represents 1.
@@ -380,8 +486,6 @@ pub enum Binding {
     /// A value at a specific position in an unpacked iterable expression.
     /// Example: UnpackedValue(('a', 'b')), 1) represents 'b'.
     UnpackedValue(Box<Binding>, TextRange, UnpackedPosition),
-    /// The expected number of values in an unpacked iterable expression.
-    UnpackedLength(Box<Binding>, TextRange, SizeExpectation),
     /// A subscript expression and the value assigned to it
     SubscriptValue(Box<Binding>, ExprSubscript),
     /// A type where we have an annotation, but also a type we computed.
@@ -399,12 +503,7 @@ pub enum Binding {
     TypeParameter(Quantified),
     /// A function definition, but with the return/body stripped out.
     /// The `Vec<Idx<LegacyTypeParam>>` contains binding information for possible legacy type params.
-    Function(
-        Box<StmtFunctionDef>,
-        FunctionKind,
-        Box<[Decorator]>,
-        Box<[Idx<KeyLegacyTypeParam>]>,
-    ),
+    Function(Vec1<FunctionBinding>),
     /// An import statement, typically with Self::Import.
     Import(ModuleName, Name),
     /// A class definition, but with the body stripped out.
@@ -430,8 +529,6 @@ pub enum Binding {
     /// Also contains the path along the module to bind, and optionally a key
     /// with the previous import to this binding (in which case merge the modules).
     Module(ModuleName, Vec<Name>, Option<Idx<Key>>),
-    /// An exception and its cause from a raise statement.
-    CheckRaisedException(RaisedException),
     /// A name that might be a legacy type parameter. Solving this gives the Quantified type if so.
     /// The TextRange is optional and should be set at most once per identifier
     /// to avoid duplicate type errors (this is not type safe, because we might
@@ -440,14 +537,6 @@ pub enum Binding {
     /// It controls whether to produce an error saying there are scoped type parameters for this
     /// function / class, and therefore the use of legacy type parameters is invalid.
     CheckLegacyTypeParam(Idx<KeyLegacyTypeParam>, Option<TextRange>),
-    /// An expectation that the types are identical, with an associated name for error messages.
-    Eq(Idx<KeyAnnotation>, Idx<KeyAnnotation>, Name),
-    /// Verify that an attribute assignment or annotation is legal, given an expr for the
-    /// assignment (use this when an expr is available, to get bidirectional typing).
-    CheckAssignExprToAttribute(Box<(ExprAttribute, Expr)>),
-    /// Verify that an attribute assignment or annotation is legal, given a type for the
-    /// assignment (use this when no expr is available).
-    CheckAssignTypeToAttribute(Box<(ExprAttribute, Binding)>),
     /// An assignment to a name.
     NameAssign(Name, Option<Idx<KeyAnnotation>>, Box<Expr>),
     /// A type alias declared with the `type` soft keyword
@@ -487,6 +576,13 @@ impl DisplayWith<Bindings> for Binding {
                     "Generator(Yield: {}, Return: {})",
                     target.display_with(ctx),
                     iterable.display_with(ctx)
+                )
+            }
+            Self::AsyncGenerator(box target) => {
+                write!(
+                    f,
+                    "AsyncGenerator(AsyncYield: {})",
+                    target.display_with(ctx)
                 )
             }
             self::Binding::SendTypeOfYieldAnnotation(Some(x), _) => {
@@ -544,20 +640,7 @@ impl DisplayWith<Bindings> for Binding {
                 };
                 write!(f, "unpack {} {:?} @ {}", x.display_with(ctx), range, pos)
             }
-            Self::UnpackedLength(x, range, expect) => {
-                let expectation = match expect {
-                    SizeExpectation::Eq(n) => n.to_string(),
-                    SizeExpectation::Ge(n) => format!(">={n}"),
-                };
-                write!(
-                    f,
-                    "expect length {} for {} {:?}",
-                    expectation,
-                    x.display_with(ctx),
-                    range
-                )
-            }
-            Self::Function(x, _, _, _) => write!(f, "def {}", x.name.id),
+            Self::Function(x) => write!(f, "def {}", x.last().def.name.id),
             Self::Import(m, n) => write!(f, "import {m}.{n}"),
             Self::ClassDef(box (c, _), _, _, _) => write!(f, "class {}", c.name.id),
             Self::FunctionalClassDef(x, _) => write!(f, "class {}", x.id),
@@ -585,12 +668,6 @@ impl DisplayWith<Bindings> for Binding {
                     }
                 )
             }
-            Self::CheckRaisedException(RaisedException::WithoutCause(exc)) => {
-                write!(f, "raise {}", m.display(exc))
-            }
-            Self::CheckRaisedException(RaisedException::WithCause(box (exc, cause))) => {
-                write!(f, "raise {} from {}", m.display(exc), m.display(cause))
-            }
             Self::Phi(xs) => {
                 write!(f, "phi(")?;
                 for (i, x) in xs.iter().enumerate() {
@@ -603,31 +680,6 @@ impl DisplayWith<Bindings> for Binding {
             }
             Self::Narrow(k, op) => {
                 write!(f, "narrow({}, {op:?})", ctx.display(*k))
-            }
-            Self::Eq(k1, k2, name) => write!(
-                f,
-                "{} == {} on {}",
-                ctx.display(*k1),
-                ctx.display(*k2),
-                name
-            ),
-            Self::CheckAssignExprToAttribute(box (attr, value)) => {
-                write!(
-                    f,
-                    "check assign expr to attr {}.{} {}",
-                    m.display(attr.value.as_ref()),
-                    attr.attr,
-                    m.display(value),
-                )
-            }
-            Self::CheckAssignTypeToAttribute(box (attr, binding)) => {
-                write!(
-                    f,
-                    "check assign type to attr {}.{} ({})",
-                    m.display(attr.value.as_ref()),
-                    attr.attr,
-                    binding.display_with(ctx)
-                )
             }
             Self::NameAssign(name, None, expr) => {
                 write!(f, "{} = {}", name, expr.display_with(ctx.module_info()))

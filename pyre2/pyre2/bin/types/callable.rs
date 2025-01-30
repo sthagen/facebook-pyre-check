@@ -100,10 +100,11 @@ pub enum Required {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Kind {
+pub enum CallableKind {
     IsInstance,
     IsSubclass,
     Dataclass,
+    ClassMethod,
     Def,
     Anon,
 }
@@ -250,11 +251,12 @@ impl Param {
     }
 }
 
-impl Kind {
+impl CallableKind {
     pub fn from_name(module: ModuleName, name: &Name) -> Self {
         match (module.as_str(), name.as_str()) {
             ("builtins", "isinstance") => Self::IsInstance,
             ("builtins", "issubclass") => Self::IsSubclass,
+            ("builtins", "classmethod") => Self::ClassMethod,
             ("dataclasses", "dataclass") => Self::Dataclass,
             _ => Self::Def,
         }

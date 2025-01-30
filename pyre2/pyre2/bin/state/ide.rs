@@ -115,15 +115,25 @@ impl State {
         let mut res = Vec::new();
         for idx in bindings.keys::<Key>() {
             match bindings.idx_to_key(idx) {
+                // TODO: Binding::Function corresponds to the last definition in a sequence of
+                // functions. This means we will not find a Key::Definition for other defines in
+                // the sequence.
+                //
+                // This is a minor issue, since overload definitions require annotations. It's
+                // possible to have non-overloads, but those defines are immediately shadowed by
+                // the last define in the sequence, so the inlay hint is not very interesting.
                 key @ Key::ReturnType(id) => {
                     match bindings.get(bindings.key_to_idx(&Key::Definition(id.clone()))) {
-                        Binding::Function(x, _, _, _)
+                        Binding::Function(x)
                             if !matches!(bindings.get(idx), &Binding::AnnotatedType(..)) =>
                         {
                             if let Some(ty) = self.get_type(module, key)
                                 && is_interesting_type(&ty)
                             {
-                                res.push((x.parameters.range.end(), format!(" -> {ty}")));
+                                res.push((
+                                    x.last().def.parameters.range.end(),
+                                    format!(" -> {ty}"),
+                                ));
                             }
                         }
                         _ => {}
