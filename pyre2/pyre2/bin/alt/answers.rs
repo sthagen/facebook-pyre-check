@@ -23,7 +23,7 @@ use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 
 use crate::alt::callable::CallArg;
-use crate::alt::classes::ClassField;
+use crate::alt::class::classdef::ClassField;
 use crate::ast::Ast;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
@@ -1143,8 +1143,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 match gen_ann {
                     Some(gen_ann) => {
                         let gen_type = gen_ann.get_type();
-
+                        // try to interpret the annotation as a generator
                         if let Some((_, send_type, _)) = self.decompose_generator(gen_type) {
+                            send_type
+                        }
+                        // try to interpret the annotation as an async generator
+                        else if let Some((_, send_type)) =
+                            self.decompose_async_generator(gen_type)
+                        {
                             send_type
                         } else {
                             self.error(*range, format!("Yield expression found but the function has an incompatible annotation `{gen_type}`"))
@@ -1154,14 +1160,27 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None => Type::any_explicit(),
                 }
             }
-            Binding::YieldTypeOfYieldAnnotation(ann, range) => {
+            Binding::YieldTypeOfYieldAnnotation(ann, range, is_async) => {
                 let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 match gen_ann {
                     Some(gen_ann) => {
                         let gen_type = gen_ann.get_type();
-
                         if let Some((yield_type, _, _)) = self.decompose_generator(gen_type) {
-                            yield_type
+                            // check type annotation against async flag
+                            if *is_async {
+                                self.error(*range, format!("Return type of generator must be compatible with `{gen_type}`"))
+                            } else {
+                                yield_type
+                            }
+                        } else if let Some((yield_type, _)) =
+                            self.decompose_async_generator(gen_type)
+                        {
+                            // check type annotation against async flag
+                            if !*is_async {
+                                self.error(*range, format!("Return type of generator must be compatible with `{gen_type}`"))
+                            } else {
+                                yield_type
+                            }
                         } else {
                             self.error(*range, format!("Yield expression found but the function has an incompatible annotation `{gen_type}`"))
                         }
@@ -1186,18 +1205,28 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None => Type::any_explicit(),
                 }
             }
-            Binding::YieldTypeOfYield(x) => match x {
-                Expr::Yield(x) => match &x.value {
-                    Some(x) => self.expr(x, None),
-                    None => self.expr(&Expr::NoneLiteral(ExprNoneLiteral { range: x.range }), None),
-                },
-                Expr::YieldFrom(x) => {
-                    let gen_type = self.expr(&x.value, None);
-                    self.decompose_generator(&gen_type)
-                        .map_or(Type::any_implicit(), |(y, _, _)| y)
-                }
-                _ => unreachable!("yield or yield from expression expected"),
+            Binding::YieldTypeOfYield(x) => match &x.value {
+                Some(x) => self.expr(x, None),
+                None => self.expr(&Expr::NoneLiteral(ExprNoneLiteral { range: x.range }), None),
             },
+            Binding::YieldTypeOfYieldFrom(x) => {
+                let gen_type = self.expr(&x.value, None);
+                self.decompose_generator(&gen_type)
+                    .map_or(Type::any_implicit(), |(y, _, _)| y)
+            }
+            Binding::AsyncReturnType(x) => {
+                let expr_type = self.expr(&x.0, None);
+                let return_type = self.solve_binding_inner(&x.1);
+
+                if self.is_async_generator(&return_type) && !expr_type.is_none() {
+                    self.error(
+                        x.0.range(),
+                        format!("Return statement with type `{expr_type}` is not allowed in async generator "),
+                    )
+                } else {
+                    return_type
+                }
+            }
 
             Binding::ReturnExpr(ann, e, has_yields) => {
                 let ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
@@ -1646,19 +1675,25 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         params.extend(x.def.parameters.kwarg.iter().map(|x| {
             let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)));
             let ty = annot.get_type();
-            Param::Kwargs(ty.clone())
+            let is_unpack = annot.qualifiers.contains(&Qualifier::Unpack);
+            Param::Kwargs(if is_unpack {
+                Type::Unpack(Box::new(ty.clone()))
+            } else {
+                ty.clone()
+            })
         }));
         let ret = self
             .get(&Key::ReturnType(ShortIdentifier::new(&x.def.name)))
             .arc_clone();
 
-        let ret = if x.def.is_async {
+        let ret = if x.def.is_async && !self.is_async_generator(&ret) {
             self.stdlib
                 .coroutine(Type::any_implicit(), Type::any_implicit(), ret)
                 .to_type()
         } else {
             ret
         };
+
         let mut tparams = self.scoped_type_params(x.def.type_params.as_deref());
         let legacy_tparams = x
             .legacy_tparams

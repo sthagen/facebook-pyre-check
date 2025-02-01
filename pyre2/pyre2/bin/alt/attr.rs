@@ -6,18 +6,22 @@
  */
 
 use dupe::Dupe;
+use itertools::Either;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_text_size::TextRange;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
+use crate::alt::callable::CallArg;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
+use crate::types::class_metadata::EnumMetadata;
 use crate::types::module::Module;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
 use crate::types::types::AnyStyle;
+use crate::types::types::Decoration;
 use crate::types::types::Quantified;
 use crate::types::types::Type;
 
@@ -41,7 +45,14 @@ pub struct Attribute(AttributeInner);
 /// and has a reason.
 #[derive(Clone)]
 enum AttributeInner {
-    Simple(Result<Type, NoAccessReason>),
+    /// A `NoAccess` attribute indicates that the attribute is well-defined, but does
+    /// not allow the access pattern (for example class access on an instance-only attribute)
+    NoAccess(NoAccessReason),
+    /// A read-write attribute with a closed form type for both get and set actions.
+    ReadWrite(Type),
+    /// A property is a special attribute were regular access invokes a getter.
+    /// It optionally might have a setter method; if not, trying to set it is an access error
+    Property(Type, Option<Type>, Class),
 }
 
 enum NotFound {
@@ -58,6 +69,8 @@ pub enum NoAccessReason {
     /// A generic class attribute exists, but has an invalid definition.
     /// Callers should treat the attribute as `Any`.
     ClassAttributeIsGeneric(Class),
+    /// A set operation on a read-only property is an access error.
+    SettingReadOnlyProperty(Class),
 }
 
 enum InternalError {
@@ -66,30 +79,16 @@ enum InternalError {
 }
 
 impl Attribute {
-    pub fn access_allowed(ty: Type) -> Self {
-        Attribute(AttributeInner::Simple(Ok(ty)))
-    }
-    pub fn access_not_allowed(reason: NoAccessReason) -> Self {
-        Attribute(AttributeInner::Simple(Err(reason)))
+    pub fn no_access(reason: NoAccessReason) -> Self {
+        Attribute(AttributeInner::NoAccess(reason))
     }
 
-    fn get(self) -> Result<Type, NoAccessReason> {
-        match self.0 {
-            AttributeInner::Simple(access_result) => access_result,
-        }
+    pub fn read_write(ty: Type) -> Self {
+        Attribute(AttributeInner::ReadWrite(ty))
     }
 
-    fn set(self) -> Result<Type, NoAccessReason> {
-        match self.0 {
-            AttributeInner::Simple(access_result) => access_result,
-        }
-    }
-
-    pub fn get_type(self) -> Option<Type> {
-        match self.0 {
-            AttributeInner::Simple(Ok(ty)) => Some(ty),
-            AttributeInner::Simple(Err(_)) => None,
-        }
+    pub fn property(getter: Type, setter: Option<Type>, cls: Class) -> Self {
+        Attribute(AttributeInner::Property(getter, setter, cls))
     }
 }
 
@@ -108,6 +107,12 @@ impl NoAccessReason {
                     "Generic attribute `{attr_name}` of class `{class_name}` is not visible on the class"
                 )
             }
+            NoAccessReason::SettingReadOnlyProperty(class) => {
+                let class_name = class.name();
+                format!(
+                    "Attribute `{attr_name}` of class `{class_name}` is a read-only property and cannot be set"
+                )
+            }
         }
     }
 }
@@ -120,24 +125,7 @@ impl LookupResult {
     /// TODO(stroxler) The uses of this eventually need to be audited, but we
     /// need to prioiritize the class logic first.
     fn found_type(ty: Type) -> Self {
-        Self::Found(Attribute::access_allowed(ty))
-    }
-
-    /// A convenience function for callers which do not need to distinguish
-    /// between NotFound and Error results.
-    pub fn get_type_or_conflated_error_msg(
-        self,
-        attr_name: &Name,
-        todo_ctx: &str,
-    ) -> Result<Type, String> {
-        match self {
-            LookupResult::Found(attr) => match &attr.get() {
-                Ok(ty) => Ok(ty.clone()),
-                Err(err) => Err(err.to_error_msg(attr_name)),
-            },
-            LookupResult::NotFound(err) => Err(err.to_error_msg(attr_name)),
-            LookupResult::InternalError(err) => Err(err.to_error_msg(attr_name, todo_ctx)),
-        }
+        Self::Found(Attribute::read_write(ty))
     }
 }
 
@@ -184,6 +172,9 @@ enum AttributeBase {
     /// type[Any] is a special case where attribute lookups first check the
     /// builtin `type` class before falling back to `Any`.
     TypeAny(AnyStyle),
+    /// Properties are handled via a special case so that we can understand
+    /// setter decorators.
+    Property(Type),
 }
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
@@ -196,10 +187,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         todo_ctx: &str,
     ) -> Type {
-        match self
-            .lookup_attr(base, attr_name)
-            .get_type_or_conflated_error_msg(attr_name, todo_ctx)
-        {
+        match self.get_type_or_conflated_error_msg(
+            self.lookup_attr(base, attr_name),
+            attr_name,
+            range,
+            todo_ctx,
+        ) {
             Ok(ty) => ty,
             Err(msg) => self.error(range, msg),
         }
@@ -216,7 +209,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         todo_ctx: &str,
     ) -> Option<Type> {
         match self.lookup_attr(base, attr_name) {
-            LookupResult::Found(attr) => match attr.get() {
+            LookupResult::Found(attr) => match self.resolve_get_access(attr, range) {
                 Ok(ty) => Some(ty),
                 Err(e) => Some(self.error(range, e.to_error_msg(attr_name))),
             },
@@ -227,49 +220,70 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    // TODO(stroxler) Revisit the use case of checking `_value`; we probably should enforce that it
-    // has a "raw" type (and complain if it is a descriptor of any kind) but the
-    // API for that doesn't exist yet and it's a non-urgent edge case.
-    //
-    /// Compute the get (i.e. read) type of an attribute if it is gettable. If it is not found or
-    /// access is denied, return `None`; never produce a type error. Used for internal special cases
-    /// like checking enum values.
-    pub fn type_of_attr_get_if_gettable(&self, base: Type, attr_name: &Name) -> Option<Type> {
-        match self.lookup_attr(base, attr_name) {
-            LookupResult::Found(attr) => attr.get_type(),
+    /// Look up the `_value_` attribute of an enum class. This field has to be a plain instance
+    /// attribute annotated in the class body; it is used to validate enum member values, which are
+    /// supposed to all share this type.
+    pub fn type_of_enum_value(&self, enum_: EnumMetadata) -> Option<Type> {
+        let base = Type::ClassType(enum_.cls);
+        match self.lookup_attr(base, &Name::new_static("_value_")) {
+            LookupResult::Found(attr) => match attr.0 {
+                AttributeInner::ReadWrite(ty) => Some(ty),
+                AttributeInner::NoAccess(_) | AttributeInner::Property(..) => None,
+            },
             _ => None,
         }
     }
 
-    // Note: no closed form for the set type is guaranteed to exist: asking
-    // whether a an attribute set is legal can require synthesizing a call (e.g.
-    // for preoperties with setters, descriptors, or `__setattr__` fallback).
-    //
-    // As a result, no function with this api can be relied upon for valldating
-    // attribute set actions in the general case, use the `check_attr_set.*`
-    // functions instead.
-    fn set_type_or_error(
+    /// Here `got` can be either an Expr or a Type so that we can support contextually
+    /// typing whenever the expression is available.
+    fn check_attr_set(
         &self,
         base: Type,
         attr_name: &Name,
+        got: Either<&Expr, &Type>,
         range: TextRange,
         todo_ctx: &str,
-    ) -> Option<Type> {
+    ) {
         match self.lookup_attr(base, attr_name) {
-            LookupResult::Found(attr) => match attr.set() {
-                Ok(ty) => Some(ty),
-                Err(e) => {
+            LookupResult::Found(attr) => match attr.0 {
+                AttributeInner::NoAccess(e) => {
                     self.error(range, e.to_error_msg(attr_name));
-                    None
+                }
+                AttributeInner::ReadWrite(want) => match got {
+                    Either::Left(got) => {
+                        self.expr(got, Some(&want));
+                    }
+                    Either::Right(got) => {
+                        if !self.solver().is_subset_eq(got, &want, self.type_order()) {
+                            self.error(
+                                range,
+                                format!(
+                                    "Could not assign type `{}` to attribute `{}` with type `{}`",
+                                    got.clone().deterministic_printing(),
+                                    attr_name,
+                                    want.deterministic_printing(),
+                                ),
+                            );
+                        }
+                    }
+                },
+                AttributeInner::Property(_, None, cls) => {
+                    let e = NoAccessReason::SettingReadOnlyProperty(cls);
+                    self.error(range, e.to_error_msg(attr_name));
+                }
+                AttributeInner::Property(_, Some(setter), _) => {
+                    let got = match &got {
+                        Either::Left(got) => CallArg::Expr(got),
+                        Either::Right(got) => CallArg::Type(got, range),
+                    };
+                    self.call_property_setter(setter, got, range);
                 }
             },
             LookupResult::InternalError(e) => {
                 self.error(range, e.to_error_msg(attr_name, todo_ctx));
-                None
             }
             LookupResult::NotFound(e) => {
                 self.error(range, e.to_error_msg(attr_name));
-                None
             }
         }
     }
@@ -282,8 +296,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         todo_ctx: &str,
     ) {
-        let want = self.set_type_or_error(base, attr_name, range, todo_ctx);
-        self.expr(got, want.as_ref());
+        self.check_attr_set(base, attr_name, Either::Left(got), range, todo_ctx)
     }
 
     pub fn check_attr_set_with_type(
@@ -294,18 +307,48 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         todo_ctx: &str,
     ) {
-        if let Some(want) = self.set_type_or_error(base, attr_name, range, todo_ctx) {
-            if !self.solver().is_subset_eq(got, &want, self.type_order()) {
-                self.error(
-                    range,
-                    format!(
-                        "Could not assign type `{}` to attribute `{}` with type `{}`",
-                        got.clone().deterministic_printing(),
-                        attr_name,
-                        want.deterministic_printing(),
-                    ),
-                );
-            }
+        self.check_attr_set(base, attr_name, Either::Right(got), range, todo_ctx)
+    }
+
+    fn resolve_get_access(
+        &self,
+        attr: Attribute,
+        range: TextRange,
+    ) -> Result<Type, NoAccessReason> {
+        match attr.0 {
+            AttributeInner::NoAccess(reason) => Err(reason),
+            AttributeInner::ReadWrite(ty) => Ok(ty),
+            AttributeInner::Property(getter, ..) => Ok(self.call_property_getter(getter, range)),
+        }
+    }
+
+    /// A convenience function for callers who don't care about reasons a lookup failed and are
+    /// only interested in simple, read-write attributes (in particular, this covers instance access to
+    /// regular methods, and is useful for edge cases where we handle cases like `__call__` and `__new__`).
+    pub fn resolve_as_instance_method(&self, attr: Attribute) -> Option<Type> {
+        match attr.0 {
+            AttributeInner::ReadWrite(ty) => Some(ty),
+            AttributeInner::NoAccess(_) => None,
+            AttributeInner::Property(..) => None,
+        }
+    }
+
+    /// A convenience function for callers which want an error but do not need to distinguish
+    /// between NotFound and Error results.
+    fn get_type_or_conflated_error_msg(
+        &self,
+        lookup: LookupResult,
+        attr_name: &Name,
+        range: TextRange,
+        todo_ctx: &str,
+    ) -> Result<Type, String> {
+        match lookup {
+            LookupResult::Found(attr) => match self.resolve_get_access(attr, range) {
+                Ok(ty) => Ok(ty.clone()),
+                Err(err) => Err(err.to_error_msg(attr_name)),
+            },
+            LookupResult::NotFound(err) => Err(err.to_error_msg(attr_name)),
+            LookupResult::InternalError(err) => Err(err.to_error_msg(attr_name, todo_ctx)),
         }
     }
 
@@ -357,12 +400,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let builtins_type_classtype = self.stdlib.builtins_type();
                 LookupResult::found_type(
                     self.get_instance_attribute(&builtins_type_classtype, attr_name)
-                        .and_then(|attr| attr.get_type())
+                        .and_then(|attr| self.resolve_as_instance_method(attr))
                         .map_or_else(|| style.propagate(), |ty| ty),
                 )
             }
             Some(AttributeBase::Any(style)) => LookupResult::found_type(style.propagate()),
             Some(AttributeBase::Never) => LookupResult::found_type(Type::never()),
+            Some(AttributeBase::Property(getter)) => {
+                // TODO(stroxler): it is probably possible to synthesize a forall type here
+                // that uses a type var to propagate the setter instead of using a `Decoration`
+                // with hardcoded support in `apply_decorator`. Investigate this option later.
+                LookupResult::found_type(Type::Decoration(Decoration::PropertySetterDecorator(
+                    Box::new(getter),
+                )))
+            }
             None => LookupResult::InternalError(InternalError::AttributeBaseUndefined(base)),
         }
     }
@@ -417,8 +468,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::BoundMethod(_, _) => Some(AttributeBase::ClassInstance(stdlib.method_type())),
             Type::Ellipsis => Some(AttributeBase::ClassInstance(stdlib.ellipsis_type())),
             Type::Forall(_, box base) => self.as_attribute_base(base, stdlib),
-            Type::Var(v) => self.as_attribute_base(self.solver().force_var(v), stdlib),
-            // TODO(stroxler) This case will have to at least sometimes return non-None for property setters.
+            Type::Var(v) => {
+                if let Some(_guard) = self.recurser.recurse(v) {
+                    self.as_attribute_base(self.solver().force_var(v), stdlib)
+                } else {
+                    None
+                }
+            }
+            Type::Decoration(Decoration::Property(box (getter, _))) => {
+                Some(AttributeBase::Property(getter))
+            }
             Type::Decoration(_) => None,
             // TODO: check to see which ones should have class representations
             Type::Union(_)

@@ -6,13 +6,14 @@
  */
 
 use crate::testcase;
+use crate::testcase_with_bug;
 
 testcase!(
     test_missing_return,
     r#"
 
-def f() -> int:
-    pass  # E: EXPECTED None <: int
+def f() -> int:  # E: EXPECTED None <: int
+    pass
 "#,
 );
 
@@ -54,10 +55,68 @@ testcase!(
     r#"
 from typing import assert_type
 
+def f(b: bool) -> int:  # E: EXPECTED None <: int
+    if b:
+        return 1
+    else:
+        pass
+"#,
+);
+
+testcase!(
+    test_return_catch,
+    r#"
+def f(b: bool) -> int:
+    try:
+        return 1
+    except Exception:
+        return 2
+"#,
+);
+
+testcase_with_bug!(
+    "Should not require a return statement",
+    test_return_never,
+    r#"
+from typing import NoReturn
+
+def fail() -> NoReturn:
+    raise Exception()
+
 def f(b: bool) -> int:
     if b:
         return 1
     else:
-        pass  # E: EXPECTED None <: int
+        fail() # E: EXPECTED None <: int
+"#,
+);
+
+testcase!(
+    test_return_if_no_else_real,
+    r#"
+def f(b: bool) -> int:  # E: EXPECTED None <: int
+    if b:
+        return 1
+"#,
+);
+
+testcase!(
+    test_return_if_no_else_none,
+    r#"
+def f(b: bool) -> None:
+    if b:
+        return None
+"#,
+);
+
+testcase!(
+    test_return_then_dead_code,
+    r#"
+def f(b: bool) -> int:  # E: EXPECTED None <: int
+    return 1
+    # This code is unreachable. A linter should spot this.
+    # But for now, it's perfectly reasonble to say the `pass`
+    # has the wrong type, and a `return` should be here.
+    pass
 "#,
 );

@@ -145,3 +145,41 @@ B(x=0, y="1")  # OK
 B(x="0", y="1")  # E: EXPECTED Literal['0'] <: int
     "#,
 );
+
+testcase!(
+    test_decorate_with_call_return,
+    r#"
+from dataclasses import dataclass
+@dataclass()
+class C:
+    x: int
+C(x=0)  # OK
+C(x='0')  # E: EXPECTED Literal['0'] <: int
+    "#,
+);
+
+testcase!(
+    test_init_already_defined,
+    r#"
+from dataclasses import dataclass
+@dataclass
+class C:
+    x: int
+    def __init__(self):
+        self.x = 42
+C()  # OK
+C(x=0)  # E: Unexpected keyword argument
+    "#,
+);
+
+testcase!(
+    test_init_false,
+    r#"
+from dataclasses import dataclass
+@dataclass(init=False)
+class C:
+    x: int = 0
+C()  # OK
+C(x=0)  # E: Unexpected keyword argument
+    "#,
+);

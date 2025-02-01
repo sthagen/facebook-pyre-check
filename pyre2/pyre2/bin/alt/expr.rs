@@ -36,6 +36,7 @@ use crate::dunder;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
+use crate::types::callable::DataclassKeywords;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Params;
@@ -71,6 +72,8 @@ enum CallStyle<'a> {
 enum CallTarget {
     /// A thing whose type is a Callable, usually a function.
     Callable(Callable),
+    /// The dataclasses.dataclass function.
+    Dataclass(Callable),
     /// Method of a class. The `Type` is the self/cls argument.
     BoundMethod(Type, Callable),
     /// A class object.
@@ -130,6 +133,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// Return a pair of the quantified variables I had to instantiate, and the resulting call target.
     fn as_call_target(&self, ty: Type) -> Option<(Vec<Var>, CallTarget)> {
         match ty {
+            Type::Callable(c, CallableKind::Dataclass(_)) => {
+                Some((Vec::new(), CallTarget::Dataclass(*c)))
+            }
             Type::Callable(c, _) => Some((Vec::new(), CallTarget::Callable(*c))),
             Type::BoundMethod(obj, func) => match self.as_call_target(*func.clone()) {
                 Some((gs, CallTarget::Callable(c))) => Some((gs, CallTarget::BoundMethod(*obj, c))),
@@ -166,7 +172,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::TypeAlias(ta) => self.as_call_target(ta.as_value(self.stdlib)),
             Type::ClassType(cls) => self
                 .get_instance_attribute(&cls, &dunder::CALL)
-                .and_then(|attr| attr.get_type())
+                .and_then(|attr| self.resolve_as_instance_method(attr))
                 .and_then(|ty| self.as_call_target(ty)),
             Type::Type(box Type::TypedDict(typed_dict)) => {
                 Some((Vec::new(), CallTarget::Callable(typed_dict.as_callable())))
@@ -343,18 +349,27 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         keywords: &[Keyword],
         range: TextRange,
     ) -> Type {
+        let is_dataclass = matches!(call_target.1, CallTarget::Dataclass(_));
         let res = match call_target.1 {
             CallTarget::Class(cls) => self.construct(cls, args, keywords, range),
             CallTarget::BoundMethod(obj, c) => {
                 let first_arg = CallArg::Type(&obj, range);
                 self.callable_infer(c, Some(first_arg), args, keywords, range)
             }
-            CallTarget::Callable(callable) => {
+            CallTarget::Callable(callable) | CallTarget::Dataclass(callable) => {
                 self.callable_infer(callable, None, args, keywords, range)
             }
         };
         self.solver().finish_quantified(&call_target.0);
-        res
+        if is_dataclass && let Type::Callable(c, _) = res {
+            let mut kws = DataclassKeywords::default();
+            for kw in keywords {
+                kws.set_keyword(kw.arg.as_ref(), self.expr_infer(&kw.value));
+            }
+            Type::Callable(c, CallableKind::Dataclass(kws))
+        } else {
+            res
+        }
     }
 
     pub fn attr_infer(&self, obj: &Type, attr_name: &Name, range: TextRange) -> Type {
@@ -522,6 +537,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Some(CalleeKind::Class(ClassKind::ClassMethod)) => {
                 return Type::Decoration(Decoration::ClassMethod(Box::new(decoratee)));
             }
+            Some(CalleeKind::Class(ClassKind::Property)) => {
+                return Type::Decoration(Decoration::Property(Box::new((decoratee, None))));
+            }
+            _ => {}
+        }
+        match ty_decorator {
+            Type::Decoration(Decoration::PropertySetterDecorator(getter)) => {
+                return Type::Decoration(Decoration::Property(Box::new((
+                    *getter,
+                    Some(decoratee),
+                ))));
+            }
             _ => {}
         }
         if matches!(&decoratee, Type::ClassDef(_)) {
@@ -532,6 +559,23 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             { self.as_call_target_or_error(ty_decorator, CallStyle::FreeForm, decorator.range) };
         let arg = CallArg::Type(&decoratee, decorator.range);
         self.call_infer(call_target, &[arg], &[], decorator.range)
+    }
+
+    /// Helper function hide details of call synthesis from the attribute resolution code.
+    pub fn call_property_getter(&self, getter_method: Type, range: TextRange) -> Type {
+        let call_target = self.as_call_target_or_error(getter_method, CallStyle::FreeForm, range);
+        self.call_infer(call_target, &[], &[], range)
+    }
+
+    /// Helper function hide details of call synthesis from the attribute resolution code.
+    pub fn call_property_setter(
+        &self,
+        setter_method: Type,
+        got: CallArg,
+        range: TextRange,
+    ) -> Type {
+        let call_target = self.as_call_target_or_error(setter_method, CallStyle::FreeForm, range);
+        self.call_infer(call_target, &[got], &[], range)
     }
 
     fn flatten_dict_items(x: &[DictItem]) -> Vec<DictItem> {

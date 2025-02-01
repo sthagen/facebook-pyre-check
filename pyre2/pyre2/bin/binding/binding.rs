@@ -16,6 +16,8 @@ use ruff_python_ast::Decorator;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprSubscript;
+use ruff_python_ast::ExprYield;
+use ruff_python_ast::ExprYieldFrom;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::StmtAugAssign;
 use ruff_python_ast::StmtClassDef;
@@ -27,7 +29,7 @@ use starlark_map::small_set::SmallSet;
 use static_assertions::assert_eq_size;
 use vec1::Vec1;
 
-use crate::alt::classes::ClassField;
+use crate::alt::class::classdef::ClassField;
 use crate::binding::bindings::Bindings;
 use crate::binding::narrow::NarrowOp;
 use crate::graph::index::Idx;
@@ -112,6 +114,8 @@ pub enum Key {
     SendTypeOfYieldAnnotation(TextRange),
     /// The return type of a yield expression.
     ReturnTypeOfYieldAnnotation(TextRange),
+    /// The return type of an async function.
+    AsyncReturnType(TextRange),
     /// The return type of a yield expression.
     YieldTypeOfYieldAnnotation(TextRange),
     /// The type at a specific return point.
@@ -150,6 +154,7 @@ impl Ranged for Key {
             Self::Definition(x) => x.range(),
             Self::SelfType(x) => x.range(),
             Self::TypeOfYieldAnnotation(x) => x.range(),
+            Self::AsyncReturnType(x) => x.range(),
             Self::SendTypeOfYieldAnnotation(x) => x.range(),
             Self::ReturnTypeOfYieldAnnotation(x) => x.range(),
             Self::YieldTypeOfYieldAnnotation(x) => x.range(),
@@ -188,6 +193,14 @@ impl DisplayWith<ModuleInfo> for Key {
             }
             Self::ReturnTypeOfYieldAnnotation(x) => {
                 write!(f, "send type of yield {} {:?}", ctx.display(x), x.range())
+            }
+            Self::AsyncReturnType(x) => {
+                write!(
+                    f,
+                    "async generator return type {} {:?}",
+                    ctx.display(x),
+                    x.range()
+                )
             }
             Self::Usage(x) => write!(f, "use {} {:?}", ctx.display(x), x.range()),
             Self::Anon(r) => write!(f, "anon {r:?}"),
@@ -469,14 +482,18 @@ pub enum Binding {
     SendTypeOfYieldAnnotation(Option<Idx<KeyAnnotation>>, TextRange),
     /// Return type of yield
     ReturnTypeOfYieldAnnotation(Option<Idx<KeyAnnotation>>, TextRange),
-    /// Yield type of yield annotation
-    YieldTypeOfYieldAnnotation(Option<Idx<KeyAnnotation>>, TextRange),
+    /// Yield type of yield annotation with a flag to indicate if the surrounding function is async
+    YieldTypeOfYieldAnnotation(Option<Idx<KeyAnnotation>>, TextRange, bool),
     /// A grouping of both the yield expression types and the return type.
+    /// Yield type of yield annotation
+    AsyncReturnType(Box<(Expr, Binding)>),
     Generator(Box<Binding>, Box<Binding>),
     /// Yield expression type from an async generator
     AsyncGenerator(Box<Binding>),
     /// Actual value of yield expression
-    YieldTypeOfYield(Expr),
+    YieldTypeOfYield(ExprYield),
+    /// Actual value of yield from expression
+    YieldTypeOfYieldFrom(ExprYieldFrom),
     /// A value in an iterable expression, e.g. IterableValue(\[1\]) represents 1.
     IterableValue(Option<Idx<KeyAnnotation>>, Expr),
     /// A value produced by entering a context manager.
@@ -578,6 +595,14 @@ impl DisplayWith<Bindings> for Binding {
                     iterable.display_with(ctx)
                 )
             }
+            Self::AsyncReturnType(x) => {
+                write!(
+                    f,
+                    "AsyncReturn(return expr {}, return annotation {})",
+                    m.display(&x.0),
+                    x.1.display_with(ctx)
+                )
+            }
             Self::AsyncGenerator(box target) => {
                 write!(
                     f,
@@ -597,13 +622,14 @@ impl DisplayWith<Bindings> for Binding {
             self::Binding::ReturnTypeOfYieldAnnotation(None, _) => {
                 write!(f, "no annotation so send type is Any")
             }
-            self::Binding::YieldTypeOfYieldAnnotation(Some(x), _) => {
+            self::Binding::YieldTypeOfYieldAnnotation(Some(x), _, _) => {
                 write!(f, "annotation containing yield type {}", ctx.display(*x))
             }
-            self::Binding::YieldTypeOfYieldAnnotation(None, _) => {
+            self::Binding::YieldTypeOfYieldAnnotation(None, _, _) => {
                 write!(f, "no annotation so yield type is Any")
             }
             Self::YieldTypeOfYield(x) => write!(f, "yield expr {}", m.display(x)),
+            Self::YieldTypeOfYieldFrom(x) => write!(f, "yield expr from {}", m.display(x)),
             Self::IterableValue(None, x) => write!(f, "iter {}", m.display(x)),
             Self::IterableValue(Some(k), x) => {
                 write!(f, "iter {}: {}", ctx.display(*k), m.display(x))

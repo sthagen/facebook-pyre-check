@@ -154,6 +154,20 @@ impl<'a> TypeDisplayContext<'a> {
             Decoration::ClassMethod(box ty) => {
                 write!(f, "classmethod[{}]", self.display(ty))
             }
+            Decoration::Property(box (getter, None)) => {
+                write!(f, "property[{}]", self.display(getter))
+            }
+            Decoration::Property(box (getter, Some(setter))) => {
+                write!(
+                    f,
+                    "property_with_setter[{}, {}]",
+                    self.display(getter),
+                    self.display(setter)
+                )
+            }
+            Decoration::PropertySetterDecorator(box getter) => {
+                write!(f, "property_setter_decorator[{}]", self.display(getter),)
+            }
         }
     }
 
@@ -309,6 +323,7 @@ mod tests {
 
     use super::*;
     use crate::module::module_info::ModuleInfo;
+    use crate::module::module_path::ModulePath;
     use crate::types::callable::Callable;
     use crate::types::callable::CallableKind;
     use crate::types::callable::Param;
@@ -330,7 +345,7 @@ mod tests {
     fn fake_class(name: &str, module: &str, range: u32, tparams: Vec<TParamInfo>) -> Class {
         let mi = ModuleInfo::new(
             ModuleName::from_str(module),
-            PathBuf::from(module),
+            ModulePath::filesystem(PathBuf::from(module)),
             "1234567890".to_owned(),
         );
         Class::new(
@@ -354,7 +369,7 @@ mod tests {
     fn fake_tyvar(name: &str, module: &str, range: u32) -> TypeVar {
         let mi = ModuleInfo::new(
             ModuleName::from_str(module),
-            PathBuf::from(module),
+            ModulePath::filesystem(PathBuf::from(module)),
             "1234567890".to_owned(),
         );
         TypeVar::new(

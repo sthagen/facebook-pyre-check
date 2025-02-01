@@ -27,6 +27,8 @@ use ruff_python_ast::ExprLambda;
 use ruff_python_ast::ExprName;
 use ruff_python_ast::ExprNoneLiteral;
 use ruff_python_ast::ExprSubscript;
+use ruff_python_ast::ExprYield;
+use ruff_python_ast::ExprYieldFrom;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Parameters;
 use ruff_python_ast::Pattern;
@@ -73,8 +75,8 @@ use crate::binding::narrow::NarrowOp;
 use crate::binding::narrow::NarrowOps;
 use crate::binding::narrow::NarrowVal;
 use crate::binding::table::TableKeyed;
+use crate::binding::util::function_last_expressions;
 use crate::binding::util::is_ellipse;
-use crate::binding::util::is_never;
 use crate::binding::util::is_valid_identifier;
 use crate::config::Config;
 use crate::dunder;
@@ -147,11 +149,15 @@ struct BindingsBuilder<'a> {
     errors: &'a ErrorCollector,
     uniques: &'a UniqueFactory,
     scopes: Vec1<Scope>,
-    /// Accumulate all the return statements
-    returns: Vec<StmtReturn>,
-    /// Accumulate all the yield statements
-    yields: Vec<Expr>,
+    functions: Vec1<FuncInfo>,
     table: BindingTable,
+}
+
+/// Things we collect from inside a function
+#[derive(Default, Clone, Debug)]
+struct FuncInfo {
+    returns: Vec<StmtReturn>,
+    yields: Vec<Either<ExprYield, ExprYieldFrom>>,
 }
 
 /// Many names may map to the same TextRange (e.g. from foo import *).
@@ -193,7 +199,7 @@ impl Static {
         lookup: &dyn LookupExport,
         config: &Config,
     ) {
-        let mut d = Definitions::new(x, module_info.name(), module_info.is_init(), config);
+        let mut d = Definitions::new(x, module_info.name(), module_info.path().is_init(), config);
         if top_level && module_info.name() != ModuleName::builtins() {
             d.inject_builtins();
         }
@@ -435,7 +441,7 @@ impl Bindings {
             panic!(
                 "Internal error: key lacking binding, module={}, path={}, key={}, key-debug={key:?}",
                 self.module_info().name(),
-                self.module_info().path().display(),
+                self.module_info().path(),
                 self.module_info().display(key),
             )
         })
@@ -471,8 +477,7 @@ impl Bindings {
             errors,
             uniques,
             scopes: Vec1::new(Scope::module()),
-            returns: Vec::new(),
-            yields: Vec::new(),
+            functions: Vec1::new(FuncInfo::default()),
             table: Default::default(),
         };
         builder
@@ -832,12 +837,18 @@ impl<'a> BindingsBuilder<'a> {
                 self.bind_lambda(x);
                 true
             }
-            Expr::Yield(_) => {
-                self.yields.push(x.clone());
+            Expr::Yield(x) => {
+                self.functions
+                    .last_mut()
+                    .yields
+                    .push(Either::Left(x.clone()));
                 false
             }
-            Expr::YieldFrom(_) => {
-                self.yields.push(x.clone());
+            Expr::YieldFrom(x) => {
+                self.functions
+                    .last_mut()
+                    .yields
+                    .push(Either::Right(x.clone()));
                 false
             }
             _ => false,
@@ -1215,15 +1226,14 @@ impl<'a> BindingsBuilder<'a> {
             FunctionKind::Impl
         };
         let mut return_annotation = mem::take(&mut x.returns);
-        let return_count = self.returns.len();
-        let yield_count = self.yields.len();
+        self.functions.push(FuncInfo::default());
 
-        let never = is_never(&body, self.config);
+        let never = function_last_expressions(&body, self.config);
         if never != Some(Vec::new()) && kind == FunctionKind::Impl {
             // If we can reach the end, and the code is real (not just ellipse),
             // check None is an OK return type.
             // Note that we special case ellipse even in non-interface, as that is what Pyright does.
-            self.returns.push(StmtReturn {
+            self.functions.last_mut().returns.push(StmtReturn {
                 range: match never.as_deref() {
                     Some([x]) => x.range(), // Try and narrow the range
                     _ => x.range,
@@ -1300,15 +1310,7 @@ impl<'a> BindingsBuilder<'a> {
         }
         let is_async = x.is_async;
 
-        let mut return_exprs = Vec::new();
-        while self.returns.len() > return_count {
-            return_exprs.push(self.returns.pop().unwrap());
-        }
-
-        let mut yield_exprs = Vec::new();
-        while self.yields.len() > yield_count {
-            yield_exprs.push(self.yields.pop().unwrap());
-        }
+        let accumulate = self.functions.pop().unwrap();
 
         let return_ann = return_annotation.map(|x| {
             self.table.insert(
@@ -1316,51 +1318,56 @@ impl<'a> BindingsBuilder<'a> {
                 BindingAnnotation::AnnotateExpr(*x, self_type),
             )
         });
-        let mut return_expr_keys = SmallSet::with_capacity(return_exprs.len());
-        for x in return_exprs {
+        let mut return_expr_keys = SmallSet::with_capacity(accumulate.returns.len());
+        for x in accumulate.returns.clone() {
             let key = self.table.insert(
                 Key::ReturnExpression(ShortIdentifier::new(&func_name), x.range),
-                Binding::ReturnExpr(return_ann, return_expr(x), !yield_exprs.is_empty()),
+                Binding::ReturnExpr(return_ann, return_expr(x), !accumulate.yields.is_empty()),
             );
             return_expr_keys.insert(key);
         }
 
         let mut return_type = Binding::phi(return_expr_keys);
-        if !yield_exprs.is_empty() {
-            let mut yield_expr_keys = SmallSet::with_capacity(yield_exprs.len());
-            for x in yield_exprs.clone() {
-                let key = self.table.insert(
-                    Key::YieldTypeOfYield(ShortIdentifier::new(&func_name), x.range()),
-                    // collect the value of the yield expression.
-                    Binding::YieldTypeOfYield(x.clone()),
-                );
-                yield_expr_keys.insert(key);
-
+        if !accumulate.yields.is_empty() {
+            let mut yield_expr_keys = SmallSet::with_capacity(accumulate.yields.len());
+            for x in accumulate.yields.clone() {
                 // create the appropriate bindings depending on whether we see a yield or a yieldFrom
                 // not all bindings are needed for all exprs
                 match x {
-                    Expr::Yield(_) => {
-                        self.table.insert(
-                            Key::SendTypeOfYieldAnnotation(x.range()),
+                    Either::Left(x) => {
+                        let key = self.table.insert(
+                            Key::YieldTypeOfYield(ShortIdentifier::new(&func_name), x.range),
                             // collect the value of the yield expression.
-                            Binding::SendTypeOfYieldAnnotation(return_ann, x.range()),
+                            Binding::YieldTypeOfYield(x.clone()),
+                        );
+                        yield_expr_keys.insert(key);
+
+                        self.table.insert(
+                            Key::SendTypeOfYieldAnnotation(x.range),
+                            // collect the value of the yield expression.
+                            Binding::SendTypeOfYieldAnnotation(return_ann, x.range),
                         );
                         self.table.insert(
-                            Key::YieldTypeOfYieldAnnotation(x.range()),
+                            Key::YieldTypeOfYieldAnnotation(x.range),
                             // collect the yield value of the yield expression.
-                            Binding::YieldTypeOfYieldAnnotation(return_ann, x.range()),
+                            Binding::YieldTypeOfYieldAnnotation(return_ann, x.range, is_async),
                         );
                     }
 
-                    Expr::YieldFrom(_) => {
-                        self.table.insert(
-                            Key::ReturnTypeOfYieldAnnotation(x.range()),
+                    Either::Right(x) => {
+                        let key = self.table.insert(
+                            Key::YieldTypeOfYield(ShortIdentifier::new(&func_name), x.range),
                             // collect the value of the yield expression.
-                            Binding::ReturnTypeOfYieldAnnotation(return_ann, x.range()),
+                            Binding::YieldTypeOfYieldFrom(x.clone()),
+                        );
+                        yield_expr_keys.insert(key);
+
+                        self.table.insert(
+                            Key::ReturnTypeOfYieldAnnotation(x.range),
+                            // collect the value of the yield expression.
+                            Binding::ReturnTypeOfYieldAnnotation(return_ann, x.range),
                         );
                     }
-
-                    _ => unreachable!("Can only encounter a Yield or a YieldFrom here"),
                 }
             }
             let yield_type = Binding::phi(yield_expr_keys);
@@ -1370,9 +1377,16 @@ impl<'a> BindingsBuilder<'a> {
             );
             if is_async {
                 // combine the original (syntactic) return type and the yield type to analyze later and obtain the final return type.
-                // for async, we should not be returning anything.
-                // Zeina TODO: i think the range here should be every return expression.
                 return_type = Binding::AsyncGenerator(Box::new(yield_type));
+
+                // if our function is async, then record the overall return type and bind it to each return type
+                // this way, we can later check if the return expr gives a value and raise an error if so
+                for x in accumulate.returns {
+                    self.table.insert(
+                        Key::AsyncReturnType(return_expr(x.clone()).range()),
+                        Binding::AsyncReturnType(Box::new((return_expr(x), return_type.clone()))),
+                    );
+                }
             } else {
                 // combine the original (syntactic) return type and the yield type to analyze later and obtain the final return type.
                 return_type = Binding::Generator(Box::new(yield_type), Box::new(return_type));
@@ -1386,9 +1400,11 @@ impl<'a> BindingsBuilder<'a> {
             return_type.clone(),
         );
 
-        for x in yield_exprs {
-            self.table
-                .insert(Key::TypeOfYieldAnnotation(x.range()), return_type.clone());
+        for x in accumulate.yields {
+            self.table.insert(
+                Key::TypeOfYieldAnnotation(x.either(|x| x.range, |x| x.range)),
+                return_type.clone(),
+            );
         }
 
         FunctionBinding {
@@ -1855,7 +1871,7 @@ impl<'a> BindingsBuilder<'a> {
             Stmt::ClassDef(x) => self.class_def(x),
             Stmt::Return(x) => {
                 self.ensure_expr_opt(x.value.as_deref());
-                self.returns.push(x);
+                self.functions.last_mut().returns.push(x);
                 self.scopes.last_mut().flow.no_next = true;
             }
             Stmt::Delete(x) => self.todo("Bindings::stmt", &x),
@@ -1948,7 +1964,7 @@ impl<'a> BindingsBuilder<'a> {
 
                     let (value, is_initialized) = if let Some(value) = x.value {
                         // Treat a name as initialized, but skip actually checking the value, if we are assigning `...` in a stub.
-                        if self.module_info.is_interface()
+                        if self.module_info.path().is_interface()
                             && matches!(&*value, Expr::EllipsisLiteral(_))
                         {
                             (None, true)
@@ -2271,7 +2287,7 @@ impl<'a> BindingsBuilder<'a> {
             }
             Stmt::ImportFrom(x) => {
                 if let Some(m) = self.module_info.name().new_maybe_relative(
-                    self.module_info.is_init(),
+                    self.module_info.path().is_init(),
                     x.level,
                     x.module.as_ref().map(|x| &x.id),
                 ) {
