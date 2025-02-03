@@ -6472,16 +6472,6 @@
   "enums_member_names.py": [
     {
       "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(property, Literal['RED']) failed",
-      "description": "assert_type(property, Literal['RED']) failed",
-      "line": 22,
-      "name": "PyreError",
-      "stop_column": 44,
-      "stop_line": 22
-    },
-    {
-      "code": -2,
       "column": 5,
       "concise_description": "assert_type(property, Literal['BLUE', 'RED']) failed",
       "description": "assert_type(property, Literal['BLUE', 'RED']) failed",
@@ -6502,26 +6492,6 @@
     }
   ],
   "enums_member_values.py": [
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(Any, Literal[1]) failed",
-      "description": "assert_type(Any, Literal[1]) failed",
-      "line": 21,
-      "name": "PyreError",
-      "stop_column": 43,
-      "stop_line": 21
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(property, Literal[1]) failed",
-      "description": "assert_type(property, Literal[1]) failed",
-      "line": 22,
-      "name": "PyreError",
-      "stop_column": 41,
-      "stop_line": 22
-    },
     {
       "code": -2,
       "column": 5,
@@ -6545,8 +6515,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(property, Literal[1]) failed",
-      "description": "assert_type(property, Literal[1]) failed",
+      "concise_description": "assert_type(tuple[Literal[1], float, float], Literal[1]) failed",
+      "description": "assert_type(tuple[Literal[1], float, float], Literal[1]) failed",
       "line": 54,
       "name": "PyreError",
       "stop_column": 46,
@@ -6555,8 +6525,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(property, Literal[1]) failed",
-      "description": "assert_type(property, Literal[1]) failed",
+      "concise_description": "assert_type(auto, Literal[1]) failed",
+      "description": "assert_type(auto, Literal[1]) failed",
       "line": 68,
       "name": "PyreError",
       "stop_column": 42,
