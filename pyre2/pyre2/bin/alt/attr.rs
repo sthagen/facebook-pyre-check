@@ -14,15 +14,15 @@ use ruff_text_size::TextRange;
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::callable::CallArg;
+use crate::alt::types::class_metadata::EnumMetadata;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
-use crate::types::class_metadata::EnumMetadata;
 use crate::types::module::Module;
+use crate::types::quantified::Quantified;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
 use crate::types::types::AnyStyle;
 use crate::types::types::Decoration;
-use crate::types::types::Quantified;
 use crate::types::types::Type;
 
 enum LookupResult {
@@ -440,7 +440,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Some(AttributeBase::ClassInstance(stdlib.tuple(element)))
             }
             Type::Tuple(Tuple::Concrete(elements)) => Some(AttributeBase::ClassInstance(
-                stdlib.tuple(self.unions(&elements)),
+                stdlib.tuple(self.unions(elements)),
             )),
             Type::LiteralString => Some(AttributeBase::ClassInstance(stdlib.str())),
             Type::Literal(lit) => {

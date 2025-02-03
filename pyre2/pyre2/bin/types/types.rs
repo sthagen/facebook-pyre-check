@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Display;
 use std::sync::Arc;
@@ -21,16 +20,14 @@ use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
-use crate::types::callable::Params;
-use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class::ClassKind;
 use crate::types::class::ClassType;
-use crate::types::class::TArgs;
 use crate::types::literal::Lit;
 use crate::types::module::Module;
 use crate::types::param_spec::ParamSpec;
 use crate::types::qname::QName;
+use crate::types::quantified::Quantified;
 use crate::types::special_form::SpecialForm;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
@@ -38,7 +35,7 @@ use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
 use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
-use crate::util::arc_id::ArcId;
+use crate::types::typed_dict::TypedDict;
 use crate::util::display::commas_iter;
 use crate::util::uniques::Unique;
 use crate::util::uniques::UniqueFactory;
@@ -64,77 +61,6 @@ impl Var {
 
     fn zero(&mut self) {
         self.0 = Unique::zero();
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Quantified {
-    /// Unique identifier
-    unique: Unique,
-    kind: QuantifiedKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Display)]
-pub enum QuantifiedKind {
-    TypeVar,
-    ParamSpec,
-    TypeVarTuple,
-}
-
-impl QuantifiedKind {
-    pub fn empty_value(self) -> Type {
-        match self {
-            QuantifiedKind::TypeVar => Type::any_implicit(),
-            QuantifiedKind::ParamSpec => Type::ParamSpecValue(ParamList::everything()),
-            QuantifiedKind::TypeVarTuple => Type::any_implicit(), // TODO
-        }
-    }
-}
-
-impl Display for Quantified {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "?_")
-    }
-}
-
-impl Quantified {
-    pub fn new(uniques: &UniqueFactory, kind: QuantifiedKind) -> Self {
-        Quantified {
-            unique: uniques.fresh(),
-            kind,
-        }
-    }
-
-    pub fn type_var(uniques: &UniqueFactory) -> Self {
-        Quantified::new(uniques, QuantifiedKind::TypeVar)
-    }
-
-    pub fn param_spec(uniques: &UniqueFactory) -> Self {
-        Quantified::new(uniques, QuantifiedKind::ParamSpec)
-    }
-
-    pub fn type_var_tuple(uniques: &UniqueFactory) -> Self {
-        Quantified::new(uniques, QuantifiedKind::TypeVarTuple)
-    }
-
-    pub fn to_type(self) -> Type {
-        Type::Quantified(self)
-    }
-
-    pub fn as_value(&self, stdlib: &Stdlib) -> ClassType {
-        match self.kind {
-            QuantifiedKind::TypeVar => stdlib.type_var(),
-            QuantifiedKind::ParamSpec => stdlib.param_spec(),
-            QuantifiedKind::TypeVarTuple => stdlib.type_var_tuple(),
-        }
-    }
-
-    pub fn kind(&self) -> QuantifiedKind {
-        self.kind
-    }
-
-    pub fn is_param_spec(&self) -> bool {
-        matches!(self.kind, QuantifiedKind::ParamSpec)
     }
 }
 
@@ -224,45 +150,6 @@ impl TParams {
     }
 }
 
-// Python's legacy (pre-PEP 695) type variable syntax is not syntactic at all, it requires
-// name resolution of global variables plus multiple sets of rules for when a global that
-// is a type variable placeholder is allowed to be used as a type parameter.
-//
-// This type represents the result of such a lookup: given a name appearing in a function or
-// a class, we either determine that the name is *not* a type variable and return the type
-// for the name, or we determine that it is one and create a `Quantified` that
-// represents that variable as a type parameter.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LegacyTypeParameterLookup {
-    Parameter(TParamInfo),
-    NotParameter(Type),
-}
-
-impl Display for LegacyTypeParameterLookup {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Parameter(p) => write!(f, "{}", p.name),
-            Self::NotParameter(ty) => write!(f, "{ty}"),
-        }
-    }
-}
-
-impl LegacyTypeParameterLookup {
-    pub fn parameter(&self) -> Option<&TParamInfo> {
-        match self {
-            Self::Parameter(p) => Some(p),
-            Self::NotParameter(_) => None,
-        }
-    }
-
-    pub fn not_parameter_mut(&mut self) -> Option<&mut Type> {
-        match self {
-            Self::Parameter(_) => None,
-            Self::NotParameter(ty) => Some(ty),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Display)]
 pub enum NeverStyle {
     Never,
@@ -335,79 +222,6 @@ impl TypeAlias {
     /// `as_type` returns `type[int]`; the caller must turn it into `int`.
     pub fn as_type(&self) -> Type {
         *self.ty.clone()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TypedDictField {
-    pub ty: Type,
-    pub required: bool,
-    pub read_only: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TypedDictInner(Class, TArgs, SmallMap<Name, TypedDictField>);
-
-impl PartialOrd for TypedDictInner {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for TypedDictInner {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
-#[derive(Debug, Clone, Dupe, Eq, PartialEq, Hash, PartialOrd, Ord)]
-pub struct TypedDict(ArcId<TypedDictInner>);
-
-impl TypedDict {
-    pub fn new(cls: Class, targs: TArgs, fields: SmallMap<Name, TypedDictField>) -> Self {
-        Self(ArcId::new(TypedDictInner(cls, targs, fields)))
-    }
-
-    pub fn qname(&self) -> &QName {
-        self.0.0.qname()
-    }
-
-    pub fn name(&self) -> &Name {
-        &self.0.0.name().id
-    }
-
-    pub fn fields(&self) -> &SmallMap<Name, TypedDictField> {
-        &self.0.2
-    }
-
-    pub fn class_object(&self) -> &Class {
-        &self.0.0
-    }
-
-    pub fn targs(&self) -> &TArgs {
-        &self.0.1
-    }
-
-    pub fn as_callable(&self) -> Callable {
-        let params = self
-            .fields()
-            .iter()
-            .map(|(name, field)| {
-                Param::KwOnly(
-                    name.clone(),
-                    field.ty.clone(),
-                    if field.required {
-                        Required::Required
-                    } else {
-                        Required::Optional
-                    },
-                )
-            })
-            .collect();
-        Callable {
-            params: Params::List(ParamList::new(params)),
-            ret: Type::TypedDict(self.clone()),
-        }
     }
 }
 
@@ -518,64 +332,13 @@ pub enum Type {
     None,
 }
 
-#[allow(dead_code)] // Some of these utilities will come and go
 impl Type {
     pub fn arc_clone(self: Arc<Self>) -> Self {
         Arc::unwrap_or_clone(self)
     }
 
-    pub fn as_union(&self) -> &[Type] {
-        match self {
-            Type::Union(types) => types,
-            _ => std::slice::from_ref(self),
-        }
-    }
-
-    pub fn as_intersect(&self) -> &[Type] {
-        match self {
-            Type::Intersect(types) => types,
-            _ => std::slice::from_ref(self),
-        }
-    }
-
     pub fn never() -> Self {
         Type::Never(NeverStyle::Never)
-    }
-
-    pub fn is_never(&self) -> bool {
-        match self {
-            Type::Never(_) => true,
-            _ => false,
-        }
-    }
-
-    pub fn is_generator(&self) -> bool {
-        match self {
-            Type::ClassType(cls) => cls.class_object().has_qname("typing", "Generator"),
-            _ => false,
-        }
-    }
-
-    pub fn is_iterator(&self) -> bool {
-        match self {
-            Type::ClassType(cls) => cls.class_object().has_qname("typing", "Iterator"),
-            _ => false,
-        }
-    }
-
-    pub fn is_var(&self) -> bool {
-        matches!(self, Type::Var(_))
-    }
-
-    pub fn is_callable(&self) -> bool {
-        matches!(self, Type::Callable(_, _))
-    }
-
-    pub fn as_var(&self) -> Option<Var> {
-        match self {
-            Type::Var(v) => Some(*v),
-            _ => None,
-        }
     }
 
     pub fn as_module(&self) -> Option<&Module> {
@@ -627,10 +390,6 @@ impl Type {
         matches!(self, Type::Any(_))
     }
 
-    pub fn is_forall(&self) -> bool {
-        matches!(self, Type::Forall(_, _))
-    }
-
     pub fn as_tvar_declaration(&self) -> Option<&QName> {
         match self {
             Type::TypeVar(t) => Some(t.qname()),
@@ -660,7 +419,7 @@ impl Type {
 
     pub fn callee_kind(&self) -> Option<CalleeKind> {
         match self {
-            Type::Callable(_, kind) => Some(CalleeKind::Callable(kind.clone())),
+            Type::Callable(_, kind) => Some(CalleeKind::Callable(*kind)),
             Type::ClassDef(c) => Some(CalleeKind::Class(c.kind())),
             Type::Forall(_, t) => t.callee_kind(),
             _ => None,
@@ -699,6 +458,7 @@ impl Type {
         });
     }
 
+    #[expect(dead_code)] // Not used, but might be in future
     pub fn contains(&self, x: &Type) -> bool {
         fn f(ty: &Type, x: &Type, seen: &mut bool) {
             if *seen || ty == x {

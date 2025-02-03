@@ -11,13 +11,10 @@ use ruff_python_ast::Arguments;
 use ruff_python_ast::BoolOp;
 use ruff_python_ast::Comprehension;
 use ruff_python_ast::Decorator;
-use ruff_python_ast::DictItem;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprBinOp;
-use ruff_python_ast::ExprNoneLiteral;
 use ruff_python_ast::ExprSlice;
 use ruff_python_ast::Identifier;
-use ruff_python_ast::Keyword;
 use ruff_python_ast::Number;
 use ruff_python_ast::Operator;
 use ruff_python_ast::UnaryOp;
@@ -29,6 +26,8 @@ use starlark_map::small_set::SmallSet;
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::answers::UNKNOWN;
+use crate::alt::call::CallStyle;
+use crate::alt::call::CallTarget;
 use crate::alt::callable::CallArg;
 use crate::ast::Ast;
 use crate::binding::binding::Key;
@@ -36,13 +35,11 @@ use crate::dunder;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
-use crate::types::callable::DataclassKeywords;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Params;
 use crate::types::callable::Required;
 use crate::types::class::ClassKind;
-use crate::types::class::ClassType;
 use crate::types::literal::Lit;
 use crate::types::param_spec::ParamSpec;
 use crate::types::special_form::SpecialForm;
@@ -52,42 +49,11 @@ use crate::types::type_var::TypeVar;
 use crate::types::type_var::TypeVarArgs;
 use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
-use crate::types::types::AnyStyle;
 use crate::types::types::CalleeKind;
 use crate::types::types::Decoration;
 use crate::types::types::Type;
-use crate::types::types::Var;
 use crate::util::prelude::SliceExt;
-
-enum CallStyle<'a> {
-    Method(&'a Name),
-    BinaryOp(Operator),
-    FreeForm,
-}
-
-/// A thing that can be called (see as_call_target and call_infer).
-/// Note that a single "call" may invoke multiple functions under the hood,
-/// e.g., `__new__` followed by `__init__` for Class.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum CallTarget {
-    /// A thing whose type is a Callable, usually a function.
-    Callable(Callable),
-    /// The dataclasses.dataclass function.
-    Dataclass(Callable),
-    /// Method of a class. The `Type` is the self/cls argument.
-    BoundMethod(Type, Callable),
-    /// A class object.
-    Class(ClassType),
-}
-
-impl CallTarget {
-    pub fn any(style: AnyStyle) -> Self {
-        Self::Callable(Callable {
-            params: Params::Ellipsis,
-            ret: style.propagate(),
-        })
-    }
-}
+use crate::visitors::Visitors;
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     // Helper method for inferring the type of a boolean operation over a sequence of values.
@@ -122,155 +88,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 _ => types.push(t),
             }
         }
-        self.unions(&types)
-    }
-
-    fn error_call_target(&self, range: TextRange, msg: String) -> (Vec<Var>, CallTarget) {
-        self.errors().add(self.module_info(), range, msg);
-        (Vec::new(), CallTarget::any(AnyStyle::Error))
-    }
-
-    /// Return a pair of the quantified variables I had to instantiate, and the resulting call target.
-    fn as_call_target(&self, ty: Type) -> Option<(Vec<Var>, CallTarget)> {
-        match ty {
-            Type::Callable(c, CallableKind::Dataclass(_)) => {
-                Some((Vec::new(), CallTarget::Dataclass(*c)))
-            }
-            Type::Callable(c, _) => Some((Vec::new(), CallTarget::Callable(*c))),
-            Type::BoundMethod(obj, func) => match self.as_call_target(*func.clone()) {
-                Some((gs, CallTarget::Callable(c))) => Some((gs, CallTarget::BoundMethod(*obj, c))),
-                _ => None,
-            },
-            Type::ClassDef(cls) => self.as_call_target(self.instantiate_fresh(&cls)),
-            Type::Type(box Type::ClassType(cls)) => Some((Vec::new(), CallTarget::Class(cls))),
-            Type::Forall(params, t) => {
-                let (mut qs, t) = self.solver().fresh_quantified(
-                    params.quantified().collect::<Vec<_>>().as_slice(),
-                    *t,
-                    self.uniques,
-                );
-                self.as_call_target(t).map(|(qs2, x)| {
-                    qs.extend(qs2);
-                    (qs, x)
-                })
-            }
-            Type::Var(v) if let Some(_guard) = self.recurser.recurse(v) => {
-                self.as_call_target(self.solver().force_var(v))
-            }
-            Type::Union(xs) => {
-                let res = xs
-                    .into_iter()
-                    .map(|x| self.as_call_target(x))
-                    .collect::<Option<SmallSet<_>>>()?;
-                if res.len() == 1 {
-                    Some(res.into_iter().next().unwrap())
-                } else {
-                    None
-                }
-            }
-            Type::Any(style) => Some((Vec::new(), CallTarget::any(style))),
-            Type::TypeAlias(ta) => self.as_call_target(ta.as_value(self.stdlib)),
-            Type::ClassType(cls) => self
-                .get_instance_attribute(&cls, &dunder::CALL)
-                .and_then(|attr| self.resolve_as_instance_method(attr))
-                .and_then(|ty| self.as_call_target(ty)),
-            Type::Type(box Type::TypedDict(typed_dict)) => {
-                Some((Vec::new(), CallTarget::Callable(typed_dict.as_callable())))
-            }
-            _ => None,
-        }
-    }
-
-    fn as_call_target_or_error(
-        &self,
-        ty: Type,
-        call_style: CallStyle,
-        range: TextRange,
-    ) -> (Vec<Var>, CallTarget) {
-        match self.as_call_target(ty.clone()) {
-            Some(target) => target,
-            None => {
-                let expect_message = match call_style {
-                    CallStyle::Method(method) => {
-                        format!("Expected `{}` to be a callable", method)
-                    }
-                    CallStyle::BinaryOp(op) => {
-                        format!("Expected `{}` to be a callable", op.dunder())
-                    }
-                    CallStyle::FreeForm => "Expected a callable".to_owned(),
-                };
-                self.error_call_target(
-                    range,
-                    format!("{}, got {}", expect_message, ty.deterministic_printing()),
-                )
-            }
-        }
-    }
-
-    /// Calls a method. If no attribute exists with the given method name, returns None without attempting the call.
-    pub fn call_method(
-        &self,
-        ty: &Type,
-        method_name: &Name,
-        range: TextRange,
-        args: &[CallArg],
-        keywords: &[Keyword],
-    ) -> Option<Type> {
-        let callee_ty =
-            self.type_of_attr_get_if_found(ty.clone(), method_name, range, "Expr::call_method")?;
-        let call_target =
-            self.as_call_target_or_error(callee_ty, CallStyle::Method(method_name), range);
-        Some(self.call_infer(call_target, args, keywords, range))
-    }
-
-    /// Calls a method. If no attribute exists with the given method name, logs an error and calls the method with
-    /// an assumed type of Callable[..., Any].
-    pub fn call_method_or_error(
-        &self,
-        ty: &Type,
-        method_name: &Name,
-        range: TextRange,
-        args: &[CallArg],
-        keywords: &[Keyword],
-    ) -> Type {
-        if let Some(ret) = self.call_method(ty, method_name, range, args, keywords) {
-            ret
-        } else {
-            self.call_infer(
-                self.error_call_target(range, format!("`{ty}` has no attribute `{method_name}`")),
-                args,
-                keywords,
-                range,
-            )
-        }
-    }
-
-    /// If the metaclass defines a custom `__call__`, call it. If the `__call__` comes from `type`, ignore
-    /// it because `type.__call__` behavior is baked into our constructor logic.
-    pub fn call_metaclass(
-        &self,
-        cls: &ClassType,
-        range: TextRange,
-        args: &[CallArg],
-        keywords: &[Keyword],
-    ) -> Option<Type> {
-        let dunder_call = match self.get_metaclass_dunder_call(cls)? {
-            Type::BoundMethod(_, func) => {
-                // This method was bound to a general instance of the metaclass, but we have more
-                // information about the particular instance that it should be bound to.
-                Type::BoundMethod(
-                    Box::new(Type::type_form(Type::ClassType(cls.clone()))),
-                    func,
-                )
-            }
-            dunder_call => dunder_call,
-        };
-        Some(self.call_infer(
-            self.as_call_target_or_error(dunder_call, CallStyle::Method(&dunder::CALL), range),
-            args,
-            keywords,
-            range,
-        ))
+        self.unions(types)
     }
 
     pub fn expr(&self, x: &Expr, check: Option<&Type>) -> Type {
@@ -290,85 +108,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             for if_clause in comp.ifs.iter() {
                 self.expr_infer(if_clause);
             }
-        }
-    }
-
-    fn construct(
-        &self,
-        cls: ClassType,
-        args: &[CallArg],
-        keywords: &[Keyword],
-        range: TextRange,
-    ) -> Type {
-        // Based on https://typing.readthedocs.io/en/latest/spec/constructors.html.
-        let instance_ty = Type::ClassType(cls.clone());
-        if let Some(ret) = self.call_metaclass(&cls, range, args, keywords)
-            && !self
-                .solver()
-                .is_subset_eq(&ret, &instance_ty, self.type_order())
-        {
-            // Got something other than an instance of the class under construction.
-            return ret;
-        }
-        let overrides_new = if let Some(new_method) = self.get_dunder_new(&cls) {
-            let cls_ty = Type::type_form(instance_ty.clone());
-            let mut full_args = vec![CallArg::Type(&cls_ty, range)];
-            full_args.extend_from_slice(args);
-            let ret = self.call_infer(
-                self.as_call_target_or_error(new_method, CallStyle::Method(&dunder::NEW), range),
-                &full_args,
-                keywords,
-                range,
-            );
-            if !self
-                .solver()
-                .is_subset_eq(&ret, &instance_ty, self.type_order())
-            {
-                // Got something other than an instance of the class under construction.
-                return ret;
-            }
-            true
-        } else {
-            false
-        };
-        if let Some(init_method) = self.get_dunder_init(&cls, overrides_new) {
-            self.call_infer(
-                self.as_call_target_or_error(init_method, CallStyle::Method(&dunder::INIT), range),
-                args,
-                keywords,
-                range,
-            );
-        }
-        cls.self_type()
-    }
-
-    fn call_infer(
-        &self,
-        call_target: (Vec<Var>, CallTarget),
-        args: &[CallArg],
-        keywords: &[Keyword],
-        range: TextRange,
-    ) -> Type {
-        let is_dataclass = matches!(call_target.1, CallTarget::Dataclass(_));
-        let res = match call_target.1 {
-            CallTarget::Class(cls) => self.construct(cls, args, keywords, range),
-            CallTarget::BoundMethod(obj, c) => {
-                let first_arg = CallArg::Type(&obj, range);
-                self.callable_infer(c, Some(first_arg), args, keywords, range)
-            }
-            CallTarget::Callable(callable) | CallTarget::Dataclass(callable) => {
-                self.callable_infer(callable, None, args, keywords, range)
-            }
-        };
-        self.solver().finish_quantified(&call_target.0);
-        if is_dataclass && let Type::Callable(c, _) = res {
-            let mut kws = DataclassKeywords::default();
-            for kw in keywords {
-                kws.set_keyword(kw.arg.as_ref(), self.expr_infer(&kw.value));
-            }
-            Type::Callable(c, CallableKind::Dataclass(kws))
-        } else {
-            res
         }
     }
 
@@ -394,7 +133,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             && let Some(l) = self.untype_opt(lhs.clone(), x.left.range())
             && let Some(r) = self.untype_opt(rhs.clone(), x.right.range())
         {
-            return Type::type_form(self.union(&l, &r));
+            return Type::type_form(self.union(l, r));
         }
         self.distribute_over_union(&lhs, |lhs| binop_call(x.op, lhs, rhs.clone(), x.range))
     }
@@ -511,17 +250,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.expr_infer_with_hint(x, None)
     }
 
-    fn yield_expr(&self, x: Expr) -> Expr {
-        match x {
-            Expr::Yield(x) => match x.value {
-                Some(x) => *x,
-                None => Expr::NoneLiteral(ExprNoneLiteral { range: x.range() }),
-            },
-            // This case should be unreachable.
-            _ => unreachable!("yield or yield from expression expected"),
-        }
-    }
-
     /// Apply a decorator. This effectively synthesizes a function call.
     pub fn apply_decorator(&self, decorator: &Decorator, decoratee: Type) -> Type {
         if matches!(&decoratee, Type::ClassDef(cls) if cls.has_qname("typing", "TypeVar")) {
@@ -559,37 +287,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             { self.as_call_target_or_error(ty_decorator, CallStyle::FreeForm, decorator.range) };
         let arg = CallArg::Type(&decoratee, decorator.range);
         self.call_infer(call_target, &[arg], &[], decorator.range)
-    }
-
-    /// Helper function hide details of call synthesis from the attribute resolution code.
-    pub fn call_property_getter(&self, getter_method: Type, range: TextRange) -> Type {
-        let call_target = self.as_call_target_or_error(getter_method, CallStyle::FreeForm, range);
-        self.call_infer(call_target, &[], &[], range)
-    }
-
-    /// Helper function hide details of call synthesis from the attribute resolution code.
-    pub fn call_property_setter(
-        &self,
-        setter_method: Type,
-        got: CallArg,
-        range: TextRange,
-    ) -> Type {
-        let call_target = self.as_call_target_or_error(setter_method, CallStyle::FreeForm, range);
-        self.call_infer(call_target, &[got], &[], range)
-    }
-
-    fn flatten_dict_items(x: &[DictItem]) -> Vec<DictItem> {
-        x.iter()
-            .flat_map(|item| {
-                if item.key.is_none()
-                    && let Expr::Dict(dict) = &item.value
-                {
-                    Self::flatten_dict_items(&dict.items)
-                } else {
-                    vec![item.clone()]
-                }
-            })
-            .collect()
     }
 
     fn expr_infer_with_hint(&self, x: &Expr, hint: Option<&Type>) -> Type {
@@ -691,7 +388,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     match condition_type.as_bool() {
                         Some(true) => body_type,
                         Some(false) => orelse_type,
-                        None => self.union(&body_type, &orelse_type),
+                        None => self.union(body_type, orelse_type),
                     }
                 }
             }
@@ -726,12 +423,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     let tys = x
                         .elts
                         .map(|x| self.expr_infer(x).promote_literals(self.stdlib));
-                    self.stdlib.list(self.unions(&tys)).to_type()
+                    self.stdlib.list(self.unions(tys)).to_type()
                 }
             }
             Expr::Dict(x) => {
                 let unwrapped_hint = hint.and_then(|ty| self.decompose_dict(ty));
-                let flattened_items = Self::flatten_dict_items(&x.items);
+                let flattened_items = Ast::flatten_dict_items(&x.items);
                 if let Some(hint @ Type::TypedDict(typed_dict)) = hint {
                     let fields = typed_dict.fields();
                     let mut has_expansion = false;
@@ -827,8 +524,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             }
                         }
                     });
-                    let key_ty = self.unions(&key_tys);
-                    let value_ty = self.unions(&value_tys);
+                    let key_ty = self.unions(key_tys);
+                    let value_ty = self.unions(value_tys);
                     self.stdlib.dict(key_ty, value_ty).to_type()
                 }
             }
@@ -846,7 +543,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     let tys = x
                         .elts
                         .map(|x| self.expr_infer(x).promote_literals(self.stdlib));
-                    self.stdlib.set(self.unions(&tys)).to_type()
+                    self.stdlib.set(self.unions(tys)).to_type()
                 }
             }
             Expr::ListComp(x) => {
@@ -898,26 +595,23 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None => self.error(x.range, "Expression is not awaitable".to_owned()),
                 }
             }
-            Expr::Yield(_) => {
+            Expr::Yield(x) => {
                 let yield_expr_type = &self
-                    .get(&Key::YieldTypeOfYieldAnnotation(x.clone().range()))
+                    .get(&Key::YieldTypeOfYieldAnnotation(x.range))
                     .arc_clone();
-                let yield_value = self.yield_expr(x.clone());
+                let yield_value = Ast::yield_or_none(x);
                 let inferred_expr_type = &self.expr_infer(&yield_value);
 
-                self.check_type(yield_expr_type, inferred_expr_type, x.clone().range());
+                self.check_type(yield_expr_type, inferred_expr_type, x.range);
 
                 self.get(&Key::SendTypeOfYieldAnnotation(x.range()))
                     .arc_clone()
             }
             Expr::YieldFrom(y) => {
                 let inferred_expr_type = &self.expr_infer(&y.value);
+                let final_generator_type = &*self.get(&Key::TypeOfYieldAnnotation(x.range()));
 
-                let final_generator_type = &self
-                    .get(&Key::TypeOfYieldAnnotation(x.clone().range()))
-                    .arc_clone();
-
-                self.check_type(final_generator_type, inferred_expr_type, x.clone().range());
+                self.check_type(final_generator_type, inferred_expr_type, x.range());
 
                 self.get(&Key::ReturnTypeOfYieldAnnotation(x.range()))
                     .arc_clone()
@@ -1011,10 +705,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     })
                 }
             }
-            Expr::FString(x) => match Lit::from_fstring(x) {
-                Some(lit) => lit.to_type(),
-                _ => self.stdlib.str().to_type(),
-            },
+            Expr::FString(x) => {
+                // Ensure we detect type errors in f-string expressions.
+                Visitors::visit_fstring_expr(x, |x| {
+                    self.expr_infer(x);
+                });
+                match Lit::from_fstring(x) {
+                    Some(lit) => lit.to_type(),
+                    _ => self.stdlib.str().to_type(),
+                }
+            }
             Expr::StringLiteral(x) => Lit::from_string_literal(x).to_type(),
             Expr::BytesLiteral(x) => Lit::from_bytes_literal(x).to_type(),
             Expr::NumberLiteral(x) => match &x.value {

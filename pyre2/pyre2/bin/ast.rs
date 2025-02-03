@@ -5,20 +5,28 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::borrow::Cow;
 use std::slice;
 
+use ruff_python_ast::DictItem;
 use ruff_python_ast::Expr;
+use ruff_python_ast::ExprBooleanLiteral;
 use ruff_python_ast::ExprName;
+use ruff_python_ast::ExprNoneLiteral;
 use ruff_python_ast::ExprStringLiteral;
+use ruff_python_ast::ExprYield;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::ModModule;
 use ruff_python_ast::Parameter;
 use ruff_python_ast::ParameterWithDefault;
 use ruff_python_ast::Parameters;
 use ruff_python_ast::Pattern;
+use ruff_python_ast::PatternMatchSingleton;
 use ruff_python_ast::PySourceType;
+use ruff_python_ast::Singleton;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::StmtIf;
+use ruff_python_ast::StmtReturn;
 use ruff_python_ast::StringFlags;
 use ruff_python_parser::parse_expression_range;
 use ruff_python_parser::parse_unchecked_source;
@@ -230,5 +238,48 @@ impl Ast {
             _ => {}
         }
         Visitors::visit_pattern(x, |x| Ast::pattern_lvalue(x, f));
+    }
+
+    /// Pull all dictionary items up to the top level, so `{a: 1, **{b: 2}}`
+    /// has the same items as `{a: 1, b: 2}`.
+    pub fn flatten_dict_items<'b>(x: &'b [DictItem]) -> Vec<&'b DictItem> {
+        fn f<'b>(xs: &'b [DictItem], res: &mut Vec<&'b DictItem>) {
+            for x in xs {
+                if x.key.is_none()
+                    && let Expr::Dict(dict) = &x.value
+                {
+                    f(&dict.items, res);
+                } else {
+                    res.push(x);
+                }
+            }
+        }
+        let mut res = Vec::new();
+        f(x, &mut res);
+        res
+    }
+
+    pub fn return_or_none_owned(x: StmtReturn) -> Expr {
+        match x.value {
+            Some(x) => *x,
+            None => Expr::NoneLiteral(ExprNoneLiteral { range: x.range }),
+        }
+    }
+
+    pub fn yield_or_none<'b>(x: &'b ExprYield) -> Cow<'b, Expr> {
+        match &x.value {
+            Some(x) => Cow::Borrowed(&**x),
+            None => Cow::Owned(Expr::NoneLiteral(ExprNoneLiteral { range: x.range })),
+        }
+    }
+
+    pub fn pattern_match_singleton_to_expr(x: &PatternMatchSingleton) -> Expr {
+        match x.value {
+            Singleton::None => Expr::NoneLiteral(ExprNoneLiteral { range: x.range }),
+            Singleton::True | Singleton::False => Expr::BooleanLiteral(ExprBooleanLiteral {
+                range: x.range,
+                value: x.value == Singleton::True,
+            }),
+        }
     }
 }

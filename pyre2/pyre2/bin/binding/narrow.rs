@@ -232,7 +232,7 @@ impl NarrowOps {
                 let mut narrow_ops = Self::new();
                 for name in expr_to_names(&posargs[0]) {
                     narrow_ops.and(
-                        name.id,
+                        name.id.clone(),
                         NarrowOp::Call(NarrowVal::Expr(func.clone()), args.clone()),
                         *range,
                     );
@@ -242,7 +242,7 @@ impl NarrowOps {
             Some(e) => {
                 let mut narrow_ops = Self::new();
                 for name in expr_to_names(e) {
-                    narrow_ops.and(name.id, NarrowOp::Truthy, e.range());
+                    narrow_ops.and(name.id.clone(), NarrowOp::Truthy, e.range());
                 }
                 narrow_ops
             }
@@ -251,17 +251,19 @@ impl NarrowOps {
     }
 }
 
-fn expr_to_names(expr: &Expr) -> Vec<ExprName> {
-    match expr {
-        Expr::Name(name) => vec![name.clone()],
-        Expr::Named(ExprNamed {
-            range: _,
-            target,
-            value,
-        }) => expr_to_names(target)
-            .into_iter()
-            .chain(expr_to_names(value))
-            .collect(),
-        _ => Vec::new(),
+fn expr_to_names<'a>(expr: &'a Expr) -> Vec<&'a ExprName> {
+    fn f<'a>(expr: &'a Expr, res: &mut Vec<&'a ExprName>) {
+        match expr {
+            Expr::Name(name) => res.push(name),
+            Expr::Named(ExprNamed { target, value, .. }) => {
+                f(target, res);
+                f(value, res);
+            }
+            _ => {}
+        }
     }
+
+    let mut res = Vec::new();
+    f(expr, &mut res);
+    res
 }

@@ -23,6 +23,9 @@ use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::class::classdef::ClassField;
 use crate::alt::class::classdef::ClassFieldInner;
+use crate::alt::types::class_metadata::ClassMetadata;
+use crate::alt::types::class_metadata::DataclassMetadata;
+use crate::alt::types::class_metadata::EnumMetadata;
 use crate::ast::Ast;
 use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::Key;
@@ -38,9 +41,6 @@ use crate::types::callable::ParamList;
 use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
-use crate::types::class_metadata::ClassMetadata;
-use crate::types::class_metadata::DataclassMetadata;
-use crate::types::class_metadata::EnumMetadata;
 use crate::types::special_form::SpecialForm;
 use crate::types::type_var::Variance;
 use crate::types::types::CalleeKind;
@@ -87,7 +87,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let mut is_named_tuple = false;
         let mut enum_metadata = None;
         let mut dataclass_metadata = None;
-        let bases: Vec<BaseClass> = bases.iter().map(|x| self.base_class_of(x)).collect();
+        let bases: Vec<BaseClass> = bases.map(|x| self.base_class_of(x));
         let is_protocol = bases.iter().any(|x| matches!(x, BaseClass::Protocol(_)));
         let bases_with_metadata = bases
             .iter()
@@ -187,7 +187,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 ty_decorator.callee_kind()
             {
                 let fields = self.get_dataclass_fields(cls, &bases_with_metadata);
-                let synthesized_methods = if cls.contains(&dunder::INIT) || !kws.init {
+                let synthesized_methods = if !kws.init || cls.contains(&dunder::INIT) {
                     // If a class already defines `__init__`, @dataclass doesn't overwrite it.
                     SmallMap::new()
                 } else {
