@@ -25,7 +25,6 @@ class E(enum.Enum):
     let cls = get_class("E", module, &state).unwrap();
     let fields = cls
         .fields()
-        .iter()
         .map(|f| f.as_str())
         .sorted()
         .collect::<Vec<_>>();
@@ -129,6 +128,24 @@ from enum import Enum
 
 class MyEnum(Enum):
     X: int = 1  # E: Enum member `X` may not be annotated directly. Instead, annotate the _value_ attribute.
+"#,
+);
+
+testcase!(
+    test_flag,
+    r#"
+from enum import Flag
+from typing import assert_type
+
+class MyFlag(Flag):
+    X = 1
+    Y = 2
+
+def foo(f: MyFlag) -> None:
+    if f == MyFlag.X:
+        pass
+    else:
+        assert_type(f, MyFlag)
 "#,
 );
 

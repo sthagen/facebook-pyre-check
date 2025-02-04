@@ -7,7 +7,6 @@
 
 use std::fmt;
 use std::fmt::Display;
-use std::ops::Deref;
 use std::sync::Arc;
 
 use dupe::Dupe;
@@ -38,6 +37,7 @@ use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
 use crate::types::class::Class;
+use crate::types::class::ClassFieldProperties;
 use crate::types::class::ClassType;
 use crate::types::class::Substitution;
 use crate::types::class::TArgs;
@@ -62,6 +62,7 @@ pub enum ClassFieldInner {
         ty: Type,
         annotation: Option<Annotation>,
         initialization: ClassFieldInitialization,
+        readonly: bool,
     },
 }
 
@@ -70,11 +71,13 @@ impl ClassField {
         ty: Type,
         annotation: Option<Annotation>,
         initialization: ClassFieldInitialization,
+        readonly: bool,
     ) -> Self {
         Self(ClassFieldInner::Simple {
             ty,
             annotation,
             initialization,
+            readonly,
         })
     }
 
@@ -83,6 +86,7 @@ impl ClassField {
             ty: Type::any_implicit(),
             annotation: None,
             initialization: ClassFieldInitialization::Class,
+            readonly: false,
         })
     }
 
@@ -109,10 +113,12 @@ impl ClassField {
                 ty,
                 annotation,
                 initialization,
+                readonly,
             } => Self(ClassFieldInner::Simple {
                 ty: cls.instantiate_member(ty.clone()),
                 annotation: annotation.clone(),
                 initialization: *initialization,
+                readonly: *readonly,
             }),
         }
     }
@@ -147,8 +153,9 @@ impl ClassField {
 
     fn as_instance_attribute(self, cls: &ClassType) -> Attribute {
         match self.instantiate_for(cls).0 {
-            ClassFieldInner::Simple { ty, .. } => match self.initialization() {
+            ClassFieldInner::Simple { ty, readonly, .. } => match self.initialization() {
                 ClassFieldInitialization::Class => bind_instance_attribute(cls, ty),
+                ClassFieldInitialization::Instance if readonly => Attribute::read_only(ty),
                 ClassFieldInitialization::Instance => Attribute::read_write(ty),
             },
         }
@@ -258,7 +265,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn class_definition(
         &self,
         x: &StmtClassDef,
-        fields: SmallSet<Name>,
+        fields: SmallMap<Name, ClassFieldProperties>,
         bases: &[Expr],
         legacy_tparams: &[Idx<KeyLegacyTypeParam>],
     ) -> Class {
@@ -273,7 +280,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         )
     }
 
-    pub fn functional_class_definition(&self, name: &Identifier, fields: &SmallSet<Name>) -> Class {
+    pub fn get_idx_class_def(&self, idx: Idx<Key>) -> Option<Class> {
+        let ty = self.get_idx(idx);
+        match &*ty {
+            Type::ClassDef(cls) => Some(cls.dupe()),
+            _ => None,
+        }
+    }
+
+    pub fn functional_class_definition(
+        &self,
+        name: &Identifier,
+        fields: &SmallMap<Name, ClassFieldProperties>,
+    ) -> Class {
         Class::new(
             name.clone(),
             self.module_info().dupe(),
@@ -297,20 +316,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// Given an identifier, see whether it is bound to an enum class. If so,
     /// return the enum, otherwise return `None`.
     pub fn get_enum_from_name(&self, name: Identifier) -> Option<EnumMetadata> {
-        self.get_enum_from_key(
-            self.bindings()
-                .key_to_idx(&Key::Usage(ShortIdentifier::new(&name))),
-        )
-    }
-
-    pub fn get_enum_from_key(&self, key: Idx<Key>) -> Option<EnumMetadata> {
-        // TODO(stroxler): Eventually, we should raise type errors on generic Enum because
-        // this doesn't make semantic sense. But in the meantime we need to be robust against
-        // this possibility.
-        match self.get_idx(key).deref() {
-            Type::ClassDef(class) => self.get_enum_from_class(class),
-            _ => None,
-        }
+        let key = self
+            .bindings()
+            .key_to_idx(&Key::Usage(ShortIdentifier::new(&name)));
+        self.get_idx_class_def(key)
+            .and_then(|cls| self.get_enum_from_class(&cls))
     }
 
     fn check_and_create_targs(&self, cls: &Class, targs: Vec<Type>, range: TextRange) -> TArgs {
@@ -456,10 +466,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         value_ty: &Type,
         annotation: Option<&Annotation>,
         initialization: ClassFieldInitialization,
-        class_key: Idx<Key>,
+        class: &Class,
         range: TextRange,
     ) -> ClassField {
-        if let Some(enum_) = self.get_enum_from_key(class_key)
+        let metadata = self.get_metadata_for_class(class);
+        if let Some(enum_) = self.get_enum_from_class(class)
             && enum_.get_member(name).is_some()
             && matches!(initialization, ClassFieldInitialization::Class)
         {
@@ -477,9 +488,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
         }
-        if self.is_key_typed_dict(class_key)
-            && matches!(initialization, ClassFieldInitialization::Class)
-        {
+        if metadata.is_typed_dict() && matches!(initialization, ClassFieldInitialization::Class) {
             self.error(
                 range,
                 format!("TypedDict item `{}` may not be initialized.", name),
@@ -493,19 +502,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             (value_ty, None)
         };
-        ClassField::new(ty.clone(), ann.cloned(), initialization)
+        let readonly = metadata
+            .dataclass_metadata()
+            .map_or(false, |dataclass| dataclass.frozen);
+        ClassField::new(ty.clone(), ann.cloned(), initialization, readonly)
     }
 
     pub(super) fn get_class_field(&self, cls: &Class, name: &Name) -> Option<ClassField> {
-        let metadata = self.get_metadata_for_class(cls);
-        if let Some(dataclass) = metadata.dataclass_metadata()
-            && let Some(method) = dataclass.synthesized_methods.get(name)
-        {
-            Some(ClassField::new(
-                method.clone(),
-                None,
-                ClassFieldInitialization::Class,
-            ))
+        // TODO(rechen): this lookup logic is a bit convoluted. It looks like synthesized
+        // fields take precedence, but we actually check when synthesizing a field that
+        // we're not overwriting a regular field. We should clean this up.
+        if let Some(field) = self.get_synthesized_field(cls, name) {
+            Some(field)
         } else if cls.contains(name) {
             let field = self.get_from_class(
                 cls,
@@ -640,13 +648,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             None
         } else {
             attr.value.as_special_method_type(metaclass)
-        }
-    }
-
-    fn is_key_typed_dict(&self, key: Idx<Key>) -> bool {
-        match self.get_idx(key).deref() {
-            Type::ClassDef(cls) => self.get_metadata_for_class(cls).is_typed_dict(),
-            _ => false,
         }
     }
 

@@ -6,7 +6,6 @@
  */
 
 use std::ops::Deref;
-use std::sync::Arc;
 
 use itertools::Either;
 use itertools::Itertools;
@@ -17,28 +16,20 @@ use ruff_python_ast::Identifier;
 use ruff_text_size::Ranged;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
-use starlark_map::smallmap;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::class::classdef::ClassField;
-use crate::alt::class::classdef::ClassFieldInner;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::DataclassMetadata;
 use crate::alt::types::class_metadata::EnumMetadata;
 use crate::ast::Ast;
-use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::dunder;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
-use crate::types::annotation::Annotation;
-use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
-use crate::types::callable::Param;
-use crate::types::callable::ParamList;
-use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
 use crate::types::special_form::SpecialForm;
@@ -111,12 +102,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             );
                         }
                         if dataclass_metadata.is_none() && let Some(base_dataclass) = class_metadata.dataclass_metadata() {
-                            // If we inherit from a dataclass, copy its fields. Note that if this class is
-                            // itself decorated with @dataclass, we'll recompute the fields and overwrite this.
-                            dataclass_metadata = Some(DataclassMetadata {
-                                fields: base_dataclass.fields.clone(),
-                                synthesized_methods: SmallMap::new(),
-                            });
+                            // If we inherit from a dataclass, inherit its metadata. Note that if this class is
+                            // itself decorated with @dataclass, we'll compute new metadata and overwrite this.
+                            dataclass_metadata = Some(base_dataclass.inherit());
                         }
                         Some((c, class_metadata))
                     }
@@ -172,6 +160,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 enum_metadata = Some(EnumMetadata {
                     // A generic enum is an error, but we create Any type args anyway to handle it gracefully.
                     cls: ClassType::new(cls.clone(), self.create_default_targs(cls, None)),
+                    is_flag: bases_with_metadata.iter().any(|(base, _)| {
+                        self.solver().is_subset_eq(
+                            &Type::ClassType(base.clone()),
+                            &Type::ClassType(self.stdlib.enum_flag()),
+                            self.type_order(),
+                        )
+                    }),
                 })
             }
             if is_typed_dict {
@@ -186,16 +181,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             if let Some(CalleeKind::Callable(CallableKind::Dataclass(kws))) =
                 ty_decorator.callee_kind()
             {
-                let fields = self.get_dataclass_fields(cls, &bases_with_metadata);
-                let synthesized_methods = if !kws.init || cls.contains(&dunder::INIT) {
+                let dataclass_fields = self.get_dataclass_fields(cls, &bases_with_metadata);
+                let mut synthesized_fields = SmallSet::new();
+                if kws.init && !cls.contains(&dunder::INIT) {
                     // If a class already defines `__init__`, @dataclass doesn't overwrite it.
-                    SmallMap::new()
-                } else {
-                    smallmap! { dunder::INIT => self.get_dataclass_init(cls, &fields) }
-                };
+                    synthesized_fields.insert(dunder::INIT);
+                }
+                if kws.match_args {
+                    synthesized_fields.insert(dunder::MATCH_ARGS);
+                }
                 dataclass_metadata = Some(DataclassMetadata {
-                    fields: fields.into_keys().collect(),
-                    synthesized_methods,
+                    fields: dataclass_fields,
+                    synthesized_fields,
+                    frozen: kws.frozen,
+                    kw_only: kws.kw_only,
                 });
             }
         }
@@ -219,6 +218,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             dataclass_metadata,
             self.errors(),
         )
+    }
+
+    pub fn get_synthesized_field(&self, cls: &Class, name: &Name) -> Option<ClassField> {
+        self.get_dataclass_synthesized_field(cls, name)
     }
 
     /// This helper deals with special cases where we want to intercept an `Expr`
@@ -445,65 +448,5 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 None
             }
         }
-    }
-
-    /// Gets dataclass fields for an `@dataclass`-decorated class.
-    fn get_dataclass_fields(
-        &self,
-        cls: &Class,
-        bases_with_metadata: &[(ClassType, Arc<ClassMetadata>)],
-    ) -> SmallMap<Name, ClassField> {
-        let mut all_fields = SmallMap::new();
-        for (base, metadata) in bases_with_metadata.iter().rev() {
-            if let Some(dataclass) = metadata.dataclass_metadata() {
-                for name in &dataclass.fields {
-                    if let Some(field) = self.get_class_member(base.class_object(), name) {
-                        all_fields.insert(name.clone(), field.value.instantiate_for(base));
-                    }
-                }
-            }
-        }
-        for name in cls.fields() {
-            if let Some(
-                field @ ClassField(ClassFieldInner::Simple {
-                    annotation: Some(Annotation { ty: Some(_), .. }),
-                    ..
-                }),
-            ) = self.get_class_field(cls, name)
-            {
-                all_fields.insert(name.clone(), field);
-            }
-        }
-        all_fields
-    }
-
-    /// Gets a dataclass field as a function param.
-    fn get_dataclass_param(&self, name: &Name, field: &ClassField) -> Param {
-        let ClassField(ClassFieldInner::Simple {
-            ty,
-            annotation: _,
-            initialization,
-        }) = field;
-        let required = match initialization {
-            ClassFieldInitialization::Class => Required::Required,
-            ClassFieldInitialization::Instance => Required::Optional,
-        };
-        Param::Pos(name.clone(), ty.clone(), required)
-    }
-
-    /// Gets __init__ method for an `@dataclass`-decorated class.
-    fn get_dataclass_init(&self, cls: &Class, fields: &SmallMap<Name, ClassField>) -> Type {
-        let mut params = vec![Param::Pos(
-            Name::new("self"),
-            cls.self_type(),
-            Required::Required,
-        )];
-        for (name, field) in fields {
-            params.push(self.get_dataclass_param(name, field));
-        }
-        Type::Callable(
-            Box::new(Callable::list(ParamList::new(params), Type::None)),
-            CallableKind::Def,
-        )
     }
 }

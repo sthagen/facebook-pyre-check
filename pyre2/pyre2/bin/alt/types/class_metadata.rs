@@ -12,7 +12,6 @@ use std::iter;
 use std::sync::Arc;
 
 use ruff_python_ast::name::Name;
-use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use vec1::Vec1;
 
@@ -170,6 +169,7 @@ impl Display for Keywords {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnumMetadata {
     pub cls: ClassType,
+    pub is_flag: bool,
 }
 
 impl EnumMetadata {
@@ -198,7 +198,6 @@ impl EnumMetadata {
         self.cls
             .class_object()
             .fields()
-            .iter()
             .filter_map(|f| self.get_member(f))
             .collect()
     }
@@ -206,8 +205,32 @@ impl EnumMetadata {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataclassMetadata {
-    pub fields: Vec<Name>,
-    pub synthesized_methods: SmallMap<Name, Type>,
+    /// The dataclass fields, e.g., `{'x'}` for `@dataclass class C: x: int`.
+    pub fields: SmallSet<Name>,
+    /// Synthesized fields of the dataclass, like the generated `__init__` method.
+    pub synthesized_fields: SmallSet<Name>,
+    /// @dataclass(frozen=...).
+    pub frozen: bool,
+    /// @dataclass(kw_only=...).
+    pub kw_only: bool,
+}
+
+impl DataclassMetadata {
+    /// Gets the DataclassMetadata that should be inherited by a class that is a dataclass via
+    /// inheritance but is not itself decorated with `@dataclass`.
+    pub fn inherit(&self) -> Self {
+        Self {
+            // Dataclass fields are inherited.
+            fields: self.fields.clone(),
+            // Synthesized fields like `__init__` should not be inherited, as doing so would
+            // incorrectly suggest that they are directly defined on the inheriting class.
+            synthesized_fields: SmallSet::new(),
+            // The remaining metadata are irrelevant when there are no fields to synthesize, so
+            // just set them to some sensible-seeming value.
+            frozen: self.frozen,
+            kw_only: self.kw_only,
+        }
+    }
 }
 
 /// A struct representing a class's ancestors, in method resolution order (MRO)
