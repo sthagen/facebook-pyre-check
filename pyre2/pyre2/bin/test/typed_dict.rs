@@ -6,7 +6,6 @@
  */
 
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_typed_dict,
@@ -308,20 +307,18 @@ B(x=0, y=1)  # E: EXPECTED Literal[1] <: str
     "#,
 );
 
-testcase_with_bug!(
-    "There should not be any errors",
+testcase!(
     test_generic_instantiation,
     r#"
 from typing import TypedDict, assert_type
 class C[T](TypedDict):
      x: T
-assert_type(C(x=0), C[int])  # E: EXPECTED Literal[0] <: ?_  # E: assert_type
-assert_type(C[str](x=""), C[str])  # E: assert_type(TypedDict[C], TypedDict[C]) failed
+assert_type(C(x=0), C[int])
+assert_type(C[str](x=""), C[str])
     "#,
 );
 
-testcase_with_bug!(
-    "TypedDict uses ArcId which compares by hash, so two TypedDicts will not be equal even if the fields are the same. Class has something similar, but each class is created only once.",
+testcase!(
     test_unpacked_typed_dict_assert_type,
     r#"
 from typing import TypedDict, Unpack, assert_type
@@ -329,7 +326,7 @@ class Coord(TypedDict):
     x: int
     y: int
 def foo(x: Coord, **kwargs: Unpack[Coord]):
-    assert_type(x, Coord)  # E: assert_type(TypedDict[Coord], TypedDict[Coord]) failed
-    assert_type(kwargs, Coord)  # E: assert_type(TypedDict[Coord], TypedDict[Coord]) failed
+    assert_type(x, Coord)
+    assert_type(kwargs, Coord)
     "#,
 );

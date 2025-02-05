@@ -226,16 +226,20 @@ from ... import does_not_exist  # E: Could not resolve relative import `...`
 "#,
 );
 
-testcase!(
-    test_import_all,
+fn env_all_x() -> TestEnv {
     TestEnv::one(
         "foo",
         r#"
 __all__ = ["x"]
 x: int = 1
 y: int = 3
-    "#
-    ),
+    "#,
+    )
+}
+
+testcase!(
+    test_import_all,
+    env_all_x(),
     r#"
 from foo import *
 z = y  # E: Could not find name `y`
@@ -497,14 +501,12 @@ from blank import int as int_int # E: Could not import `int` from `blank`
 
 #[test]
 fn test_import_fail_to_load() {
+    let temp = tempfile::tempdir().unwrap();
     let mut env = TestEnv::new();
-    env.add_error("foo", "Disk go urk");
+    env.add_real_path("foo", temp.path().join("foo.py"));
     env.add("main", "import foo");
-    let errs = env.to_state().collect_errors();
+    let errs = env.to_state().0.collect_errors();
     assert_eq!(errs.len(), 1);
-    assert!(
-        errs[0]
-            .to_string()
-            .contains("foo.py:1:1: Failed to load foo from foo.py, got Disk go urk")
-    );
+    let msg = errs[0].to_string();
+    assert!(msg.contains("foo.py:1:1: Failed to load"));
 }

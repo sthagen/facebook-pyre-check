@@ -5,10 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use anyhow::anyhow;
 use clap::Parser;
+use dupe::Dupe;
 use lsp_server::Connection;
 use lsp_server::Message;
 use lsp_server::Notification;
@@ -61,14 +65,16 @@ use starlark_map::small_map::SmallMap;
 use crate::commands::util::module_from_path;
 use crate::config::Config;
 use crate::error::style::ErrorStyle;
+use crate::module::bundled::typeshed;
 use crate::module::finder::find_module;
-use crate::module::finder::BundledTypeshed;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_info::SourceRange;
 use crate::module::module_name::ModuleName;
 use crate::module::module_path::ModulePath;
-use crate::state::loader::LoadResult;
+use crate::module::module_path::ModulePathDetails;
+use crate::state::handle::Handle;
 use crate::state::loader::Loader;
+use crate::state::loader::LoaderId;
 use crate::state::state::State;
 use crate::util::prelude::VecExt;
 
@@ -83,9 +89,9 @@ struct Server<'a> {
     #[expect(dead_code)] // we'll use it later on
     initialize_params: InitializeParams,
     include: Vec<PathBuf>,
-    typeshed: BundledTypeshed,
-    state: State,
-    open_files: SmallMap<PathBuf, (i32, String)>,
+    state: Mutex<State>,
+    config: Config,
+    open_files: Arc<Mutex<SmallMap<PathBuf, (i32, Arc<String>)>>>,
 }
 
 impl Args {
@@ -118,9 +124,8 @@ impl Args {
             }
         };
         let include = self.include;
-        let typeshed = BundledTypeshed::new()?;
         let send = |msg| connection.sender.send(msg).unwrap();
-        let mut server = Server::new(&send, initialization_params, include, typeshed);
+        let server = Server::new(&send, initialization_params, include);
         eprintln!("Reading messages");
         for msg in &connection.receiver {
             if matches!(&msg, Message::Request(req) if connection.handle_shutdown(req)?) {
@@ -136,51 +141,44 @@ impl Args {
     }
 }
 
-struct DummyLoader {}
-impl Loader for DummyLoader {
-    fn load(&self, _: ModuleName) -> (LoadResult, ErrorStyle) {
-        (
-            LoadResult::FailedToFind(anyhow!("Failed during init")),
-            ErrorStyle::Never,
-        )
-    }
-}
-
+#[derive(Debug, Clone)]
 struct LspLoader {
-    open_modules: SmallMap<ModuleName, PathBuf>,
-    open_files: SmallMap<PathBuf, (i32, String)>,
-    typeshed: BundledTypeshed,
+    open_files: Arc<Mutex<SmallMap<PathBuf, (i32, Arc<String>)>>>,
     search_roots: Vec<PathBuf>,
 }
 
 impl Loader for LspLoader {
-    fn load(&self, name: ModuleName) -> (LoadResult, ErrorStyle) {
-        let loaded = if let Some(path) = self.open_modules.get(&name) {
-            LoadResult::Loaded(
-                // TODO(grievejia): Properly model paths for in-memory sources
-                ModulePath::filesystem((*path).clone()),
-                self.open_files.get(path).unwrap().1.clone(),
-            )
-        } else if let Some(path) = find_module(name, &self.search_roots) {
-            LoadResult::from_path(path)
-        } else if let Some((path, content)) = self.typeshed.find(name) {
-            LoadResult::Loaded(path, content)
+    fn find(&self, module: ModuleName) -> anyhow::Result<(ModulePath, ErrorStyle)> {
+        for path in self.open_files.lock().unwrap().keys() {
+            if module_from_path(path, &self.search_roots) == module {
+                return Ok((ModulePath::memory(path.clone()), ErrorStyle::Delayed));
+            }
+        }
+        if let Some(path) = find_module(module, &self.search_roots) {
+            Ok((ModulePath::filesystem(path.clone()), ErrorStyle::Never))
+        } else if let Some(path) = typeshed()?.find(module) {
+            Ok((path, ErrorStyle::Never))
         } else {
-            LoadResult::FailedToFind(anyhow!("Could not find path for `{name}`"))
-        };
-        (
-            loaded,
-            if self.open_modules.contains_key(&name) {
-                ErrorStyle::Delayed
-            } else {
-                ErrorStyle::Never
-            },
-        )
+            Err(anyhow!("Could not find path for `{module}`"))
+        }
+    }
+
+    fn load_from_memory(&self, path: &Path) -> Option<Arc<String>> {
+        Some(self.open_files.lock().unwrap().get(path)?.1.dupe())
+    }
+}
+
+/// Convert to a path we can show to the user. The contents may not match the disk, but it has
+/// to be basically right.
+fn to_real_path(path: &ModulePath) -> Option<&Path> {
+    match path.details() {
+        ModulePathDetails::FileSystem(path) | ModulePathDetails::Memory(path) => Some(path),
+        ModulePathDetails::BundledTypeshed(_) | ModulePathDetails::NotFound(_) => None,
     }
 }
 
 impl<'a> Server<'a> {
-    fn process(&mut self, msg: Message) -> anyhow::Result<()> {
+    fn process(&self, msg: Message) -> anyhow::Result<()> {
         match msg {
             Message::Request(x) => {
                 if let Some(params) = as_request::<GotoDefinition>(&x) {
@@ -233,15 +231,19 @@ impl<'a> Server<'a> {
         send: &'a dyn Fn(Message),
         initialize_params: InitializeParams,
         include: Vec<PathBuf>,
-        typeshed: BundledTypeshed,
     ) -> Self {
+        let open_files = Arc::new(Mutex::new(SmallMap::new()));
+        let loader = LoaderId::new(LspLoader {
+            open_files: open_files.dupe(),
+            search_roots: include.clone(),
+        });
         Self {
             send,
             initialize_params,
             include,
-            typeshed,
-            state: State::new(Box::new(DummyLoader {}), Config::default(), true),
-            open_files: Default::default(),
+            state: Mutex::new(State::new(loader.dupe(), true)),
+            config: Config::default(),
+            open_files,
         }
     }
 
@@ -259,31 +261,22 @@ impl<'a> Server<'a> {
         ));
     }
 
-    fn validate(&mut self) -> anyhow::Result<()> {
-        let modules = self
+    fn validate(&self) -> anyhow::Result<()> {
+        let handles = self
             .open_files
+            .lock()
+            .unwrap()
             .keys()
-            .map(|x| (module_from_path(x, &self.include), x.clone()))
-            .collect::<SmallMap<_, _>>();
-        let module_names = modules.keys().copied().collect::<Vec<_>>();
+            .map(|x| Handle::new(module_from_path(x, &self.include), self.config.dupe()))
+            .collect::<Vec<_>>();
 
-        self.state = State::new(
-            Box::new(LspLoader {
-                open_modules: modules,
-                open_files: self.open_files.clone(), // Not good, but all of this is a hack
-                search_roots: self.include.clone(),
-                typeshed: self.typeshed.clone(),
-            }),
-            Config::default(),
-            true,
-        );
-        self.state.run(&module_names);
+        self.state.lock().unwrap().run(handles);
         let mut diags: SmallMap<PathBuf, Vec<Diagnostic>> = SmallMap::new();
-        for x in self.open_files.keys() {
+        for x in self.open_files.lock().unwrap().keys() {
             diags.insert(x.as_path().to_owned(), Vec::new());
         }
-        for e in self.state.collect_errors() {
-            if let Some(path) = e.path().as_filesystem_path() {
+        for e in self.state.lock().unwrap().collect_errors() {
+            if let Some(path) = to_real_path(e.path()) {
                 diags.entry(path.to_owned()).or_default().push(Diagnostic {
                     range: source_range_to_range(e.source_range()),
                     severity: Some(lsp_types::DiagnosticSeverity::ERROR),
@@ -302,41 +295,49 @@ impl<'a> Server<'a> {
         Ok(())
     }
 
-    fn did_open(&mut self, params: DidOpenTextDocumentParams) -> anyhow::Result<()> {
-        self.open_files.insert(
+    fn did_open(&self, params: DidOpenTextDocumentParams) -> anyhow::Result<()> {
+        self.open_files.lock().unwrap().insert(
             params.text_document.uri.to_file_path().unwrap(),
-            (params.text_document.version, params.text_document.text),
+            (
+                params.text_document.version,
+                Arc::new(params.text_document.text),
+            ),
         );
         self.validate()
     }
 
-    fn did_change(&mut self, params: DidChangeTextDocumentParams) -> anyhow::Result<()> {
+    fn did_change(&self, params: DidChangeTextDocumentParams) -> anyhow::Result<()> {
         // We asked for Sync full, so can just grab all the text from params
         let change = params.content_changes.into_iter().next().unwrap();
-        self.open_files.insert(
+        self.open_files.lock().unwrap().insert(
             params.text_document.uri.to_file_path().unwrap(),
-            (params.text_document.version, change.text),
+            (params.text_document.version, Arc::new(change.text)),
         );
         self.validate()
     }
 
-    fn did_close(&mut self, params: DidCloseTextDocumentParams) -> anyhow::Result<()> {
+    fn did_close(&self, params: DidCloseTextDocumentParams) -> anyhow::Result<()> {
         self.open_files
+            .lock()
+            .unwrap()
             .shift_remove(&params.text_document.uri.to_file_path().unwrap());
         self.publish_diagnostics(params.text_document.uri, Vec::new(), None);
         Ok(())
     }
 
+    fn make_handle(&self, uri: &Url) -> Handle {
+        let module = module_from_path(&uri.to_file_path().unwrap(), &self.include);
+        Handle::new(module, self.config.dupe())
+    }
+
     fn goto_definition(&self, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
-        let module = url_to_module(
-            &params.text_document_position_params.text_document.uri,
-            &self.include,
-        );
-        let info = self.state.get_module_info(module)?;
+        let state = self.state.lock().unwrap();
+        let handle = self.make_handle(&params.text_document_position_params.text_document.uri);
+        let info = state.get_module_info(&handle)?;
         let range = position_to_text_size(&info, params.text_document_position_params.position);
-        let (module, range) = self.state.goto_definition(module, range)?;
-        let path = find_module(module, &self.include)?;
-        let info = self.state.get_module_info(module)?;
+        let (handle, range) = state.goto_definition(&handle, range)?;
+        let path = find_module(handle.module(), &self.include)?;
+        let info = state.get_module_info(&handle)?;
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         Some(GotoDefinitionResponse::Scalar(Location {
             uri: Url::from_file_path(path).unwrap(),
@@ -352,13 +353,11 @@ impl<'a> Server<'a> {
     }
 
     fn hover(&self, params: HoverParams) -> Option<Hover> {
-        let module = url_to_module(
-            &params.text_document_position_params.text_document.uri,
-            &self.include,
-        );
-        let info = self.state.get_module_info(module)?;
+        let state = self.state.lock().unwrap();
+        let handle = self.make_handle(&params.text_document_position_params.text_document.uri);
+        let info = state.get_module_info(&handle)?;
         let range = position_to_text_size(&info, params.text_document_position_params.position);
-        let t = self.state.hover(module, range)?;
+        let t = state.hover(&handle, range)?;
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::PlainText,
@@ -369,9 +368,10 @@ impl<'a> Server<'a> {
     }
 
     fn inlay_hints(&self, params: InlayHintParams) -> Option<Vec<InlayHint>> {
-        let module = url_to_module(&params.text_document.uri, &self.include);
-        let info = self.state.get_module_info(module)?;
-        let t = self.state.inlay_hints(module)?;
+        let state = self.state.lock().unwrap();
+        let handle = self.make_handle(&params.text_document.uri);
+        let info = state.get_module_info(&handle)?;
+        let t = state.inlay_hints(&handle)?;
         Some(t.into_map(|x| {
             let position = text_size_to_position(&info, x.0);
             InlayHint {
@@ -411,10 +411,6 @@ fn text_size_to_position(info: &ModuleInfo, x: TextSize) -> lsp_types::Position 
 
 fn position_to_text_size(info: &ModuleInfo, position: lsp_types::Position) -> TextSize {
     info.to_text_size(position.line, position.character)
-}
-
-fn url_to_module(uri: &Url, include: &[PathBuf]) -> ModuleName {
-    module_from_path(&uri.to_file_path().unwrap(), include)
 }
 
 fn as_notification<T>(x: &Notification) -> Option<T::Params>

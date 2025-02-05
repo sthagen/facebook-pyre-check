@@ -18,7 +18,7 @@ use vec1::Vec1;
 
 use crate::error::style::ErrorStyle;
 use crate::module::module_name::ModuleName;
-use crate::state::loader::LoadResult;
+use crate::module::module_path::ModulePath;
 use crate::state::loader::Loader;
 use crate::util::fs_anyhow;
 
@@ -144,10 +144,10 @@ impl BuckSourceDatabase {
         self.sources.keys().copied().collect()
     }
 
-    fn lookup(&self, name: ModuleName) -> LookupResult {
-        match self.sources.get(&name) {
+    fn lookup(&self, module: ModuleName) -> LookupResult {
+        match self.sources.get(&module) {
             Some(paths) => LookupResult::OwningSource(paths.first().clone()),
-            None => match self.dependencies.get(&name) {
+            None => match self.dependencies.get(&module) {
                 Some(paths) => LookupResult::ExternalSource(paths.first().clone()),
                 None => LookupResult::NoSource,
             },
@@ -156,14 +156,15 @@ impl BuckSourceDatabase {
 }
 
 impl Loader for BuckSourceDatabase {
-    fn load(&self, name: ModuleName) -> (LoadResult, ErrorStyle) {
-        match self.lookup(name) {
-            LookupResult::OwningSource(path) => (LoadResult::from_path(path), ErrorStyle::Delayed),
-            LookupResult::ExternalSource(path) => (LoadResult::from_path(path), ErrorStyle::Never),
-            LookupResult::NoSource => (
-                LoadResult::FailedToFind(anyhow!("Not a dependency or typeshed")),
-                ErrorStyle::Never,
-            ),
+    fn find(&self, module: ModuleName) -> anyhow::Result<(ModulePath, ErrorStyle)> {
+        match self.lookup(module) {
+            LookupResult::OwningSource(path) => {
+                Ok((ModulePath::filesystem(path.clone()), ErrorStyle::Delayed))
+            }
+            LookupResult::ExternalSource(path) => {
+                Ok((ModulePath::filesystem(path.clone()), ErrorStyle::Never))
+            }
+            LookupResult::NoSource => Err(anyhow!("Not a dependency or typeshed")),
         }
     }
 }

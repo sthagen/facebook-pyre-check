@@ -16,6 +16,7 @@ use parking_lot::FairMutex;
 use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
+use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswerEntry;
 use crate::alt::answers::AnswerTable;
@@ -38,7 +39,8 @@ use crate::export::exports::LookupExport;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::report::debug_info::DebugInfo;
-use crate::state::loader::Loader;
+use crate::state::handle::Handle;
+use crate::state::loader::LoaderId;
 use crate::state::steps::Context;
 use crate::state::steps::ModuleSteps;
 use crate::state::steps::Step;
@@ -51,16 +53,15 @@ use crate::util::prelude::SliceExt;
 use crate::util::uniques::UniqueFactory;
 
 pub struct State {
-    config: Config,
-    loader: Box<dyn Loader>,
+    loader: LoaderId,
     uniques: UniqueFactory,
     parallel: bool,
-    stdlib: RwLock<Arc<Stdlib>>,
-    modules: RwLock<SmallMap<ModuleName, Arc<ModuleState>>>,
+    stdlib: RwLock<SmallMap<Config, Arc<Stdlib>>>,
+    modules: RwLock<SmallMap<Handle, Arc<ModuleState>>>,
     /// Items we still need to process. Stored in a max heap, so that
     /// the highest step (the module that is closest to being finished)
     /// gets picked first, ensuring we release its memory quickly.
-    todo: Mutex<EnumHeap<Step, ModuleName>>,
+    todo: Mutex<EnumHeap<Step, Handle>>,
 
     // Set to true to keep data around forever.
     retain_memory: bool,
@@ -113,21 +114,24 @@ impl ModuleState {
 }
 
 impl State {
-    pub fn new(loader: Box<dyn Loader>, config: Config, parallel: bool) -> Self {
+    pub fn new(loader: LoaderId, parallel: bool) -> Self {
         Self {
-            config,
             loader,
             uniques: UniqueFactory::new(),
             parallel,
-            stdlib: RwLock::new(Arc::new(Stdlib::for_bootstrapping())),
+            stdlib: Default::default(),
             modules: Default::default(),
             todo: Default::default(),
             retain_memory: true, // Will always be overwritten by entry points
         }
     }
 
-    fn demand(&self, module: ModuleName, step: Step) {
-        let module_state = self.get_module(module);
+    pub fn import_handle(&self, handle: &Handle, module: ModuleName) -> Handle {
+        Handle::new(module, handle.config().dupe())
+    }
+
+    fn demand(&self, handle: &Handle, step: Step) {
+        let module_state = self.get_module(handle);
         let mut computed = false;
         loop {
             let lock = module_state.steps.read().unwrap();
@@ -157,14 +161,14 @@ impl State {
                 module_state.steps.write().unwrap().ast.clear();
             }
 
-            let stdlib = self.stdlib.read().unwrap().dupe();
+            let stdlib = self.get_stdlib(handle);
             let set = compute(&Context {
-                name: module,
-                config: &self.config,
-                loader: &*self.loader,
+                module: handle.module(),
+                config: handle.config(),
+                loader: &self.loader,
                 uniques: &self.uniques,
                 stdlib: &stdlib,
-                lookup: self,
+                lookup: &self.lookup(handle),
                 retain_memory: self.retain_memory,
             });
             {
@@ -182,27 +186,27 @@ impl State {
         if computed && let Some(next) = step.next() {
             // For a large benchmark, LIFO is 10Gb retained, FIFO is 13Gb.
             // Perhaps we are getting to the heart of the graph with LIFO?
-            self.todo.lock().unwrap().push_lifo(next, module);
+            self.todo.lock().unwrap().push_lifo(next, handle.dupe());
         }
     }
 
-    fn get_module(&self, module: ModuleName) -> Arc<ModuleState> {
+    fn get_module(&self, handle: &Handle) -> Arc<ModuleState> {
         let lock = self.modules.read().unwrap();
-        if let Some(v) = lock.get(&module) {
+        if let Some(v) = lock.get(handle) {
             return v.dupe();
         }
         drop(lock);
         self.modules
             .write()
             .unwrap()
-            .entry(module)
+            .entry(handle.dupe())
             .or_default()
             .dupe()
     }
 
-    fn add_error(&self, module: ModuleName, range: TextRange, msg: String) {
+    fn add_error(&self, handle: &Handle, range: TextRange, msg: String) {
         let load = self
-            .get_module(module)
+            .get_module(handle)
             .steps
             .read()
             .unwrap()
@@ -213,28 +217,39 @@ impl State {
         load.errors.add(&load.module_info, range, msg);
     }
 
-    fn lookup_stdlib(&self, module: ModuleName, name: &Name) -> Option<Class> {
+    fn lookup<'a>(&'a self, handle: &Handle) -> StateHandle<'a> {
+        StateHandle {
+            state: self,
+            handle: handle.dupe(),
+        }
+    }
+
+    fn lookup_stdlib(&self, handle: &Handle, name: &Name) -> Option<Class> {
         if !self
-            .lookup_export(module)
-            .is_ok_and(|x| x.contains(name, self))
+            .lookup_export(handle)
+            .is_ok_and(|x| x.contains(name, &self.lookup(handle)))
         {
             self.add_error(
-                module,
+                handle,
                 TextRange::default(),
-                format!("Stdlib import failure, was expecting `{module}` to contain `{name}`"),
+                format!(
+                    "Stdlib import failure, was expecting `{}` to contain `{name}`",
+                    handle.module()
+                ),
             );
             return None;
         }
 
-        let t = self.lookup_answer(module, &KeyExport(name.clone()));
+        let t = self.lookup_answer(handle, &KeyExport(name.clone()));
         match t.arc_clone() {
             Type::ClassDef(cls) => Some(cls),
             ty => {
                 self.add_error(
-                    module,
+                    handle,
                     TextRange::default(),
                     format!(
-                        "Did not expect non-class type `{ty}` for stdlib import `{module}.{name}`"
+                        "Did not expect non-class type `{ty}` for stdlib import `{}.{name}`",
+                        handle.module()
                     ),
                 );
                 None
@@ -242,9 +257,9 @@ impl State {
         }
     }
 
-    fn lookup_export(&self, module: ModuleName) -> Result<Exports, Arc<String>> {
-        self.demand(module, Step::Exports);
-        let m = self.get_module(module);
+    fn lookup_export(&self, handle: &Handle) -> Result<Exports, Arc<String>> {
+        self.demand(handle, Step::Exports);
+        let m = self.get_module(handle);
         let lock = m.steps.read().unwrap();
         if let Some(err) = &lock.load.get().unwrap().import_error {
             Err(err.dupe())
@@ -253,9 +268,9 @@ impl State {
         }
     }
 
-    fn lookup_answer<'b, K: Solve<Self> + Keyed<EXPORTED = true>>(
+    fn lookup_answer<'b, K: Solve<StateHandle<'b>> + Keyed<EXPORTED = true>>(
         &'b self,
-        module: ModuleName,
+        handle: &Handle,
         key: &K,
     ) -> Arc<<K as Keyed>::Answer>
     where
@@ -263,7 +278,7 @@ impl State {
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
         Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
-        let module_state = self.get_module(module);
+        let module_state = self.get_module(handle);
         {
             // if we happen to have solutions available, use them instead
             if let Some(solutions) = module_state.steps.read().unwrap().solutions.get() {
@@ -271,7 +286,7 @@ impl State {
             }
         }
 
-        self.demand(module, Step::Answers);
+        self.demand(handle, Step::Answers);
         let (load, answers) = {
             let steps = module_state.steps.read().unwrap();
             if let Some(solutions) = steps.solutions.get() {
@@ -282,10 +297,11 @@ impl State {
                 steps.answers.get().unwrap().dupe(),
             )
         };
-        let stdlib = self.stdlib.read().unwrap().dupe();
+        let stdlib = self.get_stdlib(handle);
+        let lookup = self.lookup(handle);
         answers.1.solve_key(
-            self,
-            self,
+            &lookup,
+            &lookup,
             &answers.0,
             &load.errors,
             &stdlib,
@@ -351,9 +367,33 @@ impl State {
         }
     }
 
-    fn compute_stdlib(&self) {
-        let stdlib = Arc::new(Stdlib::new(|module, name| self.lookup_stdlib(module, name)));
-        *self.stdlib.write().unwrap() = stdlib;
+    fn get_stdlib(&self, handle: &Handle) -> Arc<Stdlib> {
+        // Safe because we always run compute_stdlib first
+        self.stdlib
+            .read()
+            .unwrap()
+            .get(handle.config())
+            .unwrap()
+            .dupe()
+    }
+
+    fn compute_stdlib(&self, configs: SmallSet<Config>) {
+        *self.stdlib.write().unwrap() = configs
+            .iter()
+            .map(|c| (c.dupe(), Arc::new(Stdlib::for_bootstrapping())))
+            .collect();
+        let stdlibs = configs
+            .iter()
+            .map(|c| {
+                (
+                    c.dupe(),
+                    Arc::new(Stdlib::new(|module, name| {
+                        self.lookup_stdlib(&Handle::new(module, c.dupe()), name)
+                    })),
+                )
+            })
+            .collect();
+        *self.stdlib.write().unwrap() = stdlibs;
     }
 
     fn work(&self) {
@@ -365,19 +405,23 @@ impl State {
                 None => break,
             };
             drop(lock);
-            self.demand(x, Step::last());
+            self.demand(&x, Step::last());
         }
     }
 
-    fn run_internal(&mut self, modules: &[ModuleName]) {
+    fn run_internal(&mut self, handles: Vec<Handle>) {
+        let configs = handles
+            .iter()
+            .map(|x| x.config().dupe())
+            .collect::<SmallSet<_>>();
         {
             let mut lock = self.todo.lock().unwrap();
-            for m in modules {
-                lock.push_fifo(Step::first(), *m);
+            for h in handles {
+                lock.push_fifo(Step::first(), h);
             }
         }
 
-        self.compute_stdlib();
+        self.compute_stdlib(configs);
 
         if self.parallel {
             rayon::scope(|s| {
@@ -395,14 +439,14 @@ impl State {
     /// The state afterwards will be useful for timing queries.
     /// Note we grab the `mut` only to stop other people accessing us simultaneously,
     /// we don't actually need it.
-    pub fn run_one_shot(&mut self, modules: &[ModuleName]) {
+    pub fn run_one_shot(&mut self, handles: Vec<Handle>) {
         self.retain_memory = false;
-        self.run_internal(modules)
+        self.run_internal(handles)
     }
 
-    pub fn run(&mut self, modules: &[ModuleName]) {
+    pub fn run(&mut self, handles: Vec<Handle>) {
         self.retain_memory = true;
-        self.run_internal(modules)
+        self.run_internal(handles)
     }
 
     #[expect(dead_code)]
@@ -413,15 +457,15 @@ impl State {
         }
     }
 
-    pub fn modules(&self) -> Vec<ModuleName> {
-        self.modules.read().unwrap().keys().copied().collect()
+    pub fn handles(&self) -> Vec<Handle> {
+        self.modules.read().unwrap().keys().cloned().collect()
     }
 
-    pub fn get_bindings(&self, module: ModuleName) -> Option<Bindings> {
+    pub fn get_bindings(&self, handle: &Handle) -> Option<Bindings> {
         self.modules
             .read()
             .unwrap()
-            .get(&module)?
+            .get(handle)?
             .steps
             .read()
             .unwrap()
@@ -430,11 +474,11 @@ impl State {
             .map(|x| x.0.dupe())
     }
 
-    pub fn get_module_info(&self, module: ModuleName) -> Option<ModuleInfo> {
+    pub fn get_module_info(&self, handle: &Handle) -> Option<ModuleInfo> {
         self.modules
             .read()
             .unwrap()
-            .get(&module)?
+            .get(handle)?
             .steps
             .read()
             .unwrap()
@@ -443,11 +487,11 @@ impl State {
             .map(|x| x.module_info.dupe())
     }
 
-    pub fn get_ast(&self, module: ModuleName) -> Option<Arc<ruff_python_ast::ModModule>> {
+    pub fn get_ast(&self, handle: &Handle) -> Option<Arc<ruff_python_ast::ModModule>> {
         self.modules
             .read()
             .unwrap()
-            .get(&module)?
+            .get(handle)?
             .steps
             .read()
             .unwrap()
@@ -456,11 +500,11 @@ impl State {
             .duped()
     }
 
-    pub fn get_solutions(&self, module: ModuleName) -> Option<Arc<Solutions>> {
+    pub fn get_solutions(&self, handle: &Handle) -> Option<Arc<Solutions>> {
         self.modules
             .read()
             .unwrap()
-            .get(&module)?
+            .get(handle)?
             .steps
             .read()
             .unwrap()
@@ -469,9 +513,9 @@ impl State {
             .duped()
     }
 
-    pub fn debug_info(&self, modules: &[ModuleName]) -> DebugInfo {
-        let owned = modules.map(|x| {
-            let module = self.get_module(*x);
+    pub fn debug_info(&self, handles: &[Handle]) -> DebugInfo {
+        let owned = handles.map(|x| {
+            let module = self.get_module(x);
             let steps = module.steps.read().unwrap();
             (
                 steps.load.get().unwrap().dupe(),
@@ -509,16 +553,22 @@ impl State {
     */
 }
 
-impl LookupExport for State {
+struct StateHandle<'a> {
+    state: &'a State,
+    handle: Handle,
+}
+
+impl<'a> LookupExport for StateHandle<'a> {
     fn get(&self, module: ModuleName) -> Result<Exports, Arc<String>> {
-        self.lookup_export(module)
+        self.state
+            .lookup_export(&self.state.import_handle(&self.handle, module))
     }
 }
 
-impl LookupAnswer for State {
+impl<'a> LookupAnswer for StateHandle<'a> {
     fn get<K: Solve<Self> + Keyed<EXPORTED = true>>(
         &self,
-        name: ModuleName,
+        module: ModuleName,
         k: &K,
     ) -> Arc<K::Answer>
     where
@@ -526,6 +576,7 @@ impl LookupAnswer for State {
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
         Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
-        self.lookup_answer(name, k)
+        self.state
+            .lookup_answer(&self.state.import_handle(&self.handle, module), k)
     }
 }

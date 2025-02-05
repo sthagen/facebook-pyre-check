@@ -189,6 +189,7 @@ impl<'a> TypeDisplayContext<'a> {
             Type::TypedDict(typed_dict) => {
                 write!(f, "TypedDict[")?;
                 self.fmt_qname(typed_dict.qname(), f)?;
+                self.fmt_targs(typed_dict.targs(), f)?;
                 write!(f, "]")
             }
             Type::TypeVar(t) => {
@@ -319,9 +320,11 @@ impl Display for Type {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use ruff_python_ast::Identifier;
     use ruff_text_size::TextSize;
+    use starlark_map::ordered_map::OrderedMap;
 
     use super::*;
     use crate::module::module_info::ModuleInfo;
@@ -340,6 +343,7 @@ mod tests {
     use crate::types::type_var::Restriction;
     use crate::types::type_var::TypeVar;
     use crate::types::type_var::Variance;
+    use crate::types::typed_dict::TypedDict;
     use crate::types::types::TParamInfo;
     use crate::types::types::TParams;
     use crate::util::uniques::UniqueFactory;
@@ -348,7 +352,7 @@ mod tests {
         let mi = ModuleInfo::new(
             ModuleName::from_str(module),
             ModulePath::filesystem(PathBuf::from(module)),
-            "1234567890".to_owned(),
+            Arc::new("1234567890".to_owned()),
         );
         Class::new(
             Identifier::new(Name::new(name), TextRange::empty(TextSize::new(range))),
@@ -372,7 +376,7 @@ mod tests {
         let mi = ModuleInfo::new(
             ModuleName::from_str(module),
             ModulePath::filesystem(PathBuf::from(module)),
-            "1234567890".to_owned(),
+            Arc::new("1234567890".to_owned()),
         );
         TypeVar::new(
             Identifier::new(Name::new(name), TextRange::empty(TextSize::new(range))),
@@ -494,6 +498,18 @@ mod tests {
         assert_eq!(
             Type::Callable(Box::new(callable), CallableKind::Anon).to_string(),
             "(hello: None, *, world: None) -> None"
+        );
+    }
+
+    #[test]
+    fn test_display_generic_typeddict() {
+        let cls = fake_class("C", "test", 0, Vec::new());
+        let t = Type::None;
+        let targs = TArgs::new(vec![t]);
+        let td = TypedDict::new(cls, targs, OrderedMap::new());
+        assert_eq!(
+            Type::TypedDict(Box::new(td)).to_string(),
+            "TypedDict[C[None]]"
         );
     }
 }

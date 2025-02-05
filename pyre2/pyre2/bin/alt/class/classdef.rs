@@ -35,15 +35,11 @@ use crate::dunder;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Annotation;
-use crate::types::annotation::Qualifier;
 use crate::types::class::Class;
 use crate::types::class::ClassFieldProperties;
 use crate::types::class::ClassType;
-use crate::types::class::Substitution;
 use crate::types::class::TArgs;
-use crate::types::literal::Lit;
 use crate::types::typed_dict::TypedDict;
-use crate::types::typed_dict::TypedDictField;
 use crate::types::types::Decoration;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -394,7 +390,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let metadata = self.get_metadata_for_class(cls);
         if metadata.is_typed_dict() {
             let fields = self.get_typed_dict_fields(cls, &targs);
-            Type::TypedDict(TypedDict::new(cls.dupe(), targs, fields))
+            Type::TypedDict(Box::new(TypedDict::new(cls.dupe(), targs, fields)))
         } else {
             Type::ClassType(ClassType::new(cls.dupe(), targs))
         }
@@ -599,7 +595,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     // Get every member of a class, including those declared in parent classes.
-    fn get_all_members(&self, cls: &Class) -> SmallMap<Name, (ClassField, Class)> {
+    pub(super) fn get_all_members(&self, cls: &Class) -> SmallMap<Name, (ClassField, Class)> {
         let mut members = SmallMap::new();
         for name in cls.fields() {
             if let Some(field) = self.get_class_field(cls, name) {
@@ -698,56 +694,5 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             attr.value.as_special_method_type(metaclass)
         }
-    }
-
-    fn get_typed_dict_fields(&self, cls: &Class, targs: &TArgs) -> SmallMap<Name, TypedDictField> {
-        let tparams = cls.tparams();
-        let substitution = Substitution::new(
-            tparams
-                .quantified()
-                .zip(targs.as_slice().iter().cloned())
-                .collect(),
-        );
-        self.get_all_members(cls)
-            .iter()
-            .filter_map(|(name, (field, cls))| {
-                let metadata = self.get_metadata_for_class(cls);
-                if !metadata.is_typed_dict() {
-                    return None;
-                }
-                if let ClassField(ClassFieldInner::Simple {
-                    annotation:
-                        Some(Annotation {
-                            ty: Some(ty),
-                            qualifiers,
-                        }),
-                    ..
-                }) = field
-                {
-                    let is_total = metadata
-                        .get_keyword(&Name::new("total"))
-                        .map_or(true, |ty| match ty {
-                            Type::Literal(Lit::Bool(b)) => b,
-                            _ => true,
-                        });
-                    Some((
-                        name.clone(),
-                        TypedDictField {
-                            ty: substitution.substitute(ty.clone()),
-                            required: if qualifiers.contains(&Qualifier::Required) {
-                                true
-                            } else if qualifiers.contains(&Qualifier::NotRequired) {
-                                false
-                            } else {
-                                is_total
-                            },
-                            read_only: qualifiers.contains(&Qualifier::ReadOnly),
-                        },
-                    ))
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 }

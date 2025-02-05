@@ -11,6 +11,7 @@ use std::str::FromStr;
 
 use anyhow::Context as _;
 use clap::Parser;
+use dupe::Dupe;
 use serde::Deserialize;
 use tracing::info;
 
@@ -20,8 +21,11 @@ use crate::config::PythonVersion;
 use crate::error::error::Error;
 use crate::error::legacy::LegacyErrors;
 use crate::module::source_db::BuckSourceDatabase;
+use crate::state::handle::Handle;
+use crate::state::loader::LoaderId;
 use crate::state::state::State;
 use crate::util::fs_anyhow;
+use crate::util::prelude::VecExt;
 
 #[derive(Debug, Parser)]
 pub struct Args {
@@ -52,9 +56,11 @@ fn read_input_file(path: &Path) -> anyhow::Result<InputFile> {
 }
 
 fn compute_errors(config: Config, sourcedb: BuckSourceDatabase, common: &CommonArgs) -> Vec<Error> {
-    let modules_to_check = sourcedb.modules_to_check();
-    let mut state = State::new(Box::new(sourcedb), config, common.parallel());
-    state.run_one_shot(&modules_to_check);
+    let modules_to_check = sourcedb
+        .modules_to_check()
+        .into_map(|x| Handle::new(x, config.dupe()));
+    let mut state = State::new(LoaderId::new(sourcedb), common.parallel());
+    state.run_one_shot(modules_to_check);
     state.collect_errors()
 }
 

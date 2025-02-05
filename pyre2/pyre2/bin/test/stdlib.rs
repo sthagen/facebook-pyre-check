@@ -250,13 +250,26 @@ def field(*args, **kwargs) -> Any: ...
 class KW_ONLY: ...
 "#;
 
+static SYS: &str = r#"
+platform: str
+version_info: tuple[int, int, int, str, int]
+"#;
+
+static STDLIB: &[(&str, &str)] = &[
+    ("builtins", BUILTINS),
+    ("typing", TYPING),
+    ("types", TYPES),
+    ("enum", ENUM),
+    ("dataclasses", DATACLASSES),
+    ("sys", SYS),
+];
+
 pub fn lookup_test_stdlib(module: ModuleName) -> Option<&'static str> {
-    match module.as_str() {
-        "builtins" => Some(BUILTINS),
-        "typing" => Some(TYPING),
-        "types" => Some(TYPES),
-        "enum" => Some(ENUM),
-        "dataclasses" => Some(DATACLASSES),
-        _ => None,
-    }
+    STDLIB.iter().find_map(|(name, source)| {
+        if *name == module.as_str() {
+            Some(*source)
+        } else {
+            None
+        }
+    })
 }

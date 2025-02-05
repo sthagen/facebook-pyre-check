@@ -18,6 +18,7 @@ use std::time::Instant;
 use anyhow::Context as _;
 use clap::Parser;
 use clap::ValueEnum;
+use dupe::Dupe;
 use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 use tracing::info;
@@ -29,12 +30,14 @@ use crate::config::PythonVersion;
 use crate::error::error::Error;
 use crate::error::legacy::LegacyErrors;
 use crate::error::style::ErrorStyle;
+use crate::module::bundled::typeshed;
 use crate::module::finder::find_module;
-use crate::module::finder::BundledTypeshed;
 use crate::module::module_name::ModuleName;
+use crate::module::module_path::ModulePath;
 use crate::report;
-use crate::state::loader::LoadResult;
+use crate::state::handle::Handle;
 use crate::state::loader::Loader;
+use crate::state::loader::LoaderId;
 use crate::state::state::State;
 use crate::util::display::number_thousands;
 use crate::util::forgetter::Forgetter;
@@ -80,33 +83,30 @@ pub struct Args {
     common: CommonArgs,
 }
 
+#[derive(Debug, Clone)]
 struct CheckLoader {
     sources: SmallMap<ModuleName, PathBuf>,
-    typeshed: BundledTypeshed,
     search_roots: Vec<PathBuf>,
     error_style_for_sources: ErrorStyle,
     error_style_for_dependencies: ErrorStyle,
 }
 
 impl Loader for CheckLoader {
-    fn load(&self, name: ModuleName) -> (LoadResult, ErrorStyle) {
-        match self.sources.get(&name) {
-            Some(path) => (
-                LoadResult::from_path((*path).clone()),
+    fn find(&self, module: ModuleName) -> anyhow::Result<(ModulePath, ErrorStyle)> {
+        if let Some(path) = self.sources.get(&module) {
+            Ok((
+                ModulePath::filesystem(path.clone()),
                 self.error_style_for_sources,
-            ),
-            None => {
-                let load_result = match find_module(name, &self.search_roots) {
-                    Some(path) => LoadResult::from_path(path),
-                    None => match self.typeshed.find(name) {
-                        Some((path, content)) => LoadResult::Loaded(path, content),
-                        None => LoadResult::FailedToFind(anyhow::anyhow!(
-                            "Could not find path for `{name}`"
-                        )),
-                    },
-                };
-                (load_result, self.error_style_for_dependencies)
-            }
+            ))
+        } else if let Some(path) = find_module(module, &self.search_roots) {
+            Ok((
+                ModulePath::filesystem(path),
+                self.error_style_for_dependencies,
+            ))
+        } else if let Some(path) = typeshed()?.find(module) {
+            Ok((path, self.error_style_for_dependencies))
+        } else {
+            Err(anyhow::anyhow!("Could not find path for `{module}`"))
         }
     }
 }
@@ -162,12 +162,14 @@ impl Args {
                 }
             }
         }
-        let modules = to_check.keys().copied().collect::<Vec<_>>();
-        let bundled_typeshed = BundledTypeshed::new()?;
         let config = match &args.python_version {
             None => Config::default(),
             Some(version) => Config::new(PythonVersion::from_str(version)?, "linux".to_owned()),
         };
+        let handles = to_check
+            .keys()
+            .map(|x| Handle::new(*x, config.dupe()))
+            .collect::<Vec<_>>();
         let error_style_for_sources = if args.output.is_some() {
             ErrorStyle::Delayed
         } else {
@@ -177,9 +179,8 @@ impl Args {
         let mut memory_trace = MemoryUsageTrace::start(Duration::from_secs_f32(0.1));
         let start = Instant::now();
         let state = State::new(
-            Box::new(CheckLoader {
+            LoaderId::new(CheckLoader {
                 sources: to_check,
-                typeshed: bundled_typeshed,
                 search_roots: include,
                 error_style_for_sources,
                 error_style_for_dependencies: if args.check_all {
@@ -188,16 +189,15 @@ impl Args {
                     ErrorStyle::Never
                 },
             }),
-            config,
             args.common.parallel(),
         );
         let mut holder = Forgetter::new(state, allow_forget);
         let state = holder.as_mut();
 
         if args.report_binding_memory.is_none() && args.debug_info.is_none() {
-            state.run_one_shot(&modules)
+            state.run_one_shot(handles.clone())
         } else {
-            state.run(&modules)
+            state.run(handles.clone())
         };
         let computing = start.elapsed();
         if let Some(path) = args.output {
@@ -218,7 +218,7 @@ impl Args {
             memory_trace.peak()
         );
         if let Some(debug_info) = args.debug_info {
-            let mut output = serde_json::to_string_pretty(&state.debug_info(&modules))?;
+            let mut output = serde_json::to_string_pretty(&state.debug_info(&handles))?;
             if debug_info.extension() == Some(OsStr::new("js")) {
                 output = format!("var data = {output}");
             }

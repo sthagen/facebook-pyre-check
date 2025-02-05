@@ -5,13 +5,16 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Once;
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::anyhow;
+use dupe::Dupe;
 use ruff_python_ast::name::Name;
 use starlark_map::small_map::SmallMap;
 
@@ -20,8 +23,9 @@ use crate::config::Config;
 use crate::error::style::ErrorStyle;
 use crate::module::module_name::ModuleName;
 use crate::module::module_path::ModulePath;
-use crate::state::loader::LoadResult;
+use crate::state::handle::Handle;
 use crate::state::loader::Loader;
+use crate::state::loader::LoaderId;
 use crate::state::state::State;
 use crate::test::stdlib::lookup_test_stdlib;
 use crate::types::class::Class;
@@ -30,13 +34,13 @@ use crate::util::trace::init_tracing;
 
 #[macro_export]
 macro_rules! testcase {
-    ($name:ident, $imports:expr, $contents:expr,) => {
+    ($name:ident, $imports:expr, $contents:literal,) => {
         #[test]
         fn $name() -> anyhow::Result<()> {
             $crate::test::util::testcase_for_macro($imports, $contents, file!(), line!())
         }
     };
-    ($name:ident, $contents:expr,) => {
+    ($name:ident, $contents:literal,) => {
         #[test]
         fn $name() -> anyhow::Result<()> {
             $crate::test::util::testcase_for_macro(
@@ -51,13 +55,13 @@ macro_rules! testcase {
 
 #[macro_export]
 macro_rules! testcase_with_bug {
-    ($explanatation:expr, $name:ident, $imports:expr, $contents:expr,) => {
+    ($explanation:literal, $name:ident, $imports:expr, $contents:literal,) => {
         #[test]
         fn $name() -> anyhow::Result<()> {
             $crate::test::util::testcase_for_macro($imports, $contents, file!(), line!() + 1)
         }
     };
-    ($explanatation:expr, $name:ident, $contents:expr,) => {
+    ($explanation:literal, $name:ident, $contents:literal,) => {
         #[test]
         fn $name() -> anyhow::Result<()> {
             $crate::test::util::testcase_for_macro(
@@ -70,22 +74,24 @@ macro_rules! testcase_with_bug {
     };
 }
 
-fn default_path(name: ModuleName) -> PathBuf {
-    PathBuf::from(format!("{}.py", name.as_str().replace('.', "/")))
+fn default_path(module: ModuleName) -> PathBuf {
+    PathBuf::from(format!("{}.py", module.as_str().replace('.', "/")))
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct TestEnv(SmallMap<ModuleName, (PathBuf, Result<String, String>)>);
+pub struct TestEnv(SmallMap<ModuleName, (PathBuf, Option<String>)>);
 
 impl TestEnv {
     pub fn new() -> Self {
+        // We aim to init the tracing before now, but if not, better now than never
+        test_init_tracing();
         Self::default()
     }
 
     pub fn add_with_path(&mut self, name: &str, code: &str, path: &str) {
         self.0.insert(
             ModuleName::from_str(name),
-            (PathBuf::from(path), Ok(code.to_owned())),
+            (PathBuf::from(path), Some(code.to_owned())),
         );
     }
 
@@ -93,7 +99,7 @@ impl TestEnv {
         let module_name = ModuleName::from_str(name);
         let relative_path = default_path(module_name);
         self.0
-            .insert(module_name, (relative_path, Ok(code.to_owned())));
+            .insert(module_name, (relative_path, Some(code.to_owned())));
     }
 
     pub fn one(name: &str, code: &str) -> Self {
@@ -108,48 +114,66 @@ impl TestEnv {
         res
     }
 
-    pub fn add_error(&mut self, name: &str, err: &str) {
+    pub fn add_real_path(&mut self, name: &str, path: PathBuf) {
         let module_name = ModuleName::from_str(name);
-        self.0.insert(
-            module_name,
-            (default_path(module_name), Err(err.to_owned())),
-        );
+        self.0.insert(module_name, (path, None));
     }
 
-    pub fn to_state(self) -> State {
-        let modules = self.0.keys().copied().collect::<Vec<_>>();
-        let mut state = State::new(Box::new(self), Config::default(), true);
-        state.run(&modules);
-        state
+    pub fn config() -> Config {
+        Config::default()
+    }
+
+    pub fn to_state(self) -> (State, impl Fn(&str) -> Handle) {
+        let config = Self::config();
+        let handles = self
+            .0
+            .keys()
+            .map(|x| Handle::new(*x, config.dupe()))
+            .collect::<Vec<_>>();
+        let mut state = State::new(LoaderId::new(self), true);
+        state.run(handles);
+        (state, |module| {
+            Handle::new(ModuleName::from_str(module), Self::config())
+        })
     }
 }
 
 impl Loader for TestEnv {
-    fn load(&self, name: ModuleName) -> (LoadResult, ErrorStyle) {
-        let loaded = if let Some((path, contents)) = self.0.get(&name) {
+    fn find(&self, module: ModuleName) -> anyhow::Result<(ModulePath, ErrorStyle)> {
+        let style = ErrorStyle::Immediate;
+        if let Some((path, contents)) = self.0.get(&module) {
             match contents {
-                Ok(contents) => {
-                    // TODO(grievejia): Properly model paths for in-memory sources
-                    LoadResult::Loaded(ModulePath::filesystem(path.to_owned()), contents.to_owned())
-                }
-                Err(err) => LoadResult::FailedToLoad(
-                    ModulePath::filesystem(path.to_owned()),
-                    anyhow!(err.to_owned()),
-                ),
+                None => Ok((ModulePath::filesystem(path.clone()), style)),
+                Some(_) => Ok((ModulePath::memory(path.clone()), style)),
             }
-        } else if let Some(contents) = lookup_test_stdlib(name) {
-            LoadResult::Loaded(
-                ModulePath::filesystem(default_path(name)),
-                contents.to_owned(),
-            )
+        } else if lookup_test_stdlib(module).is_some() {
+            Ok((ModulePath::memory(default_path(module)), style))
         } else {
-            LoadResult::FailedToFind(anyhow!("Module not given in test suite"))
-        };
-        (loaded, ErrorStyle::Immediate)
+            Err(anyhow!("Module not given in test suite"))
+        }
+    }
+
+    fn load_from_memory(&self, path: &Path) -> Option<Arc<String>> {
+        // This function involves scanning all paths to find what matches.
+        // Not super efficient, but fine for tests, and we don't have many modules.
+        for (p, contents) in self.0.values() {
+            if p == path
+                && let Some(c) = contents
+            {
+                return Some(Arc::new(c.clone()));
+            }
+        }
+        Some(Arc::new(
+            lookup_test_stdlib(ModuleName::from_str(path.file_stem()?.to_str()?))?.to_owned(),
+        ))
     }
 }
 
 static INIT_TRACING_ONCE: Once = Once::new();
+
+pub fn test_init_tracing() {
+    INIT_TRACING_ONCE.call_once(|| init_tracing(true, true));
+}
 
 /// Should only be used from the `testcase!` macro.
 pub fn testcase_for_macro(
@@ -158,7 +182,7 @@ pub fn testcase_for_macro(
     file: &str,
     line: u32,
 ) -> anyhow::Result<()> {
-    INIT_TRACING_ONCE.call_once(|| init_tracing(true, true));
+    test_init_tracing();
     let mut start_line = line as usize + 1;
     if !env.0.is_empty() {
         start_line += 1;
@@ -173,7 +197,7 @@ pub fn testcase_for_macro(
     let limit = 10;
     for _ in 0..3 {
         let start = Instant::now();
-        env.clone().to_state().check_against_expectations()?;
+        env.clone().to_state().0.check_against_expectations()?;
         if start.elapsed().as_secs() <= limit {
             return Ok(());
         }
@@ -183,13 +207,13 @@ pub fn testcase_for_macro(
     Err(anyhow!("Test took too long (> {limit}s)"))
 }
 
-pub fn mk_state(code: &str) -> (ModuleName, State) {
-    let state = TestEnv::one("main", code).to_state();
-    (ModuleName::from_str("main"), state)
+pub fn mk_state(code: &str) -> (Handle, State) {
+    let (state, handle) = TestEnv::one("main", code).to_state();
+    (handle("main"), state)
 }
 
-pub fn get_class(name: &str, module_name: ModuleName, state: &State) -> Option<Class> {
-    let solutions = state.get_solutions(module_name).unwrap();
+pub fn get_class(name: &str, handle: &Handle, state: &State) -> Option<Class> {
+    let solutions = state.get_solutions(handle).unwrap();
 
     match solutions.exports.get(&KeyExport(Name::new(name))) {
         Some(Type::ClassDef(cls)) => Some(cls.clone()),

@@ -2349,16 +2349,6 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "assert_type(TypedDict[TD1], TypedDict[TD1]) failed",
-      "description": "assert_type(TypedDict[TD1], TypedDict[TD1]) failed",
-      "line": 41,
-      "name": "PyreError",
-      "stop_column": 29,
-      "stop_line": 41
-    },
-    {
-      "code": -2,
-      "column": 5,
       "concise_description": "Missing argument `v1`",
       "description": "Missing argument `v1`",
       "line": 46,
@@ -9046,8 +9036,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "assert_type(int, TypeVar) failed",
-      "description": "assert_type(int, TypeVar) failed",
+      "concise_description": "assert_type(type[?_], TypeVar) failed",
+      "description": "assert_type(type[?_], TypeVar) failed",
       "line": 116,
       "name": "PyreError",
       "stop_column": 36,

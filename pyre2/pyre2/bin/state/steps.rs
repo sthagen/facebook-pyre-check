@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use dupe::Dupe;
 use enum_iterator::Sequence;
 use parse_display::Display;
@@ -19,17 +20,22 @@ use crate::alt::answers::Solutions;
 use crate::binding::bindings::Bindings;
 use crate::config::Config;
 use crate::error::collector::ErrorCollector;
+use crate::error::style::ErrorStyle;
 use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
+use crate::module::bundled::typeshed;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
+use crate::module::module_path::ModulePath;
+use crate::module::module_path::ModulePathDetails;
 use crate::state::info::Info;
 use crate::state::loader::Loader;
 use crate::types::stdlib::Stdlib;
+use crate::util::fs_anyhow;
 use crate::util::uniques::UniqueFactory;
 
 pub struct Context<'a, Lookup> {
-    pub name: ModuleName,
+    pub module: ModuleName,
     pub config: &'a Config,
     pub loader: &'a dyn Loader,
     pub uniques: &'a UniqueFactory,
@@ -147,24 +153,60 @@ impl Step {
     }
 
     fn load<Lookup>(ctx: &Context<Lookup>) -> Arc<Load> {
-        let (load_result, error_style) = ctx.loader.load(ctx.name);
-        let components = load_result.components(ctx.name);
-        let module_info = ModuleInfo::new(ctx.name, components.path, components.code);
+        let mut path = ModulePath::not_found(ctx.module);
+        let mut code = Arc::new("".to_owned());
+        let mut error_style = ErrorStyle::Never;
+        let mut import_error = None;
+        let mut self_error = None;
+
+        match ctx.loader.find(ctx.module) {
+            Err(err) => {
+                import_error = Some(Arc::new(format!(
+                    "Could not find import of `{}`, {err:#}",
+                    ctx.module
+                )));
+            }
+            Ok((p, s)) => {
+                path = p;
+                error_style = s;
+                let res = match path.details() {
+                    ModulePathDetails::FileSystem(path) => {
+                        fs_anyhow::read_to_string(path).map(Arc::new)
+                    }
+                    ModulePathDetails::Memory(path) => ctx
+                        .loader
+                        .load_from_memory(path)
+                        .ok_or_else(|| anyhow!("memory path not found")),
+                    ModulePathDetails::BundledTypeshed(path) => typeshed().and_then(|x| {
+                        x.load(path)
+                            .ok_or_else(|| anyhow!("bundled typeshed problem"))
+                    }),
+                    ModulePathDetails::NotFound(_) => Err(anyhow!("module was not found")),
+                };
+                match res {
+                    Err(err) => {
+                        self_error = Some(
+                            err.context(format!("When loading `{}` from `{path}`", ctx.module)),
+                        )
+                    }
+                    Ok(res) => code = res,
+                }
+            }
+        }
+
+        let module_info = ModuleInfo::new(ctx.module, path, code);
         let errors = ErrorCollector::new(error_style);
-        if let Some(err) = components.self_error {
+        if let Some(err) = self_error {
             errors.add(
                 &module_info,
                 TextRange::default(),
                 format!(
                     "Failed to load {} from {}, got {err:#}",
-                    ctx.name,
+                    ctx.module,
                     module_info.path()
                 ),
             );
         }
-        let import_error = components
-            .import_error
-            .map(|e| Arc::new(format!("Could not find import of `{}`, {e:#}", ctx.name)));
 
         Arc::new(Load {
             errors,

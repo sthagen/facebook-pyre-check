@@ -79,9 +79,14 @@ pub fn binding_memory(state: &State) -> String {
 
     let mut report = SmallMap::new();
     let phantom_table = PhantomTable::default();
-    for module in state.modules() {
-        let bindings = state.get_bindings(module).unwrap();
-        table_for_each!(&phantom_table, |v| f(v, module, &bindings, &mut report));
+    for handle in state.handles() {
+        let bindings = state.get_bindings(&handle).unwrap();
+        table_for_each!(&phantom_table, |v| f(
+            v,
+            handle.module(),
+            &bindings,
+            &mut report
+        ));
     }
 
     let mut entries = report.into_iter().collect::<Vec<_>>();
