@@ -555,18 +555,13 @@
     "Line 90: Unexpected errors ['Could not find import of `_enums_member_values`, Could not find path for `_enums_member_values`']"
   ],
   "enums_members.py": [
-    "Line 82: Expected 1 errors",
-    "Line 83: Expected 1 errors",
-    "Line 84: Expected 1 errors",
-    "Line 85: Expected 1 errors",
-    "Line 116: Expected 1 errors",
-    "Line 27: Unexpected errors ['assert_type(Literal[Pet.genus], str) failed']",
-    "Line 28: Unexpected errors ['assert_type(Literal[Pet.species], str) failed']",
+    "Line 27: Unexpected errors ['assert_type(Any, str) failed', 'Instance-only attribute `genus` of class `Pet` is not visible on the class']",
+    "Line 28: Unexpected errors ['assert_type(Any, str) failed', 'Instance-only attribute `species` of class `Pet` is not visible on the class']",
     "Line 33: Unexpected errors ['Could not find import of `_enums_members`, Could not find path for `_enums_members`']",
     "Line 35: Unexpected errors ['assert_type(Any, str) failed']",
     "Line 36: Unexpected errors ['assert_type(Any, str) failed']",
-    "Line 37: Unexpected errors ['Literal expression `Pet2` is not an enumeration']",
-    "Line 38: Unexpected errors ['Literal expression `Pet2` is not an enumeration']",
+    "Line 37: Unexpected errors ['`Pet2.CAT` is not a valid enum member']",
+    "Line 38: Unexpected errors ['`Pet2.DOG` is not a valid enum member']",
     "Line 75: Unexpected errors ['Missing argument `flush`']",
     "Line 100: Unexpected errors ['assert_type(Literal[TrafficLight.AMBER], Literal[TrafficLight.YELLOW]) failed']",
     "Line 128: Unexpected errors ['Could not find name `reveal_type`', 'revealed type: Literal[2]']"
@@ -747,7 +742,6 @@
     "Line 54: Unexpected errors ['EXPECTED ShouldBeCovariant4[int] <: ShouldBeCovariant4[float]']",
     "Line 67: Unexpected errors ['EXPECTED ShouldBeCovariant5[int] <: ShouldBeCovariant5[float]']",
     "Line 78: Unexpected errors ['EXPECTED ShouldBeCovariant6[int] <: ShouldBeCovariant6[float]']",
-    "Line 90: Unexpected errors ['Could not find name `value`']",
     "Line 149: Unexpected errors ['EXPECTED ShouldBeContravariant1[float] <: ShouldBeContravariant1[int]']"
   ],
   "generics_syntax_scoping.py": [
@@ -931,7 +925,6 @@
     "Line 57: Unexpected errors ['EXPECTED ShouldBeCovariant3[int] <: ShouldBeCovariant3[float]']",
     "Line 66: Unexpected errors ['EXPECTED ShouldBeCovariant4[int] <: ShouldBeCovariant4[float]']",
     "Line 79: Unexpected errors ['EXPECTED ShouldBeCovariant5[int] <: ShouldBeCovariant5[float]']",
-    "Line 91: Unexpected errors ['Could not find name `value`']",
     "Line 150: Unexpected errors ['EXPECTED ShouldBeContravariant1[float] <: ShouldBeContravariant1[int]']",
     "Line 182: Unexpected errors ['EXPECTED ShouldBeCovariant6[int] <: ShouldBeCovariant6[float]']",
     "Line 193: Unexpected errors ['EXPECTED ShouldBeContravariant2[float] <: ShouldBeContravariant2[int]']"
@@ -1132,9 +1125,7 @@
     "Line 266: Unexpected errors ['EXPECTED Literal[0] <: float']",
     "Line 271: Unexpected errors ['EXPECTED Literal[0] <: float']",
     "Line 277: Unexpected errors ['EXPECTED Literal[0] <: float']",
-    "Line 297: Unexpected errors ['Could not find name `val1`']",
     "Line 305: Unexpected errors ['EXPECTED Literal[0] <: float']",
-    "Line 307: Unexpected errors ['Could not find name `val1`']",
     "Line 313: Unexpected errors ['EXPECTED Literal[0] <: float']",
     "Line 318: Unexpected errors ['EXPECTED Literal[0] <: float']",
     "Line 324: Unexpected errors ['EXPECTED Literal[0] <: float']",
@@ -1258,6 +1249,7 @@
     "Line 77: Unexpected errors ['EXPECTED None <: Never']"
   ],
   "specialtypes_none.py": [
+    "Line 39: Unexpected errors ['EXPECTED type[object] <: type[None]']",
     "Line 40: Unexpected errors ['EXPECTED type[type] <: type[TypeVar[Self]]', 'Expected 2 more positional arguments', 'EXPECTED TypeVar[Self] <: type[None]', 'EXPECTED None <: str']"
   ],
   "specialtypes_promotions.py": [

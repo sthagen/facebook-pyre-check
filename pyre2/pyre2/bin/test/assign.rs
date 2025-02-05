@@ -289,6 +289,28 @@ def f(cond: bool):
     "#,
 );
 
+testcase_with_bug!(
+    "We ensure annots are consistent only when merging flow envs, missing trivial cases like this",
+    test_multiple_annotations_without_merge,
+    r#"
+x: int = 0
+x: str = ""  # TODO: Inconsistent type annotations for x
+    "#,
+);
+
+testcase!(
+    test_annot_flow_assign,
+    r#"
+from typing import Literal
+x: int = 0
+lit0: Literal[0] = x
+x = 1
+lit1: Literal[1] = x
+x = "oops"  # E: Literal['oops'] <: int
+lit2: Literal["oops"] = x  # E: int <: Literal['oops']
+    "#,
+);
+
 testcase!(
     test_type_alias_simple,
     r#"

@@ -56,26 +56,34 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Option<ClassField> {
         let metadata = self.get_metadata_for_class(cls);
         let dataclass = metadata.dataclass_metadata()?;
-        // TODO(rechen): use a series of boolean flags to get rid of the unreachable!(...).
-        if !dataclass.synthesized_fields.contains(name) {
-            return None;
-        }
-        if *name == dunder::INIT {
+        if *name == dunder::INIT && dataclass.synthesized_fields.init {
             Some(self.get_dataclass_init(cls, &dataclass.fields, dataclass.kw_only))
-        } else if *name == dunder::MATCH_ARGS {
-            Some(self.get_dataclass_match_args(&dataclass.fields))
+        } else if *name == dunder::MATCH_ARGS && dataclass.synthesized_fields.match_args {
+            Some(self.get_dataclass_match_args(cls, &dataclass.fields, dataclass.kw_only))
         } else {
-            unreachable!("No implementation found for dataclass-synthesized method: {name}");
+            None
         }
+    }
+
+    fn iter_fields(&self, cls: &Class, fields: &SmallSet<Name>) -> Vec<(Name, ClassField, bool)> {
+        let mut kw_only = false;
+        fields.iter().filter_map(|name| {
+            let field @ ClassField(ClassFieldInner::Simple { ty, .. }) = &self.get_class_member(cls, name).unwrap().value;
+            // A field with type KW_ONLY is a sentinel value that indicates that the remaining
+            // fields should be keyword-only params in the generated `__init__`.
+            if matches!(ty, Type::ClassType(cls) if cls.class_object().has_qname("dataclasses", "KW_ONLY")) {
+                kw_only = true;
+                None
+            } else {
+                Some((name.clone(), field.clone(), kw_only))
+            }
+        }).collect()
     }
 
     /// Gets a dataclass field as a function param.
     fn get_dataclass_param(&self, name: &Name, field: ClassField, kw_only: bool) -> Param {
         let ClassField(ClassFieldInner::Simple {
-            ty,
-            annotation: _,
-            initialization,
-            readonly: _,
+            ty, initialization, ..
         }) = field;
         let required = match initialization {
             ClassFieldInitialization::Class => Required::Required,
@@ -100,9 +108,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             cls.self_type(),
             Required::Required,
         )];
-        for name in fields {
-            let field = self.get_class_member(cls, name).unwrap().value;
-            params.push(self.get_dataclass_param(name, field, kw_only));
+        for (name, field, field_kw_only) in self.iter_fields(cls, fields) {
+            params.push(self.get_dataclass_param(&name, field, kw_only || field_kw_only));
         }
         let ty = Type::Callable(
             Box::new(Callable::list(ParamList::new(params), Type::None)),
@@ -113,19 +120,39 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             annotation: None,
             initialization: ClassFieldInitialization::Class,
             readonly: false,
+            is_enum_member: false,
         })
     }
 
-    fn get_dataclass_match_args(&self, fields: &SmallSet<Name>) -> ClassField {
-        let ts = fields
-            .iter()
-            .map(|name| Type::Literal(Lit::String(name.as_str().into())));
-        let ty = Type::Tuple(Tuple::Concrete(ts.collect()));
+    fn get_dataclass_match_args(
+        &self,
+        cls: &Class,
+        fields: &SmallSet<Name>,
+        kw_only: bool,
+    ) -> ClassField {
+        // Keyword-only fields do not appear in __match_args__.
+        let ts = if kw_only {
+            Vec::new()
+        } else {
+            let filtered_fields = self.iter_fields(cls, fields);
+            filtered_fields
+                .iter()
+                .filter_map(|(name, _, field_kw_only)| {
+                    if *field_kw_only {
+                        None
+                    } else {
+                        Some(Type::Literal(Lit::String(name.as_str().into())))
+                    }
+                })
+                .collect()
+        };
+        let ty = Type::Tuple(Tuple::Concrete(ts));
         ClassField(ClassFieldInner::Simple {
             ty,
             annotation: None,
             initialization: ClassFieldInitialization::Class,
             readonly: false,
+            is_enum_member: false,
         })
     }
 }

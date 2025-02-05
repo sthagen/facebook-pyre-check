@@ -15,6 +15,8 @@ use ruff_python_ast::name::Name;
 use starlark_map::small_set::SmallSet;
 use vec1::Vec1;
 
+use crate::alt::answers::AnswersSolver;
+use crate::alt::answers::LookupAnswer;
 use crate::error::collector::ErrorCollector;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
@@ -172,34 +174,39 @@ pub struct EnumMetadata {
     pub is_flag: bool,
 }
 
-impl EnumMetadata {
-    pub fn get_member(&self, name: &Name) -> Option<Lit> {
-        // TODO(stroxler, yangdanny) Enums can contain attributes that are not
-        // members, we eventually need to implement enough checks to know the
-        // difference.
-        //
-        // Instance-only attributes are one case of this and are correctly handled
-        // upstream, but there are other cases as well.
-
-        // Names starting but not ending with __ are private
-        // Names starting and ending with _ are reserved by the enum
-        if name.starts_with("__") && !name.ends_with("__")
-            || name.starts_with("_") && name.ends_with("_")
+impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
+    pub fn get_enum_member(&self, enum_: &EnumMetadata, name: &Name) -> Option<Lit> {
+        if let Some(field) = self.get_class_member(enum_.cls.class_object(), name)
+            && field.value.is_enum_member()
         {
-            None
-        } else if self.cls.class_object().contains(name) {
-            Some(Lit::Enum(Box::new((self.cls.clone(), name.clone()))))
+            Some(Lit::Enum(Box::new((enum_.cls.clone(), name.clone()))))
         } else {
             None
         }
     }
 
-    pub fn get_members(&self) -> SmallSet<Lit> {
-        self.cls
+    pub fn get_enum_members(&self, enum_: &EnumMetadata) -> SmallSet<Lit> {
+        enum_
+            .cls
             .class_object()
             .fields()
-            .filter_map(|f| self.get_member(f))
+            .filter_map(|f| self.get_enum_member(enum_, f))
             .collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataclassSynthesizedFields {
+    pub init: bool,
+    pub match_args: bool,
+}
+
+impl DataclassSynthesizedFields {
+    fn none() -> Self {
+        Self {
+            init: false,
+            match_args: false,
+        }
     }
 }
 
@@ -208,7 +215,7 @@ pub struct DataclassMetadata {
     /// The dataclass fields, e.g., `{'x'}` for `@dataclass class C: x: int`.
     pub fields: SmallSet<Name>,
     /// Synthesized fields of the dataclass, like the generated `__init__` method.
-    pub synthesized_fields: SmallSet<Name>,
+    pub synthesized_fields: DataclassSynthesizedFields,
     /// @dataclass(frozen=...).
     pub frozen: bool,
     /// @dataclass(kw_only=...).
@@ -224,7 +231,7 @@ impl DataclassMetadata {
             fields: self.fields.clone(),
             // Synthesized fields like `__init__` should not be inherited, as doing so would
             // incorrectly suggest that they are directly defined on the inheriting class.
-            synthesized_fields: SmallSet::new(),
+            synthesized_fields: DataclassSynthesizedFields::none(),
             // The remaining metadata are irrelevant when there are no fields to synthesize, so
             // just set them to some sensible-seeming value.
             frozen: self.frozen,
