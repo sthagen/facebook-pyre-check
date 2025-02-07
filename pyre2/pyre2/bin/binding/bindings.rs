@@ -31,12 +31,12 @@ use starlark_map::small_set::SmallSet;
 use vec1::Vec1;
 
 use crate::binding::binding::Binding;
-use crate::binding::binding::BindingExpect;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
+use crate::binding::binding::KeyClassSynthesizedFields;
 use crate::binding::binding::KeyExpect;
 use crate::binding::binding::KeyExport;
 use crate::binding::binding::KeyLegacyTypeParam;
@@ -205,11 +205,7 @@ impl Bindings {
             functions: Vec1::new(FuncInfo::default()),
             table: Default::default(),
         };
-        builder
-            .scopes
-            .current_mut()
-            .stat
-            .stmts(&x, &module_info, true, lookup, config);
+        builder.init_static_scope(&x, true);
         if module_info.name() != ModuleName::builtins() {
             builder.inject_builtins();
         }
@@ -218,11 +214,13 @@ impl Bindings {
         for (k, static_info) in last_scope.stat.0 {
             let info = last_scope.flow.info.get(&k);
             let val = match info {
-                Some(FlowInfo {
-                    key,
-                    style: Some(FlowStyle::Annotated { ann, .. }),
-                }) => Binding::AnnotatedType(*ann, Box::new(Binding::Forward(*key))),
-                Some(FlowInfo { key, .. }) => Binding::Forward(*key),
+                Some(FlowInfo { key, .. }) => {
+                    if let Some(ann) = static_info.annot {
+                        Binding::AnnotatedType(ann, Box::new(Binding::Forward(*key)))
+                    } else {
+                        Binding::Forward(*key)
+                    }
+                }
                 None => {
                     // We think we have a binding for this, but we didn't encounter a flow element, so have no idea of what.
                     // This might be because we haven't fully implemented all bindings, or because the two disagree. Just guess.
@@ -282,6 +280,22 @@ impl BindingTable {
 }
 
 impl<'a> BindingsBuilder<'a> {
+    pub fn init_static_scope(&mut self, x: &[Stmt], top_level: bool) {
+        self.scopes.current_mut().stat.stmts(
+            x,
+            &self.module_info,
+            top_level,
+            self.lookup,
+            self.config,
+            |x| {
+                self.table
+                    .annotations
+                    .0
+                    .insert(KeyAnnotation::Annotation(x))
+            },
+        );
+    }
+
     pub fn stmts(&mut self, xs: Vec<Stmt>) {
         for x in xs {
             self.stmt(x);
@@ -356,12 +370,11 @@ impl<'a> BindingsBuilder<'a> {
         name: &Identifier,
         binding: Binding,
         style: Option<FlowStyle>,
-    ) -> Idx<Key> {
+    ) -> Option<Idx<KeyAnnotation>> {
         let idx = self
             .table
             .insert(Key::Definition(ShortIdentifier::new(name)), binding);
-        self.bind_key(&name.id, idx, style);
-        idx
+        self.bind_key(&name.id, idx, style)
     }
 
     /// In methods, we track assignments to `self` attribute targets so that we can
@@ -401,7 +414,7 @@ impl<'a> BindingsBuilder<'a> {
         key: Idx<Key>,
         style: Option<FlowStyle>,
     ) -> Option<Idx<KeyAnnotation>> {
-        let annotation = self.scopes.update_flow_info(name, key, style);
+        self.scopes.update_flow_info(name, key, style);
         let info = self.scopes.current().stat.0.get(name).unwrap_or_else(|| {
             let module = self.module_info.name();
             panic!("Name `{name}` not found in static scope of module `{module}`")
@@ -412,7 +425,7 @@ impl<'a> BindingsBuilder<'a> {
                 .1
                 .insert(key);
         }
-        annotation
+        info.annot
     }
 
     pub fn type_params(&mut self, x: &mut TypeParams) -> Vec<Quantified> {
@@ -433,7 +446,7 @@ impl<'a> BindingsBuilder<'a> {
             self.scopes
                 .current_mut()
                 .stat
-                .add(name.id.clone(), name.range);
+                .add(name.id.clone(), name.range, None);
             self.bind_definition(name, Binding::TypeParameter(q), None);
         }
         qs
@@ -467,16 +480,16 @@ impl<'a> BindingsBuilder<'a> {
         let items = x
             .info
             .iter_hashed()
-            .map(|x| (x.0.cloned(), x.1.ann()))
+            .map(|x| x.0.cloned())
             .collect::<SmallSet<_>>();
         let mut res = SmallMap::with_capacity(items.len());
-        for (name, ann) in items.into_iter() {
+        for name in items.into_iter() {
             let key = self
                 .table
                 .types
                 .0
                 .insert(Key::Phi(name.key().clone(), range));
-            res.insert_hashed(name, FlowInfo::new_with_ann(key, ann));
+            res.insert_hashed(name, FlowInfo { key, style: None });
         }
         Flow {
             info: res,
@@ -521,51 +534,15 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
-    fn merge_flow_style(
-        &mut self,
-        styles: SmallSet<Option<&FlowStyle>>,
-        name: &Name,
-        is_loop: bool,
-    ) -> Option<FlowStyle> {
+    fn merge_flow_style(&mut self, styles: SmallSet<Option<&FlowStyle>>) -> Option<FlowStyle> {
         if styles.len() == 1 {
             return styles.first().unwrap().cloned();
         }
-
-        // The only distinct styles we can meaningfully merge are annotations
-        let unordered_anns: SmallSet<Option<Idx<KeyAnnotation>>> =
-            styles.iter().map(|x| x.as_ref()?.ann()).collect();
-        let mut anns = unordered_anns
-            .into_iter()
-            .flatten()
-            .map(|k| (k, self.table.annotations.0.idx_to_key(k).range()))
-            .collect::<Vec<_>>();
-        anns.sort_by_key(|(_, range)| (range.start(), range.end()));
-        // If there are multiple annotations, this picks the first one.
-        let mut ann = None;
-        for other_ann in anns.into_iter() {
-            match &ann {
-                None => {
-                    ann = Some(other_ann);
-                }
-                Some(ann) => {
-                    // A loop might capture the same annotation multiple times at many exit points.
-                    // But we only want to consider it when we join up `if` statements.
-                    if !is_loop {
-                        self.table.insert(
-                            KeyExpect(other_ann.1),
-                            BindingExpect::Eq(other_ann.0, ann.0, name.clone()),
-                        );
-                    }
-                }
-            }
-        }
-        ann.map(|x| FlowStyle::Annotated {
-            ann: x.0,
-            is_initialized: true,
-        })
+        // TODO: Merging of flow style is hacky. What properties should be merged?
+        None
     }
 
-    pub fn merge_flow(&mut self, mut xs: Vec<Flow>, range: TextRange, is_loop: bool) -> Flow {
+    pub fn merge_flow(&mut self, mut xs: Vec<Flow>, range: TextRange) -> Flow {
         if xs.len() == 1 && xs[0].no_next {
             return xs.pop().unwrap();
         }
@@ -589,7 +566,7 @@ impl<'a> BindingsBuilder<'a> {
                     .iter()
                     .flat_map(|x| x.info.get(name.key()).map(|x| (x.key, x.style.as_ref())))
                     .unzip();
-            let style = self.merge_flow_style(styles, name.key(), is_loop);
+            let style = self.merge_flow_style(styles);
             let key = self
                 .table
                 .insert(Key::Phi(name.key().clone(), range), Binding::phi(values));
@@ -603,7 +580,7 @@ impl<'a> BindingsBuilder<'a> {
 
     fn merge_loop_into_current(&mut self, mut branches: Vec<Flow>, range: TextRange) {
         branches.push(mem::take(&mut self.scopes.current_mut().flow));
-        self.scopes.current_mut().flow = self.merge_flow(branches, range, true);
+        self.scopes.current_mut().flow = self.merge_flow(branches, range);
     }
 }
 
@@ -671,11 +648,11 @@ impl LegacyTParamBuilder {
                     KeyLegacyTypeParam(ShortIdentifier::new(identifier)),
                     BindingLegacyTypeParam(*key),
                 );
-                builder
-                    .scopes
-                    .current_mut()
-                    .stat
-                    .add(identifier.id.clone(), identifier.range);
+                builder.scopes.current_mut().stat.add(
+                    identifier.id.clone(),
+                    identifier.range,
+                    None,
+                );
                 let key = builder
                     .table
                     .legacy_tparams

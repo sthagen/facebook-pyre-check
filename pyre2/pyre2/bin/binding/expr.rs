@@ -77,7 +77,7 @@ impl<'a> BindingsBuilder<'a> {
                 self.scopes
                     .current_mut()
                     .stat
-                    .add(name.id.clone(), name.range);
+                    .add(name.id.clone(), name.range, None);
                 self.bind_key(&name.id, bind_key, None);
             }
         }
@@ -98,8 +98,7 @@ impl<'a> BindingsBuilder<'a> {
         self.bind_narrow_ops(&ops.negate(), range);
         self.ensure_expr_opt(orelse);
         let else_branch = mem::take(&mut self.scopes.current_mut().flow);
-        self.scopes.current_mut().flow =
-            self.merge_flow(vec![if_branch, else_branch], range, false);
+        self.scopes.current_mut().flow = self.merge_flow(vec![if_branch, else_branch], range);
     }
 
     /// Execute through the expr, ensuring every name has a binding.

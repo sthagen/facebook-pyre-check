@@ -20,7 +20,9 @@ use crate::types::callable::CallableKind;
 use crate::types::callable::DataclassKeywords;
 use crate::types::callable::Params;
 use crate::types::class::ClassType;
+use crate::types::typed_dict::TypedDict;
 use crate::types::types::AnyStyle;
+use crate::types::types::BoundMethod;
 use crate::types::types::Type;
 use crate::types::types::Var;
 
@@ -43,6 +45,8 @@ pub enum CallTarget {
     BoundMethod(Type, Callable),
     /// A class object.
     Class(ClassType),
+    /// A TypedDict.
+    TypedDict(TypedDict),
 }
 
 impl CallTarget {
@@ -67,8 +71,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Some((Vec::new(), CallTarget::Dataclass(*c)))
             }
             Type::Callable(c, _) => Some((Vec::new(), CallTarget::Callable(*c))),
-            Type::BoundMethod(obj, func) => match self.as_call_target(*func.clone()) {
-                Some((gs, CallTarget::Callable(c))) => Some((gs, CallTarget::BoundMethod(*obj, c))),
+            Type::BoundMethod(box BoundMethod { obj, func }) => match self
+                .as_call_target(func.clone())
+            {
+                Some((gs, CallTarget::Callable(c))) => Some((gs, CallTarget::BoundMethod(obj, c))),
                 _ => None,
             },
             Type::ClassDef(cls) => self.as_call_target(self.instantiate_fresh(&cls)),
@@ -105,7 +111,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .and_then(|attr| self.resolve_as_instance_method(attr))
                 .and_then(|ty| self.as_call_target(ty)),
             Type::Type(box Type::TypedDict(typed_dict)) => {
-                Some((Vec::new(), CallTarget::Callable(typed_dict.as_callable())))
+                Some((Vec::new(), CallTarget::TypedDict(*typed_dict)))
             }
             _ => None,
         }
@@ -185,13 +191,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         keywords: &[Keyword],
     ) -> Option<Type> {
         let dunder_call = match self.get_metaclass_dunder_call(cls)? {
-            Type::BoundMethod(_, func) => {
+            Type::BoundMethod(box BoundMethod { func, .. }) => {
                 // This method was bound to a general instance of the metaclass, but we have more
                 // information about the particular instance that it should be bound to.
-                Type::BoundMethod(
-                    Box::new(Type::type_form(Type::ClassType(cls.clone()))),
+                Type::BoundMethod(Box::new(BoundMethod {
+                    obj: Type::type_form(Type::ClassType(cls.clone())),
                     func,
-                )
+                }))
             }
             dunder_call => dunder_call,
         };
@@ -203,7 +209,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         ))
     }
 
-    fn construct(
+    fn construct_class(
         &self,
         cls: ClassType,
         args: &[CallArg],
@@ -252,6 +258,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         cls.self_type()
     }
 
+    fn construct_typed_dict(
+        &self,
+        typed_dict: TypedDict,
+        args: &[CallArg],
+        keywords: &[Keyword],
+        range: TextRange,
+    ) -> Type {
+        // We know `__init__` exists because we synthesize it.
+        let init_method = self
+            .get_dunder_init(&typed_dict.as_class_type(), false)
+            .unwrap();
+        self.call_infer(
+            self.as_call_target_or_error(init_method, CallStyle::Method(&dunder::INIT), range),
+            args,
+            keywords,
+            range,
+        );
+        Type::TypedDict(Box::new(typed_dict))
+    }
+
     pub fn call_infer(
         &self,
         call_target: (Vec<Var>, CallTarget),
@@ -261,7 +287,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Type {
         let is_dataclass = matches!(call_target.1, CallTarget::Dataclass(_));
         let res = match call_target.1 {
-            CallTarget::Class(cls) => self.construct(cls, args, keywords, range),
+            CallTarget::Class(cls) => self.construct_class(cls, args, keywords, range),
+            CallTarget::TypedDict(td) => self.construct_typed_dict(td, args, keywords, range),
             CallTarget::BoundMethod(obj, c) => {
                 let first_arg = CallArg::Type(&obj, range);
                 self.callable_infer(c, Some(first_arg), args, keywords, range)

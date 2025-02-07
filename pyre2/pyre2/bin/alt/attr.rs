@@ -37,13 +37,14 @@ enum LookupResult {
 
 /// The result of looking up an attribute. We can analyze get and set actions
 /// on an attribute, each of which can be allowed with some type or disallowed.
+#[derive(Debug)]
 pub struct Attribute(AttributeInner);
 
 /// The result of an attempt to access an attribute (with a get or set operation).
 ///
 /// The operation is either permitted with an attribute `Type`, or is not allowed
 /// and has a reason.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum AttributeInner {
     /// A `NoAccess` attribute indicates that the attribute is well-defined, but does
     /// not allow the access pattern (for example class access on an instance-only attribute)
@@ -63,7 +64,7 @@ enum NotFound {
     ModuleExport(Module),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum NoAccessReason {
     /// The attribute is only initialized on instances, but we saw an attempt
     /// to use it as a class attribute.
@@ -324,6 +325,32 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.check_attr_set(base, attr_name, Either::Right(got), range, todo_ctx)
     }
 
+    pub fn is_attr_subset(
+        &self,
+        got: &Attribute,
+        want: &Attribute,
+        is_subset: &mut dyn FnMut(&Type, &Type) -> bool,
+    ) -> bool {
+        match (&got.0, &want.0) {
+            (_, AttributeInner::NoAccess(_)) => true,
+            (AttributeInner::NoAccess(_), _) => false,
+            (AttributeInner::ReadWrite(got), AttributeInner::ReadWrite(want)) => {
+                is_subset(got, want) && is_subset(want, got)
+            }
+            (
+                AttributeInner::ReadOnly(got) | AttributeInner::ReadWrite(got),
+                AttributeInner::ReadOnly(want),
+            ) => is_subset(got, want),
+            (
+                AttributeInner::Property(_, None, _) | AttributeInner::ReadOnly(_),
+                AttributeInner::Property(_, Some(_), _) | AttributeInner::ReadWrite(_),
+            ) => false,
+            // TODO handle properties
+            (_, AttributeInner::Property(_, _, _)) => true,
+            (AttributeInner::Property(_, _, _), _) => true,
+        }
+    }
+
     fn resolve_get_access(
         &self,
         attr: Attribute,
@@ -433,6 +460,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    pub fn try_lookup_attr(&self, base: Type, attr_name: &Name) -> Option<Attribute> {
+        match self.lookup_attr(base, attr_name) {
+            LookupResult::Found(attr) => Some(attr),
+            _ => None,
+        }
+    }
+
     fn get_module_attr(&self, module: &Module, attr_name: &Name) -> Option<Type> {
         match module.as_single_module() {
             Some(module_name) => self.get_import(attr_name, module_name),
@@ -454,9 +488,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::Tuple(Tuple::Unbounded(box element)) => {
                 Some(AttributeBase::ClassInstance(stdlib.tuple(element)))
             }
-            Type::Tuple(Tuple::Concrete(elements)) => Some(AttributeBase::ClassInstance(
-                stdlib.tuple(self.unions(elements)),
-            )),
+            Type::Tuple(Tuple::Concrete(elements)) => {
+                Some(AttributeBase::ClassInstance(if elements.is_empty() {
+                    stdlib.tuple(Type::Any(AnyStyle::Implicit))
+                } else {
+                    stdlib.tuple(self.unions(elements))
+                }))
+            }
             Type::LiteralString => Some(AttributeBase::ClassInstance(stdlib.str())),
             Type::Literal(lit) => {
                 Some(AttributeBase::ClassInstance(lit.general_class_type(stdlib)))
@@ -480,7 +518,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::None => Some(AttributeBase::ClassInstance(stdlib.none_type())),
             Type::Never(_) => Some(AttributeBase::Never),
             Type::Callable(_, _) => Some(AttributeBase::ClassInstance(stdlib.function_type())),
-            Type::BoundMethod(_, _) => Some(AttributeBase::ClassInstance(stdlib.method_type())),
+            Type::BoundMethod(_) => Some(AttributeBase::ClassInstance(stdlib.method_type())),
             Type::Ellipsis => Some(AttributeBase::ClassInstance(stdlib.ellipsis_type())),
             Type::Forall(_, box base) => self.as_attribute_base(base, stdlib),
             Type::Var(v) => {

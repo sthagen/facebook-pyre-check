@@ -20,10 +20,12 @@ use starlark_map::small_map::SmallMap;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
+use crate::binding::binding::BindingClassSynthesizedFields;
 use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
+use crate::binding::binding::KeyClassSynthesizedFields;
 use crate::binding::bindings::BindingsBuilder;
 use crate::binding::bindings::LegacyTParamBuilder;
 use crate::binding::scope::InstanceAttribute;
@@ -97,18 +99,16 @@ impl<'a> BindingsBuilder<'a> {
             KeyClassMetadata(ShortIdentifier::new(&x.name)),
             BindingClassMetadata(definition_key, bases.clone(), keywords, decorators.clone()),
         );
+        self.table.insert(
+            KeyClassSynthesizedFields(ShortIdentifier::new(&x.name)),
+            BindingClassSynthesizedFields(definition_key),
+        );
 
         let legacy_tparam_builder = legacy.unwrap();
         legacy_tparam_builder.add_name_definitions(self);
 
         self.scopes.push(Scope::class_body(x.name.clone()));
-        self.scopes.current_mut().stat.stmts(
-            &body,
-            &self.module_info,
-            false,
-            self.lookup,
-            self.config,
-        );
+        self.init_static_scope(&body, false);
         self.stmts(body);
 
         let last_scope = self.scopes.pop();
@@ -126,14 +126,14 @@ impl<'a> BindingsBuilder<'a> {
                     class: definition_key,
                     name: name.clone(),
                     value: Binding::Forward(info.key),
-                    annotation: info.ann(),
+                    annotation: stat_info.annot,
                     range: stat_info.loc,
                     initialization,
                 };
                 fields.insert(
                     name.clone(),
                     ClassFieldProperties {
-                        is_annotated: info.ann().is_some(),
+                        is_annotated: stat_info.annot.is_some(),
                     },
                 );
                 self.table.insert(
@@ -207,6 +207,10 @@ impl<'a> BindingsBuilder<'a> {
         self.table.insert(
             KeyClassMetadata(ShortIdentifier::new(&class_name)),
             BindingClassMetadata(definition_key, vec![Expr::Name(base_name)], vec![], vec![]),
+        );
+        self.table.insert(
+            KeyClassSynthesizedFields(ShortIdentifier::new(&class_name)),
+            BindingClassSynthesizedFields(definition_key),
         );
         let mut fields = SmallMap::new();
         match members {

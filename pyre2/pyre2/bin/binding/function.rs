@@ -69,12 +69,11 @@ impl<'a> BindingsBuilder<'a> {
             self.scopes
                 .current_mut()
                 .stat
-                .add(name.id.clone(), name.range);
+                .add(name.id.clone(), name.range, Some(ann_key));
             self.bind_key(
                 &name.id,
                 bind_key,
                 Some(FlowStyle::Annotated {
-                    ann: ann_key,
                     is_initialized: true,
                 }),
             );
@@ -170,13 +169,7 @@ impl<'a> BindingsBuilder<'a> {
             },
         );
 
-        self.scopes.current_mut().stat.stmts(
-            &body,
-            &self.module_info,
-            false,
-            self.lookup,
-            self.config,
-        );
+        self.init_static_scope(&body, false);
         self.stmts(body);
         let func_scope = self.scopes.pop();
         self.scopes.pop();

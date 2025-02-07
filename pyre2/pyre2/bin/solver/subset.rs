@@ -8,13 +8,13 @@
 use itertools::izip;
 
 use crate::alt::answers::LookupAnswer;
+use crate::dunder;
 use crate::solver::solver::Subset;
-use crate::types::callable::Callable;
-use crate::types::callable::CallableKind;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Params;
 use crate::types::callable::Required;
+use crate::types::class::ClassType;
 use crate::types::class::TArgs;
 use crate::types::simplify::unions;
 use crate::types::tuple::Tuple;
@@ -84,6 +84,47 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
         }
     }
 
+    fn get_call_attr(&mut self, protocol: &ClassType) -> Option<Type> {
+        self.type_order
+            .try_lookup_attr(protocol.clone().to_type(), &dunder::CALL)
+            .and_then(|attr| self.type_order.resolve_as_instance_method(attr))
+    }
+
+    pub fn is_subset_protocol(&mut self, got: Type, protocol: ClassType) -> bool {
+        let recursive_check = (got.clone(), Type::ClassType(protocol.clone()));
+        if !self.recursive_assumptions.insert(recursive_check) {
+            // Assume recursive checks are true
+            return true;
+        }
+        let to = self.type_order;
+        let protocol_members = to.get_all_member_names(protocol.class_object());
+        for name in protocol_members {
+            if name == dunder::INIT || name == dunder::NEW {
+                // Protocols can't be instantiated
+                continue;
+            }
+            if let Some(got) = to.try_lookup_attr(got.clone(), &name)
+                && let Some(want) = to.try_lookup_attr(protocol.clone().to_type(), &name)
+                && to.is_attr_subset(&got, &want, &mut |got, want| self.is_subset_eq(got, want))
+            {
+                continue;
+            } else if matches!(got, Type::Callable(_, _))
+                && name == dunder::CALL
+                && let Some(want) = self.get_call_attr(&protocol)
+            {
+                if let Type::BoundMethod(box method) = want
+                    && let Some(want_no_self) = method.as_callable()
+                    && !self.is_subset_eq(&got, &want_no_self)
+                {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Implementation of subset equality for Type, other than Var.
     pub fn is_subset_eq_impl(&mut self, got: &Type, want: &Type) -> bool {
         match (got, want) {
@@ -98,24 +139,16 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             (l, Type::Intersect(us)) => us.iter().all(|u| self.is_subset_eq(l, u)),
             (l, Type::Union(us)) => us.iter().any(|u| self.is_subset_eq(l, u)),
             (Type::Intersect(ls), u) => ls.iter().any(|l| self.is_subset_eq(l, u)),
-            (
-                Type::BoundMethod(
-                    _,
-                    box Type::Callable(
-                        box Callable {
-                            params: Params::List(params),
-                            ret,
-                        },
-                        _,
-                    ),
-                ),
-                Type::Callable(_, _),
-            ) if !params.is_empty() => {
-                let l_no_self = Type::Callable(
-                    Box::new(Callable::list(params.tail(), ret.clone())),
-                    CallableKind::Anon,
-                );
+            (Type::BoundMethod(box method), Type::Callable(_, _))
+                if let Some(l_no_self) = method.as_callable() =>
+            {
                 self.is_subset_eq_impl(&l_no_self, want)
+            }
+            (Type::BoundMethod(box l), Type::BoundMethod(box u))
+                if let Some(l_no_self) = l.as_callable()
+                    && let Some(u_no_self) = u.as_callable() =>
+            {
+                self.is_subset_eq_impl(&l_no_self, &u_no_self)
             }
             (Type::Callable(l, _), Type::Callable(u, _)) => {
                 self.is_subset_eq(&l.ret, &u.ret)
@@ -216,20 +249,19 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                     Some(got) => self.check_targs(got.targs(), want.targs(), want.tparams()),
                     // Structural checking for assigning to protocols
                     None if want_is_protocol => {
-                        let want_members =
-                            self.type_order.get_all_member_names(want.class_object());
-                        for name in want_members {
-                            if self.type_order.get_instance_attribute(got, &name).is_some() {
-                                // TODO: check types of attributes
-                                continue;
-                            } else {
-                                return false;
-                            }
-                        }
-                        true
+                        self.is_subset_protocol(got.clone().to_type(), want.clone())
                     }
                     _ => false,
                 }
+            }
+            (_, Type::ClassType(want)) if self.type_order.is_protocol(want.class_object()) => {
+                self.is_subset_protocol(got.clone(), want.clone())
+            }
+            (Type::ClassType(got), Type::BoundMethod(_) | Type::Callable(_, _))
+                if self.type_order.is_protocol(got.class_object())
+                    && let Some(call_ty) = self.get_call_attr(got) =>
+            {
+                self.is_subset_eq(&call_ty, want)
             }
             (Type::ClassDef(got), Type::ClassDef(want)) => {
                 self.type_order.has_superclass(got, want)

@@ -19,11 +19,10 @@ use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
-use crate::alt::class::classdef::ClassField;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::DataclassMetadata;
-use crate::alt::types::class_metadata::DataclassSynthesizedFields;
 use crate::alt::types::class_metadata::EnumMetadata;
+use crate::alt::types::class_metadata::TypedDictMetadata;
 use crate::ast::Ast;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyLegacyTypeParam;
@@ -32,6 +31,7 @@ use crate::module::short_identifier::ShortIdentifier;
 use crate::types::callable::CallableKind;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
+use crate::types::literal::Lit;
 use crate::types::special_form::SpecialForm;
 use crate::types::type_var::Variance;
 use crate::types::types::CalleeKind;
@@ -112,11 +112,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         is_typed_dict = true;
                         let class_object = typed_dict.class_object();
                         let class_metadata = self.get_metadata_for_class(class_object);
-                        // In normal typechecking logic, TypedDicts should never be represented as ClassType.
-                        // However, we convert it to a ClassType here so that MRO works properly and we can look up
-                        // the types of the declared items.
                         Some((
-                            ClassType::new(class_object.clone(), typed_dict.targs().clone()),
+                            typed_dict.as_class_type(),
                             class_metadata,
                         ))
                     }
@@ -140,7 +137,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 "metaclass" => Either::Left(x),
                 _ => Either::Right((n.clone(), self.expr(x, None))),
             });
-
+        let typed_dict_metadata = if is_typed_dict {
+            let is_total = !keywords.iter().any(|(n, t)| {
+                n.as_str() == "total" && matches!(t, Type::Literal(Lit::Bool(false)))
+            });
+            let fields = self.get_typed_dict_fields(cls, &bases_with_metadata, is_total);
+            Some(TypedDictMetadata { fields })
+        } else {
+            None
+        };
         let base_metaclasses = bases_with_metadata
             .iter()
             .filter_map(|(b, metadata)| metadata.metaclass().map(|m| (&b.name().id, m)))
@@ -182,15 +187,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 ty_decorator.callee_kind()
             {
                 let dataclass_fields = self.get_dataclass_fields(cls, &bases_with_metadata);
-                let synthesized_fields = DataclassSynthesizedFields {
-                    init: kws.init,
-                    match_args: kws.match_args,
-                };
                 dataclass_metadata = Some(DataclassMetadata {
                     fields: dataclass_fields,
-                    synthesized_fields,
-                    frozen: kws.frozen,
-                    kw_only: kws.kw_only,
+                    kws,
                 });
             }
         }
@@ -207,17 +206,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             bases_with_metadata,
             metaclass,
             keywords,
-            is_typed_dict,
+            typed_dict_metadata,
             is_named_tuple,
             enum_metadata,
             is_protocol,
             dataclass_metadata,
             self.errors(),
         )
-    }
-
-    pub fn get_synthesized_field(&self, cls: &Class, name: &Name) -> Option<ClassField> {
-        self.get_dataclass_synthesized_field(cls, name)
     }
 
     /// This helper deals with special cases where we want to intercept an `Expr`

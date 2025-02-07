@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use ruff_python_ast::name::Name;
+use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswersSolver;
@@ -15,6 +16,8 @@ use crate::alt::answers::LookupAnswer;
 use crate::alt::class::classdef::ClassField;
 use crate::alt::class::classdef::ClassFieldInner;
 use crate::alt::types::class_metadata::ClassMetadata;
+use crate::alt::types::class_metadata::ClassSynthesizedField;
+use crate::alt::types::class_metadata::ClassSynthesizedFields;
 use crate::binding::binding::ClassFieldInitialization;
 use crate::dunder;
 use crate::types::callable::Callable;
@@ -49,16 +52,23 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         all_fields
     }
 
-    pub fn get_dataclass_synthesized_field(&self, cls: &Class, name: &Name) -> Option<ClassField> {
+    pub fn get_dataclass_synthesized_fields(&self, cls: &Class) -> Option<ClassSynthesizedFields> {
         let metadata = self.get_metadata_for_class(cls);
         let dataclass = metadata.dataclass_metadata()?;
-        if *name == dunder::INIT && dataclass.synthesized_fields.init {
-            Some(self.get_dataclass_init(cls, &dataclass.fields, dataclass.kw_only))
-        } else if *name == dunder::MATCH_ARGS && dataclass.synthesized_fields.match_args {
-            Some(self.get_dataclass_match_args(cls, &dataclass.fields, dataclass.kw_only))
-        } else {
-            None
+        let mut fields = SmallMap::new();
+        if dataclass.kws.init {
+            fields.insert(
+                dunder::INIT,
+                self.get_dataclass_init(cls, &dataclass.fields, dataclass.kws.kw_only),
+            );
         }
+        if dataclass.kws.match_args {
+            fields.insert(
+                dunder::MATCH_ARGS,
+                self.get_dataclass_match_args(cls, &dataclass.fields, dataclass.kws.kw_only),
+            );
+        }
+        Some(ClassSynthesizedFields::new(fields))
     }
 
     fn iter_fields(&self, cls: &Class, fields: &SmallSet<Name>) -> Vec<(Name, ClassField, bool)> {
@@ -76,48 +86,34 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }).collect()
     }
 
-    /// Gets a dataclass field as a function param.
-    fn get_dataclass_param(&self, name: &Name, field: ClassField, kw_only: bool) -> Param {
-        let ClassField(ClassFieldInner::Simple {
-            ty, initialization, ..
-        }) = field;
-        let required = match initialization {
-            ClassFieldInitialization::Class => Required::Required,
-            ClassFieldInitialization::Instance => Required::Optional,
-        };
-        if kw_only {
-            Param::KwOnly(name.clone(), ty, required)
-        } else {
-            Param::Pos(name.clone(), ty, required)
-        }
-    }
-
     /// Gets __init__ method for an `@dataclass`-decorated class.
     fn get_dataclass_init(
         &self,
         cls: &Class,
         fields: &SmallSet<Name>,
         kw_only: bool,
-    ) -> ClassField {
+    ) -> ClassSynthesizedField {
         let mut params = vec![Param::Pos(
             Name::new("self"),
             cls.self_type(),
             Required::Required,
         )];
         for (name, field, field_kw_only) in self.iter_fields(cls, fields) {
-            params.push(self.get_dataclass_param(&name, field, kw_only || field_kw_only));
+            params.push(field.as_param(&name, kw_only || field_kw_only));
         }
         let ty = Type::Callable(
             Box::new(Callable::list(ParamList::new(params), Type::None)),
             CallableKind::Def,
         );
-        ClassField(ClassFieldInner::Simple {
-            ty,
-            annotation: None,
-            initialization: ClassFieldInitialization::Class,
-            readonly: false,
-            is_enum_member: false,
-        })
+        ClassSynthesizedField {
+            inner: ClassField(ClassFieldInner::Simple {
+                ty,
+                annotation: None,
+                initialization: ClassFieldInitialization::Class,
+                readonly: false,
+            }),
+            overwrite: false,
+        }
     }
 
     fn get_dataclass_match_args(
@@ -125,7 +121,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         cls: &Class,
         fields: &SmallSet<Name>,
         kw_only: bool,
-    ) -> ClassField {
+    ) -> ClassSynthesizedField {
         // Keyword-only fields do not appear in __match_args__.
         let ts = if kw_only {
             Vec::new()
@@ -143,12 +139,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .collect()
         };
         let ty = Type::Tuple(Tuple::Concrete(ts));
-        ClassField(ClassFieldInner::Simple {
-            ty,
-            annotation: None,
-            initialization: ClassFieldInitialization::Class,
-            readonly: false,
-            is_enum_member: false,
-        })
+        ClassSynthesizedField {
+            inner: ClassField(ClassFieldInner::Simple {
+                ty,
+                annotation: None,
+                initialization: ClassFieldInitialization::Class,
+                readonly: false,
+            }),
+            overwrite: false,
+        }
     }
 }

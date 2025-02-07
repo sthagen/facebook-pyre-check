@@ -30,16 +30,20 @@ use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
+use crate::binding::binding::KeyClassSynthesizedFields;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::dunder;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Annotation;
+use crate::types::callable::Param;
+use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class::ClassFieldProperties;
 use crate::types::class::ClassType;
 use crate::types::class::TArgs;
 use crate::types::typed_dict::TypedDict;
+use crate::types::types::BoundMethod;
 use crate::types::types::Decoration;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -49,17 +53,16 @@ use crate::util::prelude::SliceExt;
 /// Raw information about an attribute declared somewhere in a class. We need to
 /// know whether it is initialized in the class body in order to determine
 /// both visibility rules and whether method binding should be performed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassField(pub ClassFieldInner);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassFieldInner {
     Simple {
         ty: Type,
         annotation: Option<Annotation>,
         initialization: ClassFieldInitialization,
         readonly: bool,
-        is_enum_member: bool,
     },
 }
 
@@ -69,14 +72,12 @@ impl ClassField {
         annotation: Option<Annotation>,
         initialization: ClassFieldInitialization,
         readonly: bool,
-        is_enum_member: bool,
     ) -> Self {
         Self(ClassFieldInner::Simple {
             ty,
             annotation,
             initialization,
             readonly,
-            is_enum_member,
         })
     }
 
@@ -86,7 +87,6 @@ impl ClassField {
             annotation: None,
             initialization: ClassFieldInitialization::Class,
             readonly: false,
-            is_enum_member: false,
         })
     }
 
@@ -107,12 +107,6 @@ impl ClassField {
         }
     }
 
-    pub fn is_enum_member(&self) -> bool {
-        match &self.0 {
-            ClassFieldInner::Simple { is_enum_member, .. } => *is_enum_member,
-        }
-    }
-
     fn instantiate_for(&self, cls: &ClassType) -> Self {
         match &self.0 {
             ClassFieldInner::Simple {
@@ -120,14 +114,27 @@ impl ClassField {
                 annotation,
                 initialization,
                 readonly,
-                is_enum_member,
             } => Self(ClassFieldInner::Simple {
                 ty: cls.instantiate_member(ty.clone()),
                 annotation: annotation.clone(),
                 initialization: *initialization,
                 readonly: *readonly,
-                is_enum_member: *is_enum_member,
             }),
+        }
+    }
+
+    pub fn as_param(self, name: &Name, kw_only: bool) -> Param {
+        let ClassField(ClassFieldInner::Simple {
+            ty, initialization, ..
+        }) = self;
+        let required = match initialization {
+            ClassFieldInitialization::Class => Required::Required,
+            ClassFieldInitialization::Instance => Required::Optional,
+        };
+        if kw_only {
+            Param::KwOnly(name.clone(), ty, required)
+        } else {
+            Param::Pos(name.clone(), ty, required)
         }
     }
 
@@ -234,7 +241,7 @@ fn make_bound_method(obj: Type, attr: Type) -> Type {
     // TODO(stroxler): Think about what happens if `attr` is not callable. This
     // can happen with the current logic if a decorator spits out a non-callable
     // type that gets wrapped in `@classmethod`.
-    Type::BoundMethod(Box::new(obj), Box::new(attr))
+    Type::BoundMethod(Box::new(BoundMethod { obj, func: attr }))
 }
 
 impl Display for ClassField {
@@ -321,16 +328,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.get_enum_from_class(class_type.class_object())
     }
 
-    /// Given an identifier, see whether it is bound to an enum class. If so,
-    /// return the enum, otherwise return `None`.
-    pub fn get_enum_from_name(&self, name: Identifier) -> Option<EnumMetadata> {
-        let key = self
-            .bindings()
-            .key_to_idx(&Key::Usage(ShortIdentifier::new(&name)));
-        self.get_idx_class_def(key)
-            .and_then(|cls| self.get_enum_from_class(&cls))
-    }
-
     fn check_and_create_targs(&self, cls: &Class, targs: Vec<Type>, range: TextRange) -> TArgs {
         let tparams = cls.tparams();
         let nargs = targs.len();
@@ -389,7 +386,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn type_of_instance(&self, cls: &Class, targs: TArgs) -> Type {
         let metadata = self.get_metadata_for_class(cls);
         if metadata.is_typed_dict() {
-            let fields = self.get_typed_dict_fields(cls, &targs);
+            let fields = self.sub_typed_dict_fields(cls, &targs);
             Type::TypedDict(Box::new(TypedDict::new(cls.dupe(), targs, fields)))
         } else {
             Type::ClassType(ClassType::new(cls.dupe(), targs))
@@ -468,41 +465,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn is_valid_enum_member(
-        &self,
-        name: &Name,
-        ty: &Type,
-        initialization: ClassFieldInitialization,
-    ) -> bool {
-        // Names starting but not ending with __ are private
-        // Names starting and ending with _ are reserved by the enum
-        if name.starts_with("__") && !name.ends_with("__")
-            || name.starts_with("_") && name.ends_with("_")
-        {
-            return false;
-        }
-        // Enum members must be initialized on the class
-        if initialization == ClassFieldInitialization::Instance {
-            return false;
-        }
-        match ty {
-            // Methods decorated with @member are members
-            Type::Decoration(Decoration::EnumMember(_)) => true,
-            // Callables are not valid enum members
-            Type::BoundMethod(_, _) | Type::Callable(_, _) | Type::Decoration(_) => false,
-            // Values initialized with nonmember() are not members
-            Type::ClassType(cls)
-                if cls.class_object().has_qname("enum", "nonmember")
-                    || cls.class_object().has_qname("builtins", "staticmethod")
-                    || cls.class_object().has_qname("builtins", "classmethod")
-                    || cls.class_object().has_qname("enum", "property") =>
-            {
-                false
-            }
-            _ => true,
-        }
-    }
-
     pub fn calculate_class_field(
         &self,
         name: &Name,
@@ -513,11 +475,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
     ) -> ClassField {
         let metadata = self.get_metadata_for_class(class);
-        let mut is_enum_member = false;
         if let Some(enum_) = self.get_enum_from_class(class)
             && self.is_valid_enum_member(name, value_ty, initialization)
         {
-            is_enum_member = true;
             if annotation.is_some() {
                 self.error(range, format!("Enum member `{}` may not be annotated directly. Instead, annotate the _value_ attribute.", name));
             }
@@ -548,25 +508,28 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         };
         let readonly = metadata
             .dataclass_metadata()
-            .map_or(false, |dataclass| dataclass.frozen);
-        ClassField::new(
-            ty.clone(),
-            ann.cloned(),
-            initialization,
-            readonly,
-            is_enum_member,
-        )
+            .map_or(false, |dataclass| dataclass.kws.frozen);
+        ClassField::new(ty.clone(), ann.cloned(), initialization, readonly)
     }
 
-    fn get_class_field(&self, cls: &Class, name: &Name) -> Option<ClassField> {
-        if cls.contains(name) {
+    pub fn get_class_field(&self, cls: &Class, name: &Name) -> Option<ClassField> {
+        let synthesized_fields = self.get_from_class(
+            cls,
+            &KeyClassSynthesizedFields(ShortIdentifier::new(cls.name())),
+        );
+        let synth = synthesized_fields.get(name);
+        if let Some(synth) = synth
+            && synth.overwrite
+        {
+            Some(synth.inner.clone())
+        } else if cls.contains(name) {
             let field = self.get_from_class(
                 cls,
                 &KeyClassField(ShortIdentifier::new(cls.name()), name.clone()),
             );
             Some((*field).clone())
         } else {
-            self.get_synthesized_field(cls, name)
+            synth.map(|f| f.inner.clone())
         }
     }
 
@@ -640,14 +603,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// Access is disallowed for instance-only attributes and for attributes whose
     /// type contains a class-scoped type parameter - e.g., `class A[T]: x: T`.
     pub fn get_class_attribute(&self, cls: &Class, name: &Name) -> Option<Attribute> {
-        if let Some(e) = self.get_enum_from_class(cls)
-            && let Some(enum_member) = self.get_enum_member(&e, name)
-        {
-            Some(Attribute::read_write(Type::Literal(enum_member)))
-        } else {
-            let member = self.get_class_member(cls, name)?.value;
-            Some(member.as_class_attribute(cls))
-        }
+        let member = self.get_class_member(cls, name)?.value;
+        Some(member.as_class_attribute(cls))
     }
 
     /// Get the class's `__new__` method.

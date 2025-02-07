@@ -25,12 +25,14 @@ use crate::alt::answers::UNKNOWN;
 use crate::alt::callable::CallArg;
 use crate::alt::class::classdef::ClassField;
 use crate::alt::types::class_metadata::ClassMetadata;
+use crate::alt::types::class_metadata::ClassSynthesizedFields;
 use crate::alt::types::legacy_lookup::LegacyTypeParameterLookup;
 use crate::ast::Ast;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
+use crate::binding::binding::BindingClassSynthesizedFields;
 use crate::binding::binding::BindingExpect;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::ContextManagerKind;
@@ -597,6 +599,22 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             &self.get_idx_class_def(field.class).unwrap(),
             field.range,
         ))
+    }
+
+    pub fn solve_class_synthesized_fields(
+        &self,
+        fields: &BindingClassSynthesizedFields,
+    ) -> Arc<ClassSynthesizedFields> {
+        let cls = self.get_idx_class_def(fields.0).unwrap();
+        if let Some(fields) = self.get_typed_dict_synthesized_fields(&cls) {
+            Arc::new(fields)
+        } else if let Some(fields) = self.get_enum_synthesized_fields(&cls) {
+            Arc::new(fields)
+        } else if let Some(fields) = self.get_dataclass_synthesized_fields(&cls) {
+            Arc::new(fields)
+        } else {
+            Arc::new(ClassSynthesizedFields::default())
+        }
     }
 
     fn solve_binding_inner(&self, binding: &Binding) -> Type {

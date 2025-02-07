@@ -15,7 +15,6 @@ use ruff_python_ast::ExprName;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Stmt;
 use ruff_text_size::TextRange;
-use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 use vec1::Vec1;
 
@@ -41,6 +40,8 @@ pub struct Static(pub SmallMap<Name, StaticInfo>);
 #[derive(Clone, Debug)]
 pub struct StaticInfo {
     pub loc: TextRange,
+    /// The location of the first annotated name for this binding, if any.
+    pub annot: Option<Idx<KeyAnnotation>>,
     /// How many times this will be redefined
     pub count: usize,
     /// True if this is going to appear as a `Key::Import``.
@@ -49,10 +50,17 @@ pub struct StaticInfo {
 }
 
 impl Static {
-    fn add_with_count(&mut self, name: Name, loc: TextRange, count: usize) -> &mut StaticInfo {
+    fn add_with_count(
+        &mut self,
+        name: Name,
+        loc: TextRange,
+        annot: Option<Idx<KeyAnnotation>>,
+        count: usize,
+    ) -> &mut StaticInfo {
         // Use whichever one we see first
         let res = self.0.entry(name).or_insert(StaticInfo {
             loc,
+            annot,
             count: 0,
             uses_key_import: false,
         });
@@ -60,8 +68,8 @@ impl Static {
         res
     }
 
-    pub fn add(&mut self, name: Name, range: TextRange) {
-        self.add_with_count(name, range, 1);
+    pub fn add(&mut self, name: Name, range: TextRange, annot: Option<Idx<KeyAnnotation>>) {
+        self.add_with_count(name, range, annot, 1);
     }
 
     pub fn stmts(
@@ -71,26 +79,30 @@ impl Static {
         top_level: bool,
         lookup: &dyn LookupExport,
         config: &Config,
+        mut get_annotation_idx: impl FnMut(ShortIdentifier) -> Idx<KeyAnnotation>,
     ) {
         let mut d = Definitions::new(x, module_info.name(), module_info.path().is_init(), config);
         if top_level && module_info.name() != ModuleName::builtins() {
             d.inject_builtins();
         }
         for (name, def) in d.definitions {
-            self.add_with_count(name, def.range, def.count)
+            let annot = def.annot.map(&mut get_annotation_idx);
+            self.add_with_count(name, def.range, annot, def.count)
                 .uses_key_import = def.style == DefinitionStyle::ImportModule;
         }
         for (m, range) in d.import_all {
             if let Ok(exports) = lookup.get(m) {
                 for name in exports.wildcard(lookup).iter() {
-                    self.add_with_count(name.clone(), range, 1).uses_key_import = true;
+                    // TODO: semantics of import * and global var with same name
+                    self.add_with_count(name.clone(), range, None, 1)
+                        .uses_key_import = true;
                 }
             }
         }
     }
 
     pub fn expr_lvalue(&mut self, x: &Expr) {
-        let mut add = |name: &ExprName| self.add(name.id.clone(), name.range);
+        let mut add = |name: &ExprName| self.add(name.id.clone(), name.range, None);
         Ast::expr_lvalue(x, &mut add);
     }
 }
@@ -105,13 +117,8 @@ pub struct Flow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FlowStyle {
-    /// The annotation associated with this key, if any.
-    /// If there is one, all subsequent bindings must obey this annotation.
-    /// Also store am I initialized, or am I the result of `x: int`?
-    Annotated {
-        ann: Idx<KeyAnnotation>,
-        is_initialized: bool,
-    },
+    /// Am I initialized, or am I the result of `x: int`?
+    Annotated { is_initialized: bool },
     /// Am I the result of an import (which needs merging).
     /// E.g. `import foo.bar` and `import foo.baz` need merging.
     /// The `ModuleName` will be the most recent entry.
@@ -124,15 +131,6 @@ pub enum FlowStyle {
     ImportAs(ModuleName),
 }
 
-impl FlowStyle {
-    pub fn ann(&self) -> Option<Idx<KeyAnnotation>> {
-        match self {
-            FlowStyle::Annotated { ann, .. } => Some(*ann),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct FlowInfo {
     pub key: Idx<Key>,
@@ -140,24 +138,6 @@ pub struct FlowInfo {
 }
 
 impl FlowInfo {
-    fn new(key: Idx<Key>, style: Option<FlowStyle>) -> Self {
-        Self { key, style }
-    }
-
-    pub fn new_with_ann(key: Idx<Key>, ann: Option<Idx<KeyAnnotation>>) -> Self {
-        Self::new(
-            key,
-            ann.map(|x| FlowStyle::Annotated {
-                ann: x,
-                is_initialized: true,
-            }),
-        )
-    }
-
-    pub fn ann(&self) -> Option<Idx<KeyAnnotation>> {
-        self.style.as_ref()?.ann()
-    }
-
     pub fn is_initialized(&self) -> bool {
         match self.style.as_ref() {
             Some(FlowStyle::Annotated { is_initialized, .. }) => *is_initialized,
@@ -312,26 +292,11 @@ impl Scopes {
         self.0.iter_mut().rev()
     }
 
-    pub fn update_flow_info(
-        &mut self,
-        name: &Name,
-        key: Idx<Key>,
-        style: Option<FlowStyle>,
-    ) -> Option<Idx<KeyAnnotation>> {
-        match self.current_mut().flow.info.entry(name.clone()) {
-            Entry::Occupied(mut e) => {
-                // if there was a previous annotation, reuse that
-                let style = style.or_else(|| {
-                    e.get().ann().map(|ann| FlowStyle::Annotated {
-                        ann,
-                        is_initialized: true,
-                    })
-                });
-                *e.get_mut() = FlowInfo { key, style };
-                e.get().ann()
-            }
-            Entry::Vacant(e) => e.insert(FlowInfo { key, style }).ann(),
-        }
+    pub fn update_flow_info(&mut self, name: &Name, key: Idx<Key>, style: Option<FlowStyle>) {
+        self.current_mut()
+            .flow
+            .info
+            .insert(name.clone(), FlowInfo { key, style });
     }
 
     fn get_flow_info(&self, name: &Name) -> Option<&FlowInfo> {

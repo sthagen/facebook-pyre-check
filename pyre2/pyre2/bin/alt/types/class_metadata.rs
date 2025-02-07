@@ -12,15 +12,15 @@ use std::iter;
 use std::sync::Arc;
 
 use ruff_python_ast::name::Name;
+use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use vec1::Vec1;
 
-use crate::alt::answers::AnswersSolver;
-use crate::alt::answers::LookupAnswer;
+use crate::alt::class::classdef::ClassField;
 use crate::error::collector::ErrorCollector;
+use crate::types::callable::DataclassKeywords;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
-use crate::types::literal::Lit;
 use crate::types::qname::QName;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
@@ -31,7 +31,7 @@ pub struct ClassMetadata {
     mro: Mro,
     metaclass: Metaclass,
     keywords: Keywords,
-    is_typed_dict: bool,
+    typed_dict_metadata: Option<TypedDictMetadata>,
     is_named_tuple: bool,
     enum_metadata: Option<EnumMetadata>,
     is_protocol: bool,
@@ -50,7 +50,7 @@ impl ClassMetadata {
         bases_with_metadata: Vec<(ClassType, Arc<ClassMetadata>)>,
         metaclass: Option<ClassType>,
         keywords: Vec<(Name, Type)>,
-        is_typed_dict: bool,
+        typed_dict_metadata: Option<TypedDictMetadata>,
         is_named_tuple: bool,
         enum_metadata: Option<EnumMetadata>,
         is_protocol: bool,
@@ -61,7 +61,7 @@ impl ClassMetadata {
             mro: Mro::new(cls, bases_with_metadata, errors),
             metaclass: Metaclass(metaclass),
             keywords: Keywords(keywords),
-            is_typed_dict,
+            typed_dict_metadata,
             is_named_tuple,
             enum_metadata,
             is_protocol,
@@ -74,7 +74,7 @@ impl ClassMetadata {
             mro: Mro::Cyclic,
             metaclass: Metaclass::default(),
             keywords: Keywords::default(),
-            is_typed_dict: false,
+            typed_dict_metadata: None,
             is_named_tuple: false,
             enum_metadata: None,
             is_protocol: false,
@@ -91,16 +91,12 @@ impl ClassMetadata {
         &self.keywords.0
     }
 
-    pub fn get_keyword(&self, name: &Name) -> Option<Type> {
-        self.keywords
-            .0
-            .iter()
-            .find(|(n, _)| n.as_str() == name)
-            .map(|(_, ty)| ty.clone())
+    pub fn is_typed_dict(&self) -> bool {
+        self.typed_dict_metadata.is_some()
     }
 
-    pub fn is_typed_dict(&self) -> bool {
-        self.is_typed_dict
+    pub fn typed_dict_metadata(&self) -> Option<&TypedDictMetadata> {
+        self.typed_dict_metadata.as_ref()
     }
 
     pub fn is_named_tuple(&self) -> bool {
@@ -133,6 +129,52 @@ impl ClassMetadata {
 
     pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
         self.mro.visit_mut(&mut f)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassSynthesizedField {
+    pub inner: ClassField,
+    /// Should the synthesized field ovewrite a user-defined field of the same name defined on the same class?
+    pub overwrite: bool,
+}
+
+impl Display for ClassSynthesizedField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, overwrite={})", self.inner, self.overwrite)
+    }
+}
+
+/// A class's synthesized fields, such as a dataclass's `__init__` method.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ClassSynthesizedFields(SmallMap<Name, ClassSynthesizedField>);
+
+impl ClassSynthesizedFields {
+    pub fn new(fields: SmallMap<Name, ClassSynthesizedField>) -> Self {
+        Self(fields)
+    }
+
+    pub fn get(&self, name: &Name) -> Option<&ClassSynthesizedField> {
+        self.0.get(name)
+    }
+
+    pub fn visit_type_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
+        for field in self.0.values_mut() {
+            field.inner.visit_type_mut(f);
+        }
+    }
+}
+
+impl Display for ClassSynthesizedFields {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(
+            f,
+            "ClassSynthesizedFields {{ {} }}",
+            commas_iter(|| self
+                .0
+                .iter()
+                .map(|(name, field)| format!("{name} => {field}")))
+        )
     }
 }
 
@@ -169,57 +211,23 @@ impl Display for Keywords {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EnumMetadata {
-    pub cls: ClassType,
-    pub is_flag: bool,
-}
-
-impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
-    pub fn get_enum_member(&self, enum_: &EnumMetadata, name: &Name) -> Option<Lit> {
-        if let Some(field) = self.get_class_member(enum_.cls.class_object(), name)
-            && field.value.is_enum_member()
-        {
-            Some(Lit::Enum(Box::new((enum_.cls.clone(), name.clone()))))
-        } else {
-            None
-        }
-    }
-
-    pub fn get_enum_members(&self, enum_: &EnumMetadata) -> SmallSet<Lit> {
-        enum_
-            .cls
-            .class_object()
-            .fields()
-            .filter_map(|f| self.get_enum_member(enum_, f))
-            .collect()
-    }
+pub struct TypedDictMetadata {
+    /// Field name to the value of the `total` keyword in the defining class.
+    pub fields: SmallMap<Name, bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DataclassSynthesizedFields {
-    pub init: bool,
-    pub match_args: bool,
-}
-
-impl DataclassSynthesizedFields {
-    fn none() -> Self {
-        Self {
-            init: false,
-            match_args: false,
-        }
-    }
+pub struct EnumMetadata {
+    pub cls: ClassType,
+    /// Whether this enum inherits from enum.Flag.
+    pub is_flag: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataclassMetadata {
     /// The dataclass fields, e.g., `{'x'}` for `@dataclass class C: x: int`.
     pub fields: SmallSet<Name>,
-    /// Synthesized fields of the dataclass, like the generated `__init__` method.
-    pub synthesized_fields: DataclassSynthesizedFields,
-    /// @dataclass(frozen=...).
-    pub frozen: bool,
-    /// @dataclass(kw_only=...).
-    pub kw_only: bool,
+    pub kws: DataclassKeywords,
 }
 
 impl DataclassMetadata {
@@ -229,13 +237,8 @@ impl DataclassMetadata {
         Self {
             // Dataclass fields are inherited.
             fields: self.fields.clone(),
-            // Synthesized fields like `__init__` should not be inherited, as doing so would
-            // incorrectly suggest that they are directly defined on the inheriting class.
-            synthesized_fields: DataclassSynthesizedFields::none(),
-            // The remaining metadata are irrelevant when there are no fields to synthesize, so
-            // just set them to some sensible-seeming value.
-            frozen: self.frozen,
-            kw_only: self.kw_only,
+            // The remaining metadata are irrelevant, so just set them to some sensible-seeming value.
+            kws: self.kws,
         }
     }
 }
