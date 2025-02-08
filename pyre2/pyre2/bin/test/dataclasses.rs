@@ -282,8 +282,7 @@ assert_type(C.__match_args__, tuple[Literal["x"]])
     "#,
 );
 
-testcase_with_bug!(
-    "TODO",
+testcase!(
     test_order,
     r#"
 from dataclasses import dataclass
@@ -291,7 +290,7 @@ from dataclasses import dataclass
 class D1:
     x: int
 def f(d: D1, e: D1):
-    if d < e: ...  # TODO: this should be an error, by default dataclasses aren't comparable
+    if d < e: ...  # E: `<` not supported between instances of `D1` and `D1`
     if d == e: ...  # OK: `==` and `!=` never error regardless
 
 @dataclass(order=True)
@@ -302,7 +301,7 @@ class D3:
     x: int
 def f(d: D2, e: D2, f: D3):
     if d < e: ...  # OK
-    if e < f: ...  # TODO: this should be an error, instances of different dataclasses aren't comparable
+    if e < f: ...  # E: EXPECTED D3 <: D2
     if e != f: ...  # OK: `==` and `!=` never error regardless
     "#,
 );
