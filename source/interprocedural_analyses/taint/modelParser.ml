@@ -1865,17 +1865,32 @@ let parse_class_extends_clause ~path ~location ~callee ~arguments =
            (InvalidModelQueryClauseArguments { callee; arguments }))
 
 
-let rec parse_decorator_constraint ~path ~location ({ Node.value; _ } as constraint_expression) =
+let rec parse_decorator_constraint
+    ~path
+    ~location
+    ~within_class_constraint
+    ({ Node.value; _ } as constraint_expression)
+  =
   let open Core.Result in
+  let parse_decorator_constraint =
+    parse_decorator_constraint ~path ~location ~within_class_constraint
+  in
   let parse_constraint_reference ~callee ~reference ~arguments =
     match reference, arguments with
     | ["name"; (("equals" | "matches") as attribute)], _ ->
         parse_name_constraint ~path ~location ~constraint_expression ~attribute ~arguments
         >>| fun name_constraint -> ModelQuery.DecoratorConstraint.NameConstraint name_constraint
     | ["fully_qualified_callee"; (("equals" | "matches") as attribute)], _ ->
-        parse_name_constraint ~path ~location ~constraint_expression ~attribute ~arguments
-        >>| fun name_constraint ->
-        ModelQuery.DecoratorConstraint.FullyQualifiedCallee name_constraint
+        if not within_class_constraint then
+          parse_name_constraint ~path ~location ~constraint_expression ~attribute ~arguments
+          >>| fun name_constraint ->
+          ModelQuery.DecoratorConstraint.FullyQualifiedCallee name_constraint
+        else
+          Error
+            (model_verification_error
+               ~path
+               ~location
+               UnsupportedFullyQualifiedCalleeInClassConstraint)
     | ["arguments"; "contains"], _ ->
         Ok
           (ModelQuery.DecoratorConstraint.ArgumentsConstraint
@@ -1885,17 +1900,15 @@ let rec parse_decorator_constraint ~path ~location ({ Node.value; _ } as constra
           (ModelQuery.DecoratorConstraint.ArgumentsConstraint
              (ModelQuery.ArgumentsConstraint.Equals arguments))
     | ["AnyOf"], _ ->
-        List.map arguments ~f:(fun { Call.Argument.value; _ } ->
-            parse_decorator_constraint ~path ~location value)
+        List.map arguments ~f:(fun { Call.Argument.value; _ } -> parse_decorator_constraint value)
         |> all
         >>| fun constraints -> ModelQuery.DecoratorConstraint.AnyOf constraints
     | ["AllOf"], _ ->
-        List.map arguments ~f:(fun { Call.Argument.value; _ } ->
-            parse_decorator_constraint ~path ~location value)
+        List.map arguments ~f:(fun { Call.Argument.value; _ } -> parse_decorator_constraint value)
         |> all
         >>| fun constraints -> ModelQuery.DecoratorConstraint.AllOf constraints
     | ["Not"], [{ Call.Argument.value; _ }] ->
-        parse_decorator_constraint ~path ~location value
+        parse_decorator_constraint value
         >>= fun decorator_constraint -> Ok (ModelQuery.DecoratorConstraint.Not decorator_constraint)
     | _ ->
         Error
@@ -1921,11 +1934,11 @@ let rec parse_decorator_constraint ~path ~location ({ Node.value; _ } as constra
            (UnsupportedDecoratorConstraint constraint_expression))
 
 
-let parse_decorator_constraint_list ~path ~location ~arguments =
+let parse_decorator_constraint_list ~path ~location ~within_class_constraint ~arguments =
   let open Core.Result in
   arguments
   |> List.map ~f:(fun { Call.Argument.value; _ } ->
-         parse_decorator_constraint ~path ~location value)
+         parse_decorator_constraint ~path ~location ~within_class_constraint value)
   |> all
   >>| ModelQuery.DecoratorConstraint.all_of
 
@@ -1943,7 +1956,7 @@ let rec parse_class_constraint ~path ~location ({ Node.value; _ } as constraint_
         ModelQuery.ClassConstraint.FullyQualifiedNameConstraint name_constraint
     | ["cls"; "extends"], _ -> parse_class_extends_clause ~path ~location ~callee ~arguments
     | ["cls"; "decorator"], _ ->
-        parse_decorator_constraint_list ~path ~location ~arguments
+        parse_decorator_constraint_list ~path ~location ~within_class_constraint:true ~arguments
         >>= fun decorator_constraint ->
         Ok (ModelQuery.ClassConstraint.DecoratorConstraint decorator_constraint)
     | ["cls"; "any_child"], _ ->
@@ -2086,7 +2099,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
       | ["Decorator"], _ ->
           check_find ~callee ModelQuery.Find.is_callable
           >>= fun () ->
-          parse_decorator_constraint_list ~path ~location ~arguments
+          parse_decorator_constraint_list ~path ~location ~within_class_constraint:false ~arguments
           >>= fun decorator_constraint ->
           Ok (ModelQuery.Constraint.AnyDecoratorConstraint decorator_constraint)
       | ["return_annotation"; attribute], _ ->
@@ -4444,46 +4457,42 @@ let create_callable_model_from_annotations
   =
   let open Core.Result in
   let open ModelVerifier in
-  match modelable with
-  | Modelable.Callable { target; define } ->
-      let define = Lazy.force define in
-      resolve_global_callable
+  let target = Modelable.target modelable in
+  let define = Modelable.define modelable in
+  resolve_global_callable
+    ~path:None
+    ~location:Location.any
+    ~pyre_api
+    ~verify_decorators:false
+    ~decorators:define.signature.decorators
+    target
+  >>| (function
+        | Some (PyrePysaEnvironment.ModelQueries.Global.Attribute (Type.Callable t))
+        | Some
+            (PyrePysaEnvironment.ModelQueries.Global.Attribute
+              (Type.Parametric
+                { name = "BoundMethod"; arguments = [Type.Argument.Single (Type.Callable t); _] }))
+          ->
+            Some t
+        | _ -> None)
+  >>= fun callable_annotation ->
+  let default_model = if is_obscure then Model.obscure_model else Model.empty_model in
+  let annotations =
+    fix_constructors_and_property_setters_annotations
+      ~callable:target
+      ~source_sink_filter
+      annotations
+  in
+  List.fold_result annotations ~init:default_model ~f:(fun accumulator model_annotation ->
+      add_taint_annotation_to_model
         ~path:None
         ~location:Location.any
+        ~model_name:"Model query"
         ~pyre_api
-        ~verify_decorators:false
-        ~decorators:define.signature.decorators
-        target
-      >>| (function
-            | Some (PyrePysaEnvironment.ModelQueries.Global.Attribute (Type.Callable t))
-            | Some
-                (PyrePysaEnvironment.ModelQueries.Global.Attribute
-                  (Type.Parametric
-                    {
-                      name = "BoundMethod";
-                      arguments = [Type.Argument.Single (Type.Callable t); _];
-                    })) ->
-                Some t
-            | _ -> None)
-      >>= fun callable_annotation ->
-      let default_model = if is_obscure then Model.obscure_model else Model.empty_model in
-      let annotations =
-        fix_constructors_and_property_setters_annotations
-          ~callable:target
-          ~source_sink_filter
-          annotations
-      in
-      List.fold_result annotations ~init:default_model ~f:(fun accumulator model_annotation ->
-          add_taint_annotation_to_model
-            ~path:None
-            ~location:Location.any
-            ~model_name:"Model query"
-            ~pyre_api
-            ~callable_annotation
-            ~source_sink_filter
-            accumulator
-            model_annotation)
-  | _ -> failwith "unreachable"
+        ~callable_annotation
+        ~source_sink_filter
+        accumulator
+        model_annotation)
 
 
 let create_attribute_model_from_annotations ~pyre_api ~name ~source_sink_filter annotations =

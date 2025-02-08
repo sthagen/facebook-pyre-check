@@ -417,24 +417,41 @@ module NameCaptures : sig
   val get : t -> string -> string option
 end
 
+module CallableDecorator : sig
+  type t
+
+  val create : pyre_api:Analysis.PyrePysaEnvironment.ReadOnly.t -> Ast.Statement.Decorator.t -> t
+
+  val create_without_callees : Ast.Statement.Decorator.t -> t
+
+  val statement : t -> Ast.Statement.Decorator.t
+
+  val callees : t -> Interprocedural.CallGraph.CallCallees.t option
+end
+
 module Modelable : sig
-  type t =
-    | Callable of {
-        target: Interprocedural.Target.t;
-        define: Ast.Statement.Define.t lazy_t;
-      }
-    | Attribute of {
-        name: Ast.Reference.t;
-        type_annotation: Ast.Expression.t option lazy_t;
-      }
-    | Global of {
-        name: Ast.Reference.t;
-        type_annotation: Ast.Expression.t option lazy_t;
-      }
+  type t
+
+  val create_callable
+    :  pyre_api:Analysis.PyrePysaEnvironment.ReadOnly.t ->
+    Interprocedural.Target.t ->
+    t
+
+  val create_attribute
+    :  pyre_api:Analysis.PyrePysaEnvironment.ReadOnly.t ->
+    Interprocedural.Target.t ->
+    t
+
+  val create_global
+    :  pyre_api:Analysis.PyrePysaEnvironment.ReadOnly.t ->
+    Interprocedural.Target.t ->
+    t
 
   val target : t -> Interprocedural.Target.t
 
   val name : t -> Ast.Reference.t
+
+  val define : t -> Ast.Statement.Define.t
 
   val type_annotation : t -> Ast.Expression.t option
 
@@ -442,7 +459,7 @@ module Modelable : sig
 
   val parameters : t -> Ast.Expression.Parameter.t list
 
-  val decorators : t -> Ast.Expression.t list
+  val decorators : t -> CallableDecorator.t list
 
   val class_name : t -> string option
 

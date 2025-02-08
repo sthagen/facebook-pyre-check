@@ -592,18 +592,9 @@ let matches_name_constraint ~name_captures ~name_constraint name =
       is_match
 
 
-let matches_callee_constraint ~pyre_api ~name_captures ~name_constraint callee =
-  let return_type =
-    (* Since this won't be used and resolving the return type could be expensive, let's pass a
-       random type. *)
-    lazy Type.Any
-  in
+let matches_callee_constraint ~name_captures ~name_constraint callees =
   let { Interprocedural.CallGraph.CallCallees.call_targets; new_targets; init_targets; _ } =
-    Interprocedural.CallGraph.resolve_callees_from_type_external
-      ~pyre_in_context:(PyrePysaEnvironment.InContext.create_at_global_scope pyre_api)
-      ~override_graph:None
-      ~return_type
-      callee
+    callees
   in
   let call_targets = call_targets |> List.rev_append new_targets |> List.rev_append init_targets in
   let call_target_to_string call_target =
@@ -626,26 +617,26 @@ let rec matches_decorator_constraint ~pyre_api ~name_captures ~decorator = funct
   | ModelQuery.DecoratorConstraint.Not decorator_constraint ->
       not (matches_decorator_constraint ~pyre_api ~name_captures ~decorator decorator_constraint)
   | ModelQuery.DecoratorConstraint.NameConstraint name_constraint ->
-      let { Statement.Decorator.name = { Node.value = decorator_name; _ }; _ } = decorator in
+      let { Statement.Decorator.name = { Node.value = decorator_name; _ }; _ } =
+        CallableDecorator.statement decorator
+      in
       matches_name_constraint
         ~name_captures
         ~name_constraint
         (decorator_name |> Reference.delocalize |> Reference.last)
   | ModelQuery.DecoratorConstraint.FullyQualifiedCallee name_constraint ->
-      let ({ Node.value = expression; _ } as decorator_expression) =
-        Statement.Decorator.to_expression decorator
+      let callees =
+        match CallableDecorator.callees decorator with
+        | Some callees -> callees
+        | None ->
+            (* This is forbidden during parsing *)
+            failwith "fully_qualified_callee is not supported within cls.decorator"
       in
-      let callee =
-        match expression with
-        | Expression.Expression.Call { callee; _ } ->
-            (* Decorator factory, such as `@foo(1)` *) callee
-        | Expression.Expression.Name _ ->
-            (* Regular decorator, such as `@foo` *) decorator_expression
-        | _ -> decorator_expression
-      in
-      matches_callee_constraint ~pyre_api ~name_captures ~name_constraint callee
+      matches_callee_constraint ~name_captures ~name_constraint callees
   | ModelQuery.DecoratorConstraint.ArgumentsConstraint arguments_constraint -> (
-      let { Statement.Decorator.arguments = decorator_arguments; _ } = decorator in
+      let { Statement.Decorator.arguments = decorator_arguments; _ } =
+        CallableDecorator.statement decorator
+      in
       let split_arguments =
         List.partition_tf ~f:(fun { Expression.Call.Argument.name; _ } ->
             match name with
@@ -827,10 +818,13 @@ let class_matches_decorator_constraint ~name_captures ~pyre_api ~decorator_const
         List.exists decorators ~f:(fun decorator ->
             Statement.Decorator.from_expression decorator
             >>| (fun decorator ->
+                  (* For now, we don't support `fully_qualified_callee` within `cls.decorator()` constraints.
+                   * We could do it in the future by storing the result of the call to `get_class_summary` above
+                   * in `Modelable.t` *)
                   matches_decorator_constraint
                     ~pyre_api
                     ~name_captures
-                    ~decorator
+                    ~decorator:(CallableDecorator.create_without_callees decorator)
                     decorator_constraint)
             |> Option.value ~default:false))
   |> Option.value ~default:false
@@ -958,14 +952,7 @@ let rec matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures value
   | ModelQuery.Constraint.AnyDecoratorConstraint decorator_constraint ->
       Modelable.decorators value
       |> List.exists ~f:(fun decorator ->
-             Statement.Decorator.from_expression decorator
-             >>| (fun decorator ->
-                   matches_decorator_constraint
-                     ~pyre_api
-                     ~name_captures
-                     ~decorator
-                     decorator_constraint)
-             |> Option.value ~default:false)
+             matches_decorator_constraint ~pyre_api ~name_captures ~decorator decorator_constraint)
   | ModelQuery.Constraint.ClassConstraint class_constraint ->
       Modelable.class_name value
       >>| (fun name ->
@@ -1546,10 +1533,10 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
             scheduler_policies
             QueryKind.schedule_identifier
             ~default:
-              (Scheduler.Policy.fixed_chunk_count
+              (Scheduler.Policy.fixed_chunk_size
                  ~minimum_chunks_per_worker:1
                  ~minimum_chunk_size:1
-                 ~preferred_chunks_per_worker:1
+                 ~preferred_chunk_size:5000
                  ())
         in
         Scheduler.map_reduce
@@ -1672,21 +1659,7 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
 
   let schedule_identifier = Configuration.ScheduleIdentifier.CallableModelQueries
 
-  let make_modelable ~pyre_api callable =
-    let define =
-      lazy
-        (match Target.get_module_and_definition ~pyre_api callable with
-        | Some (_, { Node.value; _ }) -> value
-        | None ->
-            (* This should only be called with valid targets, generated from `FetchCallables`. *)
-            Format.asprintf
-              "unknown target `%a` in `CallableQueryExecutor`"
-              Target.pp_external
-              callable
-            |> failwith)
-    in
-    Modelable.Callable { target = callable; define }
-
+  let make_modelable = Modelable.create_callable
 
   let generate_annotations_from_query_models
       ~pyre_api
@@ -1954,9 +1927,7 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
       | ModelQuery.Model.WriteToCache _ -> failwith "impossible case"
     in
     let { Statement.Define.signature = { parameters; return_annotation; _ }; captures; _ } =
-      match modelable with
-      | Modelable.Callable { define; _ } -> Lazy.force define
-      | _ -> failwith "unreachable"
+      Modelable.define modelable
     in
     let normalized_parameters = AccessPath.normalize_parameters parameters in
     List.concat_map models ~f:(apply_model ~normalized_parameters ~captures ~return_annotation)
@@ -2008,33 +1979,6 @@ module AttributeQueryExecutor = struct
     List.concat_map all_classes ~f:get_class_attributes
 
 
-  let get_type_annotation ~pyre_api class_name attribute =
-    let get_annotation = function
-      | {
-          PyrePysaLogic.ClassSummary.Attribute.kind =
-            Simple { PyrePysaLogic.ClassSummary.Attribute.annotation; _ };
-          _;
-        } ->
-          annotation
-      | _ -> None
-    in
-    PyrePysaEnvironment.ReadOnly.get_class_summary pyre_api class_name
-    >>| Node.value
-    >>= fun class_summary ->
-    match
-      PyrePysaLogic.ClassSummary.constructor_attributes class_summary
-      |> Identifier.SerializableMap.find_opt attribute
-      >>| Node.value
-      >>| get_annotation
-    with
-    | Some annotation -> annotation
-    | None ->
-        PyrePysaLogic.ClassSummary.attributes ~include_generated_attributes:false class_summary
-        |> Identifier.SerializableMap.find_opt attribute
-        >>| Node.value
-        >>= get_annotation
-
-
   include MakeQueryExecutor (struct
     type annotation = TaintAnnotation.t
 
@@ -2042,16 +1986,7 @@ module AttributeQueryExecutor = struct
 
     let schedule_identifier = Configuration.ScheduleIdentifier.AttributeModelQueries
 
-    let make_modelable ~pyre_api target =
-      let name = Target.object_name target in
-      let type_annotation =
-        lazy
-          (let class_name = Reference.prefix name >>| Reference.show |> Option.value ~default:"" in
-           let attribute = Reference.last name in
-           get_type_annotation ~pyre_api class_name attribute)
-      in
-      Modelable.Attribute { name; type_annotation }
-
+    let make_modelable = Modelable.create_attribute
 
     let generate_annotations_from_query_models
         ~pyre_api:_
@@ -2103,12 +2038,6 @@ module GlobalVariableQueryExecutor = struct
     |> List.map ~f:Target.create_object
 
 
-  let get_type_annotation ~pyre_api reference =
-    match PyrePysaEnvironment.ReadOnly.get_unannotated_global pyre_api reference with
-    | Some (SimpleAssign { explicit_annotation; _ }) -> explicit_annotation
-    | _ -> None
-
-
   include MakeQueryExecutor (struct
     type annotation = TaintAnnotation.t
 
@@ -2116,11 +2045,7 @@ module GlobalVariableQueryExecutor = struct
 
     let schedule_identifier = Configuration.ScheduleIdentifier.GlobalModelQueries
 
-    let make_modelable ~pyre_api target =
-      let name = Target.object_name target in
-      let type_annotation = lazy (get_type_annotation ~pyre_api name) in
-      Modelable.Global { name; type_annotation }
-
+    let make_modelable = Modelable.create_global
 
     (* Generate taint annotations from the `models` part of a given model query. *)
     let generate_annotations_from_query_models

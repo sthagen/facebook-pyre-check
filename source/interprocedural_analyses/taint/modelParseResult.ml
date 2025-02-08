@@ -779,12 +779,54 @@ module NameCaptures = struct
     List.find_map !results ~f:(fun name_match -> Re2.Match.get ~sub:(`Name identifier) name_match)
 end
 
+module CallableDecorator = struct
+  type t = {
+    statement: Statement.Decorator.t;
+    callees: CallGraph.CallCallees.t Lazy.t option;
+  }
+
+  let create ~pyre_api statement =
+    let get_callees statement =
+      let ({ Node.value = expression; _ } as decorator_expression) =
+        Statement.Decorator.to_expression statement
+      in
+      let callee =
+        match expression with
+        | Expression.Expression.Call { callee; _ } ->
+            (* Decorator factory, such as `@foo(1)` *) callee
+        | Expression.Expression.Name _ ->
+            (* Regular decorator, such as `@foo` *) decorator_expression
+        | _ -> decorator_expression
+      in
+      let return_type =
+        (* Since this won't be used and resolving the return type could be expensive, let's pass a
+           random type. *)
+        lazy Type.Any
+      in
+      Interprocedural.CallGraph.resolve_callees_from_type_external
+        ~pyre_in_context:(Analysis.PyrePysaEnvironment.InContext.create_at_global_scope pyre_api)
+        ~override_graph:None
+        ~return_type
+        callee
+    in
+    let callees = Some (lazy (get_callees statement)) in
+    { statement; callees }
+
+
+  let create_without_callees statement = { statement; callees = None }
+
+  let statement { statement; _ } = statement
+
+  let callees { callees; _ } = Option.map ~f:Lazy.force callees
+end
+
 module Modelable = struct
   (* Use lazy values so we only query information when required. *)
   type t =
     | Callable of {
         target: Target.t;
         define: Statement.Define.t Lazy.t;
+        decorators: CallableDecorator.t list Lazy.t;
       }
     | Attribute of {
         name: Reference.t;
@@ -794,6 +836,79 @@ module Modelable = struct
         name: Reference.t;
         type_annotation: Expression.t option Lazy.t;
       }
+
+  let create_callable ~pyre_api target =
+    let define =
+      lazy
+        (match Target.get_module_and_definition ~pyre_api target with
+        | Some (_, { Node.value; _ }) -> value
+        | None ->
+            Format.asprintf
+              "unknown target `%a` in `Modelable.create_callable`"
+              Target.pp_external
+              target
+            |> failwith)
+    in
+    let decorators =
+      lazy
+        (define
+        |> Lazy.force
+        |> (function
+             | { Statement.Define.signature; _ } -> signature)
+        |> PyrePysaLogic.DecoratorPreprocessing.original_decorators_from_preprocessed_signature
+        |> List.filter_map ~f:Statement.Decorator.from_expression
+        |> List.map ~f:(CallableDecorator.create ~pyre_api))
+    in
+    Callable { target; define; decorators }
+
+
+  let create_attribute ~pyre_api target =
+    let name = Target.object_name target in
+    let get_type_annotation class_name attribute =
+      let get_annotation = function
+        | {
+            PyrePysaLogic.ClassSummary.Attribute.kind =
+              Simple { PyrePysaLogic.ClassSummary.Attribute.annotation; _ };
+            _;
+          } ->
+            annotation
+        | _ -> None
+      in
+      Analysis.PyrePysaEnvironment.ReadOnly.get_class_summary pyre_api class_name
+      >>| Node.value
+      >>= fun class_summary ->
+      match
+        PyrePysaLogic.ClassSummary.constructor_attributes class_summary
+        |> Identifier.SerializableMap.find_opt attribute
+        >>| Node.value
+        >>| get_annotation
+      with
+      | Some annotation -> annotation
+      | None ->
+          PyrePysaLogic.ClassSummary.attributes ~include_generated_attributes:false class_summary
+          |> Identifier.SerializableMap.find_opt attribute
+          >>| Node.value
+          >>= get_annotation
+    in
+    let type_annotation =
+      lazy
+        (let class_name = Reference.prefix name >>| Reference.show |> Option.value ~default:"" in
+         let attribute = Reference.last name in
+         get_type_annotation class_name attribute)
+    in
+    Attribute { name; type_annotation }
+
+
+  let create_global ~pyre_api target =
+    let name = Target.object_name target in
+    let get_type_annotation reference =
+      match Analysis.PyrePysaEnvironment.ReadOnly.get_unannotated_global pyre_api reference with
+      | Some (SimpleAssign { explicit_annotation; _ }) -> explicit_annotation
+      | _ -> None
+    in
+    let type_annotation = lazy (get_type_annotation name) in
+    Global { name; type_annotation }
+
 
   let target = function
     | Callable { target; _ } -> target
@@ -807,6 +922,11 @@ module Modelable = struct
     | Attribute { name; _ }
     | Global { name; _ } ->
         name
+
+
+  let define = function
+    | Callable { define; _ } -> Lazy.force define
+    | _ -> failwith "unexpected use of define"
 
 
   let type_annotation = function
@@ -835,12 +955,7 @@ module Modelable = struct
 
 
   let decorators = function
-    | Callable { define; _ } ->
-        define
-        |> Lazy.force
-        |> (function
-             | { Statement.Define.signature; _ } -> signature)
-        |> PyrePysaLogic.DecoratorPreprocessing.original_decorators_from_preprocessed_signature
+    | Callable { decorators; _ } -> Lazy.force decorators
     | Attribute _
     | Global _ ->
         failwith "unexpected use of Decorator on an attribute or global"
