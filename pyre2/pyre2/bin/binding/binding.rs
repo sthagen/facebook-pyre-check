@@ -133,6 +133,9 @@ pub enum Key {
     AsyncReturnType(TextRange),
     /// The return type of a yield expression.
     YieldTypeOfYieldAnnotation(TextRange),
+    /// return expression key for use when checking an annotation against none
+    #[allow(dead_code)]
+    ReturnExpressionWithNone(ShortIdentifier, TextRange),
     /// The type at a specific return point.
     ReturnExpression(ShortIdentifier, TextRange),
     /// The type yielded inside of a specific yield expression inside a function.
@@ -147,6 +150,8 @@ pub enum Key {
     /// I am an expression that does not have a simple name but needs its type inferred.
     /// For example, an attribute access.
     Anon(TextRange),
+    /// I am an expression that appears in a statement. The range for this key is the range of the expr itself, which is different than the range of the stmt expr.
+    StmtExpr(TextRange),
     /// I am the result of joining several branches.
     Phi(Name, TextRange),
     /// I am the result of narrowing a type. The two ranges are the range at which the operation is
@@ -174,11 +179,13 @@ impl Ranged for Key {
             Self::ReturnTypeOfYieldAnnotation(x) => x.range(),
             Self::YieldTypeOfYieldAnnotation(x) => x.range(),
             Self::ReturnExpression(_, r) => *r,
+            Self::ReturnExpressionWithNone(_, r) => *r,
             Self::YieldTypeOfYield(_, r) => *r,
             Self::YieldTypeOfGenerator(x) => x.range(),
             Self::ReturnType(x) => x.range(),
             Self::Usage(x) => x.range(),
             Self::Anon(r) => *r,
+            Self::StmtExpr(r) => *r,
             Self::Phi(_, r) => *r,
             Self::Narrow(_, r, _) => *r,
             Self::Anywhere(_, r) => *r,
@@ -219,11 +226,15 @@ impl DisplayWith<ModuleInfo> for Key {
             }
             Self::Usage(x) => write!(f, "use {} {:?}", ctx.display(x), x.range()),
             Self::Anon(r) => write!(f, "anon {r:?}"),
+            Self::StmtExpr(r) => write!(f, "stmt expr {r:?}"),
             Self::Phi(n, r) => write!(f, "phi {n} {r:?}"),
             Self::Narrow(n, r1, r2) => write!(f, "narrow {n} {r1:?} {r2:?}"),
             Self::Anywhere(n, r) => write!(f, "anywhere {n} {r:?}"),
             Self::ReturnType(x) => write!(f, "return {} {:?}", ctx.display(x), x.range()),
             Self::ReturnExpression(x, i) => {
+                write!(f, "return {} {:?} @ {i:?}", ctx.display(x), x.range())
+            }
+            Self::ReturnExpressionWithNone(x, i) => {
                 write!(f, "return {} {:?} @ {i:?}", ctx.display(x), x.range())
             }
             Self::YieldTypeOfYield(x, i) => {
@@ -517,6 +528,12 @@ pub enum Binding {
     /// The `bool` is whether the function has `yield` within it.
     ReturnExpr(Option<Idx<KeyAnnotation>>, Box<Expr>, bool),
     /// An expression returned from a function.
+    /// A `bool` to indicate function has `yield` within it.
+    /// An optional return annotation
+    /// A vector of all types of last statements in a function body  
+    #[allow(dead_code)]
+    ReturnExprWithReturn(Option<Idx<KeyAnnotation>>, Box<Expr>, bool, Vec<Idx<Key>>),
+    /// An expression returned from a function.
     SendTypeOfYieldAnnotation(Option<Idx<KeyAnnotation>>, TextRange),
     /// Return type of yield
     ReturnTypeOfYieldAnnotation(Option<Idx<KeyAnnotation>>, TextRange),
@@ -622,11 +639,11 @@ impl DisplayWith<Bindings> for Binding {
         let m = ctx.module_info();
         match self {
             Self::Expr(None, x) => write!(f, "{}", m.display(x)),
-            Self::ReturnExpr(Some(y), x, _) => {
-                write!(f, "ReturnExpr {} {}", ctx.display(*y), m.display(x))
+            Self::ReturnExpr(Some(y), x, _) | Self::ReturnExprWithReturn(Some(y), x, _, _) => {
+                write!(f, "{} {}", ctx.display(*y), m.display(x))
             }
-            Self::ReturnExpr(None, x, _) => {
-                write!(f, "ReturnExpr {}", m.display(x))
+            Self::ReturnExpr(None, x, _) | Self::ReturnExprWithReturn(None, x, _, _) => {
+                write!(f, "{}", m.display(x))
             }
             Self::Expr(Some(k), x) => {
                 write!(f, "{}: {}", ctx.display(*k), m.display(x))
