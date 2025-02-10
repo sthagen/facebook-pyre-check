@@ -81,14 +81,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             let key = self
                                 .bindings()
                                 .key_to_idx(&Key::Usage(ShortIdentifier::new(&enum_name)));
-                            let cls = self.get_idx_class_def(key, errors)?;
-                            self.get_enum_member(&cls, member_name, errors)
+                            let cls = self.get_idx_class_def(key)?;
+                            self.get_enum_member(&cls, member_name)
                         },
                         errors,
                     );
                     literals.push(lit);
                 }
-                Type::type_form(self.unions(literals, errors))
+                Type::type_form(self.unions(literals))
             }
             SpecialForm::Concatenate => {
                 if arguments.len() < 2 {

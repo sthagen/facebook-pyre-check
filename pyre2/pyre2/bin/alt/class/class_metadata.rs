@@ -89,7 +89,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 BaseClass::Expr(x) => match self.expr_untype(x, errors) {
                     Type::ClassType(c) => {
                         let cls = c.class_object();
-                        let class_metadata = self.get_metadata_for_class(cls, errors);
+                        let class_metadata = self.get_metadata_for_class(cls);
                         if class_metadata.is_typed_dict() {
                             is_typed_dict = true;
                         }
@@ -112,19 +112,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         Some((c, class_metadata))
                     }
                     Type::Tuple(Tuple::Concrete(ts)) => {
-                        let class_ty = self.stdlib.tuple(self.unions(ts, errors));
-                        let metadata = self.get_metadata_for_class(class_ty.class_object(), errors);
+                        let class_ty = self.stdlib.tuple(self.unions(ts));
+                        let metadata = self.get_metadata_for_class(class_ty.class_object());
                         Some((class_ty, metadata))
                     }
                     Type::Tuple(Tuple::Unbounded(t)) => {
                         let class_ty = self.stdlib.tuple(*t);
-                        let metadata = self.get_metadata_for_class(class_ty.class_object(), errors);
+                        let metadata = self.get_metadata_for_class(class_ty.class_object());
                         Some((class_ty, metadata))
                     }
                     Type::TypedDict(typed_dict) => {
                         is_typed_dict = true;
                         let class_object = typed_dict.class_object();
-                        let class_metadata = self.get_metadata_for_class(class_object, errors);
+                        let class_metadata = self.get_metadata_for_class(class_object);
                         Some((
                             typed_dict.as_class_type(),
                             class_metadata,
@@ -176,7 +176,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 &Type::ClassType(metaclass.clone()),
                 &Type::ClassType(self.stdlib.enum_meta()),
                 self.type_order(),
-                errors,
             ) {
                 if !cls.tparams().is_empty() {
                     self.error(
@@ -193,7 +192,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             &Type::ClassType(base.clone()),
                             &Type::ClassType(self.stdlib.enum_flag()),
                             self.type_order(),
-                            errors,
                         )
                     }),
                 })
@@ -245,9 +243,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// `expr_untype` and creating a `BaseClass::Type`.
     ///
     /// TODO(stroxler): See if there's a way to express this more clearly in the types.
-    fn special_base_class(&self, base_expr: &Expr, errors: &ErrorCollector) -> Option<BaseClass> {
+    fn special_base_class(&self, base_expr: &Expr) -> Option<BaseClass> {
         if let Expr::Name(name) = base_expr {
-            match &*self.get(&Key::Usage(ShortIdentifier::expr_name(name)), errors) {
+            match &*self.get(&Key::Usage(ShortIdentifier::expr_name(name))) {
                 Type::Type(box Type::SpecialForm(special)) => match special {
                     SpecialForm::Protocol => Some(BaseClass::Protocol(Vec::new())),
                     SpecialForm::Generic => Some(BaseClass::Generic(Vec::new())),
@@ -262,11 +260,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     pub fn base_class_of(&self, base_expr: &Expr, errors: &ErrorCollector) -> BaseClass {
-        if let Some(special_base_class) = self.special_base_class(base_expr, errors) {
+        if let Some(special_base_class) = self.special_base_class(base_expr) {
             // This branch handles cases like `Protocol`
             special_base_class
         } else if let Expr::Subscript(subscript) = base_expr
-            && let Some(mut special_base_class) = self.special_base_class(&subscript.value, errors)
+            && let Some(mut special_base_class) = self.special_base_class(&subscript.value)
             && special_base_class.can_apply()
         {
             // This branch handles `Generic[...]` and `Protocol[...]`
@@ -289,7 +287,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> TParams {
         let legacy_tparams = legacy
             .iter()
-            .filter_map(|key| self.get_idx(*key, errors).deref().parameter().cloned())
+            .filter_map(|key| self.get_idx(*key).deref().parameter().cloned())
             .collect::<SmallSet<_>>();
         let legacy_map = legacy_tparams
             .iter()
@@ -395,7 +393,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         &Type::ClassType(m.clone()),
                         &Type::ClassType(inherited.clone()),
                         self.type_order(),
-                        errors,
                     ),
                 };
                 if accept_m {
@@ -419,12 +416,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let metaclass_type = Type::ClassType(metaclass.clone());
         for (base_name, m) in base_metaclasses.iter() {
             let base_metaclass_type = Type::ClassType((*m).clone());
-            if !self.solver().is_subset_eq(
-                &metaclass_type,
-                &base_metaclass_type,
-                self.type_order(),
-                errors,
-            ) {
+            if !self
+                .solver()
+                .is_subset_eq(&metaclass_type, &base_metaclass_type, self.type_order())
+            {
                 self.error(errors,
                     cls.name().range,
                     format!(
@@ -451,7 +446,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     &Type::ClassType(meta.clone()),
                     &Type::ClassType(self.stdlib.builtins_type()),
                     self.type_order(),
-                    errors,
                 ) {
                     Some(meta)
                 } else {

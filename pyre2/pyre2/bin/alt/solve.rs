@@ -79,9 +79,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn solve_legacy_tparam(
         &self,
         binding: &BindingLegacyTypeParam,
-        errors: &ErrorCollector,
     ) -> Arc<LegacyTypeParameterLookup> {
-        match &*self.get_idx(binding.0, errors) {
+        match &*self.get_idx(binding.0) {
             Type::Type(box Type::TypeVar(x)) => {
                 let q = Quantified::type_var(self.uniques);
                 Arc::new(LegacyTypeParameterLookup::Parameter(TParamInfo {
@@ -123,7 +122,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Arc<ClassMetadata> {
         match binding {
             BindingClassMetadata(k, bases, keywords, decorators) => {
-                let cls = self.get_idx_class_def(*k, errors).unwrap();
+                let cls = self.get_idx_class_def(*k).unwrap();
                 Arc::new(self.class_metadata_of(&cls, bases, keywords, decorators, errors))
             }
         }
@@ -140,14 +139,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 if let Some(self_type) = self_type
                     && let Some(ty) = &mut ann.ty
                 {
-                    let self_type = &*self.get_idx(*self_type, errors);
+                    let self_type = &*self.get_idx(*self_type);
                     ty.subst_self_type_mut(self_type);
                 }
                 Arc::new(ann)
             }
             BindingAnnotation::Type(x) => Arc::new(Annotation::new_type(x.clone())),
             BindingAnnotation::Forward(k) => {
-                Arc::new(Annotation::new_type(self.get_idx(*k, errors).arc_clone()))
+                Arc::new(Annotation::new_type(self.get_idx(*k).arc_clone()))
             }
         }
     }
@@ -225,7 +224,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 vec![iterate_by_interface()]
             }
             Type::ClassDef(cls) => {
-                if self.get_metadata_for_class(cls, errors).is_typed_dict() {
+                if self.get_metadata_for_class(cls).is_typed_dict() {
                     vec![Iterable::OfType(self.error(
                         errors,
                         range,
@@ -297,7 +296,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             &actual_type,
             &Type::Union(expected_types),
             self.type_order(),
-            errors,
         ) {
             self.error(errors,
                  range,
@@ -363,7 +361,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         if matches!(
             style,
             TypeAliasStyle::Scoped | TypeAliasStyle::LegacyExplicit
-        ) && self.untype_opt(ty.clone(), range, errors).is_none()
+        ) && self.untype_opt(ty.clone(), range).is_none()
         {
             self.error(
                 errors,
@@ -373,7 +371,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             return Type::any_error();
         }
         let mut ty = match &ty {
-            Type::ClassDef(cls) => Type::type_form(self.promote(cls, range, errors)),
+            Type::ClassDef(cls) => Type::type_form(self.promote(cls, range)),
             t => t.clone(),
         };
         let mut seen = SmallMap::new();
@@ -404,17 +402,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 &[],
                 errors,
             ),
-            ContextManagerKind::Async => match self.unwrap_awaitable(
-                &self.call_method_or_error(
-                    context_manager_type,
-                    &dunder::AENTER,
-                    range,
-                    &[],
-                    &[],
-                    errors,
-                ),
+            ContextManagerKind::Async => match self.unwrap_awaitable(&self.call_method_or_error(
+                context_manager_type,
+                &dunder::AENTER,
+                range,
+                &[],
+                &[],
                 errors,
-            ) {
+            )) {
                 Some(ty) => ty,
                 None => self.error(
                     errors,
@@ -450,17 +445,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 &[],
                 errors,
             ),
-            ContextManagerKind::Async => match self.unwrap_awaitable(
-                &self.call_method_or_error(
-                    context_manager_type,
-                    &dunder::AEXIT,
-                    range,
-                    &exit_arg_types,
-                    &[],
-                    errors,
-                ),
+            ContextManagerKind::Async => match self.unwrap_awaitable(&self.call_method_or_error(
+                context_manager_type,
+                &dunder::AEXIT,
+                range,
+                &exit_arg_types,
+                &[],
                 errors,
-            ) {
+            )) {
                 Some(ty) => ty,
                 None => self.error(
                     errors,
@@ -521,7 +513,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     params.push(TParamInfo {
                         name: name.id.clone(),
                         quantified: get_quantified(
-                            &self.get(&Key::Definition(ShortIdentifier::new(name)), errors),
+                            &self.get(&Key::Definition(ShortIdentifier::new(name))),
                         ),
                         restriction,
                         default,
@@ -563,7 +555,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .solver()
                 .expand(self.solve_binding_inner(binding, errors))
             {
-                Type::Union(ts) => self.unions(ts, errors),
+                Type::Union(ts) => self.unions(ts),
                 t => t,
             },
         )
@@ -628,8 +620,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.check_is_exception(cause, cause.range(), true, errors);
             }
             BindingExpect::Eq(k1, k2, name) => {
-                let ann1 = self.get_idx(*k1, errors);
-                let ann2 = self.get_idx(*k2, errors);
+                let ann1 = self.get_idx(*k1);
+                let ann2 = self.get_idx(*k2);
                 if let Some(t1) = &ann1.ty
                     && let Some(t2) = &ann2.ty
                     && *t1 != *t2
@@ -679,13 +671,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         errors: &ErrorCollector,
     ) -> Arc<ClassField> {
         let value_ty = self.solve_binding(&field.value, errors);
-        let annotation = field.annotation.map(|a| self.get_idx(a, errors));
+        let annotation = field.annotation.map(|a| self.get_idx(a));
         Arc::new(self.calculate_class_field(
             &field.name,
             value_ty.as_ref(),
             annotation.as_deref(),
             field.initialization,
-            &self.get_idx_class_def(field.class, errors).unwrap(),
+            &self.get_idx_class_def(field.class).unwrap(),
             field.range,
             errors,
         ))
@@ -694,14 +686,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn solve_class_synthesized_fields(
         &self,
         fields: &BindingClassSynthesizedFields,
-        errors: &ErrorCollector,
     ) -> Arc<ClassSynthesizedFields> {
-        let cls = self.get_idx_class_def(fields.0, errors).unwrap();
-        if let Some(fields) = self.get_typed_dict_synthesized_fields(&cls, errors) {
+        let cls = self.get_idx_class_def(fields.0).unwrap();
+        if let Some(fields) = self.get_typed_dict_synthesized_fields(&cls) {
             Arc::new(fields)
-        } else if let Some(fields) = self.get_enum_synthesized_fields(&cls, errors) {
+        } else if let Some(fields) = self.get_enum_synthesized_fields(&cls) {
             Arc::new(fields)
-        } else if let Some(fields) = self.get_dataclass_synthesized_fields(&cls, errors) {
+        } else if let Some(fields) = self.get_dataclass_synthesized_fields(&cls) {
             Arc::new(fields)
         } else {
             Arc::new(ClassSynthesizedFields::default())
@@ -711,7 +702,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn solve_binding_inner(&self, binding: &Binding, errors: &ErrorCollector) -> Type {
         match binding {
             Binding::Expr(ann, e) => {
-                let ty = ann.map(|k| self.get_idx(k, errors));
+                let ty = ann.map(|k| self.get_idx(k));
                 self.expr(e, ty.as_ref().and_then(|x| x.ty.as_ref()), errors)
             }
             Binding::Generator(yield_type, return_type) => {
@@ -728,18 +719,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .to_type()
             }
             Binding::SendTypeOfYieldAnnotation(ann, range) => {
-                let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k, errors));
+                let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 match gen_ann {
                     Some(gen_ann) => {
                         let gen_type = gen_ann.get_type();
                         // try to interpret the annotation as a generator
-                        if let Some((_, send_type, _)) = self.decompose_generator(gen_type, errors)
-                        {
+                        if let Some((_, send_type, _)) = self.decompose_generator(gen_type) {
                             send_type
                         }
                         // try to interpret the annotation as an async generator
                         else if let Some((_, send_type)) =
-                            self.decompose_async_generator(gen_type, errors)
+                            self.decompose_async_generator(gen_type)
                         {
                             send_type
                         } else {
@@ -751,12 +741,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::YieldTypeOfYieldAnnotation(ann, range, is_async) => {
-                let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k, errors));
+                let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 match gen_ann {
                     Some(gen_ann) => {
                         let gen_type = gen_ann.get_type();
-                        if let Some((yield_type, _, _)) = self.decompose_generator(gen_type, errors)
-                        {
+                        if let Some((yield_type, _, _)) = self.decompose_generator(gen_type) {
                             // check type annotation against async flag
                             if *is_async {
                                 self.error(errors, *range, format!("Return type of generator must be compatible with `{gen_type}`"))
@@ -764,7 +753,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 yield_type
                             }
                         } else if let Some((yield_type, _)) =
-                            self.decompose_async_generator(gen_type, errors)
+                            self.decompose_async_generator(gen_type)
                         {
                             // check type annotation against async flag
                             if !*is_async {
@@ -781,14 +770,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::ReturnTypeOfYieldAnnotation(ann, range) => {
-                let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k, errors));
+                let gen_ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 match gen_ann {
                     Some(gen_ann) => {
                         let gen_type = gen_ann.get_type();
 
-                        if let Some((_, _, return_type)) =
-                            self.decompose_generator(gen_type, errors)
-                        {
+                        if let Some((_, _, return_type)) = self.decompose_generator(gen_type) {
                             return_type
                         } else {
                             self.error(errors, *range, format!("YieldFrom expression found but the function has an incompatible annotation `{gen_type}`"))
@@ -804,14 +791,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             },
             Binding::YieldTypeOfYieldFrom(x) => {
                 let gen_type = self.expr(&x.value, None, errors);
-                self.decompose_generator(&gen_type, errors)
+                self.decompose_generator(&gen_type)
                     .map_or(Type::any_implicit(), |(y, _, _)| y)
             }
             Binding::AsyncReturnType(x) => {
                 let expr_type = self.expr(&x.0, None, errors);
                 let return_type = self.solve_binding_inner(&x.1, errors);
 
-                if self.is_async_generator(&return_type, errors) && !expr_type.is_none() {
+                if self.is_async_generator(&return_type) && !expr_type.is_none() {
                     self.error(errors,
                         x.0.range(),
                         format!("Return statement with type `{expr_type}` is not allowed in async generator "),
@@ -821,13 +808,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::ReturnExpr(ann, e, has_yields) => {
-                let ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k, errors));
+                let ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
                 let hint = ann.as_ref().and_then(|x| x.ty.as_ref());
 
                 if *has_yields {
                     let hint = match hint {
                         Some(t) => {
-                            let decomposed = self.decompose_generator(t, errors);
+                            let decomposed = self.decompose_generator(t);
                             decomposed.map(|(_, _, r)| r)
                         }
                         None => None,
@@ -868,7 +855,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             &exception,
                             base_exception_group_any_type,
                             self.type_order(),
-                            errors,
                         )
                     {
                         self.error(errors, range, "Exception handler annotation in `except*` clause may not extend `BaseExceptionGroup`".to_owned());
@@ -898,10 +884,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 };
                 if *is_star {
                     self.stdlib
-                        .exception_group(self.unions(exceptions, errors))
+                        .exception_group(self.unions(exceptions))
                         .to_type()
                 } else {
-                    self.unions(exceptions, errors)
+                    self.unions(exceptions)
                 }
             }
             Binding::AugAssign(x) => {
@@ -916,7 +902,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 )
             }
             Binding::IterableValue(ann, e) => {
-                let ty = ann.map(|k| self.get_idx(k, errors));
+                let ty = ann.map(|k| self.get_idx(k));
                 let hint =
                     ty.and_then(|x| x.ty.clone().map(|ty| self.stdlib.iterable(ty).to_type()));
                 let iterables =
@@ -928,12 +914,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         Iterable::FixedLen(ts) => values.extend(ts),
                     }
                 }
-                self.unions(values, errors)
+                self.unions(values)
             }
             Binding::ContextValue(ann, e, kind) => {
                 let context_manager = self.expr(e, None, errors);
                 let context_value = self.context_value(context_manager, *kind, e.range(), errors);
-                let ty = ann.map(|k| self.get_idx(k, errors));
+                let ty = ann.map(|k| self.get_idx(k));
                 match ty.as_ref().and_then(|x| x.ty.as_ref()) {
                     Some(ty) => self.check_type(ty, &context_value, e.range(), errors),
                     None => context_value,
@@ -961,7 +947,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 &value_ty,
                                 &field.ty,
                                 self.type_order(),
-                                errors,
                             ) {
                                 self.error(
                                     errors,
@@ -1025,7 +1010,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     let start = *i;
                                     let end = ts.len() - *j;
                                     if start <= ts.len() && end >= start {
-                                        let elem_ty = self.unions(ts[start..end].to_vec(), errors);
+                                        let elem_ty = self.unions(ts[start..end].to_vec());
                                         self.stdlib.list(elem_ty).to_type()
                                     } else {
                                         // We'll report this error when solving for Binding::UnpackedLength.
@@ -1036,11 +1021,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         }
                     })
                 }
-                self.unions(values, errors)
+                self.unions(values)
             }
             Binding::Function(x) => self.function_def(x, errors),
             Binding::Import(m, name) => self
-                .get_from_module(*m, &KeyExport(name.clone()), errors)
+                .get_from_module(*m, &KeyExport(name.clone()))
                 .arc_clone(),
             Binding::ClassDef(box (x, fields), bases, decorators, legacy_tparams) => {
                 let mut ty = Type::ClassDef(self.class_definition(
@@ -1058,25 +1043,24 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::FunctionalClassDef(x, fields) => {
                 Type::ClassDef(self.functional_class_definition(x, fields))
             }
-            Binding::SelfType(k) => match &*self.get_idx(*k, errors) {
+            Binding::SelfType(k) => match &*self.get_idx(*k) {
                 Type::ClassDef(c) => c.self_type(),
                 _ => unreachable!(),
             },
-            Binding::Forward(k) => self.get_idx(*k, errors).arc_clone(),
+            Binding::Forward(k) => self.get_idx(*k).arc_clone(),
             Binding::Phi(ks) => {
                 if ks.len() == 1 {
-                    self.get_idx(*ks.first().unwrap(), errors).arc_clone()
+                    self.get_idx(*ks.first().unwrap()).arc_clone()
                 } else {
                     self.unions(
                         ks.iter()
-                            .map(|k| self.get_idx(*k, errors).arc_clone())
+                            .map(|k| self.get_idx(*k).arc_clone())
                             .collect::<Vec<_>>(),
-                        errors,
                     )
                 }
             }
-            Binding::Narrow(k, op) => self.narrow(&self.get_idx(*k, errors), op, errors),
-            Binding::AnnotatedType(ann, val) => match &self.get_idx(*ann, errors).ty {
+            Binding::Narrow(k, op) => self.narrow(&self.get_idx(*k), op, errors),
+            Binding::AnnotatedType(ann, val) => match &self.get_idx(*ann).ty {
                 Some(ty) => ty.clone(),
                 None => self.solve_binding_inner(val, errors),
             },
@@ -1086,7 +1070,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::Module(m, path, prev) => {
                 let prev = prev
                     .as_ref()
-                    .and_then(|x| self.get_idx(*x, errors).as_module().cloned());
+                    .and_then(|x| self.get_idx(*x).as_module().cloned());
                 match prev {
                     Some(prev) if prev.path() == path => prev.add_module(*m).to_type(),
                     _ => {
@@ -1103,7 +1087,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::CheckLegacyTypeParam(key, range_if_scoped_params_exist) => {
-                match &*self.get_idx(*key, errors) {
+                match &*self.get_idx(*key) {
                     LegacyTypeParameterLookup::Parameter(p) => {
                         // This class or function has scoped (PEP 695) type parameters. Mixing legacy-style parameters is an error.
                         if let Some(r) = range_if_scoped_params_exist {
@@ -1123,7 +1107,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::NameAssign(name, annot_key, expr) => {
-                let annot = annot_key.map(|k| self.get_idx(k, errors));
+                let annot = annot_key.map(|k| self.get_idx(k));
                 let ty = self.expr(expr, annot.as_ref().and_then(|x| x.ty.as_ref()), errors);
                 let expr_range = expr.range();
                 match (annot, &ty) {
@@ -1187,7 +1171,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 // TODO: check that value is a mapping
                 // TODO: check against duplicate keys (optional)
                 let key_ty = self.expr(mapping_key, None, errors);
-                let binding_ty = self.get_idx(*binding_key, errors).arc_clone();
+                let binding_ty = self.get_idx(*binding_key).arc_clone();
                 let arg = CallArg::Type(&key_ty, mapping_key.range());
                 self.call_method_or_error(
                     &binding_ty,
@@ -1201,7 +1185,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::PatternMatchClassPositional(_, idx, key, range) => {
                 // TODO: check that value matches class
                 // TODO: check against duplicate keys (optional)
-                let binding_ty = self.get_idx(*key, errors).arc_clone();
+                let binding_ty = self.get_idx(*key).arc_clone();
                 let match_args = self.attr_infer(&binding_ty, &dunder::MATCH_ARGS, *range, errors);
                 match match_args {
                     Type::Tuple(Tuple::Concrete(ts)) => {
@@ -1240,7 +1224,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::PatternMatchClassKeyword(_, attr, key) => {
                 // TODO: check that value matches class
                 // TODO: check against duplicate keys (optional)
-                let binding_ty = self.get_idx(*key, errors).arc_clone();
+                let binding_ty = self.get_idx(*key).arc_clone();
                 self.attr_infer(&binding_ty, &attr.id, attr.range, errors)
             }
         }
@@ -1261,45 +1245,36 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         };
         let mut params = Vec::with_capacity(x.def.parameters.len());
         params.extend(x.def.parameters.posonlyargs.iter().map(|x| {
-            let annot = self.get(
-                &KeyAnnotation::Annotation(ShortIdentifier::new(&x.parameter.name)),
-                errors,
-            );
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
+                &x.parameter.name,
+            )));
             let ty = annot.get_type();
             let required = check_default(&x.default, ty);
             Param::PosOnly(ty.clone(), required)
         }));
         params.extend(x.def.parameters.args.iter().map(|x| {
-            let annot = self.get(
-                &KeyAnnotation::Annotation(ShortIdentifier::new(&x.parameter.name)),
-                errors,
-            );
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
+                &x.parameter.name,
+            )));
             let ty = annot.get_type();
             let required = check_default(&x.default, ty);
             Param::Pos(x.parameter.name.id.clone(), ty.clone(), required)
         }));
         params.extend(x.def.parameters.vararg.iter().map(|x| {
-            let annot = self.get(
-                &KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)),
-                errors,
-            );
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)));
             let ty = annot.get_type();
             Param::VarArg(ty.clone())
         }));
         params.extend(x.def.parameters.kwonlyargs.iter().map(|x| {
-            let annot = self.get(
-                &KeyAnnotation::Annotation(ShortIdentifier::new(&x.parameter.name)),
-                errors,
-            );
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(
+                &x.parameter.name,
+            )));
             let ty = annot.get_type();
             let required = check_default(&x.default, ty);
             Param::KwOnly(x.parameter.name.id.clone(), ty.clone(), required)
         }));
         params.extend(x.def.parameters.kwarg.iter().map(|x| {
-            let annot = self.get(
-                &KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)),
-                errors,
-            );
+            let annot = self.get(&KeyAnnotation::Annotation(ShortIdentifier::new(&x.name)));
             let ty = annot.get_type();
             let is_unpack = annot.qualifiers.contains(&Qualifier::Unpack);
             Param::Kwargs(if is_unpack {
@@ -1309,10 +1284,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             })
         }));
         let ret = self
-            .get(&Key::ReturnType(ShortIdentifier::new(&x.def.name)), errors)
+            .get(&Key::ReturnType(ShortIdentifier::new(&x.def.name)))
             .arc_clone();
 
-        let ret = if x.def.is_async && !self.is_async_generator(&ret, errors) {
+        let ret = if x.def.is_async && !self.is_async_generator(&ret) {
             self.stdlib
                 .coroutine(Type::any_implicit(), Type::any_implicit(), ret)
                 .to_type()
@@ -1324,7 +1299,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let legacy_tparams = x
             .legacy_tparams
             .iter()
-            .filter_map(|key| self.get_idx(*key, errors).deref().parameter().cloned());
+            .filter_map(|key| self.get_idx(*key).deref().parameter().cloned());
         tparams.extend(legacy_tparams);
         let callable = Type::Callable(
             Box::new(Callable::make(params, ret)),
@@ -1341,7 +1316,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// For example, in `def f(x: int): ...`, we evaluate `int` as a value, gettings its type as
     /// `type[int]`, then call `untype(type[int])` to get the `int` annotation.
     pub fn untype(&self, ty: Type, range: TextRange, errors: &ErrorCollector) -> Type {
-        if let Some(t) = self.untype_opt(ty.clone(), range, errors) {
+        if let Some(t) = self.untype_opt(ty.clone(), range) {
             t
         } else {
             self.error(
@@ -1352,24 +1327,24 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    pub fn untype_opt(&self, ty: Type, range: TextRange, errors: &ErrorCollector) -> Option<Type> {
-        match self.canonicalize_all_class_types(ty, range, errors) {
+    pub fn untype_opt(&self, ty: Type, range: TextRange) -> Option<Type> {
+        match self.canonicalize_all_class_types(ty, range) {
             Type::Union(xs) if !xs.is_empty() => {
                 let mut ts = Vec::new();
                 for x in xs.into_iter() {
-                    let t = self.untype_opt(x, range, errors)?;
+                    let t = self.untype_opt(x, range)?;
                     ts.push(t);
                 }
-                Some(self.unions(ts, errors))
+                Some(self.unions(ts))
             }
             Type::Var(v) if let Some(_guard) = self.recurser.recurse(v) => {
-                self.untype_opt(self.solver().force_var(v), range, errors)
+                self.untype_opt(self.solver().force_var(v), range)
             }
             Type::Type(box t) => Some(t),
             Type::None => Some(Type::None), // Both a value and a type
             Type::Ellipsis => Some(Type::Ellipsis), // A bit weird because of tuples, so just promote it
             Type::Any(style) => Some(style.propagate()),
-            Type::TypeAlias(ta) => self.untype_opt(ta.as_type(), range, errors),
+            Type::TypeAlias(ta) => self.untype_opt(ta.as_type(), range),
             _ => None,
         }
     }
