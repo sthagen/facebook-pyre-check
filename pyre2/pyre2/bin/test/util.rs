@@ -24,13 +24,13 @@ use crate::error::style::ErrorStyle;
 use crate::module::module_name::ModuleName;
 use crate::module::module_path::ModulePath;
 use crate::state::handle::Handle;
+use crate::state::loader::FindError;
 use crate::state::loader::Loader;
 use crate::state::loader::LoaderId;
 use crate::state::state::State;
 use crate::test::stdlib::lookup_test_stdlib;
 use crate::types::class::Class;
 use crate::types::types::Type;
-use crate::util::prelude::VecExt;
 use crate::util::trace::init_tracing;
 
 #[macro_export]
@@ -80,7 +80,7 @@ fn default_path(module: ModuleName) -> PathBuf {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct TestEnv(SmallMap<ModuleName, (PathBuf, Option<String>)>);
+pub struct TestEnv(SmallMap<ModuleName, (ModulePath, Option<String>)>);
 
 impl TestEnv {
     pub fn new() -> Self {
@@ -92,13 +92,16 @@ impl TestEnv {
     pub fn add_with_path(&mut self, name: &str, code: &str, path: &str) {
         self.0.insert(
             ModuleName::from_str(name),
-            (PathBuf::from(path), Some(code.to_owned())),
+            (
+                ModulePath::memory(PathBuf::from(path)),
+                Some(code.to_owned()),
+            ),
         );
     }
 
     pub fn add(&mut self, name: &str, code: &str) {
         let module_name = ModuleName::from_str(name);
-        let relative_path = default_path(module_name);
+        let relative_path = ModulePath::memory(default_path(module_name));
         self.0
             .insert(module_name, (relative_path, Some(code.to_owned())));
     }
@@ -117,7 +120,8 @@ impl TestEnv {
 
     pub fn add_real_path(&mut self, name: &str, path: PathBuf) {
         let module_name = ModuleName::from_str(name);
-        self.0.insert(module_name, (path, None));
+        self.0
+            .insert(module_name, (ModulePath::filesystem(path), None));
     }
 
     pub fn config() -> Config {
@@ -126,37 +130,45 @@ impl TestEnv {
 
     pub fn to_state(self) -> (State, impl Fn(&str) -> Handle) {
         let config = Self::config();
-        let modules = self.0.keys().copied().collect::<Vec<_>>();
-        let loader = LoaderId::new(self);
-        let handles = modules.into_map(|x| Handle::new(x, config.dupe(), loader.dupe()));
+        let loader = LoaderId::new(self.clone());
+        let handles = self
+            .0
+            .into_iter()
+            .map(|(x, (path, _))| Handle::new(x, path, config.dupe(), loader.dupe()))
+            .collect();
         let mut state = State::new(true);
         state.run(handles);
+        state.print_errors();
         (state, move |module| {
-            Handle::new(ModuleName::from_str(module), Self::config(), loader.dupe())
+            let name = ModuleName::from_str(module);
+            Handle::new(
+                name,
+                loader.find(name).unwrap().0,
+                Self::config(),
+                loader.dupe(),
+            )
         })
     }
 }
 
 impl Loader for TestEnv {
-    fn find(&self, module: ModuleName) -> anyhow::Result<(ModulePath, ErrorStyle)> {
-        let style = ErrorStyle::Immediate;
-        if let Some((path, contents)) = self.0.get(&module) {
-            match contents {
-                None => Ok((ModulePath::filesystem(path.clone()), style)),
-                Some(_) => Ok((ModulePath::memory(path.clone()), style)),
-            }
+    fn find(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
+        let style = ErrorStyle::Delayed;
+        if let Some((path, _)) = self.0.get(&module) {
+            Ok((path.dupe(), style))
         } else if lookup_test_stdlib(module).is_some() {
             Ok((ModulePath::memory(default_path(module)), style))
         } else {
-            Err(anyhow!("Module not given in test suite"))
+            Err(FindError::new(anyhow!("Module not given in test suite")))
         }
     }
 
     fn load_from_memory(&self, path: &Path) -> Option<Arc<String>> {
         // This function involves scanning all paths to find what matches.
         // Not super efficient, but fine for tests, and we don't have many modules.
+        let memory_path = ModulePath::memory(path.to_owned());
         for (p, contents) in self.0.values() {
-            if p == path
+            if p == &memory_path
                 && let Some(c) = contents
             {
                 return Some(Arc::new(c.clone()));

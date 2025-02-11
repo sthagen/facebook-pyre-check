@@ -12,7 +12,6 @@ use std::hash::Hash;
 
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
-use ruff_python_ast::Decorator;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprSubscript;
@@ -515,7 +514,16 @@ pub enum FunctionKind {
 pub struct FunctionBinding {
     pub def: StmtFunctionDef,
     pub kind: FunctionKind,
-    pub decorators: Box<[Decorator]>,
+    pub decorators: Box<[Idx<Key>]>,
+    pub legacy_tparams: Box<[Idx<KeyLegacyTypeParam>]>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClassBinding {
+    pub def: StmtClassDef,
+    pub fields: SmallMap<Name, ClassFieldProperties>,
+    pub bases: Box<[Expr]>,
+    pub decorators: Box<[Idx<Key>]>,
     pub legacy_tparams: Box<[Idx<KeyLegacyTypeParam>]>,
 }
 
@@ -574,20 +582,11 @@ pub enum Binding {
     /// A type parameter.
     TypeParameter(Quantified),
     /// A function definition, but with the return/body stripped out.
-    /// The `Vec<Idx<LegacyTypeParam>>` contains binding information for possible legacy type params.
     Function(Box<FunctionBinding>),
     /// An import statement, typically with Self::Import.
     Import(ModuleName, Name),
     /// A class definition, but with the body stripped out.
-    /// The field names should be used to build `ClassField` keys for lookup.
-    /// The `Vec<Expr>` contains the base classes from the class header.
-    /// The `Vec<Idx<KeyLegacyTypeParam>>` contains binding information for possible legacy type params.
-    ClassDef(
-        Box<(StmtClassDef, SmallMap<Name, ClassFieldProperties>)>,
-        Box<[Expr]>,
-        Box<[Decorator]>,
-        Box<[Idx<KeyLegacyTypeParam>]>,
-    ),
+    ClassDef(Box<ClassBinding>),
     FunctionalClassDef(Identifier, SmallMap<Name, ClassFieldProperties>),
     /// The Self type for a class, must point at a class.
     SelfType(Idx<Key>),
@@ -621,6 +620,8 @@ pub enum Binding {
     PatternMatchClassKeyword(Box<Expr>, Identifier, Idx<Key>),
     /// Binding for an `except` (if the boolean flag is false) or `except*` (if the boolean flag is true) clause
     ExceptionHandler(Box<Expr>, bool),
+    /// Binding for an `@decorator` decoration on a function or class
+    Decorator(Expr),
 }
 
 impl Binding {
@@ -729,7 +730,7 @@ impl DisplayWith<Bindings> for Binding {
             }
             Self::Function(x) => write!(f, "def {}", x.def.name.id),
             Self::Import(m, n) => write!(f, "import {m}.{n}"),
-            Self::ClassDef(box (c, _), _, _, _) => write!(f, "class {}", c.name.id),
+            Self::ClassDef(x) => write!(f, "class {}", x.def.name.id),
             Self::FunctionalClassDef(x, _) => write!(f, "class {}", x.id),
             Self::SelfType(k) => write!(f, "self {}", ctx.display(*k)),
             Self::Forward(k) => write!(f, "{}", ctx.display(*k)),
@@ -828,6 +829,7 @@ impl DisplayWith<Bindings> for Binding {
                     ctx.display(*key),
                 )
             }
+            Self::Decorator(e) => write!(f, "decorator {}", m.display(e)),
         }
     }
 }
@@ -908,17 +910,18 @@ impl DisplayWith<Bindings> for BindingClassSynthesizedFields {
 /// The `Key` points to the definition of the class.
 /// The `Vec<Expr>` contains the base classes from the class header.
 /// The `Vec<(Name, Expr)>` contains the class keywords from the class header.
+/// The `Vec<Idx<Key>>` points to the class's decorators.
 #[derive(Clone, Debug)]
-pub struct BindingClassMetadata(
-    pub Idx<Key>,
-    pub Vec<Expr>,
-    pub Vec<(Name, Expr)>,
-    pub Vec<Decorator>,
-);
+pub struct BindingClassMetadata {
+    pub def: Idx<Key>,
+    pub bases: Vec<Expr>,
+    pub keywords: Vec<(Name, Expr)>,
+    pub decorators: Vec<Idx<Key>>,
+}
 
 impl DisplayWith<Bindings> for BindingClassMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
-        write!(f, "mro {}", ctx.display(self.0))
+        write!(f, "mro {}", ctx.display(self.def))
     }
 }
 

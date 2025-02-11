@@ -120,12 +120,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         binding: &BindingClassMetadata,
         errors: &ErrorCollector,
     ) -> Arc<ClassMetadata> {
-        match binding {
-            BindingClassMetadata(k, bases, keywords, decorators) => {
-                let cls = self.get_idx_class_def(*k).unwrap();
-                Arc::new(self.class_metadata_of(&cls, bases, keywords, decorators, errors))
-            }
-        }
+        let BindingClassMetadata {
+            def: k,
+            bases,
+            keywords,
+            decorators,
+        } = binding;
+        let cls = self.get_idx_class_def(*k).unwrap();
+        Arc::new(self.class_metadata_of(&cls, bases, keywords, decorators, errors))
     }
 
     pub fn solve_annotation(
@@ -1027,16 +1029,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::Import(m, name) => self
                 .get_from_module(*m, &KeyExport(name.clone()))
                 .arc_clone(),
-            Binding::ClassDef(box (x, fields), bases, decorators, legacy_tparams) => {
+            Binding::ClassDef(x) => {
                 let mut ty = Type::ClassDef(self.class_definition(
-                    x,
-                    fields.clone(),
-                    bases,
-                    legacy_tparams,
+                    &x.def,
+                    x.fields.clone(),
+                    &x.bases,
+                    &x.legacy_tparams,
                     errors,
                 ));
-                for x in decorators.iter().rev() {
-                    ty = self.apply_decorator(x, ty, errors)
+                for x in x.decorators.iter().rev() {
+                    ty = self.apply_decorator(*x, ty, errors)
                 }
                 ty
             }
@@ -1227,6 +1229,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let binding_ty = self.get_idx(*key).arc_clone();
                 self.attr_infer(&binding_ty, &attr.id, attr.range, errors)
             }
+            Binding::Decorator(expr) => self.expr_infer(expr, errors),
         }
     }
 
@@ -1307,7 +1310,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         );
         let mut ty = callable.forall(self.type_params(x.def.range, tparams, errors));
         for x in x.decorators.iter().rev() {
-            ty = self.apply_decorator(x, ty, errors)
+            ty = self.apply_decorator(*x, ty, errors)
         }
         ty
     }

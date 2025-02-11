@@ -21,6 +21,7 @@ use crate::binding::binding::Binding;
 use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingClassSynthesizedFields;
+use crate::binding::binding::ClassBinding;
 use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyClassField;
@@ -40,11 +41,7 @@ use crate::util::prelude::SliceExt;
 impl<'a> BindingsBuilder<'a> {
     pub fn class_def(&mut self, mut x: StmtClassDef) {
         let body = mem::take(&mut x.body);
-        let decorators = mem::take(&mut x.decorator_list);
-
-        for x in decorators.iter() {
-            self.ensure_expr(&x.expression);
-        }
+        let decorators = self.ensure_and_bind_decorators(mem::take(&mut x.decorator_list));
 
         self.scopes.push(Scope::annotation());
 
@@ -97,7 +94,12 @@ impl<'a> BindingsBuilder<'a> {
 
         self.table.insert(
             KeyClassMetadata(ShortIdentifier::new(&x.name)),
-            BindingClassMetadata(definition_key, bases.clone(), keywords, decorators.clone()),
+            BindingClassMetadata {
+                def: definition_key,
+                bases: bases.clone(),
+                keywords,
+                decorators: decorators.clone(),
+            },
         );
         self.table.insert(
             KeyClassSynthesizedFields(ShortIdentifier::new(&x.name)),
@@ -183,12 +185,13 @@ impl<'a> BindingsBuilder<'a> {
         let name = x.name.clone();
         self.bind_definition(
             &name,
-            Binding::ClassDef(
-                Box::new((x, fields)),
-                bases.into_boxed_slice(),
-                decorators.into_boxed_slice(),
-                legacy_tparams.into_boxed_slice(),
-            ),
+            Binding::ClassDef(Box::new(ClassBinding {
+                def: x,
+                fields,
+                bases: bases.into_boxed_slice(),
+                decorators: decorators.into_boxed_slice(),
+                legacy_tparams: legacy_tparams.into_boxed_slice(),
+            })),
             None,
         );
     }
@@ -206,7 +209,12 @@ impl<'a> BindingsBuilder<'a> {
             .insert(Key::Definition(ShortIdentifier::new(&class_name)));
         self.table.insert(
             KeyClassMetadata(ShortIdentifier::new(&class_name)),
-            BindingClassMetadata(definition_key, vec![Expr::Name(base_name)], vec![], vec![]),
+            BindingClassMetadata {
+                def: definition_key,
+                bases: vec![Expr::Name(base_name)],
+                keywords: vec![],
+                decorators: vec![],
+            },
         );
         self.table.insert(
             KeyClassSynthesizedFields(ShortIdentifier::new(&class_name)),

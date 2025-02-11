@@ -7,6 +7,7 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::str::FromStr;
 
 use anyhow::Context as _;
@@ -20,6 +21,7 @@ use crate::config::Config;
 use crate::config::PythonVersion;
 use crate::error::error::Error;
 use crate::error::legacy::LegacyErrors;
+use crate::module::module_path::ModulePath;
 use crate::module::source_db::BuckSourceDatabase;
 use crate::state::handle::Handle;
 use crate::state::loader::LoaderId;
@@ -58,7 +60,14 @@ fn read_input_file(path: &Path) -> anyhow::Result<InputFile> {
 fn compute_errors(config: Config, sourcedb: BuckSourceDatabase, common: &CommonArgs) -> Vec<Error> {
     let modules = sourcedb.modules_to_check();
     let loader = LoaderId::new(sourcedb);
-    let modules_to_check = modules.into_map(|x| Handle::new(x, config.dupe(), loader.dupe()));
+    let modules_to_check = modules.into_map(|(name, path)| {
+        Handle::new(
+            name,
+            ModulePath::filesystem(path),
+            config.dupe(),
+            loader.dupe(),
+        )
+    });
     let mut state = State::new(common.parallel());
     state.run_one_shot(modules_to_check);
     state.collect_errors()
@@ -86,7 +95,7 @@ fn write_output(errors: &[Error], path: Option<&Path>) -> anyhow::Result<()> {
 }
 
 impl Args {
-    pub fn run(self) -> anyhow::Result<()> {
+    pub fn run(self) -> anyhow::Result<ExitCode> {
         let input_file = read_input_file(self.input_path.as_path())?;
         let python_version = PythonVersion::from_str(&input_file.py_version)?;
         let config = Config::new(python_version, "linux".to_owned());
@@ -98,6 +107,6 @@ impl Args {
         let type_errors = compute_errors(config, sourcedb, &self.common);
         info!("Found {} type errors", type_errors.len());
         write_output(&type_errors, self.output_path.as_deref())?;
-        Ok(())
+        Ok(ExitCode::SUCCESS)
     }
 }

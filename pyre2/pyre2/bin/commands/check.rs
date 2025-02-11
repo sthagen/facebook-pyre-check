@@ -11,6 +11,7 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::Duration;
 use std::time::Instant;
@@ -19,7 +20,6 @@ use anyhow::Context as _;
 use clap::Parser;
 use clap::ValueEnum;
 use dupe::Dupe;
-use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 use tracing::info;
 
@@ -36,6 +36,7 @@ use crate::module::module_name::ModuleName;
 use crate::module::module_path::ModulePath;
 use crate::report;
 use crate::state::handle::Handle;
+use crate::state::loader::FindError;
 use crate::state::loader::Loader;
 use crate::state::loader::LoaderId;
 use crate::state::state::State;
@@ -79,6 +80,9 @@ pub struct Args {
     summarize_errors: Option<usize>,
     #[clap(long)]
     python_version: Option<String>,
+    /// Check against any `E:` lines in the file.
+    #[clap(long)]
+    expectations: bool,
 
     #[clap(flatten)]
     common: CommonArgs,
@@ -93,8 +97,10 @@ struct CheckLoader {
 }
 
 impl Loader for CheckLoader {
-    fn find(&self, module: ModuleName) -> anyhow::Result<(ModulePath, ErrorStyle)> {
+    fn find(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
         if let Some(path) = self.sources.get(&module) {
+            // FIXME: Because we pre-created these handles, the only real reason to do this
+            // is for the error-style, which is a pretty weird reason to do it.
             Ok((
                 ModulePath::filesystem(path.clone()),
                 self.error_style_for_sources,
@@ -104,10 +110,10 @@ impl Loader for CheckLoader {
                 ModulePath::filesystem(path),
                 self.error_style_for_dependencies,
             ))
-        } else if let Some(path) = typeshed()?.find(module) {
+        } else if let Some(path) = typeshed().map_err(FindError::new)?.find(module) {
             Ok((path, self.error_style_for_dependencies))
         } else {
-            Err(anyhow::anyhow!("Could not find path for `{module}`"))
+            Err(FindError::search_path(&self.search_roots))
         }
     }
 }
@@ -139,43 +145,27 @@ impl OutputFormat {
 }
 
 impl Args {
-    pub fn run(self, allow_forget: bool) -> anyhow::Result<()> {
+    pub fn run(self, allow_forget: bool) -> anyhow::Result<ExitCode> {
         let args = self;
         let include = args.include;
 
         if args.files.is_empty() {
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
 
         let mut to_check = SmallMap::with_capacity(args.files.len());
-        for file in args.files {
-            let module = module_from_path(&file, &include);
-            match to_check.entry(module) {
-                Entry::Vacant(new_entry) => {
-                    new_entry.insert(file);
-                }
-                Entry::Occupied(old_entry) => {
-                    return Err(anyhow::anyhow!(
-                        "Two files map to the same module: `{}` and `{}` both map to `{module}`",
-                        file.display(),
-                        old_entry.get().display()
-                    ));
-                }
-            }
+        for file in &args.files {
+            let module = module_from_path(file, &include);
+            to_check.entry(module).or_insert_with(|| file.clone());
         }
         let config = match &args.python_version {
             None => Config::default(),
             Some(version) => Config::new(PythonVersion::from_str(version)?, "linux".to_owned()),
         };
-        let error_style_for_sources = if args.output.is_some() {
-            ErrorStyle::Delayed
-        } else {
-            ErrorStyle::Immediate
-        };
-        let modules = to_check.keys().copied().collect::<Vec<_>>();
+        let error_style_for_sources = ErrorStyle::Delayed;
         let loader = LoaderId::new(CheckLoader {
-            sources: to_check,
-            search_roots: include,
+            sources: to_check.clone(),
+            search_roots: include.clone(),
             error_style_for_sources,
             error_style_for_dependencies: if args.check_all {
                 error_style_for_sources
@@ -183,7 +173,14 @@ impl Args {
                 ErrorStyle::Never
             },
         });
-        let handles = modules.into_map(|x| Handle::new(x, config.dupe(), loader.dupe()));
+        let handles = args.files.into_map(|x| {
+            Handle::new(
+                module_from_path(&x, &include),
+                ModulePath::filesystem(x),
+                config.dupe(),
+                loader.dupe(),
+            )
+        });
 
         let mut memory_trace = MemoryUsageTrace::start(Duration::from_secs_f32(0.1));
         let start = Instant::now();
@@ -201,16 +198,17 @@ impl Args {
             let errors = state.collect_errors();
             args.output_format.write_errors_to_file(&path, &errors)?;
         } else {
-            state.check_against_expectations()?;
+            state.print_errors();
         }
         let printing = start.elapsed();
         memory_trace.stop();
         if let Some(limit) = args.summarize_errors {
             state.print_error_summary(limit);
         }
+        let count_errors = state.count_errors();
         info!(
             "{} errors, {} modules, took {printing:.2?} ({computing:.2?} without printing errors), peak memory {}",
-            number_thousands(state.count_errors()),
+            number_thousands(count_errors),
             number_thousands(state.module_count()),
             memory_trace.peak()
         );
@@ -227,6 +225,13 @@ impl Args {
                 report::binding_memory::binding_memory(state).as_bytes(),
             )?;
         }
-        Ok(())
+        if args.expectations {
+            state.check_against_expectations()?;
+            Ok(ExitCode::SUCCESS)
+        } else if count_errors > 0 {
+            Ok(ExitCode::FAILURE)
+        } else {
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }

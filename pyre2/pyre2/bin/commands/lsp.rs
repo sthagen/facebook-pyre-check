@@ -7,10 +7,10 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use anyhow::anyhow;
 use clap::Parser;
 use dupe::Dupe;
 use lsp_server::Connection;
@@ -73,6 +73,7 @@ use crate::module::module_name::ModuleName;
 use crate::module::module_path::ModulePath;
 use crate::module::module_path::ModulePathDetails;
 use crate::state::handle::Handle;
+use crate::state::loader::FindError;
 use crate::state::loader::Loader;
 use crate::state::loader::LoaderId;
 use crate::state::state::State;
@@ -96,7 +97,7 @@ struct Server<'a> {
 }
 
 impl Args {
-    pub fn run(self) -> anyhow::Result<()> {
+    pub fn run(self) -> anyhow::Result<ExitCode> {
         // Note that  we must have our logging only write out to stderr.
         eprintln!("starting generic LSP server");
 
@@ -138,7 +139,7 @@ impl Args {
 
         // Shut down gracefully.
         eprintln!("shutting down server");
-        Ok(())
+        Ok(ExitCode::SUCCESS)
     }
 }
 
@@ -149,7 +150,7 @@ struct LspLoader {
 }
 
 impl Loader for LspLoader {
-    fn find(&self, module: ModuleName) -> anyhow::Result<(ModulePath, ErrorStyle)> {
+    fn find(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
         for path in self.open_files.lock().unwrap().keys() {
             if module_from_path(path, &self.search_roots) == module {
                 return Ok((ModulePath::memory(path.clone()), ErrorStyle::Delayed));
@@ -157,10 +158,10 @@ impl Loader for LspLoader {
         }
         if let Some(path) = find_module(module, &self.search_roots) {
             Ok((ModulePath::filesystem(path.clone()), ErrorStyle::Never))
-        } else if let Some(path) = typeshed()?.find(module) {
+        } else if let Some(path) = typeshed().map_err(FindError::new)?.find(module) {
             Ok((path, ErrorStyle::Never))
         } else {
-            Err(anyhow!("Could not find path for `{module}`"))
+            Err(FindError::search_path(&self.search_roots))
         }
     }
 
@@ -174,7 +175,7 @@ impl Loader for LspLoader {
 fn to_real_path(path: &ModulePath) -> Option<&Path> {
     match path.details() {
         ModulePathDetails::FileSystem(path) | ModulePathDetails::Memory(path) => Some(path),
-        ModulePathDetails::BundledTypeshed(_) | ModulePathDetails::NotFound(_) => None,
+        ModulePathDetails::BundledTypeshed(_) => None,
     }
 }
 
@@ -272,6 +273,7 @@ impl<'a> Server<'a> {
             .map(|x| {
                 Handle::new(
                     module_from_path(x, &self.include),
+                    ModulePath::memory(x.clone()),
                     self.config.dupe(),
                     self.loader.dupe(),
                 )
@@ -334,8 +336,14 @@ impl<'a> Server<'a> {
     }
 
     fn make_handle(&self, uri: &Url) -> Handle {
-        let module = module_from_path(&uri.to_file_path().unwrap(), &self.include);
-        Handle::new(module, self.config.dupe(), self.loader.dupe())
+        let path = uri.to_file_path().unwrap();
+        let module = module_from_path(&path, &self.include);
+        let module_path = if self.open_files.lock().unwrap().contains_key(&path) {
+            ModulePath::memory(path)
+        } else {
+            ModulePath::filesystem(path)
+        };
+        Handle::new(module, module_path, self.config.dupe(), self.loader.dupe())
     }
 
     fn goto_definition(&self, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {

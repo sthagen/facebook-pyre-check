@@ -37,6 +37,7 @@ use crate::util::uniques::UniqueFactory;
 
 pub struct Context<'a, Lookup> {
     pub module: ModuleName,
+    pub path: &'a ModulePath,
     pub config: &'a Config,
     pub loader: &'a dyn Loader,
     pub uniques: &'a UniqueFactory,
@@ -49,7 +50,6 @@ pub struct Context<'a, Lookup> {
 pub struct Load {
     pub errors: ErrorCollector,
     pub module_info: ModuleInfo,
-    pub import_error: Option<Arc<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -144,53 +144,41 @@ impl Step {
     }
 
     fn load<Lookup>(ctx: &Context<Lookup>) -> Arc<Load> {
-        let mut module_path = ModulePath::not_found(ctx.module);
-        let mut code = Arc::new("".to_owned());
-        let mut error_style = ErrorStyle::Never;
-        let mut import_error = None;
-        let mut self_error = None;
-
-        match ctx.loader.find(ctx.module) {
-            Err(err) => {
-                import_error = Some(Arc::new(format!(
-                    "Could not find import of `{}`, {err:#}",
-                    ctx.module
-                )));
+        let error_style = match ctx.loader.find(ctx.module) {
+            Ok((_, s)) => s,
+            Err(_) => {
+                // We shouldn't reach here, as we must be able to load the module to get here.
+                // But if we do, delayed is fairly safe.
+                ErrorStyle::Delayed
             }
-            Ok((p, s)) => {
-                module_path = p;
-                error_style = s;
-                let res = match module_path.details() {
-                    ModulePathDetails::FileSystem(path) => {
-                        if module_path.style() == ModuleStyle::Namespace {
-                            Ok(Arc::new("".to_owned()))
-                        } else {
-                            fs_anyhow::read_to_string(path).map(Arc::new)
-                        }
-                    }
-                    ModulePathDetails::Memory(path) => ctx
-                        .loader
-                        .load_from_memory(path)
-                        .ok_or_else(|| anyhow!("memory path not found")),
-                    ModulePathDetails::BundledTypeshed(path) => typeshed().and_then(|x| {
-                        x.load(path)
-                            .ok_or_else(|| anyhow!("bundled typeshed problem"))
-                    }),
-                    ModulePathDetails::NotFound(_) => Err(anyhow!("module was not found")),
-                };
-                match res {
-                    Err(err) => {
-                        self_error = Some(err.context(format!(
-                            "When loading `{}` from `{module_path}`",
-                            ctx.module
-                        )))
-                    }
-                    Ok(res) => code = res,
+        };
+
+        let res = match ctx.path.details() {
+            ModulePathDetails::FileSystem(path) => {
+                if ctx.path.style() == ModuleStyle::Namespace {
+                    Ok(Arc::new("".to_owned()))
+                } else {
+                    fs_anyhow::read_to_string(path).map(Arc::new)
                 }
             }
-        }
+            ModulePathDetails::Memory(path) => ctx
+                .loader
+                .load_from_memory(path)
+                .ok_or_else(|| anyhow!("memory path not found")),
+            ModulePathDetails::BundledTypeshed(path) => typeshed().and_then(|x| {
+                x.load(path)
+                    .ok_or_else(|| anyhow!("bundled typeshed problem"))
+            }),
+        };
+        let (code, self_error) = match res {
+            Err(err) => (
+                Arc::new(String::new()),
+                Some(err.context(format!("When loading `{}` from `{}`", ctx.module, ctx.path))),
+            ),
+            Ok(res) => (res, None),
+        };
 
-        let module_info = ModuleInfo::new(ctx.module, module_path, code);
+        let module_info = ModuleInfo::new(ctx.module, ctx.path.dupe(), code);
         let errors = ErrorCollector::new(error_style);
         if let Some(err) = self_error {
             errors.add(
@@ -207,7 +195,6 @@ impl Step {
         Arc::new(Load {
             errors,
             module_info,
-            import_error,
         })
     }
 

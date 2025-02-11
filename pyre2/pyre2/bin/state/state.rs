@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -38,8 +39,12 @@ use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
+use crate::module::module_path::ModulePath;
 use crate::report::debug_info::DebugInfo;
 use crate::state::handle::Handle;
+use crate::state::loader::FindError;
+use crate::state::loader::Loader;
+use crate::state::loader::LoaderFindCache;
 use crate::state::loader::LoaderId;
 use crate::state::steps::Context;
 use crate::state::steps::ModuleSteps;
@@ -57,6 +62,7 @@ pub struct State {
     parallel: bool,
     stdlib: RwLock<SmallMap<(Config, LoaderId), Arc<Stdlib>>>,
     modules: RwLock<SmallMap<Handle, Arc<ModuleState>>>,
+    loaders: RwLock<SmallMap<LoaderId, Arc<LoaderFindCache<LoaderId>>>>,
     /// Items we still need to process. Stored in a max heap, so that
     /// the highest step (the module that is closest to being finished)
     /// gets picked first, ensuring we release its memory quickly.
@@ -113,13 +119,19 @@ impl State {
             parallel,
             stdlib: Default::default(),
             modules: Default::default(),
+            loaders: Default::default(),
             todo: Default::default(),
             retain_memory: true, // Will always be overwritten by entry points
         }
     }
 
-    pub fn import_handle(&self, handle: &Handle, module: ModuleName) -> Handle {
-        Handle::new(module, handle.config().dupe(), handle.loader().dupe())
+    pub fn import_handle(&self, handle: &Handle, module: ModuleName) -> Result<Handle, FindError> {
+        Ok(Handle::new(
+            module,
+            self.get_cached_find(handle.loader(), module)?,
+            handle.config().dupe(),
+            handle.loader().dupe(),
+        ))
     }
 
     fn demand(&self, handle: &Handle, step: Step) {
@@ -154,10 +166,12 @@ impl State {
             }
 
             let stdlib = self.get_stdlib(handle);
+            let loader = self.get_cached_loader(handle.loader());
             let set = compute(&Context {
                 module: handle.module(),
+                path: handle.path(),
                 config: handle.config(),
-                loader: handle.loader(),
+                loader: &*loader,
                 uniques: &self.uniques,
                 stdlib: &stdlib,
                 lookup: &self.lookup(handle),
@@ -219,7 +233,7 @@ impl State {
     fn lookup_stdlib(&self, handle: &Handle, name: &Name) -> Option<Class> {
         if !self
             .lookup_export(handle)
-            .is_ok_and(|x| x.contains(name, &self.lookup(handle)))
+            .contains(name, &self.lookup(handle))
         {
             self.add_error(
                 handle,
@@ -249,15 +263,11 @@ impl State {
         }
     }
 
-    fn lookup_export(&self, handle: &Handle) -> Result<Exports, Arc<String>> {
+    fn lookup_export(&self, handle: &Handle) -> Exports {
         self.demand(handle, Step::Exports);
         let m = self.get_module(handle);
         let lock = m.steps.read().unwrap();
-        if let Some(err) = &lock.load.get().unwrap().import_error {
-            Err(err.dupe())
-        } else {
-            Ok(lock.exports.get().unwrap().dupe())
-        }
+        lock.exports.get().unwrap().dupe()
     }
 
     fn lookup_answer<'b, K: Solve<StateHandle<'b>> + Keyed<EXPORTED = true>>(
@@ -333,7 +343,6 @@ impl State {
             .sum()
     }
 
-    #[allow(dead_code)] // Reasonable part of the API, not currently used
     pub fn print_errors(&self) {
         for module in self.modules.read().unwrap().values() {
             let steps = module.steps.read().unwrap();
@@ -359,6 +368,19 @@ impl State {
         }
     }
 
+    fn get_cached_find(
+        &self,
+        loader: &LoaderId,
+        module: ModuleName,
+    ) -> Result<ModulePath, FindError> {
+        self.get_cached_loader(loader).find(module).map(|x| x.0)
+    }
+
+    fn get_cached_loader(&self, loader: &LoaderId) -> Arc<LoaderFindCache<LoaderId>> {
+        // Safe because we always fill these in before starting
+        self.loaders.read().unwrap().get(loader).unwrap().dupe()
+    }
+
     fn get_stdlib(&self, handle: &Handle) -> Arc<Stdlib> {
         // Safe because we always run compute_stdlib first
         self.stdlib
@@ -380,7 +402,8 @@ impl State {
                 (
                     (c.dupe(), l.dupe()),
                     Arc::new(Stdlib::new(|module, name| {
-                        self.lookup_stdlib(&Handle::new(module, c.dupe(), l.dupe()), name)
+                        let path = self.get_cached_find(l, module).ok()?;
+                        self.lookup_stdlib(&Handle::new(module, path, c.dupe(), l.dupe()), name)
                     })),
                 )
             })
@@ -406,6 +429,12 @@ impl State {
             .iter()
             .map(|x| (x.config().dupe(), x.loader().dupe()))
             .collect::<SmallSet<_>>();
+
+        *self.loaders.write().unwrap() = configs
+            .iter()
+            .map(|x| (x.1.dupe(), Arc::new(LoaderFindCache::new(x.1.dupe()))))
+            .collect::<SmallMap<_, _>>();
+
         {
             let mut lock = self.todo.lock().unwrap();
             for h in handles {
@@ -520,6 +549,36 @@ impl State {
         Ok(())
     }
 
+    fn invalidate_everything(&mut self) {
+        *self = State::new(self.parallel);
+    }
+
+    /// Called if the `find` portion of loading might have changed.
+    /// E.g. you have include paths, and a new file appeared earlier on the path.
+    #[expect(dead_code)]
+    pub fn invalidate_find(&mut self, loader: LoaderId) {
+        let _ = loader;
+        self.invalidate_everything();
+    }
+
+    /// Called if the `load` portion of loading might have changed.
+    /// Specify which files might have changed.
+    #[expect(dead_code)]
+    pub fn invalidate_load(&mut self, loader: LoaderId, files: &[PathBuf]) {
+        let _ = loader;
+        let _ = files;
+        self.invalidate_everything();
+    }
+
+    /// Called if the files read from the disk might have changed.
+    /// Specify which files might have changed.
+    /// You must use the same absolute/relative paths as were given by `find`.
+    #[expect(dead_code)]
+    pub fn invalidate_disk(&mut self, files: &[PathBuf]) {
+        let _ = files;
+        self.invalidate_everything();
+    }
+
     /* Notes on how to move to incremental
 
     /// Run, collecting all errors and leaving enough around for further queries and incremental updates.
@@ -543,9 +602,10 @@ struct StateHandle<'a> {
 }
 
 impl<'a> LookupExport for StateHandle<'a> {
-    fn get(&self, module: ModuleName) -> Result<Exports, Arc<String>> {
-        self.state
-            .lookup_export(&self.state.import_handle(&self.handle, module))
+    fn get(&self, module: ModuleName) -> Result<Exports, FindError> {
+        Ok(self
+            .state
+            .lookup_export(&self.state.import_handle(&self.handle, module)?))
     }
 }
 
@@ -560,7 +620,9 @@ impl<'a> LookupAnswer for StateHandle<'a> {
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
         Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
-        self.state
-            .lookup_answer(&self.state.import_handle(&self.handle, module), k)
+        // The unwrap is safe because we must have said there were no exports,
+        // so no one can be trying to get at them
+        let handle = self.state.import_handle(&self.handle, module).unwrap();
+        self.state.lookup_answer(&handle, k)
     }
 }
