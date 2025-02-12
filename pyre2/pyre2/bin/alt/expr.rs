@@ -268,6 +268,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         &self,
         decorator: Idx<Key>,
         decoratee: Type,
+        overload: &mut bool,
         errors: &ErrorCollector,
     ) -> Type {
         if matches!(&decoratee, Type::ClassDef(cls) if cls.has_qname("typing", "TypeVar")) {
@@ -288,6 +289,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Some(CalleeKind::Class(ClassKind::EnumMember)) => {
                 return Type::Decoration(Decoration::EnumMember(Box::new(decoratee)));
+            }
+            Some(CalleeKind::Callable(CallableKind::Overload)) => {
+                *overload = true;
             }
             _ => {}
         }
@@ -630,7 +634,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             errors,
                             x.range,
                             format!(
-                                "`{}` not supported between instances of `{}` and `{}`",
+                                "`{}` not supported between `{}` and `{}`",
                                 op.as_str(),
                                 left,
                                 right

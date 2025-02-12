@@ -157,7 +157,7 @@ impl Loader for LspLoader {
             }
         }
         if let Some(path) = find_module(module, &self.search_roots) {
-            Ok((ModulePath::filesystem(path.clone()), ErrorStyle::Never))
+            Ok((path, ErrorStyle::Never))
         } else if let Some(path) = typeshed().map_err(FindError::new)?.find(module) {
             Ok((path, ErrorStyle::Never))
         } else {
@@ -352,9 +352,9 @@ impl<'a> Server<'a> {
         let info = state.get_module_info(&handle)?;
         let range = position_to_text_size(&info, params.text_document_position_params.position);
         let (handle, range) = state.goto_definition(&handle, range)?;
-        let path = find_module(handle.module(), &self.include)?;
+        let path = to_real_path(handle.path())?;
         let info = state.get_module_info(&handle)?;
-        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
         Some(GotoDefinitionResponse::Scalar(Location {
             uri: Url::from_file_path(path).unwrap(),
             range: source_range_to_range(&info.source_range(range)),

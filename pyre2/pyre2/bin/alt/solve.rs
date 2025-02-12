@@ -26,10 +26,12 @@ use crate::alt::callable::CallArg;
 use crate::alt::class::classdef::ClassField;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::ClassSynthesizedFields;
+use crate::alt::types::function_answer::FunctionAnswer;
 use crate::alt::types::legacy_lookup::LegacyTypeParameterLookup;
 use crate::ast::Ast;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
+use crate::binding::binding::BindingClass;
 use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingClassSynthesizedFields;
@@ -55,6 +57,7 @@ use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
+use crate::types::class::Class;
 use crate::types::literal::Lit;
 use crate::types::module::Module;
 use crate::types::quantified::Quantified;
@@ -126,7 +129,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             keywords,
             decorators,
         } = binding;
-        let cls = self.get_idx_class_def(*k).unwrap();
+        let cls = self.get_idx(*k);
         Arc::new(self.class_metadata_of(&cls, bases, keywords, decorators, errors))
     }
 
@@ -667,6 +670,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         Arc::new(EmptyAnswer)
     }
 
+    pub fn solve_class(&self, cls: &BindingClass, errors: &ErrorCollector) -> Arc<Class> {
+        Arc::new(match cls {
+            BindingClass::ClassDef(x) => self.class_definition(
+                &x.def,
+                x.fields.clone(),
+                &x.bases,
+                &x.legacy_tparams,
+                errors,
+            ),
+            BindingClass::FunctionalClassDef(x, fields) => {
+                self.functional_class_definition(x, fields)
+            }
+        })
+    }
+
     pub fn solve_class_field(
         &self,
         field: &BindingClassField,
@@ -679,7 +697,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             value_ty.as_ref(),
             annotation.as_deref(),
             field.initialization,
-            &self.get_idx_class_def(field.class).unwrap(),
+            &self.get_idx(field.class),
             field.range,
             errors,
         ))
@@ -689,7 +707,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         &self,
         fields: &BindingClassSynthesizedFields,
     ) -> Arc<ClassSynthesizedFields> {
-        let cls = self.get_idx_class_def(fields.0).unwrap();
+        let cls = self.get_idx(fields.0);
         if let Some(fields) = self.get_typed_dict_synthesized_fields(&cls) {
             Arc::new(fields)
         } else if let Some(fields) = self.get_enum_synthesized_fields(&cls) {
@@ -828,9 +846,61 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.expr(e, hint, errors)
                 }
             }
-            Binding::ReturnExprWithReturn(_ann, _e, _has_yields, _last_statement_types) => {
-                // todo zeina: solve this binding
-                Type::any_error()
+            Binding::ReturnExprWithNone(ann, expr_range, has_yields, last_statement_types) => {
+                let ann: Option<Arc<Annotation>> = ann.map(|k| self.get_idx(k));
+                let hint = ann.as_ref().and_then(|x| x.ty.as_ref());
+
+                let all_never = last_statement_types
+                    .iter()
+                    .all(|k| self.get_idx(*k).is_never());
+
+                if all_never {
+                    // if all branches to the function are NoReturn, then infer Never
+                    Type::never()
+                } else if *has_yields {
+                    match &hint {
+                        Some(t) => {
+                            let decomposed = self.decompose_generator(t);
+                            let return_type = decomposed.map(|(_, _, r)| r);
+                            if return_type.is_some_and(|x| x != Type::None) {
+                                self.error(
+                                    errors,
+                                    *expr_range,
+                                    format!("Expected None, got generator type {}", t),
+                                )
+                            } else {
+                                Type::None
+                            }
+                        }
+                        None => Type::None,
+                    }
+                } else if matches!(hint, Some(Type::TypeGuard(_))) {
+                    self.error(
+                        errors,
+                        *expr_range,
+                        "This function has an implicit `None` return but claims to return a `TypeGuard`".to_owned(),
+                    )
+                } else {
+                    match hint {
+                        Some(t) => {
+                            if t.is_none() {
+                                Type::None
+                            } else if !self
+                                .solver()
+                                .is_subset_eq(&Type::None, t, self.type_order())
+                            {
+                                self.error(
+                                    errors,
+                                    *expr_range,
+                                    format!("Expr has type None but should have type {}", t),
+                                )
+                            } else {
+                                Type::None
+                            }
+                        }
+                        None => Type::None,
+                    }
+                }
             }
             Binding::ExceptionHandler(box ann, is_star) => {
                 let base_exception_type = self.stdlib.base_exception().to_type();
@@ -1025,30 +1095,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 self.unions(values)
             }
-            Binding::Function(x) => self.function_def(x, errors),
+            Binding::Function(x, _pred) => self.get_idx(*x).ty.clone(),
             Binding::Import(m, name) => self
                 .get_from_module(*m, &KeyExport(name.clone()))
                 .arc_clone(),
-            Binding::ClassDef(x) => {
-                let mut ty = Type::ClassDef(self.class_definition(
-                    &x.def,
-                    x.fields.clone(),
-                    &x.bases,
-                    &x.legacy_tparams,
-                    errors,
-                ));
-                for x in x.decorators.iter().rev() {
-                    ty = self.apply_decorator(*x, ty, errors)
+            Binding::ClassDef(x, decorators) => {
+                let mut ty = Type::ClassDef((*self.get_idx(*x)).clone());
+                for x in decorators.iter().rev() {
+                    ty = self.apply_decorator(*x, ty, &mut false, errors)
                 }
                 ty
             }
-            Binding::FunctionalClassDef(x, fields) => {
-                Type::ClassDef(self.functional_class_definition(x, fields))
-            }
-            Binding::SelfType(k) => match &*self.get_idx(*k) {
-                Type::ClassDef(c) => c.self_type(),
-                _ => unreachable!(),
-            },
+            Binding::SelfType(k) => self.get_idx(*k).self_type(),
             Binding::Forward(k) => self.get_idx(*k).arc_clone(),
             Binding::Phi(ks) => {
                 if ks.len() == 1 {
@@ -1233,7 +1291,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn function_def(&self, x: &FunctionBinding, errors: &ErrorCollector) -> Type {
+    pub fn solve_function(
+        &self,
+        x: &FunctionBinding,
+        errors: &ErrorCollector,
+    ) -> Arc<FunctionAnswer> {
         let check_default = |default: &Option<Box<Expr>>, ty: &Type| {
             let mut required = Required::Required;
             if let Some(default) = default {
@@ -1309,10 +1371,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             CallableKind::from_name(self.module_info().name(), &x.def.name.id),
         );
         let mut ty = callable.forall(self.type_params(x.def.range, tparams, errors));
+        let mut is_overload = false;
         for x in x.decorators.iter().rev() {
-            ty = self.apply_decorator(*x, ty, errors)
+            ty = self.apply_decorator(*x, ty, &mut is_overload, errors)
         }
-        ty
+        Arc::new(FunctionAnswer { ty, is_overload })
     }
 
     /// Unwraps a type, originally evaluated as a value, so that it can be used as a type annotation.

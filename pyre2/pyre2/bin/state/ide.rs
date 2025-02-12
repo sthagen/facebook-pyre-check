@@ -122,13 +122,14 @@ impl State {
             match bindings.idx_to_key(idx) {
                 key @ Key::ReturnType(id) => {
                     match bindings.get(bindings.key_to_idx(&Key::Definition(id.clone()))) {
-                        Binding::Function(x)
+                        Binding::Function(x, _pred)
                             if !matches!(bindings.get(idx), &Binding::AnnotatedType(..)) =>
                         {
                             if let Some(ty) = self.get_type(handle, key)
                                 && is_interesting_type(&ty)
                             {
-                                res.push((x.def.parameters.range.end(), format!(" -> {ty}")));
+                                let fun = bindings.get(*x);
+                                res.push((fun.def.parameters.range.end(), format!(" -> {ty}")));
                             }
                         }
                         _ => {}

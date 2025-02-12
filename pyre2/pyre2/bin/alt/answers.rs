@@ -18,22 +18,27 @@ use starlark_map::small_map::SmallMap;
 use crate::alt::class::classdef::ClassField;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::ClassSynthesizedFields;
+use crate::alt::types::function_answer::FunctionAnswer;
 use crate::alt::types::legacy_lookup::LegacyTypeParameterLookup;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
+use crate::binding::binding::BindingClass;
 use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingClassSynthesizedFields;
 use crate::binding::binding::BindingExpect;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::EmptyAnswer;
+use crate::binding::binding::FunctionBinding;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
+use crate::binding::binding::KeyClass;
 use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
 use crate::binding::binding::KeyClassSynthesizedFields;
 use crate::binding::binding::KeyExpect;
 use crate::binding::binding::KeyExport;
+use crate::binding::binding::KeyFunction;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::binding::binding::Keyed;
 use crate::binding::bindings::BindingEntry;
@@ -207,6 +212,24 @@ impl SolveRecursive for KeyExport {
         f(v);
     }
 }
+impl SolveRecursive for KeyFunction {
+    type Recursive = ();
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        // TODO(samgoldman) I'm not sure this really makes sense. These bindings should never
+        // be recursive, but this definition is required.
+        FunctionAnswer::recursive()
+    }
+    fn visit_type_mut(v: &mut FunctionAnswer, f: &mut dyn FnMut(&mut Type)) {
+        f(&mut v.ty);
+    }
+}
+impl SolveRecursive for KeyClass {
+    type Recursive = ();
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        unreachable!("Classes cannot be recursive");
+    }
+    fn visit_type_mut(_v: &mut Class, _f: &mut dyn FnMut(&mut Type)) {}
+}
 impl SolveRecursive for KeyClassField {
     type Recursive = ();
     fn promote_recursive(_: Self::Recursive) -> Self::Answer {
@@ -329,6 +352,30 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyExport {
     ) {
         answers.record_recursive(key.range(), answer, recursive, errors);
     }
+}
+
+impl<Ans: LookupAnswer> Solve<Ans> for KeyFunction {
+    fn solve(
+        answers: &AnswersSolver<Ans>,
+        binding: &FunctionBinding,
+        errors: &ErrorCollector,
+    ) -> Arc<FunctionAnswer> {
+        answers.solve_function(binding, errors)
+    }
+
+    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
+}
+
+impl<Ans: LookupAnswer> Solve<Ans> for KeyClass {
+    fn solve(
+        answers: &AnswersSolver<Ans>,
+        binding: &BindingClass,
+        errors: &ErrorCollector,
+    ) -> Arc<Class> {
+        answers.solve_class(binding, errors)
+    }
+
+    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyClassField {

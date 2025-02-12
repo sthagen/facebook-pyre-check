@@ -290,7 +290,7 @@ from dataclasses import dataclass
 class D1:
     x: int
 def f(d: D1, e: D1):
-    if d < e: ...  # E: `<` not supported between instances of `D1` and `D1`
+    if d < e: ...  # E: `<` not supported between `D1` and `D1`
     if d == e: ...  # OK: `==` and `!=` never error regardless
 
 @dataclass(order=True)
@@ -313,5 +313,19 @@ from dataclasses import dataclass
 @dataclass(flibbertigibbet=True)  # E: Unexpected keyword argument
 class C:
     pass
+    "#,
+);
+
+testcase_with_bug!(
+    "TODO",
+    test_dataclasses_field,
+    r#"
+from dataclasses import dataclass, field
+@dataclass
+class C:
+    x: int = field(init=False)
+    y: str
+C(y="")  # Should be OK  # E: Missing argument
+C(x=0, y="")  # Should be an error: Unexpected keyword argument `x`
     "#,
 );

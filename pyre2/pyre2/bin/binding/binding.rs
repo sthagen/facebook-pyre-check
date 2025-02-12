@@ -30,6 +30,7 @@ use starlark_map::small_set::SmallSet;
 use crate::alt::class::classdef::ClassField;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::ClassSynthesizedFields;
+use crate::alt::types::function_answer::FunctionAnswer;
 use crate::alt::types::legacy_lookup::LegacyTypeParameterLookup;
 use crate::binding::bindings::Bindings;
 use crate::binding::narrow::NarrowOp;
@@ -38,6 +39,7 @@ use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Annotation;
+use crate::types::class::Class;
 use crate::types::class::ClassFieldProperties;
 use crate::types::quantified::Quantified;
 use crate::types::types::AnyStyle;
@@ -53,6 +55,7 @@ mod check_size {
     assert_eq_size!(Key, [usize; 5]);
     assert_eq_size!(KeyExpect, [usize; 1]);
     assert_eq_size!(KeyExport, [usize; 3]);
+    assert_eq_size!(KeyClass, [usize; 1]);
     assert_eq_size!(KeyClassField, [usize; 4]);
     assert_eq_size!(KeyClassSynthesizedFields, [usize; 1]);
     assert_eq_size!(KeyAnnotation, [u8; 12]); // Equivalent to 1.5 usize
@@ -62,6 +65,7 @@ mod check_size {
     assert_eq_size!(Binding, [usize; 9]);
     assert_eq_size!(BindingExpect, [usize; 8]);
     assert_eq_size!(BindingAnnotation, [usize; 9]);
+    assert_eq_size!(BindingClass, [usize; 8]);
     assert_eq_size!(BindingClassMetadata, [usize; 10]);
     assert_eq_size!(BindingClassField, [usize; 15]);
     assert_eq_size!(BindingClassSynthesizedFields, [u8; 4]); // Equivalent to 0.5 usize
@@ -82,6 +86,10 @@ impl Keyed for KeyExpect {
     type Value = BindingExpect;
     type Answer = EmptyAnswer;
 }
+impl Keyed for KeyClass {
+    type Value = BindingClass;
+    type Answer = Class;
+}
 impl Keyed for KeyClassField {
     const EXPORTED: bool = true;
     type Value = BindingClassField;
@@ -96,6 +104,10 @@ impl Keyed for KeyExport {
     const EXPORTED: bool = true;
     type Value = Binding;
     type Answer = Type;
+}
+impl Keyed for KeyFunction {
+    type Value = FunctionBinding;
+    type Answer = FunctionAnswer;
 }
 impl Keyed for KeyAnnotation {
     type Value = BindingAnnotation;
@@ -360,6 +372,37 @@ impl DisplayWith<ModuleInfo> for KeyExport {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KeyFunction(pub ShortIdentifier);
+
+impl Ranged for KeyFunction {
+    fn range(&self) -> TextRange {
+        self.0.range()
+    }
+}
+
+impl DisplayWith<ModuleInfo> for KeyFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
+        write!(f, "{} {:?}", ctx.display(&self.0), self.0.range())
+    }
+}
+
+/// A reference to a class.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KeyClass(pub ShortIdentifier);
+
+impl Ranged for KeyClass {
+    fn range(&self) -> TextRange {
+        self.0.range()
+    }
+}
+
+impl DisplayWith<ModuleInfo> for KeyClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
+        write!(f, "class {} {:?}", ctx.display(&self.0), self.0.range())
+    }
+}
+
 /// A reference to a field in a class.
 /// The range is the range of the class name, not the field name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -512,10 +555,17 @@ pub enum FunctionKind {
 
 #[derive(Clone, Debug)]
 pub struct FunctionBinding {
+    /// A function definition, but with the return/body stripped out.
     pub def: StmtFunctionDef,
     pub kind: FunctionKind,
     pub decorators: Box<[Idx<Key>]>,
     pub legacy_tparams: Box<[Idx<KeyLegacyTypeParam>]>,
+}
+
+impl DisplayWith<Bindings> for FunctionBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, _ctx: &Bindings) -> fmt::Result {
+        write!(f, "def {}", self.def.name.id)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -523,7 +573,6 @@ pub struct ClassBinding {
     pub def: StmtClassDef,
     pub fields: SmallMap<Name, ClassFieldProperties>,
     pub bases: Box<[Expr]>,
-    pub decorators: Box<[Idx<Key>]>,
     pub legacy_tparams: Box<[Idx<KeyLegacyTypeParam>]>,
 }
 
@@ -540,7 +589,7 @@ pub enum Binding {
     /// An optional return annotation
     /// A vector of all types of last statements in a function body  
     #[allow(dead_code)]
-    ReturnExprWithReturn(Option<Idx<KeyAnnotation>>, Box<Expr>, bool, Vec<Idx<Key>>),
+    ReturnExprWithNone(Option<Idx<KeyAnnotation>>, TextRange, bool, Vec<Idx<Key>>),
     /// An expression returned from a function.
     SendTypeOfYieldAnnotation(Option<Idx<KeyAnnotation>>, TextRange),
     /// Return type of yield
@@ -581,15 +630,14 @@ pub enum Binding {
     StrType,
     /// A type parameter.
     TypeParameter(Quantified),
-    /// A function definition, but with the return/body stripped out.
-    Function(Box<FunctionBinding>),
+    /// The type of a function. Stores an optional reference to the predecessor of this function.
+    Function(Idx<KeyFunction>, Option<Idx<Key>>),
     /// An import statement, typically with Self::Import.
     Import(ModuleName, Name),
-    /// A class definition, but with the body stripped out.
-    ClassDef(Box<ClassBinding>),
-    FunctionalClassDef(Identifier, SmallMap<Name, ClassFieldProperties>),
+    /// A class definition, points to a BindingClass and any decorators.
+    ClassDef(Idx<KeyClass>, Box<[Idx<Key>]>),
     /// The Self type for a class, must point at a class.
-    SelfType(Idx<Key>),
+    SelfType(Idx<KeyClass>),
     /// A forward reference to another binding.
     Forward(Idx<Key>),
     /// A phi node, representing the union of several alternative keys.
@@ -640,11 +688,17 @@ impl DisplayWith<Bindings> for Binding {
         let m = ctx.module_info();
         match self {
             Self::Expr(None, x) => write!(f, "{}", m.display(x)),
-            Self::ReturnExpr(Some(y), x, _) | Self::ReturnExprWithReturn(Some(y), x, _, _) => {
+            Self::ReturnExpr(Some(y), x, _) => {
                 write!(f, "{} {}", ctx.display(*y), m.display(x))
             }
-            Self::ReturnExpr(None, x, _) | Self::ReturnExprWithReturn(None, x, _, _) => {
+            Self::ReturnExpr(None, x, _) => {
                 write!(f, "{}", m.display(x))
+            }
+            Self::ReturnExprWithNone(Some(y), _, _, _) => {
+                write!(f, "ReturnExprwithNone, {}", ctx.display(*y))
+            }
+            Self::ReturnExprWithNone(None, _, _, _) => {
+                write!(f, "ReturnExprwithNone")
             }
             Self::Expr(Some(k), x) => {
                 write!(f, "{}: {}", ctx.display(*k), m.display(x))
@@ -728,10 +782,9 @@ impl DisplayWith<Bindings> for Binding {
                 };
                 write!(f, "unpack {} {:?} @ {}", x.display_with(ctx), range, pos)
             }
-            Self::Function(x) => write!(f, "def {}", x.def.name.id),
+            Self::Function(x, _pred) => write!(f, "{}", ctx.display(*x)),
             Self::Import(m, n) => write!(f, "import {m}.{n}"),
-            Self::ClassDef(x) => write!(f, "class {}", x.def.name.id),
-            Self::FunctionalClassDef(x, _) => write!(f, "class {}", x.id),
+            Self::ClassDef(x, _) => write!(f, "{}", ctx.display(*x)),
             Self::SelfType(k) => write!(f, "self {}", ctx.display(*k)),
             Self::Forward(k) => write!(f, "{}", ctx.display(*k)),
             Self::AugAssign(s) => write!(f, "augmented_assign {:?}", s),
@@ -864,6 +917,22 @@ impl DisplayWith<Bindings> for BindingAnnotation {
     }
 }
 
+/// Binding for a class.
+#[derive(Clone, Debug)]
+pub enum BindingClass {
+    ClassDef(Box<ClassBinding>),
+    FunctionalClassDef(Identifier, SmallMap<Name, ClassFieldProperties>),
+}
+
+impl DisplayWith<Bindings> for BindingClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, _ctx: &Bindings) -> fmt::Result {
+        match self {
+            Self::ClassDef(c) => write!(f, "class {}", c.def.name),
+            Self::FunctionalClassDef(id, _) => write!(f, "class {}", id),
+        }
+    }
+}
+
 /// Correctly analyzing which attributes are visible on class objects, as well
 /// as handling method binding correctly, requires distinguishing which fields
 /// are assigned values in the class body.
@@ -878,7 +947,7 @@ pub enum ClassFieldInitialization {
 /// defining instance attributes.
 #[derive(Clone, Debug)]
 pub struct BindingClassField {
-    pub class: Idx<Key>,
+    pub class: Idx<KeyClass>,
     pub name: Name,
     pub value: Binding,
     pub annotation: Option<Idx<KeyAnnotation>>,
@@ -896,7 +965,7 @@ impl DisplayWith<Bindings> for BindingClassField {
 /// has to be its own key/binding type because of the dependencies between the various pieces of
 /// information about a class: ClassDef -> ClassMetadata -> ClassField -> ClassSynthesizedFields.
 #[derive(Clone, Debug)]
-pub struct BindingClassSynthesizedFields(pub Idx<Key>);
+pub struct BindingClassSynthesizedFields(pub Idx<KeyClass>);
 
 impl DisplayWith<Bindings> for BindingClassSynthesizedFields {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
@@ -913,7 +982,7 @@ impl DisplayWith<Bindings> for BindingClassSynthesizedFields {
 /// The `Vec<Idx<Key>>` points to the class's decorators.
 #[derive(Clone, Debug)]
 pub struct BindingClassMetadata {
-    pub def: Idx<Key>,
+    pub def: Idx<KeyClass>,
     pub bases: Vec<Expr>,
     pub keywords: Vec<(Name, Expr)>,
     pub decorators: Vec<Idx<Key>>,
