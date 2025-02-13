@@ -22,22 +22,22 @@ let assert_fixpoint
     source
     ~expect:{ iterations = expect_iterations; expect }
   =
-  let {
-    TestEnvironment.static_analysis_configuration;
-    taint_configuration;
-    taint_configuration_shared_memory;
-    whole_program_call_graph;
-    define_call_graphs;
-    global_constants;
-    pyre_api;
-    override_graph_heap;
-    override_graph_shared_memory;
-    initial_models;
-    initial_callables;
-    stubs;
-    class_interval_graph_shared_memory;
-    _;
-  }
+  let ({
+         TestEnvironment.static_analysis_configuration;
+         taint_configuration;
+         taint_configuration_shared_memory;
+         whole_program_call_graph;
+         get_define_call_graph;
+         global_constants;
+         pyre_api;
+         override_graph_heap;
+         override_graph_shared_memory;
+         initial_models;
+         initial_callables;
+         stubs;
+         class_interval_graph_shared_memory;
+         _;
+       } as test_environment)
     =
     initialize ?models_source ~handle:"qualifier.py" ~context source
   in
@@ -49,15 +49,15 @@ let assert_fixpoint
       ~call_graph:whole_program_call_graph
       ~overrides:override_graph_heap
   in
-  let shared_models =
+  let state =
     TaintFixpoint.record_initial_models
       ~scheduler:(Test.mock_scheduler ())
-      ~initial_callables:(FetchCallables.get_definitions initial_callables)
+      ~callables_to_analyze
       ~stubs
       ~override_targets
       ~initial_models
   in
-  let fixpoint_state =
+  let ({ TaintFixpoint.fixpoint_reached_iterations; _ } as fixpoint) =
     TaintFixpoint.compute
       ~scheduler:(Test.mock_scheduler ())
       ~scheduler_policy:(Scheduler.Policy.legacy_fixed_chunk_count ())
@@ -69,15 +69,14 @@ let assert_fixpoint
           TaintFixpoint.Context.taint_configuration = taint_configuration_shared_memory;
           pyre_api;
           class_interval_graph = class_interval_graph_shared_memory;
-          define_call_graphs = Interprocedural.CallGraph.SharedMemory.read_only define_call_graphs;
+          get_define_call_graph;
           global_constants = Interprocedural.GlobalConstants.SharedMemory.read_only global_constants;
-          decorator_resolution = CallGraph.DecoratorResolution.Results.empty;
         }
       ~callables_to_analyze
       ~max_iterations:100
       ~error_on_max_iterations:true
       ~epoch:TaintFixpoint.Epoch.initial
-      ~shared_models
+      ~state
   in
 
   assert_bool
@@ -86,19 +85,22 @@ let assert_fixpoint
   assert_equal
     ~msg:"Fixpoint iterations"
     expect_iterations
-    (TaintFixpoint.get_iterations fixpoint_state)
+    fixpoint_reached_iterations
     ~printer:Int.to_string;
-  let get_model = TaintFixpoint.get_model fixpoint_state in
+  let get_model =
+    TaintFixpoint.State.ReadOnly.get_model
+      (TaintFixpoint.State.read_only fixpoint.TaintFixpoint.state)
+  in
   let get_errors callable =
-    TaintFixpoint.get_result fixpoint_state callable |> IssueHandle.SerializableMap.data
+    callable
+    |> TaintFixpoint.State.ReadOnly.get_result (TaintFixpoint.State.read_only state)
+    |> IssueHandle.SerializableMap.data
   in
   let () =
     List.iter ~f:(check_expectation ~pyre_api ~taint_configuration ~get_model ~get_errors) expect
   in
-  OverrideGraph.SharedMemory.cleanup override_graph_shared_memory;
-  CallGraph.SharedMemory.cleanup define_call_graphs;
-  TaintFixpoint.cleanup fixpoint_state;
-  ()
+  TaintFixpoint.State.cleanup fixpoint.TaintFixpoint.state;
+  TestEnvironment.cleanup test_environment
 
 
 let test_fixpoint context =
@@ -214,7 +216,7 @@ let test_fixpoint context =
     |}
     ~expect:
       {
-        iterations = 4;
+        iterations = 2;
         expect =
           [
             outcome
@@ -543,7 +545,7 @@ let test_overrides context =
     |}
     ~expect:
       {
-        iterations = 4;
+        iterations = 2;
         expect =
           [
             outcome

@@ -219,15 +219,44 @@ module Make (Analysis : ANALYSIS) : sig
     val initial : t
   end
 
-  type t
+  module State : sig
+    type t
+
+    module ReadOnly : sig
+      type t
+
+      val get_model : t -> Target.t -> Analysis.Model.t option
+
+      val get_result : t -> Target.t -> Analysis.Result.t
+    end
+
+    val read_only : t -> ReadOnly.t
+
+    (** Remove the fixpoint state from the shared memory. This must be called before computing
+        another fixpoint. *)
+    val cleanup : t -> unit
+
+    val targets : t -> Target.t list
+
+    val update_models
+      :  scheduler:Scheduler.t ->
+      update_model:(target:Target.t -> model:Analysis.Model.t -> Analysis.Model.t) ->
+      t ->
+      t
+  end
+
+  type t = {
+    fixpoint_reached_iterations: int;
+    state: State.t;
+  }
 
   val record_initial_models
     :  scheduler:Scheduler.t ->
     initial_models:SharedModels.t ->
-    initial_callables:Target.t list ->
+    callables_to_analyze:Target.t list ->
     stubs:Target.t list ->
     override_targets:Target.t list ->
-    SharedModels.t
+    State.t
 
   val compute
     :  scheduler:Scheduler.t ->
@@ -239,27 +268,7 @@ module Make (Analysis : ANALYSIS) : sig
     max_iterations:int ->
     error_on_max_iterations:bool ->
     epoch:Epoch.t ->
-    shared_models:SharedModels.t ->
-    t
-
-  val get_result : t -> Target.t -> Analysis.Result.t
-
-  val set_result : t -> Target.t -> Analysis.Result.t -> unit
-
-  val clear_results : t -> unit
-
-  val get_model : t -> Target.t -> Analysis.Model.t option
-
-  val get_iterations : t -> int
-
-  (** Remove the fixpoint state from the shared memory. This must be called before computing another
-      fixpoint. *)
-  val cleanup : t -> unit
-
-  val update_models
-    :  scheduler:Scheduler.t ->
-    update_model:(target:Target.t -> model:Analysis.Model.t -> Analysis.Model.t) ->
-    t ->
+    state:State.t ->
     t
 end
 

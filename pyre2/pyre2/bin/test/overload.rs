@@ -6,6 +6,7 @@
  */
 
 use crate::test::util::TestEnv;
+use crate::testcase;
 use crate::testcase_with_bug;
 
 testcase_with_bug!(
@@ -48,13 +49,29 @@ def f(x: str) -> str: ...
     t
 }
 
-testcase_with_bug!(
-    "TODO: support overloads defined in pyi files",
+testcase!(
     test_pyi,
     env_with_stub(),
     r#"
 from typing import assert_type
 import foo
-assert_type(foo.f(1), int)  # E: EXPECTED Literal[1] <: str  # E: assert_type
+assert_type(foo.f(1), int)
+    "#,
+);
+
+testcase_with_bug!(
+    "Protocol overloaded methods do not need an implementation",
+    test_protocol,
+    r#"
+from typing import Protocol, assert_type, overload
+
+class P(Protocol):
+    @overload
+    def m(self, x: int) -> int: ...
+    @overload
+    def m(self, x: str) -> str: ...
+
+def test(o: P):
+    assert_type(o.m(1), int) # E: assert_type # E: EXPECTED Literal[1] <: str
     "#,
 );

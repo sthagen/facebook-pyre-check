@@ -1,3 +1,10 @@
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 import { ExtensionContext } from 'vscode';
 import * as vscode from 'vscode';
 import {
@@ -34,7 +41,7 @@ export function activate(context: ExtensionContext) {
 
     // Create the language client and start the client.
     client = new LanguageClient(
-        'Pyre2',
+        'pyre2',
         'Pyre2 language server',
         serverOptions,
         clientOptions
@@ -42,6 +49,19 @@ export function activate(context: ExtensionContext) {
 
     // Start the client. This will also launch the server
     client.start();
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('pyre2.restartClient', async () => {
+            await client.stop();
+            client = new LanguageClient(
+                'pyre2',
+                'Pyre2 language server',
+                serverOptions,
+                clientOptions
+            );
+            await client.start();
+        }),
+    );
 }
 
 export function deactivate(): Thenable<void> | undefined {
