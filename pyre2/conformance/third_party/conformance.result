@@ -4,7 +4,9 @@
     "Line 69: Expected 1 errors",
     "Line 70: Expected 1 errors",
     "Line 71: Expected 1 errors",
+    "Line 79: Expected 1 errors",
     "Line 84: Expected 1 errors",
+    "Line 85: Expected 1 errors",
     "Line 86: Expected 1 errors",
     "Line 90: Expected 1 errors",
     "Line 27: Unexpected errors [\"Expected `GoodTypeAlias13` to be a type alias, got Literal['int | str']\"]",
@@ -38,9 +40,7 @@
     "Line 64: Unexpected errors ['assert_type(list[str] | tuple[TypeVar[T], ...], list[str] | tuple[str, ...]) failed']",
     "Line 65: Unexpected errors ['assert_type(Any, tuple[int, int, int, str]) failed']",
     "Line 68: Unexpected errors ['assert_type((int, ParamSpec(ParamSpec[P])) -> Any, (int, str, str) -> None) failed']",
-    "Line 72: Unexpected errors ['assert_type((ParamSpec(ParamSpec[P])) -> None, (...) -> None) failed']",
-    "Line 89: Unexpected errors ['No matching overload found']",
-    "Line 95: Unexpected errors ['No matching overload found']"
+    "Line 72: Unexpected errors ['assert_type((ParamSpec(ParamSpec[P])) -> None, (...) -> None) failed']"
   ],
   "aliases_newtype.py": [
     "Line 11: Expected 1 errors",
@@ -77,6 +77,7 @@
   "aliases_type_statement.py": [
     "Line 26: Expected 1 errors",
     "Line 42: Expected 1 errors",
+    "Line 43: Expected 1 errors",
     "Line 44: Expected 1 errors",
     "Line 48: Expected 1 errors",
     "Line 52: Expected 1 errors",
@@ -93,11 +94,13 @@
     "Line 44: Expected 1 errors",
     "Line 46: Expected 1 errors",
     "Line 48: Expected 1 errors",
+    "Line 52: Expected 1 errors",
     "Line 53: Expected 1 errors",
     "Line 54: Expected 1 errors",
     "Line 55: Expected 1 errors",
     "Line 56: Expected 1 errors",
     "Line 57: Expected 1 errors",
+    "Line 58: Expected 1 errors",
     "Line 59: Expected 1 errors",
     "Line 60: Expected 1 errors",
     "Line 61: Expected 1 errors",
@@ -126,7 +129,9 @@
     "Line 23: Expected 1 errors",
     "Line 24: Expected 1 errors",
     "Line 25: Expected 1 errors",
+    "Line 41: Expected 1 errors",
     "Line 46: Expected 1 errors",
+    "Line 47: Expected 1 errors",
     "Line 48: Expected 1 errors",
     "Line 53: Expected 1 errors",
     "Line 66: Expected 1 errors",
@@ -153,9 +158,9 @@
   ],
   "annotations_typeexpr.py": [
     "Line 93: Expected 1 errors",
+    "Line 94: Expected 1 errors",
     "Line 95: Expected 1 errors",
     "Line 100: Expected 1 errors",
-    "Line 15: Unexpected errors ['No matching overload found']",
     "Line 77: Unexpected errors ['assert_type(tuple[Any], tuple[Any, ...]) failed']"
   ],
   "callables_annotation.py": [
@@ -194,10 +199,11 @@
     "Line 168: Unexpected errors ['EXPECTED (x: Any) -> Any <: Proto8']"
   ],
   "callables_subtyping.py": [
-    "Line 297: Expected 1 errors",
     "Line 211: Unexpected errors [\"Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TypeAliasWithP, type[(ParamSpec(ParamSpec[P])) -> None]]\"]",
     "Line 213: Unexpected errors [\"Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TypeAliasWithP, type[(ParamSpec(ParamSpec[P])) -> None]]\"]",
-    "Line 271: Unexpected errors ['EXPECTED Overloaded9 <: IntArg9']"
+    "Line 271: Unexpected errors ['EXPECTED Overloaded9 <: IntArg9']",
+    "Line 272: Unexpected errors ['EXPECTED Overloaded9 <: StrArg9']",
+    "Line 296: Unexpected errors ['EXPECTED IntStrArg10 <: Overloaded10']"
   ],
   "classes_classvar.py": [
     "Line 45: Expected 1 errors",
@@ -209,8 +215,7 @@
     "Line 67: Expected 1 errors",
     "Line 71: Expected 1 errors",
     "Line 105: Expected 1 errors",
-    "Line 61: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `ClassVar[list[int]]`']",
-    "Line 101: Unexpected errors ['No matching overload found']"
+    "Line 61: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `ClassVar[list[int]]`']"
   ],
   "classes_override.py": [
     "Line 53: Expected 1 errors",
@@ -222,9 +227,8 @@
   "constructors_call_init.py": [
     "Line 42: Expected 1 errors",
     "Line 107: Expected 1 errors",
-    "Line 72: Unexpected errors ['assert_type(Class5[Any], Class5[list[int]]) failed']",
-    "Line 74: Unexpected errors ['assert_type(Class5[Any], Class5[set[str]]) failed']",
-    "Line 75: Unexpected errors ['assert_type(Class5[Any], Class5[float]) failed']",
+    "Line 74: Unexpected errors ['assert_type(Class5[list[int]], Class5[set[str]]) failed', 'No matching overload found']",
+    "Line 75: Unexpected errors ['assert_type(Class5[list[int]], Class5[float]) failed', 'No matching overload found']",
     "Line 91: Unexpected errors ['assert_type(Class6[TypeVar[V1], TypeVar[V2]], Class6[int, str]) failed']",
     "Line 92: Unexpected errors ['EXPECTED Class6[int, str] <: Class6[TypeVar[V1], TypeVar[V2]]']",
     "Line 99: Unexpected errors ['assert_type(Class7[TypeVar[V2], TypeVar[V1]], Class7[str, int]) failed']",
@@ -296,12 +300,11 @@
     "Line 22: Unexpected errors ['EXPECTED object <: Class1', 'Expected 0 positional arguments, got 1']"
   ],
   "dataclasses_descriptors.py": [
-    "Line 35: Unexpected errors ['Expected 0 positional arguments, got 1']",
+    "Line 35: Unexpected errors ['EXPECTED Literal[3] <: Desc1']",
     "Line 37: Unexpected errors ['assert_type(Desc1, int) failed']",
     "Line 61: Unexpected errors ['assert_type(Any, list[int]) failed', 'Instance-only attribute `x` of class `DC2` is not visible on the class']",
     "Line 62: Unexpected errors ['assert_type(Any, list[str]) failed', 'Instance-only attribute `y` of class `DC2` is not visible on the class']",
     "Line 63: Unexpected errors ['assert_type(Desc2[str], list[str]) failed']",
-    "Line 65: Unexpected errors ['Expected 0 positional arguments, got 3']",
     "Line 66: Unexpected errors ['assert_type(Desc2[int], int) failed']",
     "Line 67: Unexpected errors ['assert_type(Desc2[str], str) failed']",
     "Line 68: Unexpected errors ['assert_type(Desc2[str], str) failed']"
@@ -311,35 +314,31 @@
     "Line 35: Expected 1 errors",
     "Line 36: Expected 1 errors",
     "Line 38: Expected 1 errors",
-    "Line 30: Unexpected errors ['Unexpected keyword argument `final_no_default`', 'Unexpected keyword argument `final_with_default`']"
+    "Line 30: Unexpected errors ['Missing argument `final_classvar`']"
   ],
   "dataclasses_frozen.py": [
     "Lines 22, 23: Expected error (tag 'DC2')",
     "Lines 32, 33: Expected error (tag 'DC4')"
   ],
   "dataclasses_hash.py": [
+    "Line 15: Expected 1 errors",
     "Line 32: Expected 1 errors"
   ],
   "dataclasses_inheritance.py": [
     "Line 60: Expected 1 errors",
     "Line 64: Expected 1 errors",
-    "Line 23: Unexpected errors ['Expected 0 positional arguments, got 2']",
-    "Line 40: Unexpected errors ['Expected 0 positional arguments, got 3']"
+    "Line 25: Unexpected errors ['Missing argument `a`', 'Missing argument `b`']"
   ],
   "dataclasses_kwonly.py": [
-    "Line 17: Unexpected errors ['Expected 0 positional arguments, got 1']",
-    "Line 18: Unexpected errors ['Unexpected keyword argument `a`']",
-    "Line 19: Unexpected errors ['Unexpected keyword argument `a`', 'Unexpected keyword argument `b`']",
-    "Line 20: Unexpected errors ['Expected 0 positional arguments, got 1', 'Unexpected keyword argument `b`']",
-    "Line 32: Unexpected errors ['Expected 0 positional arguments, got 1']",
-    "Line 33: Unexpected errors ['Unexpected keyword argument `a`']",
-    "Line 34: Unexpected errors ['Unexpected keyword argument `a`', 'Unexpected keyword argument `b`']",
-    "Line 35: Unexpected errors ['Expected 0 positional arguments, got 1', 'Unexpected keyword argument `b`']",
+    "Line 17: Unexpected errors ['Missing argument `b`']",
+    "Line 18: Unexpected errors ['Missing argument `b`']",
+    "Line 32: Unexpected errors [\"EXPECTED Literal['hi'] <: int\"]",
+    "Line 33: Unexpected errors ['Missing argument `b`']",
+    "Line 35: Unexpected errors [\"EXPECTED Literal['hi'] <: int\", 'Multiple values for argument `b`']",
     "Line 47: Unexpected errors ['Missing argument `a`', 'Missing argument `b`', 'Expected 0 positional arguments, got 1']",
     "Line 48: Unexpected errors ['Missing argument `b`']",
     "Line 50: Unexpected errors ['Missing argument `a`', 'Expected 0 positional arguments, got 1']",
-    "Line 61: Unexpected errors ['Missing argument `a`', 'Expected 0 positional arguments, got 2']",
-    "Line 62: Unexpected errors ['Unexpected keyword argument `c`']"
+    "Line 61: Unexpected errors ['EXPECTED float <: int', 'Multiple values for argument `b`']"
   ],
   "dataclasses_order.py": [],
   "dataclasses_postinit.py": [
@@ -347,13 +346,12 @@
     "Line 28: Expected 1 errors",
     "Line 29: Expected 1 errors",
     "Line 36: Expected 1 errors",
-    "Line 23: Unexpected errors ['Expected 0 positional arguments, got 5']"
+    "Line 23: Unexpected errors ['EXPECTED Literal[3] <: InitVar[int]', \"EXPECTED Literal[''] <: InitVar[str]\"]"
   ],
   "dataclasses_slots.py": [
     "Line 25: Expected 1 errors",
     "Line 38: Expected 1 errors",
     "Lines 10, 11: Expected error (tag 'DC1')",
-    "Line 48: Unexpected errors ['Expected 0 positional arguments, got 2']",
     "Line 56: Unexpected errors ['Class `DC5` has no class attribute `__slots__`']",
     "Line 57: Unexpected errors ['Object of class `DC5` has no attribute `__slots__`']"
   ],
@@ -372,7 +370,6 @@
   "dataclasses_transform_converter.py": [
     "Line 118: Expected 1 errors",
     "Line 29: Unexpected errors ['EXPECTED tuple[Forall[S, T, (*, converter: (S) -> T, default: S | None, default_factory: () -> S | None) -> T]] <: tuple[(...) -> Any | type[Any], ...]']",
-    "Line 68: Unexpected errors ['No matching overload found']",
     "Line 102: Unexpected errors ['EXPECTED type[ConverterClass] <: (@_) -> @_']",
     "Line 103: Unexpected errors ['EXPECTED Overload[(s: str) -> int, (s: list[str]) -> int] <: (@_) -> @_']",
     "Line 104: Unexpected errors ['EXPECTED type[dict] <: (@_) -> @_']",
@@ -409,27 +406,23 @@
     "Line 100: Unexpected errors ['Unexpected keyword argument `id`', 'Unexpected keyword argument `name`']"
   ],
   "dataclasses_usage.py": [
+    "Line 83: Expected 1 errors",
     "Lines 58, 61: Expected error (tag 'DC1')",
     "Lines 64, 67: Expected error (tag 'DC2')",
     "Lines 70, 73: Expected error (tag 'DC3')",
     "Line 25: Unexpected errors ['Missing argument `quantity_on_hand`']",
     "Line 35: Unexpected errors ['EXPECTED BoundMethod[InventoryItem, (self: InventoryItem, name: str, unit_price: float, quantity_on_hand: int) -> None] <: InventoryItemInitProto']",
     "Line 72: Unexpected errors ['EXPECTED Literal[0] <: InitVar[int]']",
-    "Line 82: Unexpected errors ['Expected 0 positional arguments, got 1']",
-    "Line 102: Unexpected errors ['Expected 0 positional arguments, got 1']",
+    "Line 102: Unexpected errors ['Missing argument `c`', \"EXPECTED Literal[''] <: int\"]",
     "Line 106: Unexpected errors ['assert_type(BoundMethod[DC6, (str) -> int], (str) -> int) failed']",
-    "Line 123: Unexpected errors ['Expected 0 positional arguments, got 1']",
-    "Line 194: Unexpected errors ['Unexpected keyword argument `prop_2`']",
-    "Line 205: Unexpected errors ['EXPECTED DC15 <: DataclassProto']",
-    "Line 213: Unexpected errors ['assert_type(DC16[Any], DC16[int]) failed', 'Expected 0 positional arguments, got 1']",
-    "Line 220: Unexpected errors ['Expected 0 positional arguments, got 1']"
+    "Line 194: Unexpected errors ['Missing argument `prop_1`', 'Missing argument `prop_3`']",
+    "Line 205: Unexpected errors ['EXPECTED DC15 <: DataclassProto']"
   ],
   "directives_assert_type.py": [
     "Line 24: Unexpected errors ['assert_type(ForwardReference, Any) failed', \"untype, got Literal['ForwardReference']\"]"
   ],
   "directives_cast.py": [
-    "Line 16: Expected 1 errors",
-    "Line 11: Unexpected errors ['No matching overload found']"
+    "Line 16: Expected 1 errors"
   ],
   "directives_deprecated.py": [
     "Line 24: Expected 1 errors",
@@ -502,12 +495,9 @@
     "Line 55: Expected 1 errors",
     "Line 121: Expected 1 errors",
     "Line 191: Expected 1 errors",
-    "Line 19: Unexpected errors ['No matching overload found']",
     "Line 34: Unexpected errors ['TODO: Expr::attr_infer attribute base undefined for type: ?_ (trying to access __add__)']",
     "Line 67: Unexpected errors ['assert_type(MyStr, str) failed']",
-    "Line 68: Unexpected errors ['assert_type(MyStr, str) failed', 'EXPECTED str <: MyStr']",
-    "Line 92: Unexpected errors ['No matching overload found']",
-    "Line 96: Unexpected errors ['No matching overload found']"
+    "Line 68: Unexpected errors ['assert_type(MyStr, str) failed', 'EXPECTED str <: MyStr']"
   ],
   "generics_defaults.py": [
     "Line 104: Expected 1 errors",
@@ -598,14 +588,12 @@
   "generics_self_advanced.py": [
     "Line 19: Unexpected errors ['assert_type(ParentA, ChildA) failed']",
     "Line 35: Unexpected errors ['assert_type(ChildB, Self) failed']",
-    "Line 37: Unexpected errors ['assert_type(Any, Self) failed', 'No matching overload found']",
     "Line 38: Unexpected errors ['assert_type(ParentB, Self) failed', 'EXPECTED type[ChildB] <: ParentB']",
     "Line 42: Unexpected errors ['assert_type(ChildB, type[Self]) failed']",
-    "Line 44: Unexpected errors ['assert_type(Any, Self) failed', 'No matching overload found']",
     "Line 45: Unexpected errors ['assert_type(ParentB, Self) failed', 'EXPECTED type[ChildB] <: ParentB']"
   ],
   "generics_self_attributes.py": [
-    "Line 29: Unexpected errors ['EXPECTED OrdinalLinkedList <: Self | None', 'Unexpected keyword argument `value`', 'Unexpected keyword argument `next`']"
+    "Line 29: Unexpected errors ['EXPECTED OrdinalLinkedList <: Self | None']"
   ],
   "generics_self_basic.py": [
     "Line 20: Expected 1 errors",
@@ -856,9 +844,8 @@
   ],
   "literals_literalstring.py": [
     "Line 120: Expected 1 errors",
-    "Line 48: Unexpected errors ['assert_type(Any, LiteralString) failed', 'No matching overload found']",
-    "Line 52: Unexpected errors ['assert_type(Any, LiteralString) failed', 'No matching overload found']",
-    "Line 53: Unexpected errors ['assert_type(Any, str) failed', 'No matching overload found']",
+    "Line 48: Unexpected errors ['assert_type(str, LiteralString) failed']",
+    "Line 52: Unexpected errors ['assert_type(str, LiteralString) failed']",
     "Line 57: Unexpected errors ['`LiteralString` has no attribute `__iadd__`']",
     "Line 58: Unexpected errors ['`LiteralString` has no attribute `__iadd__`']",
     "Line 63: Unexpected errors ['assert_type(str, LiteralString) failed']",
@@ -883,29 +870,12 @@
   "namedtuples_define_class.py": [
     "Line 59: Expected 1 errors",
     "Line 79: Expected 1 errors",
-    "Line 21: Unexpected errors ['EXPECTED Literal[1] <: Iterable[Any]', 'Expected 2 positional arguments, got 3']",
-    "Line 22: Unexpected errors ['assert_type(tuple[Any], Point) failed']",
-    "Line 23: Unexpected errors ['assert_type(Any, int) failed', 'No matching overload found']",
-    "Line 24: Unexpected errors ['assert_type(Any, int) failed', 'No matching overload found']",
-    "Line 25: Unexpected errors ['assert_type(Any, str) failed', 'No matching overload found']",
-    "Line 26: Unexpected errors ['assert_type(Any, str) failed', 'No matching overload found']",
-    "Line 27: Unexpected errors ['assert_type(Any, int) failed', 'No matching overload found']",
-    "Line 28: Unexpected errors ['assert_type(Any, int) failed', 'No matching overload found']",
-    "Line 29: Unexpected errors ['assert_type(Any, tuple[int, int]) failed', 'No matching overload found']",
-    "Line 30: Unexpected errors ['assert_type(Any, tuple[int, int, str]) failed', 'No matching overload found']",
-    "Line 35: Unexpected errors ['EXPECTED Literal[1] <: Iterable[Any]', 'Expected 2 positional arguments, got 4']",
-    "Line 36: Unexpected errors ['assert_type(tuple[Any], Point) failed']",
-    "Line 38: Unexpected errors ['Unexpected keyword argument `x`', 'Unexpected keyword argument `y`']",
-    "Line 39: Unexpected errors ['assert_type(tuple[Any], Point) failed']",
-    "Line 41: Unexpected errors ['Unexpected keyword argument `x`', 'Unexpected keyword argument `y`', 'Unexpected keyword argument `units`']",
-    "Line 42: Unexpected errors ['assert_type(tuple[Any], Point) failed']",
-    "Line 72: Unexpected errors ['EXPECTED Literal[1] <: Iterable[Any]', 'Expected 2 positional arguments, got 4']",
-    "Line 73: Unexpected errors ['EXPECTED tuple[Any] <: tuple[int, int, str]']",
-    "Line 74: Unexpected errors ['assert_type(Any, str) failed', 'Object of class `tuple` has no attribute `name`']",
-    "Line 93: Unexpected errors [\"EXPECTED Literal[''] <: Iterable[Any]\", 'Expected 2 positional arguments, got 3']",
-    "Line 94: Unexpected errors ['assert_type(tuple[Any], Property[float]) failed']",
-    "Line 95: Unexpected errors ['assert_type(Any, float) failed', 'No matching overload found']",
-    "Line 96: Unexpected errors ['assert_type(Any, float) failed', 'Object of class `tuple` has no attribute `value`']"
+    "Line 21: Unexpected errors ['No matching overload found']",
+    "Line 35: Unexpected errors ['No matching overload found']",
+    "Line 38: Unexpected errors ['No matching overload found']",
+    "Line 41: Unexpected errors ['No matching overload found']",
+    "Line 72: Unexpected errors ['No matching overload found']",
+    "Line 93: Unexpected errors ['No matching overload found']"
   ],
   "namedtuples_define_functional.py": [
     "Line 14: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point1, type[tuple[Any, ...]]]']",
@@ -927,26 +897,12 @@
     "Line 65: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[NT5, type[tuple[Any, ...]]]']"
   ],
   "namedtuples_type_compat.py": [
-    "Line 19: Unexpected errors ['Unexpected keyword argument `x`', 'Unexpected keyword argument `y`', 'Unexpected keyword argument `units`']",
-    "Line 20: Unexpected errors ['EXPECTED tuple[Any] <: tuple[int, int, str]']",
-    "Line 21: Unexpected errors ['EXPECTED tuple[Any] <: tuple[Any, ...]']",
-    "Line 27: Unexpected errors ['EXPECTED tuple[Any] <: tuple[float, float, str]']"
+    "Line 19: Unexpected errors ['No matching overload found']"
   ],
   "namedtuples_usage.py": [
-    "Line 52: Expected 1 errors",
-    "Line 53: Expected 1 errors",
-    "Line 19: Unexpected errors ['EXPECTED Literal[1] <: Iterable[Any]', 'Expected 2 positional arguments, got 3']",
-    "Line 20: Unexpected errors ['assert_type(Any, int) failed', 'Object of class `tuple` has no attribute `x`']",
-    "Line 21: Unexpected errors ['assert_type(Any, str) failed', 'Object of class `tuple` has no attribute `units`']",
-    "Line 27: Unexpected errors ['assert_type(Any, int) failed', 'No matching overload found']",
-    "Line 28: Unexpected errors ['assert_type(Any, int) failed', 'No matching overload found']",
-    "Line 29: Unexpected errors ['assert_type(Any, str) failed', 'No matching overload found']",
-    "Line 30: Unexpected errors ['assert_type(Any, str) failed', 'No matching overload found']",
-    "Line 31: Unexpected errors ['assert_type(Any, int) failed', 'No matching overload found']",
-    "Line 32: Unexpected errors ['assert_type(Any, int) failed', 'No matching overload found']",
-    "Line 49: Unexpected errors ['assert_type(Any, int) failed']",
-    "Line 50: Unexpected errors ['assert_type(Any, str) failed']",
-    "Line 60: Unexpected errors ['EXPECTED Literal[1] <: Iterable[Any]', 'Expected 2 positional arguments, got 3']"
+    "Line 40: Expected 1 errors",
+    "Line 19: Unexpected errors ['No matching overload found']",
+    "Line 60: Unexpected errors ['No matching overload found']"
   ],
   "narrowing_typeguard.py": [
     "Line 102: Expected 1 errors",
@@ -995,9 +951,7 @@
   ],
   "overloads_basic.py": [
     "Lines 62, 63: Expected error (tag 'func1')",
-    "Lines 74, 75: Expected error (tag 'func2')",
-    "Line 35: Unexpected errors ['assert_type(Any, int) failed', 'No matching overload found']",
-    "Line 36: Unexpected errors ['assert_type(Any, bytes) failed', 'No matching overload found']"
+    "Lines 74, 75: Expected error (tag 'func2')"
   ],
   "protocols_class_objects.py": [
     "Line 29: Expected 1 errors",
@@ -1011,11 +965,9 @@
   "protocols_definition.py": [
     "Line 117: Expected 1 errors",
     "Line 157: Expected 1 errors",
-    "Line 218: Expected 1 errors",
-    "Line 216: Unexpected errors ['EXPECTED tuple[Any] <: Template4']",
+    "Line 216: Unexpected errors ['No matching overload found']",
     "Line 217: Unexpected errors ['Missing argument `val1`']",
     "Line 281: Unexpected errors ['EXPECTED Concrete5_Good2 <: Template5']",
-    "Line 284: Unexpected errors ['EXPECTED Concrete5_Good5 <: Template5']",
     "Line 338: Unexpected errors ['Missing argument `val1`']"
   ],
   "protocols_explicit.py": [
@@ -1073,6 +1025,7 @@
   ],
   "qualifiers_annotated.py": [
     "Line 47: Expected 1 errors",
+    "Line 48: Expected 1 errors",
     "Line 49: Expected 1 errors",
     "Line 53: Expected 1 errors",
     "Line 64: Expected 1 errors",
@@ -1241,8 +1194,7 @@
     "Lines 54, 55: Expected error (tag 'Y1')"
   ],
   "typeddicts_operations.py": [
-    "Line 41: Unexpected errors ['No matching overload found']",
-    "Line 60: Unexpected errors ['assert_type(Any, str | None) failed', 'No matching overload found']",
+    "Line 60: Unexpected errors ['assert_type(object | None, str | None) failed']",
     "Line 64: Unexpected errors ['TODO: StmtDelete - Bindings::stmt']"
   ],
   "typeddicts_readonly.py": [
@@ -1282,12 +1234,11 @@
   "typeddicts_type_consistency.py": [
     "Line 21: Expected 1 errors",
     "Line 88: Unexpected errors ['Expected a callable, got type[TypedDict]']",
-    "Line 91: Unexpected errors ['No matching overload found']",
-    "Line 92: Unexpected errors ['No matching overload found']",
+    "Line 91: Unexpected errors ['EXPECTED int | str <: str']",
+    "Line 92: Unexpected errors ['EXPECTED int | str <: int']",
     "Line 94: Unexpected errors ['Expected a callable, got type[TypedDict]']",
-    "Line 97: Unexpected errors ['No matching overload found']",
-    "Line 103: Unexpected errors ['No matching overload found']",
-    "Line 105: Unexpected errors ['No matching overload found']",
+    "Line 97: Unexpected errors ['EXPECTED int | str | None <: str | None']",
+    "Line 103: Unexpected errors ['EXPECTED int | str <: int']",
     "Line 151: Unexpected errors [\"EXPECTED dict[str, int] <: Literal[''] | TypedDict[Inner3]\"]"
   ],
   "typeddicts_usage.py": [

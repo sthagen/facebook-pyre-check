@@ -240,6 +240,11 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             {
                 self.is_subset_eq_impl(&l_no_self, want)
             }
+            (Type::Callable(_, _), Type::BoundMethod(box method))
+                if let Some(u_no_self) = method.as_callable() =>
+            {
+                self.is_subset_eq_impl(got, &u_no_self)
+            }
             (Type::BoundMethod(box l), Type::BoundMethod(box u))
                 if let Some(l_no_self) = l.as_callable()
                     && let Some(u_no_self) = u.as_callable() =>
@@ -389,6 +394,11 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             }
             (Type::ClassDef(_), Type::Type(box Type::Any(_)))
             | (Type::Type(box Type::Any(_)), Type::ClassDef(_)) => true,
+            (Type::ClassType(cls), want @ Type::Tuple(_))
+                if let Some(elts) = self.type_order.named_tuple_element_types(cls) =>
+            {
+                self.is_subset_eq(&Type::Tuple(Tuple::Concrete(elts)), want)
+            }
             (Type::Tuple(Tuple::Concrete(lelts)), Type::Tuple(Tuple::Concrete(uelts))) => {
                 if lelts.len() == uelts.len() {
                     lelts

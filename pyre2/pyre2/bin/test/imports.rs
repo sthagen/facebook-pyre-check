@@ -20,13 +20,17 @@ x: X = X()
 }
 
 fn env_class_x_deeper() -> TestEnv {
-    TestEnv::one(
+    let mut t = TestEnv::new();
+    t.add_with_path("foo", "", "foo/__init__.pyi");
+    t.add_with_path(
         "foo.bar",
         r#"
 class X: ...
 x: X = X()
 "#,
-    )
+        "foo/bar.pyi",
+    );
+    t
 }
 
 testcase!(
@@ -105,8 +109,10 @@ y: X = x  # E: foo.X <: main.X
 
 fn env_imports_dot() -> TestEnv {
     let mut t = TestEnv::new();
-    t.add("foo.bar.baz", "from .qux import x");
-    t.add("foo.bar.qux", "x: int = 1");
+    t.add_with_path("foo", "", "foo/__init__.pyi");
+    t.add_with_path("foo.bar", "", "foo/bar/__init__.pyi");
+    t.add_with_path("foo.bar.baz", "from .qux import x", "foo/bar/baz.pyi");
+    t.add_with_path("foo.bar.qux", "x: int = 1", "foo/bar/qux.pyi");
     t
 }
 
@@ -120,13 +126,12 @@ assert_type(x, int)
 "#,
 );
 
-testcase_with_bug!(
-    "False negative",
+testcase!(
     test_access_nonexistent_module,
     env_imports_dot(),
     r#"
 import foo.bar.baz
-foo.qux.wibble.wobble # TODO: error
+foo.qux.wibble.wobble # E: No attribute `qux` in module `foo`
 "#,
 );
 
@@ -177,8 +182,9 @@ assert_type(_y, Any)  # E: Could not find name `_y`
 
 fn env_import_different_submodules() -> TestEnv {
     let mut t = TestEnv::new();
-    t.add("foo.bar", "x: int = 1");
-    t.add("foo.baz", "x: str = 'a'");
+    t.add_with_path("foo", "", "foo/__init__.pyi");
+    t.add_with_path("foo.bar", "x: int = 1", "foo/bar.pyi");
+    t.add_with_path("foo.baz", "x: str = 'a'", "foo/baz.pyi");
     t
 }
 
@@ -248,13 +254,14 @@ z = y  # E: Could not find name `y`
 
 fn env_broken_export() -> TestEnv {
     let mut t = TestEnv::new();
-    t.add("foo", "from foo.bar import *");
-    t.add(
+    t.add_with_path("foo", "from foo.bar import *", "foo/__init__.pyi");
+    t.add_with_path(
         "foo.bar",
         r#"
 from foo import baz  # E: Could not import `baz` from `foo`
 __all__ = []
 "#,
+        "foo/bar.pyi",
     );
     t
 }
@@ -303,8 +310,7 @@ from foo import baz  # E: Could not import `baz` from `foo`
 "#,
 );
 
-testcase_with_bug!(
-    "TODO: foo.bar.x should exist and should be an int",
+testcase!(
     test_import_dunder_init_and_submodule,
     env_dunder_init_with_submodule(),
     r#"
@@ -312,30 +318,31 @@ from typing import assert_type
 import foo
 import foo.bar
 assert_type(foo.x, str)
-foo.bar.x # TODO # E: No attribute `bar` in module `foo`
+assert_type(foo.bar.x, int)
 "#,
 );
 
-testcase!(
+testcase_with_bug!(
+    "Attribute access on a module is not yet failable",
     test_import_dunder_init_without_submodule,
     env_dunder_init_with_submodule(),
     r#"
 from typing import assert_type
 import foo
 assert_type(foo.x, str)
-foo.bar.x # E: No attribute `bar` in module `foo`
+foo.bar.x # This should fail: `bar` has not been imported/loaded yet
 "#,
 );
 
 testcase_with_bug!(
-    "TODO: `foo.x` should be an error. The assert_type(foo.x) call should fail, but the error message is not great",
+    "TODO: `foo.x` should be an error. The assert_type(foo.x) call should fail",
     test_import_dunder_init_submodule_only,
     env_dunder_init_with_submodule(),
     r#"
 from typing import assert_type
 import foo.bar
-foo.x
-assert_type(foo.x, str) # E: assert_type(Module[foo.x], str) failed
+foo.x  # Should error
+assert_type(foo.x, str)  # Should error
 assert_type(foo.bar.x, int)
 "#,
 );
@@ -387,14 +394,33 @@ foo.bar.x # E: Object of class `str` has no attribute `x`
 "#,
 );
 
-testcase!(
+testcase_with_bug!(
+    "`foo.bar` is explicitly imported as module so it should be treated as a module.",
     test_import_dunder_init_overlap_submodule_only,
     env_dunder_init_overlap_submodule(),
     r#"
 from typing import assert_type
 import foo.bar
-assert_type(foo.bar, str) # E: assert_type(Module[foo.bar], str) failed
-assert_type(foo.bar.x, int)
+assert_type(foo.bar, str) # This should fail: foo.bar is a module, not a str
+foo.bar.x # This should not fail. The type is `int`. # E: Object of class `str` has no attribute `x`
+"#,
+);
+
+fn env_dunder_init_reexport_submodule() -> TestEnv {
+    let mut t = TestEnv::new();
+    t.add_with_path("foo", "from .bar import x", "foo/__init__.pyi");
+    t.add_with_path("foo.bar", "x: int = 0", "foo/bar.pyi");
+    t
+}
+
+testcase!(
+    test_import_dunder_init_reexport_submodule,
+    env_dunder_init_reexport_submodule(),
+    r#"
+from typing import assert_type
+import foo
+assert_type(foo.x, int)
+assert_type(foo.bar.x, int)  # This is fine: `bar` is loaded when we import from `foo` and run `foo/__init__.pyi`
 "#,
 );
 
@@ -446,7 +472,6 @@ testcase!(
     env_blank(),
     r#"
 import foo
-
 x = foo.bar  # E: No attribute `bar` in module `foo`
 "#,
 );

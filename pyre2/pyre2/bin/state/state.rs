@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use dupe::Dupe;
 use dupe::OptionDupedExt;
@@ -54,15 +55,16 @@ use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
 use crate::util::display::number_thousands;
 use crate::util::enum_heap::EnumHeap;
+use crate::util::locked_map::LockedMap;
 use crate::util::prelude::SliceExt;
 use crate::util::uniques::UniqueFactory;
 
 pub struct State {
     uniques: UniqueFactory,
     parallel: bool,
-    stdlib: RwLock<SmallMap<(Config, LoaderId), Arc<Stdlib>>>,
-    modules: RwLock<SmallMap<Handle, Arc<ModuleState>>>,
-    loaders: RwLock<SmallMap<LoaderId, Arc<LoaderFindCache<LoaderId>>>>,
+    stdlib: SmallMap<(Config, LoaderId), Arc<Stdlib>>,
+    modules: LockedMap<Handle, Arc<ModuleState>>,
+    loaders: SmallMap<LoaderId, Arc<LoaderFindCache<LoaderId>>>,
     /// Items we still need to process. Stored in a max heap, so that
     /// the highest step (the module that is closest to being finished)
     /// gets picked first, ensuring we release its memory quickly.
@@ -144,7 +146,17 @@ impl State {
                 _ => break,
             }
             drop(lock);
-            let _compute_lock = module_state.lock.lock();
+            let compute_lock = module_state.lock.try_lock_for(Duration::from_millis(100));
+            if compute_lock.is_none() {
+                // Typechecking empty.py with -j25 deadlocks about 1% of the time. At -j100 it deadlocks about 5% of the time.
+                // I don't really understand it. But the fact we have to use FairMutex is a bit of a smell, and potentially
+                // we are having races as to what "fair" means.
+                //
+                // We plan to rewrite much of this code soon to support incrementality, so for now, bodge it.
+                // If we can't get the lock in 100ms, just give up and try from scratch.
+                // Small delay plus rarely hit means this has no overall perf impact.
+                continue;
+            }
             let lock = module_state.steps.read().unwrap();
 
             // BIG WARNING: We do Step::Solutions.compute_next, NOT step.compute_next.
@@ -162,7 +174,7 @@ impl State {
             if todo == Step::Answers && !self.retain_memory {
                 // We have captured the Ast, and must have already built Exports (we do it serially),
                 // so won't need the Ast again.
-                module_state.steps.write().unwrap().ast.clear();
+                module_state.steps.write().unwrap().ast.take();
             }
 
             let stdlib = self.get_stdlib(handle);
@@ -178,12 +190,16 @@ impl State {
                 retain_memory: self.retain_memory,
             });
             {
+                let mut to_drop = None;
                 let mut module_write = module_state.steps.write().unwrap();
                 set(&mut module_write);
                 if todo == Step::Solutions && !self.retain_memory {
                     // From now on we can use the answers directly, so evict the bindings/answers.
-                    module_write.answers.clear();
+                    to_drop = module_write.answers.take();
                 }
+                drop(module_write);
+                // Release the lock before dropping
+                drop(to_drop);
             }
             if todo == step {
                 break; // Fast path - avoid asking again since we just did it.
@@ -197,17 +213,7 @@ impl State {
     }
 
     fn get_module(&self, handle: &Handle) -> Arc<ModuleState> {
-        let lock = self.modules.read().unwrap();
-        if let Some(v) = lock.get(handle) {
-            return v.dupe();
-        }
-        drop(lock);
-        self.modules
-            .write()
-            .unwrap()
-            .entry(handle.dupe())
-            .or_default()
-            .dupe()
+        self.modules.ensure(handle, Default::default).dupe()
     }
 
     fn add_error(&self, handle: &Handle, range: TextRange, msg: String) {
@@ -314,7 +320,7 @@ impl State {
 
     pub fn collect_errors(&self) -> Vec<Error> {
         let mut errors = Vec::new();
-        for module in self.modules.read().unwrap().values() {
+        for module in self.modules.values() {
             let steps = module.steps.read().unwrap();
             if let Some(load) = steps.load.get() {
                 errors.extend(load.errors.collect());
@@ -324,13 +330,11 @@ impl State {
     }
 
     pub fn module_count(&self) -> usize {
-        self.modules.read().unwrap().len()
+        self.modules.len()
     }
 
     pub fn count_errors(&self) -> usize {
         self.modules
-            .read()
-            .unwrap()
             .values()
             .map(|x| {
                 x.steps
@@ -344,7 +348,7 @@ impl State {
     }
 
     pub fn print_errors(&self) {
-        for module in self.modules.read().unwrap().values() {
+        for module in self.modules.values() {
             let steps = module.steps.read().unwrap();
             if let Some(load) = steps.load.get() {
                 load.errors.print();
@@ -355,8 +359,6 @@ impl State {
     pub fn print_error_summary(&self, limit: usize) {
         let loads = self
             .modules
-            .read()
-            .unwrap()
             .values()
             .filter_map(|x| x.steps.read().unwrap().load.get().duped())
             .collect::<Vec<_>>();
@@ -378,21 +380,19 @@ impl State {
 
     fn get_cached_loader(&self, loader: &LoaderId) -> Arc<LoaderFindCache<LoaderId>> {
         // Safe because we always fill these in before starting
-        self.loaders.read().unwrap().get(loader).unwrap().dupe()
+        self.loaders.get(loader).unwrap().dupe()
     }
 
     fn get_stdlib(&self, handle: &Handle) -> Arc<Stdlib> {
         // Safe because we always run compute_stdlib first
         self.stdlib
-            .read()
-            .unwrap()
             .get(&(handle.config().dupe(), handle.loader().dupe()))
             .unwrap()
             .dupe()
     }
 
-    fn compute_stdlib(&self, configs: SmallSet<(Config, LoaderId)>) {
-        *self.stdlib.write().unwrap() = configs
+    fn compute_stdlib(&mut self, configs: SmallSet<(Config, LoaderId)>) {
+        self.stdlib = configs
             .iter()
             .map(|k| (k.dupe(), Arc::new(Stdlib::for_bootstrapping())))
             .collect();
@@ -408,7 +408,7 @@ impl State {
                 )
             })
             .collect();
-        *self.stdlib.write().unwrap() = stdlibs;
+        self.stdlib = stdlibs;
     }
 
     fn work(&self) {
@@ -430,7 +430,7 @@ impl State {
             .map(|x| (x.config().dupe(), x.loader().dupe()))
             .collect::<SmallSet<_>>();
 
-        *self.loaders.write().unwrap() = configs
+        self.loaders = configs
             .iter()
             .map(|x| (x.1.dupe(), Arc::new(LoaderFindCache::new(x.1.dupe()))))
             .collect::<SmallMap<_, _>>();
@@ -471,13 +471,11 @@ impl State {
     }
 
     pub fn handles(&self) -> Vec<Handle> {
-        self.modules.read().unwrap().keys().cloned().collect()
+        self.modules.keys().cloned().collect()
     }
 
     pub fn get_bindings(&self, handle: &Handle) -> Option<Bindings> {
         self.modules
-            .read()
-            .unwrap()
             .get(handle)?
             .steps
             .read()
@@ -489,8 +487,6 @@ impl State {
 
     pub fn get_module_info(&self, handle: &Handle) -> Option<ModuleInfo> {
         self.modules
-            .read()
-            .unwrap()
             .get(handle)?
             .steps
             .read()
@@ -502,8 +498,6 @@ impl State {
 
     pub fn get_ast(&self, handle: &Handle) -> Option<Arc<ruff_python_ast::ModModule>> {
         self.modules
-            .read()
-            .unwrap()
             .get(handle)?
             .steps
             .read()
@@ -515,8 +509,6 @@ impl State {
 
     pub fn get_solutions(&self, handle: &Handle) -> Option<Arc<Solutions>> {
         self.modules
-            .read()
-            .unwrap()
             .get(handle)?
             .steps
             .read()
@@ -540,7 +532,7 @@ impl State {
     }
 
     pub fn check_against_expectations(&self) -> anyhow::Result<()> {
-        for module in self.modules.read().unwrap().values() {
+        for module in self.modules.values() {
             let steps = module.steps.read().unwrap();
             let load = steps.load.get().unwrap();
             Expectation::parse(load.module_info.dupe(), load.module_info.contents())

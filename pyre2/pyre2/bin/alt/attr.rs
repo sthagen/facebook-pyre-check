@@ -15,7 +15,10 @@ use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::callable::CallArg;
 use crate::alt::types::class_metadata::EnumMetadata;
+use crate::binding::binding::KeyExport;
 use crate::error::collector::ErrorCollector;
+use crate::export::exports::Exports;
+use crate::module::module_name::ModuleName;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
 use crate::types::module::Module;
@@ -347,6 +350,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             (_, AttributeInner::NoAccess(_)) => true,
             (AttributeInner::NoAccess(_), _) => false,
             (
+                AttributeInner::Property(_, _, _),
+                AttributeInner::ReadOnly(_) | AttributeInner::ReadWrite(_),
+            ) => false,
+            (
+                AttributeInner::ReadOnly(_),
+                AttributeInner::Property(_, Some(_), _) | AttributeInner::ReadWrite(_),
+            ) => false,
+            (
                 AttributeInner::ReadWrite(got @ Type::BoundMethod(_)),
                 AttributeInner::ReadWrite(want @ Type::BoundMethod(_)),
             ) => is_subset(got, want),
@@ -358,12 +369,29 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 AttributeInner::ReadOnly(want),
             ) => is_subset(got, want),
             (
-                AttributeInner::Property(_, None, _) | AttributeInner::ReadOnly(_),
-                AttributeInner::Property(_, Some(_), _) | AttributeInner::ReadWrite(_),
-            ) => false,
-            // TODO handle properties
-            (_, AttributeInner::Property(_, _, _)) => true,
-            (AttributeInner::Property(_, _, _), _) => true,
+                AttributeInner::ReadOnly(got) | AttributeInner::ReadWrite(got),
+                AttributeInner::Property(want, _, _),
+            ) => {
+                is_subset(
+                    // Synthesize a getter method
+                    &Type::callable_ellipsis(got.clone()),
+                    want,
+                )
+            }
+            (
+                AttributeInner::Property(got_getter, got_setter, _),
+                AttributeInner::Property(want_getter, want_setter, _),
+            ) => {
+                if !is_subset(got_getter, want_getter) {
+                    false
+                } else {
+                    match (got_setter, want_setter) {
+                        (Some(got_setter), Some(want_setter)) => is_subset(got_setter, want_setter),
+                        (None, Some(_)) => false,
+                        (_, None) => true,
+                    }
+                }
+            }
         }
     }
 
@@ -487,13 +515,36 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    fn get_module_exports(&self, module_name: ModuleName) -> Option<Exports> {
+        self.exports.get(module_name).ok()
+    }
+
+    fn get_exported_type(&self, exports: &Exports, from: ModuleName, name: &Name) -> Option<Type> {
+        if exports.contains(name, self.exports) {
+            Some(
+                self.get_from_module(from, &KeyExport(name.clone()))
+                    .arc_clone(),
+            )
+        } else {
+            None
+        }
+    }
+
     fn get_module_attr(&self, module: &Module, attr_name: &Name) -> Option<Type> {
-        match module.as_single_module() {
-            Some(module_name) => self.get_import(attr_name, module_name),
+        let module_name = ModuleName::from_string(module.path().join("."));
+        match self.get_module_exports(module_name) {
             None => {
-                // TODO: This is fallable, but we don't detect it yet.
-                Some(module.push_path(attr_name.clone()).to_type())
+                // We have already errored on `m` when loading the module. No need to emit error again.
+                Some(Type::any_error())
             }
+            Some(exports) => self.get_exported_type(&exports, module_name, attr_name).or(
+                // `module_name` could also refer to a package, in which case we need to check if
+                // `module_name.attr_name` is a submodule.
+                // TODO(grievejia): This is still not totally correct as it assumes that submodule `attr_name`
+                // is always accessible even if `module_name/__init__.py` (if exists) does not export that.
+                self.get_module_exports(module_name.append(attr_name))
+                    .map(|_| module.push_path(attr_name.clone()).to_type()),
+            ),
         }
     }
 

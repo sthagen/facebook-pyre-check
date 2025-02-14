@@ -15,6 +15,7 @@ use std::sync::Arc;
 use dupe::Dupe;
 
 use crate::dunder;
+use crate::util::with_hash::WithHash;
 
 #[derive(Debug, Clone, Dupe, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ModuleStyle {
@@ -27,7 +28,7 @@ pub enum ModuleStyle {
 
 /// Store information about where a module is sourced from.
 #[derive(Debug, Clone, Dupe, PartialOrd, Ord, PartialEq, Eq, Hash)]
-pub struct ModulePath(Arc<ModulePathDetails>);
+pub struct ModulePath(Arc<WithHash<ModulePathDetails>>);
 
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub enum ModulePathDetails {
@@ -58,7 +59,7 @@ impl ModuleStyle {
 
 impl Display for ModulePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &*self.0 {
+        match &**self.0 {
             ModulePathDetails::FileSystem(path)
             | ModulePathDetails::Memory(path)
             | ModulePathDetails::Namespace(path) => {
@@ -76,20 +77,24 @@ impl Display for ModulePath {
 }
 
 impl ModulePath {
+    fn new(details: ModulePathDetails) -> Self {
+        Self(Arc::new(WithHash::new(details)))
+    }
+
     pub fn filesystem(path: PathBuf) -> Self {
-        Self(Arc::new(ModulePathDetails::FileSystem(path)))
+        Self::new(ModulePathDetails::FileSystem(path))
     }
 
     pub fn namespace(path: PathBuf) -> Self {
-        Self(Arc::new(ModulePathDetails::Namespace(path)))
+        Self::new(ModulePathDetails::Namespace(path))
     }
 
     pub fn memory(path: PathBuf) -> Self {
-        Self(Arc::new(ModulePathDetails::Memory(path)))
+        Self::new(ModulePathDetails::Memory(path))
     }
 
     pub fn bundled_typeshed(relative_path: PathBuf) -> Self {
-        Self(Arc::new(ModulePathDetails::BundledTypeshed(relative_path)))
+        Self::new(ModulePathDetails::BundledTypeshed(relative_path))
     }
 
     pub fn is_init(&self) -> bool {
@@ -107,7 +112,7 @@ impl ModulePath {
 
     /// Convert to a path, that may not exist on disk.
     fn as_path(&self) -> Option<&Path> {
-        match &*self.0 {
+        match &**self.0 {
             ModulePathDetails::FileSystem(path)
             | ModulePathDetails::BundledTypeshed(path)
             | ModulePathDetails::Memory(path)

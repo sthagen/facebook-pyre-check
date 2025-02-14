@@ -228,8 +228,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }))
         };
         match iterable {
-            Type::ClassType(_) | Type::Type(box Type::ClassType(_)) => {
-                vec![iterate_by_interface()]
+            Type::ClassType(cls) | Type::Type(box Type::ClassType(cls)) => {
+                if let Some(elts) = self.named_tuple_element_types(cls) {
+                    vec![Iterable::FixedLen(elts.clone())]
+                } else {
+                    vec![iterate_by_interface()]
+                }
             }
             Type::ClassDef(cls) => {
                 if self.get_metadata_for_class(cls).is_typed_dict() {
@@ -717,6 +721,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Arc::new(fields)
         } else if let Some(fields) = self.get_dataclass_synthesized_fields(&cls) {
             Arc::new(fields)
+        } else if let Some(fields) = self.get_named_tuple_synthesized_fields(&cls) {
+            Arc::new(fields)
         } else {
             Arc::new(ClassSynthesizedFields::default())
         }
@@ -1098,17 +1104,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 self.unions(values)
             }
-            Binding::Function(idx, mut pred) => {
+            Binding::Function(idx, mut pred, class_meta) => {
                 // Overloads in .pyi should not have an implementation.
-                // TODO: Overloaded methods in protocols also do not need implementations.
-                let needs_implementation =
-                    self.module_info().path().style() == ModuleStyle::Executable;
+                let skip_implementation = self.module_info().path().style()
+                    == ModuleStyle::Interface
+                    || class_meta.is_some_and(|idx| self.get_idx(idx).is_protocol());
                 let def = self.get_idx(*idx);
                 if def.is_overload {
                     // This function is decorated with @overload. We should warn if this function is actually called anywhere.
                     let successor = self.bindings().get(*idx).successor;
                     let ty = def.ty.clone();
-                    if !needs_implementation && successor.is_none() {
+                    if skip_implementation && successor.is_none() {
                         // This is the last definition in the chain. We should produce an overload type.
                         let mut acc = Vec1::new(ty);
                         while let Some(ty) = self.step_overload_pred(&mut pred) {
@@ -1417,7 +1423,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     // Given the index to a function binding, return the previous function binding, if any.
     pub fn step_overload_pred(&self, pred: &mut Option<Idx<Key>>) -> Option<Type> {
         let pred_idx = (*pred)?;
-        if let Binding::Function(idx, pred_) = self.bindings().get(pred_idx) {
+        if let Binding::Function(idx, pred_, _) = self.bindings().get(pred_idx) {
             let def = self.get_idx(*idx);
             if def.is_overload {
                 *pred = *pred_;
