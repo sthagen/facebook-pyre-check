@@ -174,6 +174,27 @@ xs: dict[A, X] = {B(): Y() for _ in [0]}
 "#,
 );
 
+testcase_with_bug!(
+    "We should push context into generator expressions",
+    test_context_generator_expr,
+    r#"
+from typing import Generator, Iterable
+class A: ...
+class B(A): ...
+x0 = ([B()] for _ in [0])
+x1a: Generator[list[A], None, None] = x0 # E: EXPECTED Generator[list[B], None, None] <: Generator[list[A], None, None]
+x1b: Generator[list[A], None, None] = ([B()] for _ in [0])
+x2a: Iterable[list[A]] = x0 # E: EXPECTED Generator[list[B], None, None] <: Iterable[list[A]]
+x2b: Iterable[list[A]] = ([B()] for _ in [0])
+
+# In theory, we should allow this, since the generator expression accepts _any_ send type,
+# but both Mypy and Pyright assume that the send type is `None`.
+x3: Generator[int, int, None] = (1 for _ in [1]) # E: EXPECTED None <: int
+
+x4: Generator[int, None, int] = (1 for _ in [1]) # E: EXPECTED int <: None
+"#,
+);
+
 testcase!(
     test_context_if_expr,
     r#"
@@ -194,6 +215,20 @@ class B(A): ...
 def takes_int(x: int) -> None: ...
 xs: list[A] = [B()] if True else takes_int("") # E: EXPECTED Literal[''] <: int
 ys: list[A] = takes_int("") if False else [B()] # E: EXPECTED Literal[''] <: int
+"#,
+);
+
+testcase_with_bug!(
+    "We don't contextually type the yield expression",
+    test_context_yield,
+    r#"
+from typing import Generator, Iterator
+class A: ...
+class B(A): ...
+def gen() -> Generator[list[A], None, None]:
+    yield [B()] # E: EXPECTED list[B] <: list[A]
+def iter() -> Iterator[list[A]]:
+    yield [B()] # E: EXPECTED list[B] <: list[A]
 "#,
 );
 

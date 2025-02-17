@@ -239,27 +239,15 @@ impl<'a> BindingsBuilder<'a> {
             }
 
             for x in accumulate.returns.clone() {
-                if never_is_empty || never_is_none {
-                    let key = self.table.insert(
-                        Key::ReturnExpression(ShortIdentifier::new(&func_name), x.range),
-                        Binding::ReturnExpr(
-                            return_ann,
-                            Box::new(Ast::return_or_none_owned(x)),
-                            has_yields,
-                        ),
-                    );
-                    return_expr_keys.insert(key);
-                } else {
-                    let key = self.table.insert(
-                        Key::ReturnExpression(ShortIdentifier::new(&func_name), x.clone().range),
-                        Binding::ReturnExpr(
-                            return_ann,
-                            Box::new(Ast::return_or_none_owned(x.clone())),
-                            has_yields,
-                        ),
-                    );
-                    return_expr_keys.insert(key);
-                }
+                let key = self.table.insert(
+                    Key::ReturnExpression(ShortIdentifier::new(&func_name), x.range),
+                    Binding::ReturnExpr(
+                        return_ann,
+                        Box::new(Ast::return_or_none_owned(x)),
+                        has_yields,
+                    ),
+                );
+                return_expr_keys.insert(key);
             }
         }
 
@@ -333,10 +321,6 @@ impl<'a> BindingsBuilder<'a> {
                 }
             }
             let yield_type = Binding::phi(yield_expr_keys);
-            self.table.insert(
-                Key::YieldTypeOfGenerator(ShortIdentifier::new(&func_name)),
-                yield_type.clone(),
-            );
             if is_async {
                 // combine the original (syntactic) return type and the yield type to analyze later and obtain the final return type.
                 return_type = Binding::AsyncGenerator(Box::new(yield_type));
