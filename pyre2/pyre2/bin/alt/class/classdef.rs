@@ -12,6 +12,7 @@ use std::sync::Arc;
 use dupe::Dupe;
 use itertools::EitherOrBoth;
 use itertools::Itertools;
+use parse_display::Display;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Identifier;
@@ -26,7 +27,6 @@ use crate::alt::attr::Attribute;
 use crate::alt::attr::NoAccessReason;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::EnumMetadata;
-use crate::binding::binding::ClassFieldInitialization;
 use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
 use crate::binding::binding::KeyClassSynthesizedFields;
@@ -34,7 +34,6 @@ use crate::binding::binding::KeyLegacyTypeParam;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
 use crate::graph::index::Idx;
-use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Annotation;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
@@ -49,6 +48,21 @@ use crate::types::types::TParams;
 use crate::types::types::Type;
 use crate::util::display::count;
 use crate::util::prelude::SliceExt;
+
+/// Correctly analyzing which attributes are visible on class objects, as well
+/// as handling method binding correctly, requires distinguishing which fields
+/// are assigned values in the class body.
+#[derive(Clone, Copy, Debug, Display, PartialEq, Eq)]
+pub enum ClassFieldInitialization {
+    Class,
+    Instance,
+}
+
+impl ClassFieldInitialization {
+    pub fn recursive() -> Self {
+        ClassFieldInitialization::Class
+    }
+}
 
 /// Raw information about an attribute declared somewhere in a class. We need to
 /// know whether it is initialized in the class body in order to determine
@@ -85,7 +99,7 @@ impl ClassField {
         Self(ClassFieldInner::Simple {
             ty: Type::any_implicit(),
             annotation: None,
-            initialization: ClassFieldInitialization::Class,
+            initialization: ClassFieldInitialization::recursive(),
             readonly: false,
         })
     }
@@ -312,7 +326,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     pub fn get_metadata_for_class(&self, cls: &Class) -> Arc<ClassMetadata> {
-        self.get_from_class(cls, &KeyClassMetadata(ShortIdentifier::new(cls.name())))
+        self.get_from_class(cls, &KeyClassMetadata(cls.short_identifier()))
     }
 
     fn get_enum_from_class(&self, cls: &Class) -> Option<EnumMetadata> {
@@ -519,7 +533,50 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let readonly = metadata
             .dataclass_metadata()
             .map_or(false, |dataclass| dataclass.kws.frozen);
-        ClassField::new(ty.clone(), ann.cloned(), initialization, readonly)
+        let class_field = ClassField::new(ty.clone(), ann.cloned(), initialization, readonly);
+
+        // check if this attribute is compatible with the parent attribute
+        let class_type = match class.self_type() {
+            Type::ClassType(class_type) => Some(class_type),
+            _ => None,
+        };
+
+        if let Some(class_type) = class_type {
+            let got = class_field.clone().as_instance_attribute(&class_type);
+
+            let metadata = self.get_metadata_for_class(class);
+            let parents = metadata.bases_with_metadata();
+
+            for (parent, parent_metadata) in parents {
+                // todo zeina: skip dataclasses. Look into them next.
+                if metadata.dataclass_metadata().is_some()
+                    || parent_metadata.dataclass_metadata().is_some()
+                    || (name.starts_with('_') && name.ends_with('_'))
+                {
+                    continue;
+                }
+
+                if let Some(want) = self.type_order().try_lookup_attr(parent.self_type(), name) {
+                    let attr_check = self.is_attr_subset(&got, &want, &mut |got, want| {
+                        self.solver().is_subset_eq(got, want, self.type_order())
+                    });
+
+                    if !attr_check {
+                        self.error(
+                            errors,
+                            range,
+                            format!(
+                                "Class member `{}` overrides parent class `{}` in an inconsistent manner",
+                                name,
+                                parent.name()
+                            ),
+                        );
+                    }
+                }
+            }
+        };
+
+        class_field
     }
 
     pub fn get_class_field_non_synthesized(
@@ -528,10 +585,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         name: &Name,
     ) -> Option<Arc<ClassField>> {
         if cls.contains(name) {
-            let field = self.get_from_class(
-                cls,
-                &KeyClassField(ShortIdentifier::new(cls.name()), name.clone()),
-            );
+            let field =
+                self.get_from_class(cls, &KeyClassField(cls.short_identifier(), name.clone()));
             Some(field)
         } else {
             None
@@ -539,10 +594,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     pub fn get_class_field(&self, cls: &Class, name: &Name) -> Option<Arc<ClassField>> {
-        let synthesized_fields = self.get_from_class(
-            cls,
-            &KeyClassSynthesizedFields(ShortIdentifier::new(cls.name())),
-        );
+        let synthesized_fields =
+            self.get_from_class(cls, &KeyClassSynthesizedFields(cls.short_identifier()));
         let synth = synthesized_fields.get(name);
         if let Some(synth) = synth
             && synth.overwrite

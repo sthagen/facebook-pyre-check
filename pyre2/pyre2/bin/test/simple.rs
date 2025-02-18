@@ -356,7 +356,7 @@ y = "bar" # TODO: y can not be assigned
 );
 
 testcase_with_bug!(
-    "final annotations don't prevent overrides",
+    "todo zeina: Incorrect error message. The error message should be that a final class cannot be overridden",
     test_final_annotated_override,
     r#"
 from typing import Final
@@ -365,7 +365,7 @@ class Base:
     p: Final = 0
     
 class Derived(Base):
-    p = 1 # TODO: p can not be overridden
+    p = 1  # E: Class member `p` overrides parent class `Base` in an inconsistent manner
 "#,
 );
 
@@ -602,7 +602,30 @@ from typing import assert_type
 x1: dict[str, int] = {"foo": 1, **{"bar": 2}}
 x2: dict[str, int] = {"foo": 1, **{"bar": "bar"}}  # E: EXPECTED Literal['bar'] <: int
 assert_type({"foo": 1, **{"bar": "bar"}}, dict[str, int | str])
-{"foo": 1, **1}  # E: Expected a dict, got Literal[1]
+{"foo": 1, **1}  # E: Expected a mapping, got Literal[1]
+"#,
+);
+
+testcase!(
+    test_dict_unpack_mapping,
+    r#"
+from typing import Mapping, assert_type
+def test(m: Mapping[str, int]) -> None:
+    x1: dict[str, int] = {**m}
+    x2: dict[int, int] = {**m} # E: EXPECTED int <: str
+    assert_type({"foo": 1, **m}, dict[str, int])
+"#,
+);
+
+testcase!(
+    test_dict_unpack_subclass,
+    r#"
+from typing import assert_type
+class Counter[T](dict[T, int]): ...
+def test(c: Counter[str]) -> None:
+    x1: dict[str, int] = {**c}
+    x2: dict[int, int] = {**c}  # E: EXPECTED int <: str
+    assert_type({"foo": 1, **c}, dict[str, int])
 "#,
 );
 
@@ -696,9 +719,9 @@ class B:
         return self
     __next__: str
 def f(x: A, y: B):
-    for _ in x:  # E: Expected `__iter__` to be a callable, got bool
+    for _ in x:  # E: Type `A` is not iterable
         pass
-    for _ in y:  # E: Expected `__next__` to be a callable, got str
+    for _ in y:  # E: Type `B` is not iterable
         pass
     "#,
 );
@@ -710,7 +733,7 @@ class A:
     def __iter__(self) -> None:
         return None
 def f(x: A):
-    for _ in x:  # E: `None` has no attribute `__next__`
+    for _ in x:  # E: Type `A` is not iterable
         pass
     "#,
 );

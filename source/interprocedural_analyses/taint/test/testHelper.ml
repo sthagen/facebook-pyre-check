@@ -503,7 +503,7 @@ let set_up_decorator_preprocessing ~handle models =
     |> Option.value ~default:Reference.SerializableMap.empty
   in
   PyrePysaLogic.DecoratorPreprocessing.setup_preprocessing
-    { actions = decorator_actions; enable_inlining = true; enable_discarding = true }
+    { actions = decorator_actions; enable_inlining = false; enable_discarding = true }
 
 
 let initialize_pyre_and_fail_on_errors ~context ~handle ~source_content ~models_source =
@@ -666,10 +666,13 @@ let initialize
   (* Initialize models *)
   (* The call graph building depends on initial models for global targets. *)
   let decorators = CallGraph.CallableToDecoratorsMap.create ~pyre_api definitions in
+  let scheduler_policy = Scheduler.Policy.legacy_fixed_chunk_count () in
   let decorator_resolution =
     CallGraph.DecoratorResolution.Results.resolve_batch_exn
       ~debug:false
       ~pyre_api
+      ~scheduler
+      ~scheduler_policy
       ~override_graph:override_graph_shared_memory
       ~decorators
       definitions
@@ -696,7 +699,6 @@ let initialize
       ~call_graph:whole_program_call_graph
       ~overrides:override_graph_heap
   in
-  let scheduler_policy = Scheduler.Policy.legacy_fixed_chunk_count () in
   let ({ CallGraphFixpoint.whole_program_call_graph; get_define_call_graph; _ } as
       call_graph_fixpoint_state)
     =
@@ -931,6 +933,7 @@ let end_to_end_integration_test path context =
             get_define_call_graph;
             global_constants =
               Interprocedural.GlobalConstants.SharedMemory.read_only global_constants;
+            decorator_inlined = false;
           }
         ~callables_to_analyze
         ~max_iterations:100

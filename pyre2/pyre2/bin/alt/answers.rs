@@ -15,29 +15,13 @@ use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 
-use crate::alt::class::classdef::ClassField;
-use crate::alt::types::class_metadata::ClassMetadata;
-use crate::alt::types::class_metadata::ClassSynthesizedFields;
-use crate::alt::types::decorated_function::DecoratedFunction;
-use crate::alt::types::legacy_lookup::LegacyTypeParameterLookup;
-use crate::alt::types::yields::YieldFromResult;
-use crate::alt::types::yields::YieldResult;
-use crate::binding::binding::Binding;
-use crate::binding::binding::BindingAnnotation;
-use crate::binding::binding::BindingClass;
-use crate::binding::binding::BindingClassField;
-use crate::binding::binding::BindingClassMetadata;
-use crate::binding::binding::BindingClassSynthesizedFields;
-use crate::binding::binding::BindingExpect;
-use crate::binding::binding::BindingLegacyTypeParam;
-use crate::binding::binding::BindingYield;
-use crate::binding::binding::BindingYieldFrom;
-use crate::binding::binding::EmptyAnswer;
-use crate::binding::binding::FunctionBinding;
+use crate::alt::traits::Solve;
+use crate::alt::traits::SolveRecursive;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyClass;
 use crate::binding::binding::KeyClassField;
+use crate::binding::binding::KeyClassFieldInitialization;
 use crate::binding::binding::KeyClassMetadata;
 use crate::binding::binding::KeyClassSynthesizedFields;
 use crate::binding::binding::KeyExpect;
@@ -52,6 +36,7 @@ use crate::binding::bindings::BindingTable;
 use crate::binding::bindings::Bindings;
 use crate::binding::table::TableKeyed;
 use crate::error::collector::ErrorCollector;
+use crate::error::style::ErrorStyle;
 use crate::export::exports::LookupExport;
 use crate::graph::calculation::Calculation;
 use crate::graph::index::Idx;
@@ -64,7 +49,6 @@ use crate::table;
 use crate::table_for_each;
 use crate::table_mut_for_each;
 use crate::table_try_for_each;
-use crate::types::annotation::Annotation;
 use crate::types::class::Class;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::AnyStyle;
@@ -130,12 +114,15 @@ impl DisplayWith<Bindings> for Answers {
     }
 }
 
-pub type SolutionsEntry<K> = SmallMap<K, <K as Keyed>::Answer>;
+pub type SolutionsEntry<K> = SmallMap<K, Arc<<K as Keyed>::Answer>>;
 
 table!(
     #[derive(Default, Debug, Clone)]
-    pub struct Solutions(pub SolutionsEntry)
+    pub struct SolutionsTable(pub SolutionsEntry)
 );
+
+#[derive(Default, Debug, Clone)]
+pub struct Solutions(SolutionsTable);
 
 impl DisplayWith<ModuleInfo> for Solutions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &ModuleInfo) -> fmt::Result {
@@ -153,8 +140,21 @@ impl DisplayWith<ModuleInfo> for Solutions {
             Ok(())
         }
 
-        table_try_for_each!(self, |x| go(x, f, ctx));
+        table_try_for_each!(&self.0, |x| go(x, f, ctx));
         Ok(())
+    }
+}
+
+impl Solutions {
+    pub fn table(&self) -> &SolutionsTable {
+        &self.0
+    }
+
+    pub fn get<K: Keyed>(&self, key: &K) -> Option<&Arc<<K as Keyed>::Answer>>
+    where
+        SolutionsTable: TableKeyed<K, Value = SolutionsEntry<K>>,
+    {
+        self.0.get().get(key)
     }
 }
 
@@ -182,308 +182,7 @@ pub trait LookupAnswer: Sized {
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
-        Solutions: TableKeyed<K, Value = SolutionsEntry<K>>;
-}
-
-pub trait SolveRecursive: Keyed {
-    type Recursive: Dupe = ();
-
-    fn promote_recursive(x: Self::Recursive) -> Self::Answer;
-
-    fn visit_type_mut(v: &mut Self::Answer, f: &mut dyn FnMut(&mut Type));
-}
-
-impl SolveRecursive for Key {
-    type Recursive = Var;
-    fn promote_recursive(x: Self::Recursive) -> Self::Answer {
-        Type::Var(x)
-    }
-    fn visit_type_mut(v: &mut Type, f: &mut dyn FnMut(&mut Type)) {
-        f(v);
-    }
-}
-impl SolveRecursive for KeyExpect {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        EmptyAnswer
-    }
-    fn visit_type_mut(_: &mut Self::Answer, _: &mut dyn FnMut(&mut Type)) {}
-}
-impl SolveRecursive for KeyExport {
-    type Recursive = Var;
-    fn promote_recursive(x: Self::Recursive) -> Self::Answer {
-        Type::Var(x)
-    }
-    fn visit_type_mut(v: &mut Type, f: &mut dyn FnMut(&mut Type)) {
-        f(v);
-    }
-}
-impl SolveRecursive for KeyFunction {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        // TODO(samgoldman) I'm not sure this really makes sense. These bindings should never
-        // be recursive, but this definition is required.
-        DecoratedFunction::recursive()
-    }
-    fn visit_type_mut(v: &mut DecoratedFunction, f: &mut dyn FnMut(&mut Type)) {
-        f(&mut v.ty);
-    }
-}
-impl SolveRecursive for KeyClass {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        unreachable!("Classes cannot be recursive");
-    }
-    fn visit_type_mut(_v: &mut Class, _f: &mut dyn FnMut(&mut Type)) {}
-}
-impl SolveRecursive for KeyClassField {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        // TODO(stroxler) Revisit the recursive handling, which needs changes in the plumbing
-        // to work correctly; what we have here is a fallback to permissive gradual typing.
-        ClassField::recursive()
-    }
-    fn visit_type_mut(v: &mut ClassField, f: &mut dyn FnMut(&mut Type)) {
-        v.visit_type_mut(f);
-    }
-}
-impl SolveRecursive for KeyClassSynthesizedFields {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        ClassSynthesizedFields::default()
-    }
-    fn visit_type_mut(v: &mut ClassSynthesizedFields, f: &mut dyn FnMut(&mut Type)) {
-        v.visit_type_mut(f)
-    }
-}
-impl SolveRecursive for KeyAnnotation {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        Annotation::default()
-    }
-    fn visit_type_mut(v: &mut Annotation, f: &mut dyn FnMut(&mut Type)) {
-        v.ty.iter_mut().for_each(f);
-    }
-}
-impl SolveRecursive for KeyClassMetadata {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        ClassMetadata::recursive()
-    }
-    fn visit_type_mut(v: &mut ClassMetadata, f: &mut dyn FnMut(&mut Type)) {
-        v.visit_mut(f);
-    }
-}
-impl SolveRecursive for KeyLegacyTypeParam {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        LegacyTypeParameterLookup::NotParameter(Type::any_implicit())
-    }
-    fn visit_type_mut(v: &mut LegacyTypeParameterLookup, f: &mut dyn FnMut(&mut Type)) {
-        v.not_parameter_mut().into_iter().for_each(f);
-    }
-}
-impl SolveRecursive for KeyYield {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        // In practice, we should never have recursive bindings with yield.
-        YieldResult::recursive()
-    }
-    fn visit_type_mut(v: &mut YieldResult, f: &mut dyn FnMut(&mut Type)) {
-        v.visit_mut(f);
-    }
-}
-impl SolveRecursive for KeyYieldFrom {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        // In practice, we should never have recursive bindings with yield from.
-        YieldFromResult::recursive()
-    }
-    fn visit_type_mut(v: &mut YieldFromResult, f: &mut dyn FnMut(&mut Type)) {
-        v.visit_mut(f);
-    }
-}
-
-pub trait Solve<Ans: LookupAnswer>: SolveRecursive {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &Self::Value,
-        _errors: &ErrorCollector,
-    ) -> Arc<Self::Answer>;
-
-    fn recursive(answers: &AnswersSolver<Ans>) -> Self::Recursive;
-
-    fn record_recursive(
-        _answers: &AnswersSolver<Ans>,
-        _key: &Self,
-        _answer: Arc<Self::Answer>,
-        _recursive: Self::Recursive,
-        _errors: &ErrorCollector,
-    ) {
-    }
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for Key {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &Binding,
-        errors: &ErrorCollector,
-    ) -> Arc<Type> {
-        answers.solve_binding(binding, errors)
-    }
-
-    fn recursive(answers: &AnswersSolver<Ans>) -> Self::Recursive {
-        answers.solver().fresh_recursive(answers.uniques)
-    }
-
-    fn record_recursive(
-        answers: &AnswersSolver<Ans>,
-        key: &Key,
-        answer: Arc<Type>,
-        recursive: Var,
-        errors: &ErrorCollector,
-    ) {
-        answers.record_recursive(key.range(), answer, recursive, errors);
-    }
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyExpect {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &BindingExpect,
-        errors: &ErrorCollector,
-    ) -> Arc<EmptyAnswer> {
-        answers.solve_expectation(binding, errors)
-    }
-
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyExport {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &Binding,
-        errors: &ErrorCollector,
-    ) -> Arc<Type> {
-        answers.solve_binding(binding, errors)
-    }
-
-    fn recursive(answers: &AnswersSolver<Ans>) -> Self::Recursive {
-        answers.solver().fresh_recursive(answers.uniques)
-    }
-
-    fn record_recursive(
-        answers: &AnswersSolver<Ans>,
-        key: &KeyExport,
-        answer: Arc<Type>,
-        recursive: Var,
-        errors: &ErrorCollector,
-    ) {
-        answers.record_recursive(key.range(), answer, recursive, errors);
-    }
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyFunction {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &FunctionBinding,
-        errors: &ErrorCollector,
-    ) -> Arc<DecoratedFunction> {
-        answers.solve_function(binding, errors)
-    }
-
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyClass {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &BindingClass,
-        errors: &ErrorCollector,
-    ) -> Arc<Class> {
-        answers.solve_class(binding, errors)
-    }
-
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyClassField {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &BindingClassField,
-        errors: &ErrorCollector,
-    ) -> Arc<ClassField> {
-        answers.solve_class_field(binding, errors)
-    }
-
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyClassSynthesizedFields {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &BindingClassSynthesizedFields,
-        _errors: &ErrorCollector,
-    ) -> Arc<ClassSynthesizedFields> {
-        answers.solve_class_synthesized_fields(binding)
-    }
-
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyAnnotation {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &BindingAnnotation,
-        errors: &ErrorCollector,
-    ) -> Arc<Annotation> {
-        answers.solve_annotation(binding, errors)
-    }
-
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyClassMetadata {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &BindingClassMetadata,
-        errors: &ErrorCollector,
-    ) -> Arc<ClassMetadata> {
-        answers.solve_mro(binding, errors)
-    }
-
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyLegacyTypeParam {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &BindingLegacyTypeParam,
-        _errors: &ErrorCollector,
-    ) -> Arc<LegacyTypeParameterLookup> {
-        answers.solve_legacy_tparam(binding)
-    }
-
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyYield {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &BindingYield,
-        errors: &ErrorCollector,
-    ) -> Arc<YieldResult> {
-        answers.solve_yield(binding, errors)
-    }
-
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
-}
-
-impl<Ans: LookupAnswer> Solve<Ans> for KeyYieldFrom {
-    fn solve(
-        answers: &AnswersSolver<Ans>,
-        binding: &BindingYieldFrom,
-        errors: &ErrorCollector,
-    ) -> Arc<YieldFromResult> {
-        answers.solve_yield_from(binding, errors)
-    }
-
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
+        SolutionsTable: TableKeyed<K, Value = SolutionsEntry<K>>;
 }
 
 impl Answers {
@@ -524,7 +223,7 @@ impl Answers {
         uniques: &UniqueFactory,
         exported_only: bool,
     ) -> Solutions {
-        let mut res = Solutions::default();
+        let mut res = SolutionsTable::default();
 
         fn pre_solve<Ans: LookupAnswer, K: Solve<Ans>>(
             items: &mut SolutionsEntry<K>,
@@ -539,10 +238,12 @@ impl Answers {
                 items.reserve(answers.bindings.keys::<K>().len());
             }
             for idx in answers.bindings.keys::<K>() {
-                let k = answers.bindings.idx_to_key(idx);
-                let v = answers.get(k);
-                if retain {
-                    items.insert(k.clone(), Arc::unwrap_or_clone(v));
+                if retain || answers.base_errors.style() == ErrorStyle::Delayed {
+                    let v = answers.get_idx(idx);
+                    if retain {
+                        let k = answers.bindings.idx_to_key(idx);
+                        items.insert(k.clone(), v.dupe());
+                    }
                 }
             }
         }
@@ -565,11 +266,13 @@ impl Answers {
         // Now force all types to be fully resolved.
         fn post_solve<K: SolveRecursive>(items: &mut SolutionsEntry<K>, solver: &Solver) {
             for v in items.values_mut() {
-                K::visit_type_mut(v, &mut |x| solver.deep_force_mut(x));
+                let mut vv = (**v).clone();
+                K::visit_type_mut(&mut vv, &mut |x| solver.deep_force_mut(x));
+                *v = Arc::new(vv);
             }
         }
         table_mut_for_each!(&mut res, |items| post_solve(items, &self.solver));
-        res
+        Solutions(res)
     }
 
     pub fn solve_key<Ans: LookupAnswer, K: Solve<Ans>>(
@@ -621,7 +324,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
-        Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
+        SolutionsTable: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
         if module == self.module_info().name() {
             self.get(k)
@@ -638,7 +341,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
-        Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
+        SolutionsTable: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
         self.get_from_module(cls.module_info().name(), k)
     }
@@ -686,7 +389,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.get_idx(self.bindings().key_to_idx(k))
     }
 
-    fn record_recursive(
+    pub fn record_recursive(
         &self,
         loc: TextRange,
         answer: Arc<Type>,

@@ -174,7 +174,12 @@ module CallableToDecoratorsMap = struct
       "property";
       "dataclass";
       "partial";
+      "functools.cache";
+      "functools.cached_property";
       "functools.lru_cache";
+      "functools.total_ordering";
+      "functools.singledispatch";
+      "functools.wraps";
       "enum.verify";
       "enum.unique";
       "typing.final";
@@ -3165,14 +3170,19 @@ let resolve_callees
             true
         | _ -> false
       in
-      let preserve_implicit_dunder_call = function
+      let preserve_implicit_dunder_call ({ CallTarget.target; _ } as higher_order_callee) =
+        let target =
+          target |> Target.get_regular |> Target.Regular.override_to_method |> Target.from_regular
+        in
+        let higher_order_callee = { higher_order_callee with CallTarget.target } in
+        match higher_order_callee with
         | {
-            CallTarget.implicit_dunder_call = true;
-            target =
-              Target.Regular
-                (Target.Regular.Method { class_name = callable_class; method_name = "__call__"; _ });
-            _;
-          } -> (
+         CallTarget.implicit_dunder_call = true;
+         target =
+           Target.Regular
+             (Target.Regular.Method { class_name = callable_class; method_name = "__call__"; _ });
+         _;
+        } -> (
             match regular_callees.call_targets with
             | [callee] when Target.is_function_or_method callee.target ->
                 Target.get_module_and_definition
@@ -3861,7 +3871,15 @@ module DecoratorResolution = struct
 
     let decorated_callables = Target.Map.keys
 
-    let resolve_batch_exn ~debug ~pyre_api ~override_graph ~decorators callables =
+    let resolve_batch_exn
+        ~debug
+        ~pyre_api
+        ~scheduler
+        ~scheduler_policy
+        ~override_graph
+        ~decorators
+        callables
+      =
       let pyre_in_context = PyrePysaEnvironment.InContext.create_at_global_scope pyre_api in
       let resolve callable =
         match
@@ -3877,11 +3895,23 @@ module DecoratorResolution = struct
         | Undecorated ->
             None
       in
-      callables
-      |> List.filter_map ~f:resolve
-      |> List.map ~f:(fun ({ DecoratorDefine.callable; _ } as decorator_define) ->
-             callable, decorator_define)
-      |> Target.Map.of_alist_exn
+      let map callables =
+        callables
+        |> List.filter_map ~f:resolve
+        |> List.map ~f:(fun ({ DecoratorDefine.callable; _ } as decorator_define) ->
+               callable, decorator_define)
+        |> Target.Map.of_alist_exn
+      in
+      Scheduler.map_reduce
+        scheduler
+        ~policy:scheduler_policy
+        ~initial:empty
+        ~map
+        ~reduce:
+          (Target.Map.union (fun callable _ _ ->
+               failwithf "Unexpected: %s" (Target.show_pretty_with_kind callable) ()))
+        ~inputs:callables
+        ()
 
 
     let get_module_and_definition ~callable decorator_defines =
@@ -4449,7 +4479,7 @@ module HigherOrderCallGraph = struct
                     } ->
                     let parameters_roots, parameters_targets =
                       captures
-                      |> List.map ~f:(fun { Define.Capture.name; _ } ->
+                      |> List.filter_map ~f:(fun { Define.Capture.name; _ } ->
                              let captured = State.create_root_from_identifier name in
                              log
                                "Inner function `%a` captures `%a`"
@@ -4457,26 +4487,40 @@ module HigherOrderCallGraph = struct
                                delocalized_name
                                TaintAccessPath.Root.pp
                                captured;
-                             ( captured,
+                             let parameter_targets =
                                state
                                |> State.get captured
                                |> CallTarget.Set.elements
-                               |> List.map ~f:CallTarget.target ))
+                               |> List.map ~f:CallTarget.target
+                             in
+                             (* Sometimes a captured variable does not have a record in `state`, but
+                                we still want to create a callee with the captured variables that
+                                have records in `state`. *)
+                             if List.is_empty parameter_targets then
+                               None
+                             else
+                               Some (captured, parameter_targets))
                       |> List.unzip
                     in
-                    parameters_targets
-                    |> Algorithms.cartesian_product
-                    |> List.map ~f:(fun parameters_targets ->
-                           Target.Parameterized
-                             {
-                               regular = regular_target;
-                               parameters =
-                                 parameters_targets
-                                 |> List.zip_exn parameters_roots
-                                 |> Target.ParameterMap.of_alist_exn;
-                             }
-                           |> CallTarget.create)
-                    |> CallTarget.Set.of_list
+                    if List.is_empty parameters_targets then
+                      regular_target
+                      |> Target.from_regular
+                      |> CallTarget.create
+                      |> CallTarget.Set.singleton
+                    else
+                      parameters_targets
+                      |> Algorithms.cartesian_product
+                      |> List.map ~f:(fun parameters_targets ->
+                             Target.Parameterized
+                               {
+                                 regular = regular_target;
+                                 parameters =
+                                   parameters_targets
+                                   |> List.zip_exn parameters_roots
+                                   |> Target.ParameterMap.of_alist_exn;
+                               }
+                             |> CallTarget.create)
+                      |> CallTarget.Set.of_list
                 | _ ->
                     regular_target
                     |> Target.from_regular

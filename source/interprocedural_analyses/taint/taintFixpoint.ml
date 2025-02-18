@@ -29,6 +29,8 @@ module Context = struct
     get_define_call_graph:
       Interprocedural.Target.t -> Interprocedural.CallGraph.DefineCallGraph.t option;
     global_constants: Interprocedural.GlobalConstants.SharedMemory.ReadOnly.t;
+    (* Whether decorators are inlined during pre-processing. *)
+    decorator_inlined: bool;
   }
 end
 
@@ -121,13 +123,14 @@ module Analysis = struct
       ~modes
       ~previous_model
       ~get_callee_model
+      ~decorator_inlined
     =
     let taint_configuration = TaintConfiguration.SharedMemory.get taint_configuration in
     let profiler =
       if Ast.Statement.Define.dump_perf (Ast.Node.value define) then
-        TaintProfiler.create ()
+        TaintProfiler.start ~callable ()
       else
-        TaintProfiler.none
+        TaintProfiler.disabled
     in
     let call_graph_of_define =
       match get_define_call_graph callable with
@@ -175,6 +178,7 @@ module Analysis = struct
             ~get_callee_model
             ~existing_model:previous_model
             ~triggered_sinks
+            ~decorator_inlined
             ())
     in
     let forward, backward =
@@ -197,7 +201,7 @@ module Analysis = struct
       TaintProfiler.track_duration ~profiler ~name:"Sanitize" ~f:(fun () ->
           Model.apply_sanitizers ~taint_configuration model)
     in
-    TaintProfiler.dump ~max_number_expressions:50 ~max_number_apply_call_steps:50 profiler;
+    TaintProfiler.stop ~max_number_expressions:50 ~max_number_apply_call_steps:50 profiler;
     { AnalyzeDefineResult.result; model; additional_dependencies = [] }
 
 
@@ -209,6 +213,7 @@ module Analysis = struct
           class_interval_graph;
           get_define_call_graph;
           global_constants;
+          decorator_inlined;
         }
       ~callable
       ~previous_model:({ Model.modes; sanitizers; _ } as previous_model)
@@ -264,6 +269,7 @@ module Analysis = struct
         ~modes
         ~previous_model
         ~get_callee_model
+        ~decorator_inlined
 
 
   let skip_additional_dependency _ = false

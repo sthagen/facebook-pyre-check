@@ -17,8 +17,8 @@ use starlark_map::small_set::SmallSet;
 use vec1::Vec1;
 
 use crate::alt::class::classdef::ClassField;
+use crate::alt::class::classdef::ClassFieldInitialization;
 use crate::alt::class::classdef::ClassFieldInner;
-use crate::binding::binding::ClassFieldInitialization;
 use crate::error::collector::ErrorCollector;
 use crate::types::callable::DataclassKeywords;
 use crate::types::class::Class;
@@ -38,6 +38,7 @@ pub struct ClassMetadata {
     enum_metadata: Option<EnumMetadata>,
     is_protocol: bool,
     dataclass_metadata: Option<DataclassMetadata>,
+    bases_with_metadata: Vec<(ClassType, Arc<ClassMetadata>)>,
 }
 
 impl Display for ClassMetadata {
@@ -59,8 +60,9 @@ impl ClassMetadata {
         dataclass_metadata: Option<DataclassMetadata>,
         errors: &ErrorCollector,
     ) -> ClassMetadata {
+        let mro = Mro::new(cls, &bases_with_metadata, errors);
         ClassMetadata {
-            mro: Mro::new(cls, bases_with_metadata, errors),
+            mro,
             metaclass: Metaclass(metaclass),
             keywords: Keywords(keywords),
             typed_dict_metadata,
@@ -68,6 +70,7 @@ impl ClassMetadata {
             enum_metadata,
             is_protocol,
             dataclass_metadata,
+            bases_with_metadata,
         }
     }
 
@@ -81,6 +84,7 @@ impl ClassMetadata {
             enum_metadata: None,
             is_protocol: false,
             dataclass_metadata: None,
+            bases_with_metadata: Vec::new(),
         }
     }
 
@@ -107,6 +111,10 @@ impl ClassMetadata {
 
     pub fn enum_metadata(&self) -> Option<&EnumMetadata> {
         self.enum_metadata.as_ref()
+    }
+
+    pub fn bases_with_metadata(&self) -> &Vec<(ClassType, Arc<ClassMetadata>)> {
+        &self.bases_with_metadata
     }
 
     pub fn is_protocol(&self) -> bool {
@@ -324,7 +332,7 @@ impl Mro {
     /// `Generic`, `Protocol`, and `object`.
     pub fn new(
         cls: &Class,
-        bases_with_metadata: Vec<(ClassType, Arc<ClassMetadata>)>,
+        bases_with_metadata: &[(ClassType, Arc<ClassMetadata>)],
         errors: &ErrorCollector,
     ) -> Self {
         match Linearization::new(cls, bases_with_metadata, errors) {
@@ -391,7 +399,7 @@ impl Linearization {
     /// - One consisting of the base classes themselves in the order defined.
     fn new(
         cls: &Class,
-        bases_with_metadata: Vec<(ClassType, Arc<ClassMetadata>)>,
+        bases_with_metadata: &[(ClassType, Arc<ClassMetadata>)],
         errors: &ErrorCollector,
     ) -> Linearization {
         let bases = match Vec1::try_from_vec(
@@ -428,7 +436,7 @@ impl Linearization {
                 } => {
                     errors.add(
                         cls.module_info(),
-                        cls.name().range,
+                        cls.range(),
                         format!(
                             "Class `{}` inheriting from `{}` creates a cycle.",
                             ClassName(cls.qname()),
@@ -505,7 +513,7 @@ impl Linearization {
                 let first_candidate = &ancestor_chains.first().unwrap().0.last().class_object();
                 errors.add(
                     cls.module_info(),
-                    cls.name().range,
+                    cls.range(),
                     format!(
                         "Class `{}` has a nonlinearizable inheritance chain detected at `{}`.",
                         ClassName(cls.qname()),

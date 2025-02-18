@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -25,7 +26,8 @@ use crate::alt::answers::AnswerTable;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::answers::Solutions;
 use crate::alt::answers::SolutionsEntry;
-use crate::alt::answers::Solve;
+use crate::alt::answers::SolutionsTable;
+use crate::alt::traits::Solve;
 use crate::binding::binding::KeyExport;
 use crate::binding::binding::Keyed;
 use crate::binding::bindings::BindingEntry;
@@ -41,6 +43,7 @@ use crate::export::exports::LookupExport;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::module::module_path::ModulePath;
+use crate::module::module_path::ModulePathDetails;
 use crate::report::debug_info::DebugInfo;
 use crate::state::handle::Handle;
 use crate::state::loader::FindError;
@@ -56,6 +59,7 @@ use crate::types::types::Type;
 use crate::util::display::number_thousands;
 use crate::util::enum_heap::EnumHeap;
 use crate::util::locked_map::LockedMap;
+use crate::util::no_hash::BuildNoHash;
 use crate::util::prelude::SliceExt;
 use crate::util::uniques::UniqueFactory;
 
@@ -68,13 +72,12 @@ pub struct State {
     /// Items we still need to process. Stored in a max heap, so that
     /// the highest step (the module that is closest to being finished)
     /// gets picked first, ensuring we release its memory quickly.
-    todo: Mutex<EnumHeap<Step, Handle>>,
+    todo: Mutex<EnumHeap<Step, Arc<ModuleState>>>,
 
     // Set to true to keep data around forever.
     retain_memory: bool,
 }
 
-#[derive(Default)]
 struct ModuleState {
     // BIG WARNING: This must be a FairMutex or we are exposed to deadlocks.
     //
@@ -112,7 +115,19 @@ struct ModuleState {
     // is still waiting for `bar` and we are unable to make progress.
     lock: FairMutex<()>,
     steps: RwLock<ModuleSteps>,
-    dependencies: Mutex<SmallSet<ModuleName>>,
+    handle: Handle,
+    dependencies: RwLock<HashMap<ModuleName, Arc<ModuleState>, BuildNoHash>>,
+}
+
+impl ModuleState {
+    fn new(handle: Handle) -> Self {
+        Self {
+            lock: Default::default(),
+            steps: Default::default(),
+            handle,
+            dependencies: Default::default(),
+        }
+    }
 }
 
 impl State {
@@ -137,11 +152,14 @@ impl State {
         ))
     }
 
-    fn demand(&self, handle: &Handle, step: Step) {
-        let module_state = self.get_module(handle);
+    fn demand(&self, module_state: &Arc<ModuleState>, step: Step) {
         let mut computed = false;
         loop {
             let lock = module_state.steps.read().unwrap();
+            if lock.dirty.is_dirty() {
+                panic!("Should make the code not dirty");
+            }
+
             match Step::Solutions.compute_next(&lock) {
                 Some(todo) if todo <= step => {}
                 _ => break,
@@ -175,19 +193,20 @@ impl State {
             if todo == Step::Answers && !self.retain_memory {
                 // We have captured the Ast, and must have already built Exports (we do it serially),
                 // so won't need the Ast again.
-                module_state.steps.write().unwrap().ast.take();
+                let to_drop = module_state.steps.write().unwrap().ast.take();
+                drop(to_drop);
             }
 
-            let stdlib = self.get_stdlib(handle);
-            let loader = self.get_cached_loader(handle.loader());
+            let stdlib = self.get_stdlib(&module_state.handle);
+            let loader = self.get_cached_loader(module_state.handle.loader());
             let set = compute(&Context {
-                module: handle.module(),
-                path: handle.path(),
-                config: handle.config(),
+                module: module_state.handle.module(),
+                path: module_state.handle.path(),
+                config: module_state.handle.config(),
                 loader: &*loader,
                 uniques: &self.uniques,
                 stdlib: &stdlib,
-                lookup: &self.lookup(handle, module_state.dupe()),
+                lookup: &self.lookup(module_state.dupe()),
                 retain_memory: self.retain_memory,
             });
             {
@@ -209,17 +228,21 @@ impl State {
         if computed && let Some(next) = step.next() {
             // For a large benchmark, LIFO is 10Gb retained, FIFO is 13Gb.
             // Perhaps we are getting to the heart of the graph with LIFO?
-            self.todo.lock().unwrap().push_lifo(next, handle.dupe());
+            self.todo
+                .lock()
+                .unwrap()
+                .push_lifo(next, module_state.dupe());
         }
     }
 
     fn get_module(&self, handle: &Handle) -> Arc<ModuleState> {
-        self.modules.ensure(handle, Default::default).dupe()
+        self.modules
+            .ensure(handle, || Arc::new(ModuleState::new(handle.dupe())))
+            .dupe()
     }
 
-    fn add_error(&self, handle: &Handle, range: TextRange, msg: String) {
-        let load = self
-            .get_module(handle)
+    fn add_error(&self, module_state: &Arc<ModuleState>, range: TextRange, msg: String) {
+        let load = module_state
             .steps
             .read()
             .unwrap()
@@ -230,40 +253,40 @@ impl State {
         load.errors.add(&load.module_info, range, msg);
     }
 
-    fn lookup<'a>(&'a self, handle: &Handle, module_state: Arc<ModuleState>) -> StateHandle<'a> {
+    fn lookup<'a>(&'a self, module_state: Arc<ModuleState>) -> StateHandle<'a> {
         StateHandle {
             state: self,
             module_state,
-            handle: handle.dupe(),
         }
     }
 
     fn lookup_stdlib(&self, handle: &Handle, name: &Name) -> Option<Class> {
+        let module_state = self.get_module(handle);
         if !self
-            .lookup_export(handle)
-            .contains(name, &self.lookup(handle, self.get_module(handle)))
+            .lookup_export(&module_state)
+            .contains(name, &self.lookup(module_state.dupe()))
         {
             self.add_error(
-                handle,
+                &module_state,
                 TextRange::default(),
                 format!(
                     "Stdlib import failure, was expecting `{}` to contain `{name}`",
-                    handle.module()
+                    module_state.handle.module()
                 ),
             );
             return None;
         }
 
-        let t = self.lookup_answer(handle, &KeyExport(name.clone()));
+        let t = self.lookup_answer(module_state.dupe(), &KeyExport(name.clone()));
         match t.arc_clone() {
             Type::ClassDef(cls) => Some(cls),
             ty => {
                 self.add_error(
-                    handle,
+                    &module_state,
                     TextRange::default(),
                     format!(
                         "Did not expect non-class type `{ty}` for stdlib import `{}.{name}`",
-                        handle.module()
+                        module_state.handle.module()
                     ),
                 );
                 None
@@ -271,44 +294,42 @@ impl State {
         }
     }
 
-    fn lookup_export(&self, handle: &Handle) -> Exports {
-        self.demand(handle, Step::Exports);
-        let m = self.get_module(handle);
-        let lock = m.steps.read().unwrap();
+    fn lookup_export(&self, module_state: &Arc<ModuleState>) -> Exports {
+        self.demand(module_state, Step::Exports);
+        let lock = module_state.steps.read().unwrap();
         lock.exports.get().unwrap().dupe()
     }
 
     fn lookup_answer<'b, K: Solve<StateHandle<'b>> + Keyed<EXPORTED = true>>(
         &'b self,
-        handle: &Handle,
+        module_state: Arc<ModuleState>,
         key: &K,
     ) -> Arc<<K as Keyed>::Answer>
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
-        Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
+        SolutionsTable: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
-        let module_state = self.get_module(handle);
         {
             // if we happen to have solutions available, use them instead
             if let Some(solutions) = module_state.steps.read().unwrap().solutions.get() {
-                return Arc::new(TableKeyed::<K>::get(&**solutions).get(key).unwrap().clone());
+                return solutions.get(key).unwrap().dupe();
             }
         }
 
-        self.demand(handle, Step::Answers);
+        self.demand(&module_state, Step::Answers);
         let (load, answers) = {
             let steps = module_state.steps.read().unwrap();
             if let Some(solutions) = steps.solutions.get() {
-                return Arc::new(TableKeyed::<K>::get(&**solutions).get(key).unwrap().clone());
+                return solutions.get(key).unwrap().dupe();
             }
             (
                 steps.load.get().unwrap().dupe(),
                 steps.answers.get().unwrap().dupe(),
             )
         };
-        let stdlib = self.get_stdlib(handle);
-        let lookup = self.lookup(handle, module_state);
+        let stdlib = self.get_stdlib(&module_state.handle);
+        let lookup = self.lookup(module_state);
         answers.1.solve_key(
             &lookup,
             &lookup,
@@ -450,7 +471,7 @@ impl State {
         {
             let mut lock = self.todo.lock().unwrap();
             for h in handles {
-                lock.push_fifo(Step::first(), h);
+                lock.push_fifo(Step::first(), self.get_module(&h));
             }
         }
 
@@ -560,16 +581,32 @@ impl State {
     /// Called if the `find` portion of loading might have changed.
     /// E.g. you have include paths, and a new file appeared earlier on the path.
     #[expect(dead_code)]
-    pub fn invalidate_find(&mut self, loader: LoaderId) {
-        let _ = loader;
+    pub fn invalidate_find(&mut self, loader: &LoaderId) {
+        if let Some(cache) = self.loaders.get_mut(loader) {
+            *cache = Arc::new(LoaderFindCache::new(loader.dupe()));
+        }
+        for (handle, module_state) in self.modules.iter_unordered() {
+            if handle.loader() == loader {
+                module_state.steps.write().unwrap().dirty.set_dirty_find();
+            }
+        }
+
         self.invalidate_everything();
     }
 
     /// Called if the `load_from_memory` portion of loading might have changed.
     /// Specify which in-memory files might have changed.
     pub fn invalidate_memory(&mut self, loader: LoaderId, files: &[PathBuf]) {
-        let _ = loader;
-        let _ = files;
+        let files = SmallSet::from_iter(files);
+        for (handle, module_state) in self.modules.iter_unordered() {
+            if handle.loader() == &loader
+                && let ModulePathDetails::Memory(x) = handle.path().details()
+                && files.contains(x)
+            {
+                module_state.steps.write().unwrap().dirty.set_dirty_load();
+            }
+        }
+
         self.invalidate_everything();
     }
 
@@ -578,7 +615,15 @@ impl State {
     /// You must use the same absolute/relative paths as were given by `find`.
     #[expect(dead_code)]
     pub fn invalidate_disk(&mut self, files: &[PathBuf]) {
-        let _ = files;
+        let files = SmallSet::from_iter(files);
+        for (handle, module_state) in self.modules.iter_unordered() {
+            if let ModulePathDetails::FileSystem(x) = handle.path().details()
+                && files.contains(x)
+            {
+                module_state.steps.write().unwrap().dirty.set_dirty_load();
+            }
+        }
+
         self.invalidate_everything();
     }
 
@@ -601,25 +646,31 @@ impl State {
 
 struct StateHandle<'a> {
     state: &'a State,
-    handle: Handle,
-    /// Used to set the dependency field, without requiring another Arc
     module_state: Arc<ModuleState>,
 }
 
 impl<'a> StateHandle<'a> {
-    fn import_handle(&self, module: ModuleName) -> Result<Handle, FindError> {
+    fn get_module(&self, module: ModuleName) -> Result<Arc<ModuleState>, FindError> {
+        if let Some(res) = self.module_state.dependencies.read().unwrap().get(&module) {
+            return Ok(res.dupe());
+        }
+
+        let handle = self
+            .state
+            .import_handle(&self.module_state.handle, module)?;
+        let res = self.state.get_module(&handle);
         self.module_state
             .dependencies
-            .lock()
+            .write()
             .unwrap()
-            .insert(module);
-        self.state.import_handle(&self.handle, module)
+            .insert(module, res.dupe());
+        Ok(res)
     }
 }
 
 impl<'a> LookupExport for StateHandle<'a> {
     fn get(&self, module: ModuleName) -> Result<Exports, FindError> {
-        Ok(self.state.lookup_export(&self.import_handle(module)?))
+        Ok(self.state.lookup_export(&self.get_module(module)?))
     }
 }
 
@@ -632,11 +683,11 @@ impl<'a> LookupAnswer for StateHandle<'a> {
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
-        Solutions: TableKeyed<K, Value = SolutionsEntry<K>>,
+        SolutionsTable: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
         // The unwrap is safe because we must have said there were no exports,
         // so no one can be trying to get at them
-        let handle = self.import_handle(module).unwrap();
-        self.state.lookup_answer(&handle, k)
+        let module_state = self.get_module(module).unwrap();
+        self.state.lookup_answer(module_state, k)
     }
 }

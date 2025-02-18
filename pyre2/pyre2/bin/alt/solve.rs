@@ -26,6 +26,7 @@ use crate::alt::answers::LookupAnswer;
 use crate::alt::answers::UNKNOWN;
 use crate::alt::callable::CallArg;
 use crate::alt::class::classdef::ClassField;
+use crate::alt::class::classdef::ClassFieldInitialization;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::ClassSynthesizedFields;
 use crate::alt::types::decorated_function::DecoratedFunction;
@@ -37,6 +38,7 @@ use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingClass;
 use crate::binding::binding::BindingClassField;
+use crate::binding::binding::BindingClassFieldInitialization;
 use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingClassSynthesizedFields;
 use crate::binding::binding::BindingExpect;
@@ -204,74 +206,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Vec<Iterable> {
         // Use the iterable protocol interfaces to determine the iterable type.
         // Special cases like Tuple should be intercepted first.
-        let iterate_by_interface = || {
-            let iteration_ty = if let Some(iterator_ty) =
-                self.call_method(iterable, &dunder::ITER, range, &[], &[], errors)
-            {
-                Some(self.call_method_or_error(
-                    &iterator_ty,
-                    &dunder::NEXT,
-                    range,
-                    &[],
-                    &[],
-                    errors,
-                ))
-            } else {
-                let int_ty = self.stdlib.int().to_type();
-                let arg = CallArg::Type(&int_ty, range);
-                self.call_method(iterable, &dunder::GETITEM, range, &[arg], &[], errors)
-            };
-            Iterable::OfType(iteration_ty.unwrap_or_else(|| {
-                self.error(
-                    errors,
-                    range,
-                    format!(
-                        "Type `{}` is not iterable",
-                        iterable.clone().deterministic_printing()
-                    ),
-                )
-            }))
-        };
         match iterable {
-            Type::ClassType(cls) | Type::Type(box Type::ClassType(cls)) => {
-                if let Some(elts) = self.named_tuple_element_types(cls) {
-                    vec![Iterable::FixedLen(elts.clone())]
-                } else {
-                    vec![iterate_by_interface()]
-                }
+            Type::ClassType(cls) if let Some(elts) = self.named_tuple_element_types(cls) => {
+                vec![Iterable::FixedLen(elts.clone())]
             }
-            Type::ClassDef(cls) => {
-                if self.get_metadata_for_class(cls).is_typed_dict() {
-                    vec![Iterable::OfType(self.error(
-                        errors,
-                        range,
-                        format!(
-                            "Type `{}` (a `TypedDict` class object) is not iterable",
-                            iterable.clone().deterministic_printing()
-                        ),
-                    ))]
-                } else {
-                    vec![iterate_by_interface()]
-                }
-            }
-            Type::TypedDict(_) => self.iterate(
-                &self
-                    .stdlib
-                    .mapping(
-                        self.stdlib.str().to_type(),
-                        self.stdlib.object_class_type().clone().to_type(),
-                    )
-                    .to_type(),
-                range,
-                errors,
-            ),
             Type::Tuple(Tuple::Concrete(elts)) => vec![Iterable::FixedLen(elts.clone())],
-            Type::Tuple(Tuple::Unbounded(box elt)) => vec![Iterable::OfType(elt.clone())],
-            Type::LiteralString => vec![Iterable::OfType(self.stdlib.str().to_type())],
-            Type::Literal(lit) if lit.is_string() => {
-                vec![Iterable::OfType(self.stdlib.str().to_type())]
-            }
-            Type::Any(_) => vec![Iterable::OfType(Type::any_implicit())],
             Type::Var(v) if let Some(_guard) = self.recurser.recurse(*v) => {
                 self.iterate(&self.solver().force_var(*v), range, errors)
             }
@@ -279,14 +218,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .iter()
                 .flat_map(|t| self.iterate(t, range, errors))
                 .collect(),
-            _ => vec![Iterable::OfType(self.error(
-                errors,
-                range,
-                format!(
-                    "`{}` is not iterable",
-                    iterable.clone().deterministic_printing()
-                ),
-            ))],
+            _ => {
+                let ty = self
+                    .unwrap_iterable(iterable)
+                    .or_else(|| {
+                        let int_ty = self.stdlib.int().to_type();
+                        let arg = CallArg::Type(&int_ty, range);
+                        self.call_method(iterable, &dunder::GETITEM, range, &[arg], &[], errors)
+                    })
+                    .unwrap_or_else(|| {
+                        self.error(
+                            errors,
+                            range,
+                            format!(
+                                "Type `{}` is not iterable",
+                                iterable.clone().deterministic_printing()
+                            ),
+                        )
+                    });
+                vec![Iterable::OfType(ty)]
+            }
         }
     }
 
@@ -708,11 +659,22 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             &field.name,
             value_ty.as_ref(),
             annotation.as_deref(),
-            field.initialization,
+            *self.get_idx(field.initialization),
             &self.get_idx(field.class),
             field.range,
             errors,
         ))
+    }
+
+    pub fn solve_class_field_initialization(
+        &self,
+        initialization: &BindingClassFieldInitialization,
+    ) -> Arc<ClassFieldInitialization> {
+        Arc::new(if initialization.is_initialized {
+            ClassFieldInitialization::Class
+        } else {
+            ClassFieldInitialization::Instance
+        })
     }
 
     pub fn solve_class_synthesized_fields(
@@ -1168,7 +1130,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         if matches!(&**expr, Expr::Call(_))
                             && let Some(tvar) = t.as_tvar_declaration() =>
                     {
-                        let tvar_name = &tvar.name.id;
+                        let tvar_name = tvar.id();
                         if *name != *tvar_name && *tvar_name != UNKNOWN {
                             self.error(
                                 errors,

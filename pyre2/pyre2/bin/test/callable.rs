@@ -308,6 +308,16 @@ def test(kwargs: Mapping[str, int]):
 );
 
 testcase!(
+    test_splat_kwargs_subclass,
+    r#"
+class Counter[T](dict[T, int]): ...
+def f(**kwargs: int): ...
+def test(c: Counter[str]):
+    f(**c)
+"#,
+);
+
+testcase!(
     test_splat_kwargs_wrong_key,
     r#"
 def f(x: int): ...
