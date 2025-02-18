@@ -48,7 +48,7 @@ impl<'a> BindingsBuilder<'a> {
         self.scopes.push(Scope::annotation());
 
         let class_key = KeyClass(ShortIdentifier::new(&x.name));
-        let definition_key = self.table.classes.0.insert(class_key.clone());
+        let definition_key = self.table.classes.0.insert(class_key);
 
         x.type_params.iter_mut().for_each(|x| {
             self.type_params(x);
@@ -95,9 +95,9 @@ impl<'a> BindingsBuilder<'a> {
             KeyClassMetadata(ShortIdentifier::new(&x.name)),
             BindingClassMetadata {
                 def: definition_key,
-                bases: bases.clone(),
-                keywords,
-                decorators: decorators.clone(),
+                bases: bases.clone().into_boxed_slice(),
+                keywords: keywords.into_boxed_slice(),
+                decorators: decorators.clone().into_boxed_slice(),
             },
         );
         self.table.insert(
@@ -188,14 +188,14 @@ impl<'a> BindingsBuilder<'a> {
             Binding::ClassDef(definition_key, decorators.into_boxed_slice()),
             None,
         );
-        self.table.insert(
-            class_key,
-            BindingClass::ClassDef(Box::new(ClassBinding {
+        self.table.insert_idx(
+            definition_key,
+            BindingClass::ClassDef(ClassBinding {
                 def: x,
                 fields,
                 bases: bases.into_boxed_slice(),
                 legacy_tparams: legacy_tparams.into_boxed_slice(),
-            })),
+            }),
         );
     }
 
@@ -211,9 +211,9 @@ impl<'a> BindingsBuilder<'a> {
             KeyClassMetadata(ShortIdentifier::new(&class_name)),
             BindingClassMetadata {
                 def: definition_key,
-                bases: vec![Expr::Name(base_name)],
-                keywords: vec![],
-                decorators: vec![],
+                bases: Box::new([Expr::Name(base_name)]),
+                keywords: Box::new([]),
+                decorators: Box::new([]),
             },
         );
         self.table.insert(

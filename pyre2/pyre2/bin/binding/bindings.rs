@@ -32,6 +32,8 @@ use vec1::Vec1;
 
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingLegacyTypeParam;
+use crate::binding::binding::BindingYield;
+use crate::binding::binding::BindingYieldFrom;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyClass;
@@ -42,6 +44,8 @@ use crate::binding::binding::KeyExpect;
 use crate::binding::binding::KeyExport;
 use crate::binding::binding::KeyFunction;
 use crate::binding::binding::KeyLegacyTypeParam;
+use crate::binding::binding::KeyYield;
+use crate::binding::binding::KeyYieldFrom;
 use crate::binding::binding::Keyed;
 use crate::binding::narrow::NarrowOps;
 use crate::binding::scope::Flow;
@@ -213,6 +217,34 @@ impl Bindings {
             builder.inject_builtins();
         }
         builder.stmts(x);
+        // Create dummy bindings for any invalid yield/yield from expressions.
+        let (func_info, _) = builder.functions.split_off_first();
+        for x in func_info.yields {
+            match x {
+                Either::Left(x) => {
+                    builder
+                        .table
+                        .insert(KeyYield(x.range), BindingYield::Invalid(x));
+                }
+                Either::Right(x) => {
+                    builder
+                        .table
+                        .insert(KeyYieldFrom(x.range), BindingYieldFrom::Invalid(x));
+                }
+            }
+        }
+        for x in func_info.returns {
+            if let Some(x) = x.value {
+                builder
+                    .table
+                    .insert(Key::Anon(x.range()), Binding::Expr(None, *x));
+            }
+            errors.add(
+                &module_info,
+                x.range,
+                "Invalid `return` outside of a function".to_owned(),
+            );
+        }
         let last_scope = builder.scopes.finish();
         for (k, static_info) in last_scope.stat.0 {
             let info = last_scope.flow.info.get(&k);
@@ -253,6 +285,14 @@ impl BindingTable {
     {
         let entry = self.get_mut::<K>();
         let idx = entry.0.insert(key);
+        self.insert_idx(idx, value)
+    }
+
+    pub fn insert_idx<K: Keyed>(&mut self, idx: Idx<K>, value: K::Value) -> Idx<K>
+    where
+        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+    {
+        let entry = self.get_mut::<K>();
         let existing = entry.1.insert(idx, value);
         if let Some(existing) = existing {
             panic!(
