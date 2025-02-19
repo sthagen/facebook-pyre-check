@@ -8,12 +8,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::RwLock;
 use std::time::Duration;
 
 use dupe::Dupe;
-use dupe::OptionDupedExt;
 use enum_iterator::Sequence;
 use parking_lot::FairMutex;
 use ruff_python_ast::name::Name;
@@ -23,6 +20,7 @@ use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswerEntry;
 use crate::alt::answers::AnswerTable;
+use crate::alt::answers::Answers;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::answers::Solutions;
 use crate::alt::answers::SolutionsEntry;
@@ -58,6 +56,8 @@ use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
 use crate::util::display::number_thousands;
 use crate::util::enum_heap::EnumHeap;
+use crate::util::lock::Mutex;
+use crate::util::lock::RwLock;
 use crate::util::locked_map::LockedMap;
 use crate::util::no_hash::BuildNoHash;
 use crate::util::prelude::SliceExt;
@@ -155,7 +155,7 @@ impl State {
     fn demand(&self, module_state: &Arc<ModuleState>, step: Step) {
         let mut computed = false;
         loop {
-            let lock = module_state.steps.read().unwrap();
+            let lock = module_state.steps.read();
             if lock.dirty.is_dirty() {
                 panic!("Should make the code not dirty");
             }
@@ -176,7 +176,7 @@ impl State {
                 // Small delay plus rarely hit means this has no overall perf impact.
                 continue;
             }
-            let lock = module_state.steps.read().unwrap();
+            let lock = module_state.steps.read();
 
             // BIG WARNING: We do Step::Solutions.compute_next, NOT step.compute_next.
             // The reason being that we may evict Answers, and later ask for Answers,
@@ -193,7 +193,7 @@ impl State {
             if todo == Step::Answers && !self.retain_memory {
                 // We have captured the Ast, and must have already built Exports (we do it serially),
                 // so won't need the Ast again.
-                let to_drop = module_state.steps.write().unwrap().ast.take();
+                let to_drop = module_state.steps.write().ast.take();
                 drop(to_drop);
             }
 
@@ -207,11 +207,10 @@ impl State {
                 uniques: &self.uniques,
                 stdlib: &stdlib,
                 lookup: &self.lookup(module_state.dupe()),
-                retain_memory: self.retain_memory,
             });
             {
                 let mut to_drop = None;
-                let mut module_write = module_state.steps.write().unwrap();
+                let mut module_write = module_state.steps.write();
                 set(&mut module_write);
                 if todo == Step::Solutions && !self.retain_memory {
                     // From now on we can use the answers directly, so evict the bindings/answers.
@@ -228,10 +227,7 @@ impl State {
         if computed && let Some(next) = step.next() {
             // For a large benchmark, LIFO is 10Gb retained, FIFO is 13Gb.
             // Perhaps we are getting to the heart of the graph with LIFO?
-            self.todo
-                .lock()
-                .unwrap()
-                .push_lifo(next, module_state.dupe());
+            self.todo.lock().push_lifo(next, module_state.dupe());
         }
     }
 
@@ -242,14 +238,7 @@ impl State {
     }
 
     fn add_error(&self, module_state: &Arc<ModuleState>, range: TextRange, msg: String) {
-        let load = module_state
-            .steps
-            .read()
-            .unwrap()
-            .load
-            .get()
-            .unwrap()
-            .dupe();
+        let load = module_state.steps.read().load.dupe().unwrap();
         load.errors.add(&load.module_info, range, msg);
     }
 
@@ -296,8 +285,8 @@ impl State {
 
     fn lookup_export(&self, module_state: &Arc<ModuleState>) -> Exports {
         self.demand(module_state, Step::Exports);
-        let lock = module_state.steps.read().unwrap();
-        lock.exports.get().unwrap().dupe()
+        let lock = module_state.steps.read();
+        lock.exports.dupe().unwrap()
     }
 
     fn lookup_answer<'b, K: Solve<StateHandle<'b>> + Keyed<EXPORTED = true>>(
@@ -312,21 +301,18 @@ impl State {
     {
         {
             // if we happen to have solutions available, use them instead
-            if let Some(solutions) = module_state.steps.read().unwrap().solutions.get() {
+            if let Some(solutions) = &module_state.steps.read().solutions {
                 return solutions.get(key).unwrap().dupe();
             }
         }
 
         self.demand(&module_state, Step::Answers);
         let (load, answers) = {
-            let steps = module_state.steps.read().unwrap();
-            if let Some(solutions) = steps.solutions.get() {
+            let steps = module_state.steps.read();
+            if let Some(solutions) = &steps.solutions {
                 return solutions.get(key).unwrap().dupe();
             }
-            (
-                steps.load.get().unwrap().dupe(),
-                steps.answers.get().unwrap().dupe(),
-            )
+            (steps.load.dupe().unwrap(), steps.answers.dupe().unwrap())
         };
         let stdlib = self.get_stdlib(&module_state.handle);
         let lookup = self.lookup(module_state);
@@ -344,8 +330,8 @@ impl State {
     pub fn collect_errors(&self) -> Vec<Error> {
         let mut errors = Vec::new();
         for module in self.modules.values() {
-            let steps = module.steps.read().unwrap();
-            if let Some(load) = steps.load.get() {
+            let steps = module.steps.read();
+            if let Some(load) = &steps.load {
                 errors.extend(load.errors.collect());
             }
         }
@@ -359,21 +345,14 @@ impl State {
     pub fn count_errors(&self) -> usize {
         self.modules
             .values()
-            .map(|x| {
-                x.steps
-                    .read()
-                    .unwrap()
-                    .load
-                    .get()
-                    .map_or(0, |x| x.errors.len())
-            })
+            .map(|x| x.steps.read().load.as_ref().map_or(0, |x| x.errors.len()))
             .sum()
     }
 
     pub fn print_errors(&self) {
         for module in self.modules.values() {
-            let steps = module.steps.read().unwrap();
-            if let Some(load) = steps.load.get() {
+            let steps = module.steps.read();
+            if let Some(load) = &steps.load {
                 load.errors.print();
             }
         }
@@ -383,7 +362,7 @@ impl State {
         let loads = self
             .modules
             .values()
-            .filter_map(|x| x.steps.read().unwrap().load.get().duped())
+            .filter_map(|x| x.steps.read().load.dupe())
             .collect::<Vec<_>>();
         let mut items = ErrorCollector::summarise(loads.iter().map(|x| &x.errors));
         items.reverse();
@@ -447,7 +426,7 @@ impl State {
     fn work(&self) {
         // ensure we have answers for everything, keep going until we don't discover any new modules
         loop {
-            let mut lock = self.todo.lock().unwrap();
+            let mut lock = self.todo.lock();
             let x = match lock.pop() {
                 Some(x) => x.1,
                 None => break,
@@ -469,7 +448,7 @@ impl State {
             .collect::<SmallMap<_, _>>();
 
         {
-            let mut lock = self.todo.lock().unwrap();
+            let mut lock = self.todo.lock();
             for h in handles {
                 lock.push_fifo(Step::first(), self.get_module(&h));
             }
@@ -512,10 +491,19 @@ impl State {
             .get(handle)?
             .steps
             .read()
-            .unwrap()
             .answers
-            .get()
+            .as_ref()
             .map(|x| x.0.dupe())
+    }
+
+    pub fn get_answers(&self, handle: &Handle) -> Option<Arc<Answers>> {
+        self.modules
+            .get(handle)?
+            .steps
+            .read()
+            .answers
+            .as_ref()
+            .map(|x| x.1.dupe())
     }
 
     pub fn get_module_info(&self, handle: &Handle) -> Option<ModuleInfo> {
@@ -523,42 +511,28 @@ impl State {
             .get(handle)?
             .steps
             .read()
-            .unwrap()
             .load
-            .get()
+            .as_ref()
             .map(|x| x.module_info.dupe())
     }
 
     pub fn get_ast(&self, handle: &Handle) -> Option<Arc<ruff_python_ast::ModModule>> {
-        self.modules
-            .get(handle)?
-            .steps
-            .read()
-            .unwrap()
-            .ast
-            .get()
-            .duped()
+        self.modules.get(handle)?.steps.read().ast.dupe()
     }
 
+    #[allow(dead_code)]
     pub fn get_solutions(&self, handle: &Handle) -> Option<Arc<Solutions>> {
-        self.modules
-            .get(handle)?
-            .steps
-            .read()
-            .unwrap()
-            .solutions
-            .get()
-            .duped()
+        self.modules.get(handle)?.steps.read().solutions.dupe()
     }
 
     pub fn debug_info(&self, handles: &[Handle]) -> DebugInfo {
         let owned = handles.map(|x| {
             let module = self.get_module(x);
-            let steps = module.steps.read().unwrap();
+            let steps = module.steps.read();
             (
-                steps.load.get().unwrap().dupe(),
-                steps.answers.get().unwrap().dupe(),
-                steps.solutions.get().unwrap().dupe(),
+                steps.load.dupe().unwrap(),
+                steps.answers.dupe().unwrap(),
+                steps.solutions.dupe().unwrap(),
             )
         });
         DebugInfo::new(&owned.map(|x| (&x.0.module_info, &x.0.errors, &x.1.0, &*x.2)))
@@ -566,8 +540,8 @@ impl State {
 
     pub fn check_against_expectations(&self) -> anyhow::Result<()> {
         for module in self.modules.values() {
-            let steps = module.steps.read().unwrap();
-            let load = steps.load.get().unwrap();
+            let steps = module.steps.read();
+            let load = steps.load.as_ref().unwrap();
             Expectation::parse(load.module_info.dupe(), load.module_info.contents())
                 .check(&load.errors.collect())?;
         }
@@ -587,7 +561,7 @@ impl State {
         }
         for (handle, module_state) in self.modules.iter_unordered() {
             if handle.loader() == loader {
-                module_state.steps.write().unwrap().dirty.set_dirty_find();
+                module_state.steps.write().dirty.set_dirty_find();
             }
         }
 
@@ -603,7 +577,7 @@ impl State {
                 && let ModulePathDetails::Memory(x) = handle.path().details()
                 && files.contains(x)
             {
-                module_state.steps.write().unwrap().dirty.set_dirty_load();
+                module_state.steps.write().dirty.set_dirty_load();
             }
         }
 
@@ -620,7 +594,7 @@ impl State {
             if let ModulePathDetails::FileSystem(x) = handle.path().details()
                 && files.contains(x)
             {
-                module_state.steps.write().unwrap().dirty.set_dirty_load();
+                module_state.steps.write().dirty.set_dirty_load();
             }
         }
 
@@ -651,7 +625,7 @@ struct StateHandle<'a> {
 
 impl<'a> StateHandle<'a> {
     fn get_module(&self, module: ModuleName) -> Result<Arc<ModuleState>, FindError> {
-        if let Some(res) = self.module_state.dependencies.read().unwrap().get(&module) {
+        if let Some(res) = self.module_state.dependencies.read().get(&module) {
             return Ok(res.dupe());
         }
 
@@ -662,7 +636,6 @@ impl<'a> StateHandle<'a> {
         self.module_state
             .dependencies
             .write()
-            .unwrap()
             .insert(module, res.dupe());
         Ok(res)
     }

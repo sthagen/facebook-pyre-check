@@ -20,6 +20,7 @@ use vec1::Vec1;
 
 use crate::ast::Ast;
 use crate::binding::binding::Binding;
+use crate::binding::binding::ClassFieldInitialValue;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyClassMetadata;
@@ -117,10 +118,12 @@ pub struct Flow {
     pub no_next: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FlowStyle {
     /// Am I initialized, or am I the result of `x: int`?
     Annotated { is_initialized: bool },
+    /// Am I a type-annotated assignment in a class body?
+    AnnotatedClassField { initial_value: Option<Expr> },
     /// Am I the result of an import (which needs merging).
     /// E.g. `import foo.bar` and `import foo.baz` need merging.
     /// The `ModuleName` will be the most recent entry.
@@ -142,10 +145,15 @@ pub struct FlowInfo {
 }
 
 impl FlowInfo {
-    pub fn is_initialized(&self) -> bool {
+    pub fn as_initial_value(&self) -> ClassFieldInitialValue {
         match self.style.as_ref() {
-            Some(FlowStyle::Annotated { is_initialized, .. }) => *is_initialized,
-            _ => true,
+            Some(FlowStyle::AnnotatedClassField {
+                initial_value: Some(e),
+            }) => ClassFieldInitialValue::Class(Some(e.clone())),
+            Some(FlowStyle::AnnotatedClassField {
+                initial_value: None,
+            }) => ClassFieldInitialValue::Instance,
+            _ => ClassFieldInitialValue::Class(None),
         }
     }
 }
