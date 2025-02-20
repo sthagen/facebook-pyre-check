@@ -221,6 +221,7 @@ module ScheduleIdentifier : sig
     | ComputeChangedPaths
     | SaveChangedPaths
     | TaintFetchCallables
+    | MethodKinds
     | ClassHierarchyGraph
     | CallableModelQueries
     | AttributeModelQueries
@@ -228,11 +229,14 @@ module ScheduleIdentifier : sig
     | InferClassModels
     | GlobalConstants
     | CallGraph
+    | HigherOrderCallGraph
     | OverrideGraph
     | TaintFixpoint
     | TaintCollectErrors
     | TaintFileCoverage
     | TaintKindCoverage
+    | DecoratorResolution
+    | CallableToDecoratorsMap
   [@@deriving sexp, compare, hash]
 
   val of_string : string -> t option
@@ -324,6 +328,8 @@ module StaticAnalysis : sig
     saved_state: SavedState.t;
     compute_coverage: bool;
     scheduler_policies: SchedulerPolicies.t;
+    higher_order_call_graph: bool;
+    higher_order_call_graph_max_iterations: int option;
   }
 
   val create
@@ -363,6 +369,8 @@ module StaticAnalysis : sig
     ?saved_state:SavedState.t ->
     ?compute_coverage:bool ->
     ?scheduler_policies:SchedulerPolicies.t ->
+    ?higher_order_call_graph:bool ->
+    ?higher_order_call_graph_max_iterations:int ->
     unit ->
     t
 end

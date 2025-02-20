@@ -11,6 +11,7 @@ use std::fmt::Display;
 
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Identifier;
+use starlark_map::ordered_map::OrderedMap;
 
 use crate::module::module_name::ModuleName;
 use crate::types::literal::Lit;
@@ -134,59 +135,65 @@ pub enum Required {
     Optional,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CallableKind {
     IsInstance,
     IsSubclass,
-    Dataclass(DataclassKeywords),
+    Dataclass(Box<BoolKeywords>),
     DataclassField,
     ClassMethod,
     Overload,
+    Override,
     Def,
     Anon,
 }
 
-/// The subset of dataclass's keywords (https://docs.python.org/3/library/dataclasses.html#dataclasses.dataclass)
-/// with typing effects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DataclassKeywords {
-    pub init: bool,
-    pub order: bool,
-    pub frozen: bool,
-    pub match_args: bool,
-    pub kw_only: bool,
-}
+/// A map from keywords to boolean values. Useful for storing sets of keyword arguments for various
+/// dataclass functions.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BoolKeywords(OrderedMap<Name, bool>);
 
-impl Default for DataclassKeywords {
-    fn default() -> Self {
-        Self {
-            init: true,
-            order: false,
-            frozen: false,
-            match_args: true,
-            kw_only: false,
+impl BoolKeywords {
+    pub fn new() -> Self {
+        Self(OrderedMap::new())
+    }
+
+    pub fn set_keyword(&mut self, name: Option<&Identifier>, ty: Type) {
+        if let Some(name) = name.map(|id| &id.id) {
+            let value = match ty {
+                Type::Literal(Lit::Bool(b)) => b,
+                _ => {
+                    return;
+                }
+            };
+            self.0.insert(name.clone(), value);
         }
     }
+
+    pub fn is_set(&self, name_and_default: &(Name, bool)) -> bool {
+        let (name, default) = name_and_default;
+        *(self.0.get(name).unwrap_or(default))
+    }
+
+    pub fn set(&mut self, name: Name, value: bool) {
+        self.0.insert(name, value);
+    }
 }
+
+/// Namespace for keyword names and defaults.
+pub struct DataclassKeywords;
 
 impl DataclassKeywords {
-    pub fn set_keyword(&mut self, name: Option<&Identifier>, ty: Type) {
-        let value = match ty {
-            Type::Literal(Lit::Bool(b)) => b,
-            _ => {
-                return;
-            }
-        };
-        match name.map(|name| name.as_str()) {
-            Some("init") => self.init = value,
-            Some("order") => self.order = value,
-            Some("frozen") => self.frozen = value,
-            Some("match_args") => self.match_args = value,
-            Some("kw_only") => self.kw_only = value,
-            // Just ignore any unrecognized keywords. We report this error elsewhere.
-            _ => {}
-        }
-    }
+    pub const INIT: (Name, bool) = (Name::new_static("init"), true);
+    pub const ORDER: (Name, bool) = (Name::new_static("order"), false);
+    pub const FROZEN: (Name, bool) = (Name::new_static("frozen"), false);
+    pub const MATCH_ARGS: (Name, bool) = (Name::new_static("match_args"), true);
+    pub const KW_ONLY: (Name, bool) = (Name::new_static("kw_only"), false);
+    /// We combine default and default_factory into a single "default" keyword indicating whether
+    /// the field has a default. The default value isn't stored.
+    pub const DEFAULT: (Name, bool) = (Name::new_static("default"), false);
+    pub const EQ: (Name, bool) = (Name::new_static("eq"), true);
+    pub const UNSAFE_HASH: (Name, bool) = (Name::new_static("unsafe_hash"), false);
 }
 
 impl Callable {
@@ -365,9 +372,11 @@ impl CallableKind {
             ("builtins", "isinstance") => Self::IsInstance,
             ("builtins", "issubclass") => Self::IsSubclass,
             ("builtins", "classmethod") => Self::ClassMethod,
-            ("dataclasses", "dataclass") => Self::Dataclass(DataclassKeywords::default()),
+            ("dataclasses", "dataclass") => Self::Dataclass(Box::new(BoolKeywords::new())),
             ("dataclasses", "field") => Self::DataclassField,
             ("typing", "overload") => Self::Overload,
+            ("typing", "override") => Self::Override,
+
             _ => Self::Def,
         }
     }

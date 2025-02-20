@@ -340,3 +340,108 @@ C()  # OK
 C(x=1)  # OK
     "#,
 );
+
+testcase!(
+    test_field_is_not_default,
+    r#"
+from dataclasses import dataclass, field
+@dataclass
+class C:
+    x: int = field()
+C()  # E: Missing argument `x`
+    "#,
+);
+
+testcase!(
+    test_field_kw_only,
+    r#"
+from dataclasses import dataclass, field
+@dataclass
+class C:
+    x: int = field(kw_only=True)
+C(1)  # E: Missing argument `x`  # E: Expected 0 positional arguments
+C(x=1)  # OK
+    "#,
+);
+
+testcase!(
+    test_field_default,
+    r#"
+from dataclasses import dataclass, field
+from typing import Callable
+
+@dataclass
+class C1:
+    x: int = field(default=0)
+C1()  # OK
+C1(x=1)  # OK
+
+factory: Callable[[], int] = lambda: 0
+
+@dataclass
+class C2:
+    x: int = field(default_factory=factory)
+C2()  # OK
+C2(x=1)  # OK
+
+@dataclass
+class C3:
+    x: int = field(default="oops")  # E: EXPECTED str <: int
+    y: str = field(default_factory=factory)  # E: EXPECTED int <: str
+    "#,
+);
+
+testcase!(
+    test_classvar,
+    r#"
+from typing import ClassVar
+from dataclasses import dataclass
+@dataclass
+class C:
+    x: ClassVar[int] = 0
+C()  # OK
+C(x=1)  # E: Unexpected keyword argument `x`
+    "#,
+);
+
+testcase!(
+    test_hashable,
+    r#"
+from typing import Hashable
+from dataclasses import dataclass
+
+class Unhashable:
+    __hash__ = None
+
+def f(x: Hashable):
+    pass
+
+# When eq=frozen=True, __hash__ is implicitly created
+@dataclass(eq=True, frozen=True)
+class D1(Unhashable):
+    pass
+f(D1())  # OK
+
+# When eq=True, frozen=False, __hash__ is set to None
+@dataclass(eq=True, frozen=False)
+class D2:
+    pass
+f(D2())  # E: EXPECTED D2 <: Hashable
+
+# When eq=False, __hash__ is untouched
+@dataclass(eq=False)
+class D3:
+    pass
+@dataclass(eq=False)
+class D4(Unhashable):
+    pass
+f(D3())  # OK
+f(D4())  # E: EXPECTED D4 <: Hashable
+
+# unsafe_hash=True forces __hash__ to be created
+@dataclass(eq=False, unsafe_hash=True)
+class D5(Unhashable):
+    pass
+f(D5())  # OK
+    "#,
+);

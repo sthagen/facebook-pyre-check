@@ -24,7 +24,6 @@ use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::attr::Attribute;
 use crate::alt::attr::NoAccessReason;
-use crate::alt::class::dataclass::DataclassFieldProperties;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::EnumMetadata;
 use crate::binding::binding::KeyClassField;
@@ -35,6 +34,8 @@ use crate::dunder;
 use crate::error::collector::ErrorCollector;
 use crate::graph::index::Idx;
 use crate::types::annotation::Annotation;
+use crate::types::callable::BoolKeywords;
+use crate::types::callable::DataclassKeywords;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
 use crate::types::class::Class;
@@ -52,9 +53,10 @@ use crate::util::prelude::SliceExt;
 /// Correctly analyzing which attributes are visible on class objects, as well
 /// as handling method binding correctly, requires distinguishing which fields
 /// are assigned values in the class body.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClassFieldInitialization {
-    Class(Option<DataclassFieldProperties>),
+    /// If this is a dataclass field, BoolKeywords stores the field's dataclass properties.
+    Class(Option<BoolKeywords>),
     Instance,
 }
 
@@ -126,7 +128,7 @@ impl ClassField {
 
     fn initialization(&self) -> ClassFieldInitialization {
         match &self.0 {
-            ClassFieldInner::Simple { initialization, .. } => *initialization,
+            ClassFieldInner::Simple { initialization, .. } => initialization.clone(),
         }
     }
 
@@ -140,19 +142,17 @@ impl ClassField {
             } => Self(ClassFieldInner::Simple {
                 ty: cls.instantiate_member(ty.clone()),
                 annotation: annotation.clone(),
-                initialization: *initialization,
+                initialization: initialization.clone(),
                 readonly: *readonly,
             }),
         }
     }
 
-    pub fn as_param(self, name: &Name, kw_only: bool) -> Param {
-        let ClassField(ClassFieldInner::Simple {
-            ty, initialization, ..
-        }) = self;
-        let required = match initialization {
-            ClassFieldInitialization::Class(_) => Required::Optional,
-            ClassFieldInitialization::Instance => Required::Required,
+    pub fn as_param(self, name: &Name, default: bool, kw_only: bool) -> Param {
+        let ClassField(ClassFieldInner::Simple { ty, .. }) = self;
+        let required = match default {
+            true => Required::Optional,
+            false => Required::Required,
         };
         if kw_only {
             Param::KwOnly(name.clone(), ty, required)
@@ -501,8 +501,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         errors: &ErrorCollector,
     ) -> ClassField {
         let metadata = self.get_metadata_for_class(class);
+
+        let (is_override, value_ty) = match value_ty {
+            Type::Decoration(Decoration::Override(ty)) => (true, ty.as_ref()),
+            _ => (false, value_ty),
+        };
+
         if let Some(enum_) = self.get_enum_from_class(class)
-            && self.is_valid_enum_member(name, value_ty, initialization)
+            && self.is_valid_enum_member(name, value_ty, &initialization)
         {
             if annotation.is_some() {
                 self.error(errors,range, format!("Enum member `{}` may not be annotated directly. Instead, annotate the _value_ attribute.", name));
@@ -534,9 +540,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             (value_ty, None)
         };
-        let readonly = metadata
-            .dataclass_metadata()
-            .map_or(false, |dataclass| dataclass.kws.frozen);
+        let readonly = metadata.dataclass_metadata().map_or(false, |dataclass| {
+            dataclass.kws.is_set(&DataclassKeywords::FROZEN)
+        });
         let class_field = ClassField::new(ty.clone(), ann.cloned(), initialization, readonly);
 
         // check if this attribute is compatible with the parent attribute
@@ -551,6 +557,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             let metadata = self.get_metadata_for_class(class);
             let parents = metadata.bases_with_metadata();
 
+            let mut parent_attr_found = false;
+
             for (parent, parent_metadata) in parents {
                 // todo zeina: skip dataclasses. Look into them next.
                 if metadata.dataclass_metadata().is_some()
@@ -561,6 +569,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
 
                 if let Some(want) = self.type_order().try_lookup_attr(parent.self_type(), name) {
+                    parent_attr_found = true;
                     let attr_check = self.is_attr_subset(&got, &want, &mut |got, want| {
                         self.solver().is_subset_eq(got, want, self.type_order())
                     });
@@ -577,6 +586,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         );
                     }
                 }
+            }
+            if is_override && !parent_attr_found {
+                self.error(
+                    errors,
+                    range,
+                    format!(
+                        "Class member `{}` is marked as an override, but no parent class has a matching attribute",
+                        name,
+        ),
+    );
             }
         };
 
@@ -634,39 +653,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 })
                 .next()
         }
-    }
-
-    // Get every member of a class, including those declared in parent classes.
-    fn get_all_members(&self, cls: &Class) -> SmallMap<Name, (Arc<ClassField>, Class)> {
-        let mut members = SmallMap::new();
-        for name in cls.fields() {
-            if let Some(field) = self.get_class_field(cls, name) {
-                members.insert(name.clone(), (field, cls.dupe()));
-            }
-        }
-        for ancestor in self.get_metadata_for_class(cls).ancestors(self.stdlib) {
-            for name in ancestor.class_object().fields() {
-                if !members.contains_key(name) {
-                    if let Some(field) = self.get_class_field(ancestor.class_object(), name) {
-                        members.insert(
-                            name.clone(),
-                            (
-                                Arc::new(field.instantiate_for(ancestor)),
-                                ancestor.class_object().dupe(),
-                            ),
-                        );
-                    }
-                }
-            }
-        }
-        members
-    }
-
-    pub fn get_all_member_names(&self, cls: &Class) -> SmallSet<Name> {
-        self.get_all_members(cls)
-            .keys()
-            .cloned()
-            .collect::<SmallSet<_>>()
     }
 
     pub fn get_instance_attribute(&self, cls: &ClassType, name: &Name) -> Option<Attribute> {

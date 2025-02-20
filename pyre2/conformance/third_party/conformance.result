@@ -213,11 +213,11 @@
     "Line 153: Unexpected errors ['Class member `z` overrides parent class `ProtoB` in an inconsistent manner']"
   ],
   "classes_override.py": [
-    "Line 53: Expected 1 errors",
     "Line 79: Expected 1 errors",
     "Line 84: Expected 1 errors",
     "Line 89: Expected 1 errors",
-    "Lines 56, 65: Expected error (tag 'method4')"
+    "Lines 56, 65: Expected error (tag 'method4')",
+    "Line 101: Unexpected errors ['Class member `method1` is marked as an override, but no parent class has a matching attribute']"
   ],
   "constructors_call_init.py": [
     "Line 42: Expected 1 errors",
@@ -314,19 +314,16 @@
     "Lines 22, 23: Expected error (tag 'DC2')",
     "Lines 32, 33: Expected error (tag 'DC4')"
   ],
-  "dataclasses_hash.py": [
-    "Line 15: Expected 1 errors",
-    "Line 32: Expected 1 errors"
-  ],
+  "dataclasses_hash.py": [],
   "dataclasses_inheritance.py": [
     "Line 60: Expected 1 errors",
     "Line 64: Expected 1 errors"
   ],
   "dataclasses_kwonly.py": [
-    "Line 32: Unexpected errors ['Missing argument `a`', \"EXPECTED Literal['hi'] <: int\"]",
-    "Line 35: Unexpected errors ['Missing argument `a`', \"EXPECTED Literal['hi'] <: int\", 'Multiple values for argument `b`']",
-    "Line 47: Unexpected errors ['Expected 0 positional arguments, got 1']",
-    "Line 50: Unexpected errors ['Expected 0 positional arguments, got 1']",
+    "Line 32: Unexpected errors ['Missing argument `a`', 'Expected 0 positional arguments, got 1']",
+    "Line 35: Unexpected errors ['Missing argument `a`', 'Expected 0 positional arguments, got 1']",
+    "Line 47: Unexpected errors ['Missing argument `a`', 'Expected 0 positional arguments, got 1']",
+    "Line 50: Unexpected errors ['Missing argument `a`', 'Expected 0 positional arguments, got 1']",
     "Line 61: Unexpected errors ['Missing argument `c`', 'EXPECTED float <: int', 'Multiple values for argument `b`']"
   ],
   "dataclasses_order.py": [],
@@ -398,7 +395,6 @@
     "Lines 70, 73: Expected error (tag 'DC3')",
     "Line 35: Unexpected errors ['EXPECTED BoundMethod[InventoryItem, (self: InventoryItem, name: str, unit_price: float, quantity_on_hand: int) -> None] <: InventoryItemInitProto']",
     "Line 72: Unexpected errors ['EXPECTED Literal[0] <: InitVar[int]']",
-    "Line 102: Unexpected errors ['Missing argument `b`', \"EXPECTED Literal[''] <: int\"]",
     "Line 106: Unexpected errors ['assert_type(BoundMethod[DC6, (str) -> int], (str) -> int) failed']",
     "Line 205: Unexpected errors ['EXPECTED DC15 <: DataclassProto']"
   ],
@@ -852,7 +848,6 @@
     "Line 102: Expected 1 errors",
     "Line 107: Expected 1 errors",
     "Line 17: Unexpected errors ['assert_type(tuple[?_TypeVar, ?_TypeVar], tuple[str, str]) failed']",
-    "Line 23: Unexpected errors ['EXPECTED list[object] <: Sized']",
     "Line 31: Unexpected errors ['EXPECTED type[int] <: type[@_]']",
     "Line 32: Unexpected errors ['assert_type(set[?_TypeVar], set[int]) failed']",
     "Line 72: Unexpected errors ['EXPECTED type[A] <: A']",
@@ -900,11 +895,12 @@
   "protocols_class_objects.py": [
     "Line 29: Expected 1 errors",
     "Line 34: Expected 1 errors",
+    "Line 104: Expected 1 errors",
+    "Line 106: Expected 1 errors",
+    "Line 107: Expected 1 errors",
+    "Line 108: Expected 1 errors",
     "Line 30: Unexpected errors ['EXPECTED type[Concrete] <: type[Proto]']",
-    "Line 35: Unexpected errors ['EXPECTED type[Concrete] <: type[Proto]']",
-    "Line 59: Unexpected errors ['EXPECTED type[ConcreteA] <: ProtoA2']",
-    "Line 105: Unexpected errors ['EXPECTED type[ConcreteC1] <: ProtoC2']",
-    "Line 109: Unexpected errors ['EXPECTED type[ConcreteC3] <: ProtoC2']"
+    "Line 35: Unexpected errors ['EXPECTED type[Concrete] <: type[Proto]']"
   ],
   "protocols_definition.py": [
     "Line 117: Expected 1 errors",

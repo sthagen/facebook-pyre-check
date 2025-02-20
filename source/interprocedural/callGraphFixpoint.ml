@@ -13,6 +13,7 @@ module CallGraphAnalysis = struct
       pyre_api: Analysis.PyrePysaEnvironment.ReadOnly.t;
       define_call_graphs: CallGraph.SharedMemory.ReadOnly.t;
       decorator_resolution: CallGraph.DecoratorResolution.Results.t;
+      method_kinds: CallGraph.MethodKind.SharedMemory.ReadOnly.t;
     }
   end
 
@@ -59,7 +60,16 @@ module CallGraphAnalysis = struct
 
   let obscure_model = empty_model
 
-  module Logger = FixpointAnalysis.WithoutLogging
+  module Logger = struct
+    include FixpointAnalysis.WithLogging (struct
+      let expensive_callable_ms = 500
+    end)
+
+    let iteration_end ~iteration ~expensive_callables ~number_of_callables ~timer =
+      (* Explicitly collect the shared memory to reduce heap size. *)
+      let () = Memory.SharedMemory.collect `aggressive in
+      iteration_end ~iteration ~expensive_callables ~number_of_callables ~timer
+  end
 
   module AnalyzeDefineResult = struct
     type t = {
@@ -70,7 +80,7 @@ module CallGraphAnalysis = struct
   end
 
   let analyze_define
-      ~context:{ Context.pyre_api; define_call_graphs; decorator_resolution }
+      ~context:{ Context.pyre_api; define_call_graphs; decorator_resolution; method_kinds }
       ~callable
       ~previous_model:{ CallGraph.HigherOrderCallGraph.call_graph = previous_call_graph; _ }
       ~get_callee_model
@@ -99,7 +109,8 @@ module CallGraphAnalysis = struct
           ~pyre_api
           ~qualifier
           ~define
-          ~initial_state:(CallGraph.HigherOrderCallGraph.State.initialize_from_callable callable)
+          ~initial_state:
+            (CallGraph.HigherOrderCallGraph.State.initialize_from_callable ~method_kinds callable)
           ~get_callee_model
       in
       let dependencies call_graph =
@@ -191,6 +202,7 @@ let compute
     ~override_graph_shared_memory
     ~initial_callables
     ~decorator_resolution
+    ~method_kinds
     ~max_iterations
   =
   let decorated_callables =
@@ -254,6 +266,7 @@ let compute
           CallGraphAnalysis.Context.pyre_api;
           define_call_graphs = CallGraph.SharedMemory.read_only define_call_graphs;
           decorator_resolution;
+          method_kinds;
         }
       ~callables_to_analyze:(List.rev_append callables_to_analyze decorated_callables)
       ~max_iterations
@@ -278,5 +291,8 @@ let compute
   {
     fixpoint;
     whole_program_call_graph = build_whole_program_call_graph ~scheduler ~scheduler_policy state;
-    get_define_call_graph = get_define_call_graph ~state:(Fixpoint.State.read_only state);
+    get_define_call_graph =
+      (* Use a lightweight handle, to avoid copying a large handle for each worker, when used in map
+         reduce. *)
+      get_define_call_graph ~state:(Fixpoint.State.read_only state);
   }

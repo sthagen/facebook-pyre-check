@@ -20,8 +20,11 @@ use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::ClassSynthesizedField;
 use crate::alt::types::class_metadata::ClassSynthesizedFields;
 use crate::dunder;
+use crate::types::annotation::Qualifier;
+use crate::types::callable::BoolKeywords;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
+use crate::types::callable::DataclassKeywords;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Required;
@@ -30,12 +33,6 @@ use crate::types::class::ClassType;
 use crate::types::literal::Lit;
 use crate::types::tuple::Tuple;
 use crate::types::types::Type;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DataclassFieldProperties {
-    pub init: bool,
-    pub kw_only: bool,
-}
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// Gets dataclass fields for an `@dataclass`-decorated class.
@@ -62,20 +59,38 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let metadata = self.get_metadata_for_class(cls);
         let dataclass = metadata.dataclass_metadata()?;
         let mut fields = SmallMap::new();
-        if dataclass.kws.init {
+        if dataclass.kws.is_set(&DataclassKeywords::INIT) {
             fields.insert(
                 dunder::INIT,
-                self.get_dataclass_init(cls, &dataclass.fields, dataclass.kws.kw_only),
+                self.get_dataclass_init(
+                    cls,
+                    &dataclass.fields,
+                    dataclass.kws.is_set(&DataclassKeywords::KW_ONLY),
+                ),
             );
         }
-        if dataclass.kws.order {
+        if dataclass.kws.is_set(&DataclassKeywords::ORDER) {
             fields.extend(self.get_dataclass_rich_comparison_methods(cls));
         }
-        if dataclass.kws.match_args {
+        if dataclass.kws.is_set(&DataclassKeywords::MATCH_ARGS) {
             fields.insert(
                 dunder::MATCH_ARGS,
-                self.get_dataclass_match_args(cls, &dataclass.fields, dataclass.kws.kw_only),
+                self.get_dataclass_match_args(
+                    cls,
+                    &dataclass.fields,
+                    dataclass.kws.is_set(&DataclassKeywords::KW_ONLY),
+                ),
             );
+        }
+        // See rules for `__hash__` creation under "unsafe_hash":
+        // https://docs.python.org/3/library/dataclasses.html#module-contents
+        if dataclass.kws.is_set(&DataclassKeywords::UNSAFE_HASH)
+            || (dataclass.kws.is_set(&DataclassKeywords::EQ)
+                && dataclass.kws.is_set(&DataclassKeywords::FROZEN))
+        {
+            fields.insert(dunder::HASH, self.get_dataclass_hash(cls));
+        } else if dataclass.kws.is_set(&DataclassKeywords::EQ) {
+            fields.insert(dunder::HASH, ClassSynthesizedField::new(Type::None, false));
         }
         Some(ClassSynthesizedFields::new(fields))
     }
@@ -84,13 +99,24 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         &self,
         cls: &Class,
         fields: &SmallSet<Name>,
-    ) -> Vec<(Name, ClassField, DataclassFieldProperties)> {
+    ) -> Vec<(Name, ClassField, BoolKeywords)> {
         let mut kw_only = false;
         fields.iter().filter_map(|name| {
-            let field @ ClassField(ClassFieldInner::Simple { ty, initialization, .. }) = &*self.get_class_member(cls, name).unwrap().value;
-            let mut props = DataclassFieldProperties { init: true, kw_only };
-            if let ClassFieldInitialization::Class(Some(field_props)) = initialization {
-                props.init = field_props.init;
+            let field @ ClassField(ClassFieldInner::Simple { ty, annotation, initialization, .. }) = &*self.get_class_member(cls, name).unwrap().value;
+            if let Some(annot) = annotation && annot.qualifiers.contains(&Qualifier::ClassVar) {
+                return None; // Class variables are not dataclass fields
+            }
+            let mut props = match initialization {
+                ClassFieldInitialization::Class(Some(field_props)) => field_props.clone(),
+                ClassFieldInitialization::Class(None) => {
+                    let mut kws = BoolKeywords::new();
+                    kws.set(DataclassKeywords::DEFAULT.0, true);
+                    kws
+                }
+                ClassFieldInitialization::Instance => BoolKeywords::new()
+            };
+            if kw_only {
+                props.set(DataclassKeywords::KW_ONLY.0, true);
             }
             // A field with type KW_ONLY is a sentinel value that indicates that the remaining
             // fields should be keyword-only params in the generated `__init__`.
@@ -110,14 +136,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         fields: &SmallSet<Name>,
         kw_only: bool,
     ) -> ClassSynthesizedField {
-        let mut params = vec![Param::Pos(
-            Name::new("self"),
-            cls.self_type(),
-            Required::Required,
-        )];
+        let mut params = vec![cls.self_param()];
         for (name, field, field_props) in self.iter_fields(cls, fields) {
-            if field_props.init {
-                params.push(field.as_param(&name, kw_only || field_props.kw_only));
+            if field_props.is_set(&DataclassKeywords::INIT) {
+                params.push(field.as_param(
+                    &name,
+                    field_props.is_set(&DataclassKeywords::DEFAULT),
+                    kw_only || field_props.is_set(&DataclassKeywords::KW_ONLY),
+                ));
             }
         }
         let ty = Type::Callable(
@@ -141,7 +167,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             filtered_fields
                 .iter()
                 .filter_map(|(name, _, field_props)| {
-                    if field_props.kw_only {
+                    if field_props.is_set(&DataclassKeywords::KW_ONLY) {
                         None
                     } else {
                         Some(Type::Literal(Lit::String(name.as_str().into())))
@@ -157,9 +183,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         &self,
         cls: &Class,
     ) -> SmallMap<Name, ClassSynthesizedField> {
-        let self_ty = cls.self_type();
-        let self_ = Param::Pos(Name::new("self"), self_ty.clone(), Required::Required);
-        let other = Param::Pos(Name::new("other"), self_ty, Required::Required);
+        let self_ = cls.self_param();
+        let other = Param::Pos(Name::new("other"), cls.self_type(), Required::Required);
         let ret = Type::ClassType(self.stdlib.bool());
         let field = ClassSynthesizedField::new(
             Type::Callable(
@@ -172,5 +197,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             .iter()
             .map(|name| (name.clone(), field.clone()))
             .collect()
+    }
+
+    fn get_dataclass_hash(&self, cls: &Class) -> ClassSynthesizedField {
+        let params = vec![cls.self_param()];
+        let ret = self.stdlib.int().to_type();
+        ClassSynthesizedField::new(
+            Type::Callable(
+                Box::new(Callable::list(ParamList::new(params), ret)),
+                CallableKind::Def,
+            ),
+            false,
+        )
     }
 }
