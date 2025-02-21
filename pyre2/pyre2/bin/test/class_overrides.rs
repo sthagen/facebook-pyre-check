@@ -62,6 +62,7 @@ testcase!(
 from typing import overload
 
 class A:
+
     @overload
     def method(self, x: int) -> int:
         ...
@@ -71,7 +72,21 @@ class A:
         ...
 
     def method(self, x: int | str) -> int | str:
-        return 0        
+        return 0
+
+
+class B(A):
+
+    @overload
+    def method(self, x: int) -> int:
+        ...
+
+    @overload
+    def method(self, x: str) -> str:
+        ...
+
+    def method(self, x: int | str) -> int | str:
+        return 0
  "#,
 );
 
@@ -92,8 +107,7 @@ class B(A):
  "#,
 );
 
-testcase_with_bug!(
-    "Todo: consistent override",
+testcase!(
     test_default_value_consistent,
     r#"
 class A:
@@ -101,7 +115,7 @@ class A:
 
 class B(A):
     def __init__(self) -> None:
-        self.x = 0 # E:  Class member `x` overrides parent class `A` in an inconsistent manner
+        self.x = 0
  "#,
 );
 

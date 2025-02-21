@@ -11,9 +11,7 @@ use std::sync::Arc;
 use dupe::Dupe;
 use itertools::Either;
 use ruff_python_ast::name::Name;
-use ruff_python_ast::Arguments;
 use ruff_python_ast::Expr;
-use ruff_python_ast::ExprCall;
 use ruff_python_ast::TypeParam;
 use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
@@ -28,7 +26,6 @@ use crate::alt::answers::LookupAnswer;
 use crate::alt::answers::UNKNOWN;
 use crate::alt::callable::CallArg;
 use crate::alt::class::classdef::ClassField;
-use crate::alt::class::classdef::ClassFieldInitialization;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::ClassSynthesizedFields;
 use crate::alt::types::decorated_function::DecoratedFunction;
@@ -40,14 +37,12 @@ use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingClass;
 use crate::binding::binding::BindingClassField;
-use crate::binding::binding::BindingClassFieldInitialization;
 use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingClassSynthesizedFields;
 use crate::binding::binding::BindingExpect;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::BindingYield;
 use crate::binding::binding::BindingYieldFrom;
-use crate::binding::binding::ClassFieldInitialValue;
 use crate::binding::binding::ContextManagerKind;
 use crate::binding::binding::EmptyAnswer;
 use crate::binding::binding::FunctionBinding;
@@ -61,16 +56,13 @@ use crate::binding::binding::UnpackedPosition;
 use crate::dunder;
 use crate::dunder::inplace_dunder;
 use crate::error::collector::ErrorCollector;
-use crate::error::style::ErrorStyle;
 use crate::graph::index::Idx;
 use crate::module::module_path::ModuleStyle;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
-use crate::types::callable::BoolKeywords;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
-use crate::types::callable::DataclassKeywords;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
 use crate::types::class::Class;
@@ -82,7 +74,6 @@ use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
 use crate::types::type_var::Variance;
 use crate::types::types::AnyStyle;
-use crate::types::types::CalleeKind;
 use crate::types::types::TParamInfo;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -259,14 +250,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         if allow_none && actual_type.is_none() {
             return;
         }
-        let expected_types = if let base_exception_type @ Type::ClassType(c) =
-            &self.stdlib.base_exception().to_type()
-        {
-            let base_exception_class_type = Type::ClassDef(c.class_object().dupe());
-            vec![base_exception_type.clone(), base_exception_class_type]
-        } else {
-            unreachable!("The stdlib base exception type should be a ClassInstance")
-        };
+        let base_exception_class = self.stdlib.base_exception();
+        let base_exception_class_type = Type::ClassDef(base_exception_class.class_object().dupe());
+        let base_exception_type = base_exception_class.to_type();
+        let expected_types = vec![base_exception_type, base_exception_class_type];
         if !self.solver().is_subset_eq(
             &actual_type,
             &Type::Union(expected_types),
@@ -666,57 +653,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             &field.name,
             value_ty.as_ref(),
             annotation.as_deref(),
-            (*self.get_idx(field.initialization)).clone(),
+            &field.initial_value,
             &self.get_idx(field.class),
             field.range,
             errors,
         ))
-    }
-
-    pub fn solve_class_field_initialization(
-        &self,
-        initialization: &BindingClassFieldInitialization,
-    ) -> Arc<ClassFieldInitialization> {
-        Arc::new(match &initialization.initial_value {
-            ClassFieldInitialValue::Instance => ClassFieldInitialization::Instance,
-            ClassFieldInitialValue::Class(None) => ClassFieldInitialization::Class(None),
-            ClassFieldInitialValue::Class(Some(e)) => {
-                let metadata = self.get_idx(initialization.class_metadata);
-                // If this field was created via a call to a dataclass field specifier, extract field properties from the call.
-                if metadata.dataclass_metadata().is_some()
-                    && let Expr::Call(ExprCall {
-                        range: _,
-                        func,
-                        arguments: Arguments { keywords, .. },
-                    }) = e
-                {
-                    let mut props = BoolKeywords::new();
-                    // We already type-checked this expression as part of computing the type for the ClassField,
-                    // so we can ignore any errors encountered here.
-                    let ignore_errors = ErrorCollector::new(ErrorStyle::Never);
-                    let func_ty = self.expr_infer(func, &ignore_errors);
-                    if matches!(
-                        func_ty.callee_kind(),
-                        Some(CalleeKind::Callable(CallableKind::DataclassField))
-                    ) {
-                        for kw in keywords {
-                            if let Some(id) = &kw.arg
-                                && (id.id == DataclassKeywords::DEFAULT.0
-                                    || id.id == "default_factory")
-                            {
-                                props.set(DataclassKeywords::DEFAULT.0, true);
-                            } else {
-                                let val = self.expr_infer(&kw.value, &ignore_errors);
-                                props.set_keyword(kw.arg.as_ref(), val);
-                            }
-                        }
-                    }
-                    ClassFieldInitialization::Class(Some(props))
-                } else {
-                    ClassFieldInitialization::Class(None)
-                }
-            }
-        })
     }
 
     pub fn solve_class_synthesized_fields(
@@ -725,8 +666,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Arc<ClassSynthesizedFields> {
         let cls = self.get_idx(fields.0);
         if let Some(fields) = self.get_typed_dict_synthesized_fields(&cls) {
-            Arc::new(fields)
-        } else if let Some(fields) = self.get_enum_synthesized_fields(&cls) {
             Arc::new(fields)
         } else if let Some(fields) = self.get_dataclass_synthesized_fields(&cls) {
             Arc::new(fields)
@@ -982,7 +921,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     format!("Expected {}, got {}", field.ty, value_ty),
                                 )
                             } else {
-                                Type::ClassType(self.stdlib.none_type())
+                                Type::None
                             }
                         } else {
                             self.error(
@@ -1061,27 +1000,56 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     // This function is decorated with @overload. We should warn if this function is actually called anywhere.
                     let successor = self.bindings().get(*idx).successor;
                     let ty = def.ty.clone();
-                    if skip_implementation && successor.is_none() {
+                    if successor.is_none() {
                         // This is the last definition in the chain. We should produce an overload type.
                         let mut acc = Vec1::new(ty);
-                        while let Some(ty) = self.step_overload_pred(&mut pred) {
-                            acc.push(ty);
+                        let mut first = def;
+                        while let Some(def) = self.step_overload_pred(&mut pred) {
+                            acc.push(def.ty.clone());
+                            first = def;
                         }
-                        acc.reverse();
-                        Type::Overload(acc)
+                        if !skip_implementation {
+                            self.error(
+                                errors,
+                                first.id_range,
+                                "Overloaded function must have an implementation".to_owned(),
+                            );
+                        }
+                        if acc.len() == 1 {
+                            self.error(
+                                errors,
+                                first.id_range,
+                                "Overloaded function needs at least two signatures".to_owned(),
+                            );
+                            acc.split_off_first().0
+                        } else {
+                            acc.reverse();
+                            Type::Overload(acc)
+                        }
                     } else {
                         ty
                     }
                 } else {
                     let mut acc = Vec::new();
-                    while let Some(ty) = self.step_overload_pred(&mut pred) {
-                        acc.push(ty);
+                    let mut first = def;
+                    while let Some(def) = self.step_overload_pred(&mut pred) {
+                        acc.push(def.ty.clone());
+                        first = def;
                     }
                     acc.reverse();
-                    if let Ok(overloads) = Vec1::try_from_vec(acc) {
-                        Type::Overload(overloads)
+                    if let Ok(defs) = Vec1::try_from_vec(acc) {
+                        if defs.len() == 1 {
+                            self.error(
+                                errors,
+                                first.id_range,
+                                "Overloaded function needs at least two signatures".to_owned(),
+                            );
+                            defs.split_off_first().0
+                        } else {
+                            Type::Overload(defs)
+                        }
                     } else {
-                        def.ty.clone()
+                        first.ty.clone()
                     }
                 }
             }
@@ -1365,17 +1333,28 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         for x in x.decorators.iter().rev() {
             ty = self.apply_decorator(*x, ty, &mut is_overload, errors)
         }
-        Arc::new(DecoratedFunction { ty, is_overload })
+        Arc::new(DecoratedFunction {
+            id_range: x.def.name.range,
+            ty,
+            is_overload,
+        })
     }
 
     // Given the index to a function binding, return the previous function binding, if any.
-    pub fn step_overload_pred(&self, pred: &mut Option<Idx<Key>>) -> Option<Type> {
+    pub fn step_overload_pred(
+        &self,
+        pred: &mut Option<Idx<Key>>,
+    ) -> Option<Arc<DecoratedFunction>> {
         let pred_idx = (*pred)?;
-        if let Binding::Function(idx, pred_, _) = self.bindings().get(pred_idx) {
+        let mut b = self.bindings().get(pred_idx);
+        while let Binding::Forward(k) = b {
+            b = self.bindings().get(*k);
+        }
+        if let Binding::Function(idx, pred_, _) = b {
             let def = self.get_idx(*idx);
             if def.is_overload {
                 *pred = *pred_;
-                Some(def.ty.clone())
+                Some(def)
             } else {
                 None
             }
@@ -1511,6 +1490,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::Ellipsis => Some(Type::Ellipsis), // A bit weird because of tuples, so just promote it
             Type::Any(style) => Some(style.propagate()),
             Type::TypeAlias(ta) => self.untype_opt(ta.as_type(), range),
+            t @ Type::Unpack(
+                box Type::Tuple(_) | box Type::TypeVarTuple(_) | box Type::Quantified(_),
+            ) => Some(t),
+            Type::Unpack(box Type::Var(v)) if let Some(_guard) = self.recurser.recurse(v) => {
+                self.untype_opt(Type::Unpack(Box::new(self.solver().force_var(v))), range)
+            }
             Type::Unpack(box t) => Some(t),
             _ => None,
         }

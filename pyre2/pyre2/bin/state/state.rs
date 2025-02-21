@@ -8,11 +8,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use dupe::Dupe;
 use enum_iterator::Sequence;
-use parking_lot::FairMutex;
 use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
@@ -43,14 +41,17 @@ use crate::module::module_name::ModuleName;
 use crate::module::module_path::ModulePath;
 use crate::module::module_path::ModulePathDetails;
 use crate::report::debug_info::DebugInfo;
+use crate::state::dirty::Dirty;
+use crate::state::epoch::Epoch;
+use crate::state::epoch::Epochs;
 use crate::state::handle::Handle;
 use crate::state::loader::FindError;
 use crate::state::loader::Loader;
 use crate::state::loader::LoaderFindCache;
 use crate::state::loader::LoaderId;
 use crate::state::steps::Context;
-use crate::state::steps::ModuleSteps;
 use crate::state::steps::Step;
+use crate::state::steps::Steps;
 use crate::types::class::Class;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
@@ -62,69 +63,46 @@ use crate::util::locked_map::LockedMap;
 use crate::util::no_hash::BuildNoHash;
 use crate::util::prelude::SliceExt;
 use crate::util::uniques::UniqueFactory;
+use crate::util::upgrade_lock::UpgradeLock;
 
 pub struct State {
     uniques: UniqueFactory,
     parallel: bool,
     stdlib: SmallMap<(Config, LoaderId), Arc<Stdlib>>,
-    modules: LockedMap<Handle, Arc<ModuleState>>,
+    modules: LockedMap<Handle, Arc<ModuleData>>,
     loaders: SmallMap<LoaderId, Arc<LoaderFindCache<LoaderId>>>,
     /// Items we still need to process. Stored in a max heap, so that
     /// the highest step (the module that is closest to being finished)
     /// gets picked first, ensuring we release its memory quickly.
-    todo: Mutex<EnumHeap<Step, Arc<ModuleState>>>,
+    todo: Mutex<EnumHeap<Step, Arc<ModuleData>>>,
+    /// The current epoch, gets incremented every time we recompute
+    now: Epoch,
 
     // Set to true to keep data around forever.
     retain_memory: bool,
 }
 
-struct ModuleState {
-    // BIG WARNING: This must be a FairMutex or we are exposed to deadlocks.
-    //
-    // The FairMutex is locking an entire module, which goes through stages
-    // of compute (the stages are enumerated by `Step`).
-    //
-    // Each stage can `demand` some previous stage of other modules, for
-    // example `Answers` (which computes bindings) may require `Exports`
-    // of other modules to handle wildcard imports.
-    //
-    // When a thread `demand`s a Step of a module, we take the lock, and
-    // - we might see that what we need is already available
-    // - we might see that it is not, in which case we start computing
-    // - or we might pause if another thread owns the lock
-    //
-    // This works with a `FairMutex`: as long as we only `demand` earlier steps
-    // from later steps, the demand calls form a DAG. Since `FairMutex` respects
-    // the order of calls, the lock acquisition is also a DAG and we make
-    // progress.
-    //
-    // But without a `FairMutex`, we lose control of the order and we can
-    // deadlock. Suppose `foo` and `bar` each try to `from <other> import *`,
-    // and consider when
-    // - Thread 0 is computing bindings for `foo`
-    // - Thread 1 is computing exports for `bar`
-    //
-    // When Thread 0 hits the `from bar import *`, it will try to take the lock
-    // on `bar`, and wait. Thread 1 will produce the exports for `bar`.
-    //
-    // But if the mutex is not fair, Thread 1 (or some other thread) might
-    // get the lock on `bar` to start computing bindings before Thread 0
-    // does. If this happens, we will deadlock because Thread 0 still owns
-    // the lock on `foo`, so the thread trying to compute bindings on `bar`
-    // will get stuck trying to analyze `from foo import *`. Meanwhile Thread 0
-    // is still waiting for `bar` and we are unable to make progress.
-    lock: FairMutex<()>,
-    steps: RwLock<ModuleSteps>,
+struct ModuleData {
     handle: Handle,
-    dependencies: RwLock<HashMap<ModuleName, Arc<ModuleState>, BuildNoHash>>,
+    state: UpgradeLock<Step, ModuleState>,
+    dependencies: RwLock<HashMap<ModuleName, Arc<ModuleData>, BuildNoHash>>,
 }
 
-impl ModuleState {
-    fn new(handle: Handle) -> Self {
+struct ModuleState {
+    epochs: Epochs,
+    dirty: Dirty,
+    steps: Steps,
+}
+
+impl ModuleData {
+    fn new(handle: Handle, now: Epoch) -> Self {
         Self {
-            lock: Default::default(),
-            steps: Default::default(),
             handle,
+            state: UpgradeLock::new(ModuleState {
+                epochs: Epochs::new(now),
+                dirty: Dirty::default(),
+                steps: Steps::default(),
+            }),
             dependencies: Default::default(),
         }
     }
@@ -135,6 +113,7 @@ impl State {
         Self {
             uniques: UniqueFactory::new(),
             parallel,
+            now: Epoch::zero(),
             stdlib: Default::default(),
             modules: Default::default(),
             loaders: Default::default(),
@@ -152,71 +131,91 @@ impl State {
         ))
     }
 
-    fn demand(&self, module_state: &Arc<ModuleState>, step: Step) {
+    fn clean(&self, module_data: &Arc<ModuleData>) {
+        let exclusive;
+        loop {
+            match module_data.state.exclusive(Step::first()) {
+                None => continue,
+                Some(ex) => {
+                    exclusive = ex;
+                    break;
+                }
+            }
+        }
+        if exclusive.epochs.checked == self.now {
+            // Someone already checked us
+            return;
+        }
+        if exclusive.dirty.is_dirty() {
+            panic!("Should make the code not dirty");
+        }
+        let mut write = exclusive.write();
+        write.dirty.clean();
+        write.epochs.checked = self.now;
+    }
+
+    fn demand(&self, module_data: &Arc<ModuleData>, step: Step) {
         let mut computed = false;
         loop {
-            let lock = module_state.steps.read();
-            if lock.dirty.is_dirty() {
-                panic!("Should make the code not dirty");
-            }
-
-            match Step::Solutions.compute_next(&lock) {
-                Some(todo) if todo <= step => {}
-                _ => break,
-            }
-            drop(lock);
-            let compute_lock = module_state.lock.try_lock_for(Duration::from_millis(100));
-            if compute_lock.is_none() {
-                // Typechecking empty.py with -j25 deadlocks about 1% of the time. At -j100 it deadlocks about 5% of the time.
-                // I don't really understand it. But the fact we have to use FairMutex is a bit of a smell, and potentially
-                // we are having races as to what "fair" means.
-                //
-                // We plan to rewrite much of this code soon to support incrementality, so for now, bodge it.
-                // If we can't get the lock in 100ms, just give up and try from scratch.
-                // Small delay plus rarely hit means this has no overall perf impact.
+            let reader = module_data.state.read();
+            if reader.epochs.checked != self.now {
+                drop(reader);
+                self.clean(module_data);
                 continue;
             }
-            let lock = module_state.steps.read();
 
-            // BIG WARNING: We do Step::Solutions.compute_next, NOT step.compute_next.
-            // The reason being that we may evict Answers, and later ask for Answers,
-            // which would then say Answers needed to be computed. But because we only ever
-            // evict earlier things in the list when computing later things, if we always
-            // ask from the end we get the right thing, not the evicted thing.
-            let todo = match Step::Solutions.compute_next(&lock) {
+            let todo = match reader.steps.next_step() {
                 Some(todo) if todo <= step => todo,
                 _ => break,
             };
+            let mut exclusive = match reader.exclusive(todo) {
+                Some(exclusive) => exclusive,
+                None => {
+                    // The world changed, we should check again
+                    continue;
+                }
+            };
+            let todo = match exclusive.steps.next_step() {
+                Some(todo) if todo <= step => todo,
+                _ => break,
+            };
+
             computed = true;
-            let compute = todo.compute().0(&lock);
-            drop(lock);
+            let compute = todo.compute().0(&exclusive.steps);
             if todo == Step::Answers && !self.retain_memory {
                 // We have captured the Ast, and must have already built Exports (we do it serially),
                 // so won't need the Ast again.
-                let to_drop = module_state.steps.write().ast.take();
+                let to_drop;
+                let mut writer = exclusive.write();
+                to_drop = writer.steps.ast.take();
+                exclusive = writer.exclusive();
                 drop(to_drop);
             }
 
-            let stdlib = self.get_stdlib(&module_state.handle);
-            let loader = self.get_cached_loader(module_state.handle.loader());
+            let stdlib = self.get_stdlib(&module_data.handle);
+            let loader = self.get_cached_loader(module_data.handle.loader());
             let set = compute(&Context {
-                module: module_state.handle.module(),
-                path: module_state.handle.path(),
-                config: module_state.handle.config(),
+                retain_memory: self.retain_memory,
+                module: module_data.handle.module(),
+                path: module_data.handle.path(),
+                config: module_data.handle.config(),
                 loader: &*loader,
                 uniques: &self.uniques,
                 stdlib: &stdlib,
-                lookup: &self.lookup(module_state.dupe()),
+                lookup: &self.lookup(module_data.dupe()),
             });
             {
                 let mut to_drop = None;
-                let mut module_write = module_state.steps.write();
-                set(&mut module_write);
-                if todo == Step::Solutions && !self.retain_memory {
-                    // From now on we can use the answers directly, so evict the bindings/answers.
-                    to_drop = module_write.answers.take();
+                let mut writer = exclusive.write();
+                set(&mut writer.steps);
+                if todo == Step::Solutions {
+                    writer.epochs.changed = self.now;
+                    if !self.retain_memory {
+                        // From now on we can use the answers directly, so evict the bindings/answers.
+                        to_drop = writer.steps.answers.take();
+                    }
                 }
-                drop(module_write);
+                drop(writer);
                 // Release the lock before dropping
                 drop(to_drop);
             }
@@ -227,55 +226,57 @@ impl State {
         if computed && let Some(next) = step.next() {
             // For a large benchmark, LIFO is 10Gb retained, FIFO is 13Gb.
             // Perhaps we are getting to the heart of the graph with LIFO?
-            self.todo.lock().push_lifo(next, module_state.dupe());
+            self.todo.lock().push_lifo(next, module_data.dupe());
         }
     }
 
-    fn get_module(&self, handle: &Handle) -> Arc<ModuleState> {
+    fn get_module(&self, handle: &Handle) -> Arc<ModuleData> {
         self.modules
-            .ensure(handle, || Arc::new(ModuleState::new(handle.dupe())))
+            .ensure(handle, || {
+                Arc::new(ModuleData::new(handle.dupe(), self.now))
+            })
             .dupe()
     }
 
-    fn add_error(&self, module_state: &Arc<ModuleState>, range: TextRange, msg: String) {
-        let load = module_state.steps.read().load.dupe().unwrap();
+    fn add_error(&self, module_data: &Arc<ModuleData>, range: TextRange, msg: String) {
+        let load = module_data.state.read().steps.load.dupe().unwrap();
         load.errors.add(&load.module_info, range, msg);
     }
 
-    fn lookup<'a>(&'a self, module_state: Arc<ModuleState>) -> StateHandle<'a> {
+    fn lookup<'a>(&'a self, module_data: Arc<ModuleData>) -> StateHandle<'a> {
         StateHandle {
             state: self,
-            module_state,
+            module_data,
         }
     }
 
     fn lookup_stdlib(&self, handle: &Handle, name: &Name) -> Option<Class> {
-        let module_state = self.get_module(handle);
+        let module_data = self.get_module(handle);
         if !self
-            .lookup_export(&module_state)
-            .contains(name, &self.lookup(module_state.dupe()))
+            .lookup_export(&module_data)
+            .contains(name, &self.lookup(module_data.dupe()))
         {
             self.add_error(
-                &module_state,
+                &module_data,
                 TextRange::default(),
                 format!(
                     "Stdlib import failure, was expecting `{}` to contain `{name}`",
-                    module_state.handle.module()
+                    module_data.handle.module()
                 ),
             );
             return None;
         }
 
-        let t = self.lookup_answer(module_state.dupe(), &KeyExport(name.clone()));
+        let t = self.lookup_answer(module_data.dupe(), &KeyExport(name.clone()));
         match t.arc_clone() {
             Type::ClassDef(cls) => Some(cls),
             ty => {
                 self.add_error(
-                    &module_state,
+                    &module_data,
                     TextRange::default(),
                     format!(
                         "Did not expect non-class type `{ty}` for stdlib import `{}.{name}`",
-                        module_state.handle.module()
+                        module_data.handle.module()
                     ),
                 );
                 None
@@ -283,15 +284,15 @@ impl State {
         }
     }
 
-    fn lookup_export(&self, module_state: &Arc<ModuleState>) -> Exports {
-        self.demand(module_state, Step::Exports);
-        let lock = module_state.steps.read();
-        lock.exports.dupe().unwrap()
+    fn lookup_export(&self, module_data: &Arc<ModuleData>) -> Exports {
+        self.demand(module_data, Step::Exports);
+        let lock = module_data.state.read();
+        lock.steps.exports.dupe().unwrap()
     }
 
     fn lookup_answer<'b, K: Solve<StateHandle<'b>> + Keyed<EXPORTED = true>>(
         &'b self,
-        module_state: Arc<ModuleState>,
+        module_data: Arc<ModuleData>,
         key: &K,
     ) -> Arc<<K as Keyed>::Answer>
     where
@@ -301,21 +302,24 @@ impl State {
     {
         {
             // if we happen to have solutions available, use them instead
-            if let Some(solutions) = &module_state.steps.read().solutions {
+            if let Some(solutions) = &module_data.state.read().steps.solutions {
                 return solutions.get(key).unwrap().dupe();
             }
         }
 
-        self.demand(&module_state, Step::Answers);
+        self.demand(&module_data, Step::Answers);
         let (load, answers) = {
-            let steps = module_state.steps.read();
-            if let Some(solutions) = &steps.solutions {
+            let steps = module_data.state.read();
+            if let Some(solutions) = &steps.steps.solutions {
                 return solutions.get(key).unwrap().dupe();
             }
-            (steps.load.dupe().unwrap(), steps.answers.dupe().unwrap())
+            (
+                steps.steps.load.dupe().unwrap(),
+                steps.steps.answers.dupe().unwrap(),
+            )
         };
-        let stdlib = self.get_stdlib(&module_state.handle);
-        let lookup = self.lookup(module_state);
+        let stdlib = self.get_stdlib(&module_data.handle);
+        let lookup = self.lookup(module_data);
         answers.1.solve_key(
             &lookup,
             &lookup,
@@ -330,8 +334,8 @@ impl State {
     pub fn collect_errors(&self) -> Vec<Error> {
         let mut errors = Vec::new();
         for module in self.modules.values() {
-            let steps = module.steps.read();
-            if let Some(load) = &steps.load {
+            let steps = module.state.read();
+            if let Some(load) = &steps.steps.load {
                 errors.extend(load.errors.collect());
             }
         }
@@ -345,14 +349,21 @@ impl State {
     pub fn count_errors(&self) -> usize {
         self.modules
             .values()
-            .map(|x| x.steps.read().load.as_ref().map_or(0, |x| x.errors.len()))
+            .map(|x| {
+                x.state
+                    .read()
+                    .steps
+                    .load
+                    .as_ref()
+                    .map_or(0, |x| x.errors.len())
+            })
             .sum()
     }
 
     pub fn print_errors(&self) {
         for module in self.modules.values() {
-            let steps = module.steps.read();
-            if let Some(load) = &steps.load {
+            let steps = module.state.read();
+            if let Some(load) = &steps.steps.load {
                 load.errors.print();
             }
         }
@@ -362,7 +373,7 @@ impl State {
         let loads = self
             .modules
             .values()
-            .filter_map(|x| x.steps.read().load.dupe())
+            .filter_map(|x| x.state.read().steps.load.dupe())
             .collect::<Vec<_>>();
         let mut items = ErrorCollector::summarise(loads.iter().map(|x| &x.errors));
         items.reverse();
@@ -437,6 +448,7 @@ impl State {
     }
 
     fn run_internal(&mut self, handles: Vec<Handle>) {
+        self.now.next();
         let configs = handles
             .iter()
             .map(|x| (x.config().dupe(), x.loader().dupe()))
@@ -489,8 +501,9 @@ impl State {
     pub fn get_bindings(&self, handle: &Handle) -> Option<Bindings> {
         self.modules
             .get(handle)?
-            .steps
+            .state
             .read()
+            .steps
             .answers
             .as_ref()
             .map(|x| x.0.dupe())
@@ -499,8 +512,9 @@ impl State {
     pub fn get_answers(&self, handle: &Handle) -> Option<Arc<Answers>> {
         self.modules
             .get(handle)?
-            .steps
+            .state
             .read()
+            .steps
             .answers
             .as_ref()
             .map(|x| x.1.dupe())
@@ -509,30 +523,37 @@ impl State {
     pub fn get_module_info(&self, handle: &Handle) -> Option<ModuleInfo> {
         self.modules
             .get(handle)?
-            .steps
+            .state
             .read()
+            .steps
             .load
             .as_ref()
             .map(|x| x.module_info.dupe())
     }
 
     pub fn get_ast(&self, handle: &Handle) -> Option<Arc<ruff_python_ast::ModModule>> {
-        self.modules.get(handle)?.steps.read().ast.dupe()
+        self.modules.get(handle)?.state.read().steps.ast.dupe()
     }
 
     #[allow(dead_code)]
     pub fn get_solutions(&self, handle: &Handle) -> Option<Arc<Solutions>> {
-        self.modules.get(handle)?.steps.read().solutions.dupe()
+        self.modules
+            .get(handle)?
+            .state
+            .read()
+            .steps
+            .solutions
+            .dupe()
     }
 
     pub fn debug_info(&self, handles: &[Handle]) -> DebugInfo {
         let owned = handles.map(|x| {
             let module = self.get_module(x);
-            let steps = module.steps.read();
+            let steps = module.state.read();
             (
-                steps.load.dupe().unwrap(),
-                steps.answers.dupe().unwrap(),
-                steps.solutions.dupe().unwrap(),
+                steps.steps.load.dupe().unwrap(),
+                steps.steps.answers.dupe().unwrap(),
+                steps.steps.solutions.dupe().unwrap(),
             )
         });
         DebugInfo::new(&owned.map(|x| (&x.0.module_info, &x.0.errors, &x.1.0, &*x.2)))
@@ -540,8 +561,8 @@ impl State {
 
     pub fn check_against_expectations(&self) -> anyhow::Result<()> {
         for module in self.modules.values() {
-            let steps = module.steps.read();
-            let load = steps.load.as_ref().unwrap();
+            let steps = module.state.read();
+            let load = steps.steps.load.as_ref().unwrap();
             Expectation::parse(load.module_info.dupe(), load.module_info.contents())
                 .check(&load.errors.collect())?;
         }
@@ -559,9 +580,14 @@ impl State {
         if let Some(cache) = self.loaders.get_mut(loader) {
             *cache = Arc::new(LoaderFindCache::new(loader.dupe()));
         }
-        for (handle, module_state) in self.modules.iter_unordered() {
+        for (handle, module_data) in self.modules.iter_unordered() {
             if handle.loader() == loader {
-                module_state.steps.write().dirty.set_dirty_find();
+                module_data
+                    .state
+                    .write(Step::Load)
+                    .unwrap()
+                    .dirty
+                    .set_dirty_find();
             }
         }
 
@@ -572,12 +598,17 @@ impl State {
     /// Specify which in-memory files might have changed.
     pub fn invalidate_memory(&mut self, loader: LoaderId, files: &[PathBuf]) {
         let files = SmallSet::from_iter(files);
-        for (handle, module_state) in self.modules.iter_unordered() {
+        for (handle, module_data) in self.modules.iter_unordered() {
             if handle.loader() == &loader
                 && let ModulePathDetails::Memory(x) = handle.path().details()
                 && files.contains(x)
             {
-                module_state.steps.write().dirty.set_dirty_load();
+                module_data
+                    .state
+                    .write(Step::Load)
+                    .unwrap()
+                    .dirty
+                    .set_dirty_load();
             }
         }
 
@@ -590,11 +621,16 @@ impl State {
     #[expect(dead_code)]
     pub fn invalidate_disk(&mut self, files: &[PathBuf]) {
         let files = SmallSet::from_iter(files);
-        for (handle, module_state) in self.modules.iter_unordered() {
+        for (handle, module_data) in self.modules.iter_unordered() {
             if let ModulePathDetails::FileSystem(x) = handle.path().details()
                 && files.contains(x)
             {
-                module_state.steps.write().dirty.set_dirty_load();
+                module_data
+                    .state
+                    .write(Step::Load)
+                    .unwrap()
+                    .dirty
+                    .set_dirty_load();
             }
         }
 
@@ -620,20 +656,18 @@ impl State {
 
 struct StateHandle<'a> {
     state: &'a State,
-    module_state: Arc<ModuleState>,
+    module_data: Arc<ModuleData>,
 }
 
 impl<'a> StateHandle<'a> {
-    fn get_module(&self, module: ModuleName) -> Result<Arc<ModuleState>, FindError> {
-        if let Some(res) = self.module_state.dependencies.read().get(&module) {
+    fn get_module(&self, module: ModuleName) -> Result<Arc<ModuleData>, FindError> {
+        if let Some(res) = self.module_data.dependencies.read().get(&module) {
             return Ok(res.dupe());
         }
 
-        let handle = self
-            .state
-            .import_handle(&self.module_state.handle, module)?;
+        let handle = self.state.import_handle(&self.module_data.handle, module)?;
         let res = self.state.get_module(&handle);
-        self.module_state
+        self.module_data
             .dependencies
             .write()
             .insert(module, res.dupe());
@@ -660,7 +694,7 @@ impl<'a> LookupAnswer for StateHandle<'a> {
     {
         // The unwrap is safe because we must have said there were no exports,
         // so no one can be trying to get at them
-        let module_state = self.get_module(module).unwrap();
-        self.state.lookup_answer(module_state, k)
+        let module_data = self.get_module(module).unwrap();
+        self.state.lookup_answer(module_data, k)
     }
 }

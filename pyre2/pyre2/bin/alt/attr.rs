@@ -136,7 +136,7 @@ impl NoAccessReason {
 impl LookupResult {
     /// We found a simple attribute type.
     ///
-    /// This means we assume it is both readable and writeable with that type.
+    /// This means we assume it is both readable and writable with that type.
     ///
     /// TODO(stroxler) The uses of this eventually need to be audited, but we
     /// need to prioiritize the class logic first.
@@ -242,8 +242,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// Look up the `_value_` attribute of an enum class. This field has to be a plain instance
     /// attribute annotated in the class body; it is used to validate enum member values, which are
     /// supposed to all share this type.
-    pub fn type_of_enum_value(&self, enum_: EnumMetadata) -> Option<Type> {
-        let base = Type::ClassType(enum_.cls);
+    pub fn type_of_enum_value(&self, enum_: &EnumMetadata) -> Option<Type> {
+        let base = Type::ClassType(enum_.cls.clone());
         match self.lookup_attr(base, &Name::new_static("_value_")) {
             LookupResult::Found(attr) => match attr.0 {
                 AttributeInner::ReadWrite(ty) => Some(ty),

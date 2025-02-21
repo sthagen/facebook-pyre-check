@@ -29,13 +29,13 @@ use crate::module::module_name::ModuleName;
 use crate::module::module_path::ModulePath;
 use crate::module::module_path::ModulePathDetails;
 use crate::solver::solver::Solver;
-use crate::state::dirty::Dirty;
 use crate::state::loader::Loader;
 use crate::types::stdlib::Stdlib;
 use crate::util::fs_anyhow;
 use crate::util::uniques::UniqueFactory;
 
 pub struct Context<'a, Lookup> {
+    pub retain_memory: bool,
     pub module: ModuleName,
     pub path: &'a ModulePath,
     pub config: &'a Config,
@@ -51,14 +51,75 @@ pub struct Load {
     pub module_info: ModuleInfo,
 }
 
+impl Load {
+    /// Return the code for this module, and whether there was an error while loading (a self-error).
+    pub fn load_from_path(
+        path: &ModulePath,
+        loader: &dyn Loader,
+    ) -> (Arc<String>, Option<anyhow::Error>) {
+        let res = match path.details() {
+            ModulePathDetails::FileSystem(path) => fs_anyhow::read_to_string(path).map(Arc::new),
+            ModulePathDetails::Namespace(_) => Ok(Arc::new("".to_owned())),
+            ModulePathDetails::Memory(path) => loader
+                .load_from_memory(path)
+                .ok_or_else(|| anyhow!("memory path not found")),
+            ModulePathDetails::BundledTypeshed(path) => typeshed().and_then(|x| {
+                x.load(path)
+                    .ok_or_else(|| anyhow!("bundled typeshed problem"))
+            }),
+        };
+        match res {
+            Err(err) => (Arc::new(String::new()), Some(err)),
+            Ok(res) => (res, None),
+        }
+    }
+
+    pub fn load_from_data(
+        name: ModuleName,
+        path: ModulePath,
+        error_style: ErrorStyle,
+        code: Arc<String>,
+        self_error: Option<anyhow::Error>,
+    ) -> Self {
+        let module_info = ModuleInfo::new(name, path, code);
+        let errors = ErrorCollector::new(error_style);
+        if let Some(err) = self_error {
+            errors.add(
+                &module_info,
+                TextRange::default(),
+                format!(
+                    "Failed to load `{name}` from `{}`, got {err:#}",
+                    module_info.path()
+                ),
+            );
+        }
+        Self {
+            errors,
+            module_info,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
-pub struct ModuleSteps {
-    pub dirty: Dirty,
+pub struct Steps {
+    /// The last step that was computed.
+    /// None means no steps have been computed yet.
+    last_step: Option<Step>,
     pub load: Option<Arc<Load>>,
     pub ast: Option<Arc<ModModule>>,
     pub exports: Option<Exports>,
     pub answers: Option<Arc<(Bindings, Arc<Answers>)>>,
     pub solutions: Option<Arc<Solutions>>,
+}
+
+impl Steps {
+    // The next step to compute, if any.
+    pub fn next_step(&self) -> Option<Step> {
+        match self.last_step {
+            None => Some(Step::first()),
+            Some(last) => last.next(),
+        }
+    }
 }
 
 #[derive(
@@ -77,22 +138,20 @@ pub struct ComputeStep<Lookup: LookupExport + LookupAnswer>(
     /// Second you get given the configs, from which you should compute the result.
     /// Thrid you get given the `ModuleSteps` to update.
     pub  Box<
-        dyn for<'a> Fn(
-            &ModuleSteps,
-        )
-            -> Box<dyn FnOnce(&Context<Lookup>) -> Box<dyn FnOnce(&mut ModuleSteps)>>,
+        dyn for<'a> Fn(&Steps) -> Box<dyn FnOnce(&Context<Lookup>) -> Box<dyn FnOnce(&mut Steps)>>,
     >,
 );
 
 macro_rules! compute_step {
-    (<$ty:ty> $output:ident = $($input:ident),*) => {
-        ComputeStep(Box::new(|steps: &ModuleSteps| {
+    (<$ty:ty> $alt:ident $output:ident = $($input:ident),*) => {
+        ComputeStep(Box::new(|steps: &Steps| {
             let _ = steps; // Not used if $input is empty.
             $(let $input = steps.$input.dupe().unwrap();)*
             Box::new(move |ctx: &Context<$ty>| {
                 let res = Step::$output(ctx, $($input),*);
-                Box::new(move |steps: &mut ModuleSteps| {
+                Box::new(move |steps: &mut Steps| {
                     steps.$output = Some(res);
+                    steps.last_step = Some(Step::$alt);
                 })
             })
         }))
@@ -100,16 +159,6 @@ macro_rules! compute_step {
 }
 
 impl Step {
-    pub fn check(self, steps: &ModuleSteps) -> bool {
-        match self {
-            Step::Load => steps.load.is_some(),
-            Step::Ast => steps.ast.is_some(),
-            Step::Exports => steps.exports.is_some(),
-            Step::Answers => steps.answers.is_some(),
-            Step::Solutions => steps.solutions.is_some(),
-        }
-    }
-
     pub fn first() -> Self {
         Sequence::first().unwrap()
     }
@@ -118,28 +167,13 @@ impl Step {
         Sequence::last().unwrap()
     }
 
-    /// If you want to have access to the given step, the next step to compute is returned.
-    /// None means the step is already available.
-    pub fn compute_next(self, steps: &ModuleSteps) -> Option<Self> {
-        if self.check(steps) {
-            return None;
-        }
-        let mut res = self;
-        while let Some(prev) = res.previous()
-            && !prev.check(steps)
-        {
-            res = prev;
-        }
-        Some(res)
-    }
-
     pub fn compute<Lookup: LookupExport + LookupAnswer>(self) -> ComputeStep<Lookup> {
         match self {
-            Step::Load => compute_step!(<Lookup> load =),
-            Step::Ast => compute_step!(<Lookup> ast = load),
-            Step::Exports => compute_step!(<Lookup> exports = load, ast),
-            Step::Answers => compute_step!(<Lookup> answers = load, ast, exports),
-            Step::Solutions => compute_step!(<Lookup> solutions = load, answers),
+            Step::Load => compute_step!(<Lookup> Load load =),
+            Step::Ast => compute_step!(<Lookup> Ast ast = load),
+            Step::Exports => compute_step!(<Lookup> Exports exports = load, ast),
+            Step::Answers => compute_step!(<Lookup> Answers answers = load, ast, exports),
+            Step::Solutions => compute_step!(<Lookup> Solutions solutions = load, answers),
         }
     }
 
@@ -152,42 +186,14 @@ impl Step {
                 ErrorStyle::Delayed
             }
         };
-
-        let res = match ctx.path.details() {
-            ModulePathDetails::FileSystem(path) => fs_anyhow::read_to_string(path).map(Arc::new),
-            ModulePathDetails::Namespace(_) => Ok(Arc::new("".to_owned())),
-            ModulePathDetails::Memory(path) => ctx
-                .loader
-                .load_from_memory(path)
-                .ok_or_else(|| anyhow!("memory path not found")),
-            ModulePathDetails::BundledTypeshed(path) => typeshed().and_then(|x| {
-                x.load(path)
-                    .ok_or_else(|| anyhow!("bundled typeshed problem"))
-            }),
-        };
-        let (code, self_error) = match res {
-            Err(err) => (Arc::new(String::new()), Some(err)),
-            Ok(res) => (res, None),
-        };
-
-        let module_info = ModuleInfo::new(ctx.module, ctx.path.dupe(), code);
-        let errors = ErrorCollector::new(error_style);
-        if let Some(err) = self_error {
-            errors.add(
-                &module_info,
-                TextRange::default(),
-                format!(
-                    "Failed to load `{}` from `{}`, got {err:#}",
-                    ctx.module,
-                    module_info.path()
-                ),
-            );
-        }
-
-        Arc::new(Load {
-            errors,
-            module_info,
-        })
+        let (code, self_error) = Load::load_from_path(ctx.path, ctx.loader);
+        Arc::new(Load::load_from_data(
+            ctx.module,
+            ctx.path.dupe(),
+            error_style,
+            code,
+            self_error,
+        ))
     }
 
     fn ast<Lookup>(_ctx: &Context<Lookup>, load: Arc<Load>) -> Arc<ModModule> {
@@ -215,7 +221,8 @@ impl Step {
             &load.errors,
             ctx.uniques,
         );
-        let answers = Answers::new(&bindings, solver);
+        let enable_trace = ctx.retain_memory;
+        let answers = Answers::new(&bindings, solver, enable_trace);
         Arc::new((bindings, Arc::new(answers)))
     }
 

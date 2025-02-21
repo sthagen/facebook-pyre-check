@@ -10,10 +10,10 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use dupe::Dupe;
-use itertools::EitherOrBoth;
-use itertools::Itertools;
 use ruff_python_ast::name::Name;
+use ruff_python_ast::Arguments;
 use ruff_python_ast::Expr;
+use ruff_python_ast::ExprCall;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::StmtClassDef;
 use ruff_text_size::TextRange;
@@ -26,15 +26,18 @@ use crate::alt::attr::Attribute;
 use crate::alt::attr::NoAccessReason;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::EnumMetadata;
+use crate::binding::binding::ClassFieldInitialValue;
 use crate::binding::binding::KeyClassField;
 use crate::binding::binding::KeyClassMetadata;
 use crate::binding::binding::KeyClassSynthesizedFields;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
+use crate::error::style::ErrorStyle;
 use crate::graph::index::Idx;
 use crate::types::annotation::Annotation;
 use crate::types::callable::BoolKeywords;
+use crate::types::callable::CallableKind;
 use crate::types::callable::DataclassKeywords;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
@@ -42,8 +45,11 @@ use crate::types::class::Class;
 use crate::types::class::ClassFieldProperties;
 use crate::types::class::ClassType;
 use crate::types::class::TArgs;
+use crate::types::literal::Lit;
+use crate::types::tuple::Tuple;
 use crate::types::typed_dict::TypedDict;
 use crate::types::types::BoundMethod;
+use crate::types::types::CalleeKind;
 use crate::types::types::Decoration;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -350,32 +356,113 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let tparams = cls.tparams();
         let nargs = targs.len();
         let mut checked_targs = Vec::new();
-        for pair in tparams.iter().zip_longest(targs) {
-            match pair {
-                EitherOrBoth::Both(_, arg) => {
-                    checked_targs.push(arg);
+        let mut targ_idx = 0;
+        for (param_idx, param) in tparams.iter().enumerate() {
+            if param.quantified.is_type_var_tuple() && targs.get(targ_idx).is_some() {
+                let n_remaining_params = tparams.len() - param_idx - 1;
+                let n_remaining_args = nargs - targ_idx;
+                let mut prefix = Vec::new();
+                let mut middle = Vec::new();
+                let mut suffix = Vec::new();
+                let args_to_consume = n_remaining_args.saturating_sub(n_remaining_params);
+                for _ in 0..args_to_consume {
+                    match targs.get(targ_idx) {
+                        Some(Type::Unpack(box Type::Tuple(Tuple::Concrete(elts)))) => {
+                            if middle.is_empty() {
+                                prefix.extend(elts.clone());
+                            } else {
+                                suffix.extend(elts.clone());
+                            }
+                        }
+                        Some(Type::Unpack(box t)) => {
+                            if !suffix.is_empty() {
+                                middle.push(Type::Tuple(Tuple::Unbounded(Box::new(
+                                    self.unions(suffix),
+                                ))));
+                                suffix = Vec::new();
+                            } else {
+                                middle.push(t.clone())
+                            }
+                        }
+                        Some(arg) => {
+                            if middle.is_empty() {
+                                prefix.push(arg.clone());
+                            } else {
+                                suffix.push(arg.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                    targ_idx += 1;
                 }
-                EitherOrBoth::Left(param) if let Some(default) = &param.default => {
-                    checked_targs.push(default.clone());
+                let tuple_type = match middle.as_slice() {
+                    [] => Type::tuple(prefix),
+                    [middle] => Tuple::unpacked(prefix, middle.clone(), suffix),
+                    // We can't precisely model unpacking two unbounded iterables, so we'll keep any
+                    // concrete prefix and suffix elements and merge everything in between into an unbounded tuple
+                    _ => {
+                        let middle_types: Vec<Type> = middle
+                            .iter()
+                            .map(|t| {
+                                self.unwrap_iterable(t)
+                                    .unwrap_or(self.stdlib.object_class_type().clone().to_type())
+                            })
+                            .collect();
+                        Tuple::unpacked(
+                            prefix,
+                            Type::Tuple(Tuple::Unbounded(Box::new(self.unions(middle_types)))),
+                            suffix,
+                        )
+                    }
+                };
+                checked_targs.push(tuple_type);
+            } else if param.quantified.is_type_var_tuple() {
+                checked_targs.push(Type::any_tuple())
+            } else if let Some(arg) = targs.get(targ_idx) {
+                match arg {
+                    Type::Unpack(_) => {
+                        checked_targs.push(self.error(
+                            errors,
+                            range,
+                            format!(
+                                "Unpacked argument cannot be used for type parameter {}.",
+                                param.name
+                            ),
+                        ));
+                    }
+                    _ => {
+                        checked_targs.push(arg.clone());
+                    }
                 }
-                _ => {
-                    self.error(
-                        errors,
-                        range,
-                        format!(
-                            "Expected {} for class `{}`, got {}.",
-                            count(tparams.len(), "type argument"),
-                            cls.name(),
-                            nargs
-                        ),
-                    );
-                    // We have either too few or too many targs. If too few, pad out with Any.
-                    // If there are too many, the extra are ignored.
-                    checked_targs
-                        .extend(vec![Type::any_error(); tparams.len().saturating_sub(nargs)]);
-                    break;
-                }
+                targ_idx += 1;
+            } else if let Some(default) = &param.default {
+                checked_targs.push(default.clone());
+            } else {
+                self.error(
+                    errors,
+                    range,
+                    format!(
+                        "Expected {} for class `{}`, got {}.",
+                        count(tparams.len(), "type argument"),
+                        cls.name(),
+                        nargs
+                    ),
+                );
+                checked_targs.extend(vec![Type::any_error(); tparams.len().saturating_sub(nargs)]);
+                break;
             }
+        }
+        if targ_idx < nargs {
+            self.error(
+                errors,
+                range,
+                format!(
+                    "Expected {} for class `{}`, got {}.",
+                    count(tparams.len(), "type argument"),
+                    cls.name(),
+                    nargs
+                ),
+            );
         }
         TArgs::new(checked_targs)
     }
@@ -495,19 +582,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         name: &Name,
         value_ty: &Type,
         annotation: Option<&Annotation>,
-        initialization: ClassFieldInitialization,
+        initial_value: &ClassFieldInitialValue,
         class: &Class,
         range: TextRange,
         errors: &ErrorCollector,
     ) -> ClassField {
+        let value_ty = if annotation.is_none() && value_ty.is_literal() {
+            &value_ty.clone().promote_literals(self.stdlib)
+        } else {
+            value_ty
+        };
+
         let metadata = self.get_metadata_for_class(class);
+        let initialization = self.get_class_field_initialization(&metadata, initial_value);
 
         let (is_override, value_ty) = match value_ty {
             Type::Decoration(Decoration::Override(ty)) => (true, ty.as_ref()),
             _ => (false, value_ty),
         };
 
-        if let Some(enum_) = self.get_enum_from_class(class)
+        let value_ty = if let Some(enum_) = metadata.enum_metadata()
             && self.is_valid_enum_member(name, value_ty, &initialization)
         {
             if annotation.is_some() {
@@ -523,7 +617,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(errors,range, format!("The value for enum member `{}` must match the annotation of the _value_ attribute.", name));
                 }
             }
-        }
+
+            &Type::Literal(Lit::Enum(Box::new((
+                enum_.cls.clone(),
+                name.clone(),
+                value_ty.clone(),
+            ))))
+        } else {
+            value_ty
+        };
         if metadata.is_typed_dict() && matches!(initialization, ClassFieldInitialization::Class(_))
         {
             self.error(
@@ -594,12 +696,58 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     format!(
                         "Class member `{}` is marked as an override, but no parent class has a matching attribute",
                         name,
-        ),
-    );
+                    ),
+                );
             }
         };
 
         class_field
+    }
+
+    fn get_class_field_initialization(
+        &self,
+        metadata: &ClassMetadata,
+        initial_value: &ClassFieldInitialValue,
+    ) -> ClassFieldInitialization {
+        match initial_value {
+            ClassFieldInitialValue::Instance => ClassFieldInitialization::Instance,
+            ClassFieldInitialValue::Class(None) => ClassFieldInitialization::Class(None),
+            ClassFieldInitialValue::Class(Some(e)) => {
+                // If this field was created via a call to a dataclass field specifier, extract field properties from the call.
+                if metadata.dataclass_metadata().is_some()
+                    && let Expr::Call(ExprCall {
+                        range: _,
+                        func,
+                        arguments: Arguments { keywords, .. },
+                    }) = e
+                {
+                    let mut props = BoolKeywords::new();
+                    // We already type-checked this expression as part of computing the type for the ClassField,
+                    // so we can ignore any errors encountered here.
+                    let ignore_errors = ErrorCollector::new(ErrorStyle::Never);
+                    let func_ty = self.expr_infer(func, &ignore_errors);
+                    if matches!(
+                        func_ty.callee_kind(),
+                        Some(CalleeKind::Callable(CallableKind::DataclassField))
+                    ) {
+                        for kw in keywords {
+                            if let Some(id) = &kw.arg
+                                && (id.id == DataclassKeywords::DEFAULT.0
+                                    || id.id == "default_factory")
+                            {
+                                props.set(DataclassKeywords::DEFAULT.0, true);
+                            } else {
+                                let val = self.expr_infer(&kw.value, &ignore_errors);
+                                props.set_keyword(kw.arg.as_ref(), val);
+                            }
+                        }
+                    }
+                    ClassFieldInitialization::Class(Some(props))
+                } else {
+                    ClassFieldInitialization::Class(None)
+                }
+            }
+        }
     }
 
     pub fn get_class_field_non_synthesized(
@@ -617,16 +765,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     pub fn get_class_field(&self, cls: &Class, name: &Name) -> Option<Arc<ClassField>> {
-        let synthesized_fields =
-            self.get_from_class(cls, &KeyClassSynthesizedFields(cls.short_identifier()));
-        let synth = synthesized_fields.get(name);
-        if let Some(synth) = synth
-            && synth.overwrite
-        {
-            Some(synth.inner.dupe())
-        } else if let Some(field) = self.get_class_field_non_synthesized(cls, name) {
+        if let Some(field) = self.get_class_field_non_synthesized(cls, name) {
             Some(field)
         } else {
+            let synthesized_fields =
+                self.get_from_class(cls, &KeyClassSynthesizedFields(cls.short_identifier()));
+            let synth = synthesized_fields.get(name);
             synth.map(|f| f.inner.dupe())
         }
     }

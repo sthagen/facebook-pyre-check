@@ -52,6 +52,7 @@ use crate::types::type_var::TypeVar;
 use crate::types::type_var::TypeVarArgs;
 use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
+use crate::types::types::AnyStyle;
 use crate::types::types::CalleeKind;
 use crate::types::types::Decoration;
 use crate::types::types::Type;
@@ -95,10 +96,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     pub fn expr(&self, x: &Expr, check: Option<&Type>, errors: &ErrorCollector) -> Type {
-        match check {
-            Some(want) if !want.is_any() => {
+        self.expr_with_separate_check_errors(x, check.map(|ty| (ty, errors)), errors)
+    }
+
+    pub fn expr_with_separate_check_errors(
+        &self,
+        x: &Expr,
+        check: Option<(&Type, &ErrorCollector)>,
+        errors: &ErrorCollector,
+    ) -> Type {
+        match &check {
+            Some((want, check_errors)) if !want.is_any() => {
                 let got = self.expr_infer_with_hint(x, Some(want), errors);
-                self.check_type(want, &got, x.range(), errors)
+                self.check_type(want, &got, x.range(), check_errors)
             }
             _ => self.expr_infer(x, errors),
         }
@@ -156,8 +166,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// This function canonicalizes to `Type::ClassType` or `Type::TypedDict`
     pub fn canonicalize_all_class_types(&self, ty: Type, range: TextRange) -> Type {
         ty.transform(|ty| match ty {
+            Type::SpecialForm(SpecialForm::Tuple) => {
+                *ty = Type::Tuple(Tuple::unbounded(Type::Any(AnyStyle::Implicit)));
+            }
+            Type::SpecialForm(SpecialForm::Callable) => {
+                *ty = Type::callable_ellipsis(Type::Any(AnyStyle::Implicit))
+            }
             Type::ClassDef(cls) => {
-                *ty = Type::type_form(self.promote(cls, range));
+                if cls.has_qname("builtins", "tuple") {
+                    *ty = Type::type_form(Type::Tuple(Tuple::unbounded(Type::Any(
+                        AnyStyle::Implicit,
+                    ))));
+                } else {
+                    *ty = Type::type_form(self.promote(cls, range));
+                }
             }
             _ => {}
         })
@@ -326,7 +348,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     fn expr_infer_with_hint(&self, x: &Expr, hint: Option<&Type>, errors: &ErrorCollector) -> Type {
-        match x {
+        let ty = match x {
             Expr::BoolOp(x) => self.boolop(&x.values, x.op, errors),
             Expr::Named(x) => self.expr_infer_with_hint(&x.value, hint, errors),
             Expr::BinOp(x) => self.binop_infer(x, errors),
@@ -411,25 +433,113 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     },
                     None => &Vec::new(),
                 };
-                Type::tuple(
-                    x.elts
-                        .iter()
-                        .enumerate()
-                        .map(|(i, x)| self.expr_infer_with_hint(x, ts.get(i), errors))
-                        .collect(),
-                )
+                let mut prefix = Vec::new();
+                let mut unbounded = Vec::new();
+                let mut suffix = Vec::new();
+                let mut ts_idx = 0;
+                for elt in x.elts.iter() {
+                    match elt {
+                        Expr::Starred(ExprStarred { box value, .. }) => {
+                            let ty = self.expr_infer_with_hint(value, None, errors);
+                            match ty {
+                                Type::Tuple(Tuple::Concrete(elts)) => {
+                                    if unbounded.is_empty() {
+                                        ts_idx += elts.len();
+                                        prefix.extend(elts);
+                                    } else {
+                                        suffix.extend(elts)
+                                    }
+                                }
+                                Type::Tuple(Tuple::Unpacked(box (pre, middle, suff)))
+                                    if unbounded.is_empty() =>
+                                {
+                                    prefix.extend(pre);
+                                    suffix.extend(suff);
+                                    unbounded.push(middle);
+                                }
+                                _ => {
+                                    if let Some(iterable_ty) = self.unwrap_iterable(&ty) {
+                                        if !unbounded.is_empty() {
+                                            unbounded.push(Type::Tuple(Tuple::unbounded(
+                                                self.unions(suffix),
+                                            )));
+                                            suffix = Vec::new();
+                                        }
+                                        unbounded.push(Type::Tuple(Tuple::unbounded(iterable_ty)));
+                                    } else {
+                                        return self.error(
+                                            errors,
+                                            x.range(),
+                                            format!("Expected an iterable, got {}", ty),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            let ty = self.expr_infer_with_hint(
+                                elt,
+                                if unbounded.is_empty() {
+                                    ts.get(ts_idx)
+                                } else {
+                                    None
+                                },
+                                errors,
+                            );
+                            ts_idx += 1;
+                            if unbounded.is_empty() {
+                                prefix.push(ty)
+                            } else {
+                                suffix.push(ty)
+                            }
+                        }
+                    }
+                }
+                match unbounded.as_slice() {
+                    [] => Type::tuple(prefix),
+                    [middle] => Tuple::unpacked(prefix, middle.clone(), suffix),
+                    // We can't precisely model unpacking two unbounded iterables, so we'll keep any
+                    // concrete prefix and suffix elements and merge everything in between into an unbounded tuple
+                    _ => {
+                        let middle_types: Vec<Type> = unbounded
+                            .iter()
+                            .map(|t| {
+                                self.unwrap_iterable(t)
+                                    .unwrap_or(Type::Any(AnyStyle::Implicit))
+                            })
+                            .collect();
+                        Tuple::unpacked(
+                            prefix,
+                            Type::Tuple(Tuple::Unbounded(Box::new(self.unions(middle_types)))),
+                            suffix,
+                        )
+                    }
+                }
             }
             Expr::List(x) => {
-                let hint = hint.and_then(|ty| self.decompose_list(ty));
-                let elem_ty = if x.is_empty() {
-                    hint.unwrap_or_else(|| self.solver().fresh_contained(self.uniques).to_type())
+                let elt_hint = hint.and_then(|ty| self.decompose_list(ty));
+                if x.is_empty() {
+                    let elem_ty = self.solver().fresh_contained(self.uniques).to_type();
+                    self.stdlib.list(elem_ty).to_type()
                 } else {
-                    let elem_tys = x
-                        .elts
-                        .map(|x| self.expr_infer_with_hint_promote(x, hint.as_ref(), errors));
-                    self.unions(elem_tys)
-                };
-                self.stdlib.list(elem_ty).to_type()
+                    let elem_tys = x.elts.map(|x| match x {
+                        Expr::Starred(ExprStarred { box value, .. }) => {
+                            let unpacked_ty =
+                                self.expr_infer_with_hint_promote(value, hint, errors);
+                            if let Some(iterable_ty) = self.unwrap_iterable(&unpacked_ty) {
+                                iterable_ty
+                            } else {
+                                self.error(
+                                    errors,
+                                    x.range(),
+                                    format!("Expected an iterable, got {}", unpacked_ty),
+                                )
+                            }
+                        }
+                        _ => self.expr_infer_with_hint_promote(x, elt_hint.as_ref(), errors),
+                    });
+                    self.stdlib.list(self.unions(elem_tys)).to_type()
+                }
             }
             Expr::Dict(x) => {
                 let flattened_items = Ast::flatten_dict_items(&x.items);
@@ -749,21 +859,36 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             // This causes us to treat `type[list]` as equivalent to `type[list[Any]]`,
                             // which may or may not be what we want.
                             1 => self.expr_untype(&xs[0], errors),
-                            _ => {
-                                self.error(
-                                    errors,
-                                    x.range,
-                                    format!(
-                                        "Expected 1 type argument for class `type`, got {}",
-                                        xs.len()
-                                    ),
-                                );
-                                Type::any_error()
-                            }
+                            _ => self.error(
+                                errors,
+                                x.range,
+                                format!(
+                                    "Expected 1 type argument for class `type`, got {}",
+                                    xs.len()
+                                ),
+                            ),
                         };
                         // TODO: Validate that `targ` refers to a "valid in-scope class or TypeVar"
                         // (https://typing.readthedocs.io/en/latest/spec/annotations.html#type-and-annotation-expressions)
                         Type::type_form(Type::type_form(targ))
+                    }
+                    // TODO: pyre_extensions.PyreReadOnly is a non-standard type system extension that marks read-only
+                    // objects. We don't support it yet.
+                    Type::ClassDef(cls)
+                        if cls.has_qname("pyre_extensions", "PyreReadOnly")
+                            || cls.has_qname("pyre_extensions", "ReadOnly") =>
+                    {
+                        match xs.len() {
+                            1 => self.expr_infer(&xs[0], errors),
+                            _ => self.error(
+                                errors,
+                                x.range,
+                                format!(
+                                    "Expected 1 type argument for class `PyreReadOnly`, got {}",
+                                    xs.len()
+                                ),
+                            ),
+                        }
                     }
                     Type::ClassDef(cls) => Type::type_form(self.specialize(
                         &cls,
@@ -859,7 +984,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 x.range,
                 "IPython escapes are not supported".to_owned(),
             ),
-        }
+        };
+        self.record_trace(x.range(), &ty);
+        ty
     }
 
     fn expr_infer_with_hint_promote(

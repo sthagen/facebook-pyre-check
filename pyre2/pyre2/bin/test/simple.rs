@@ -291,11 +291,11 @@ class C:
 testcase!(
     test_class_attribute_lookup,
     r#"
-from typing import assert_type, Literal
+from typing import assert_type
 class C:
     x = 1
 
-assert_type(C.x, Literal[1])
+assert_type(C.x, int)
 "#,
 );
 
@@ -810,6 +810,17 @@ z: foo(y=x)  # E: untype, got Never
 "#,
 );
 
+testcase_with_bug!(
+    "We think that Type::None is a type",
+    test_function_in_type_none,
+    r#"
+x = 42
+def foo(y):
+    pass
+z: foo(y=x)  # TODO: not legal
+"#,
+);
+
 testcase!(
     test_invalid_literal,
     r#"
@@ -952,6 +963,18 @@ assert_type(id([0]), list[int])
 );
 
 testcase!(
+    test_unpack_in_list_literal,
+    r#"
+from typing import assert_type
+def test(x: list[int], y: list[str]):
+    assert_type([*x, 1], list[int])
+    assert_type([*x, "test"], list[int | str])
+    assert_type([*x, *y], list[int | str])
+    [*1]  # E: Expected an iterable
+"#,
+);
+
+testcase!(
     test_union_never,
     r#"
 from typing import Never, assert_type
@@ -1033,5 +1056,15 @@ testcase!(
     r#"
 class C:
     x: int = oops  # E: Could not find name `oops`
+    "#,
+);
+
+testcase!(
+    test_pyrereadonly,
+    r#"
+from pyre_extensions import PyreReadOnly
+def f(x: PyreReadOnly[str]):
+    pass
+f("test")
     "#,
 );

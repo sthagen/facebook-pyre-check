@@ -390,6 +390,10 @@ impl Type {
         matches!(self, Type::Never(_))
     }
 
+    pub fn is_literal(&self) -> bool {
+        matches!(self, Type::Literal(_))
+    }
+
     pub fn callable_concatenate(args: Box<[Type]>, param_spec: Type, ret: Type) -> Self {
         Type::Callable(
             Box::new(Callable::concatenate(args, param_spec, ret)),
@@ -413,8 +417,20 @@ impl Type {
         Type::Tuple(Tuple::concrete(elts))
     }
 
+    pub fn any_tuple() -> Self {
+        Type::Tuple(Tuple::Unbounded(Box::new(Type::Any(AnyStyle::Implicit))))
+    }
+
     pub fn is_any(&self) -> bool {
         matches!(self, Type::Any(_))
+    }
+
+    pub fn is_kind_type_var_tuple(&self) -> bool {
+        match self {
+            Type::TypeVarTuple(_) => true,
+            Type::Quantified(q) if q.is_type_var_tuple() => true,
+            _ => false,
+        }
     }
 
     pub fn as_tvar_declaration(&self) -> Option<&QName> {
@@ -479,11 +495,62 @@ impl Type {
         }
     }
 
+    fn flatten_unpacked_elements(elts: &Vec<Type>) -> Vec<Type> {
+        let mut result = Vec::new();
+        for elt in elts {
+            match elt {
+                Type::Unpack(box Type::Tuple(Tuple::Concrete(elts))) => {
+                    result.extend(elts.clone());
+                }
+                _ => result.push(elt.clone()),
+            }
+        }
+        result
+    }
+
     pub fn subst(self, mp: &SmallMap<Quantified, Type>) -> Self {
         self.transform(|ty| {
             if let Type::Quantified(x) = &ty {
                 if let Some(w) = mp.get(x) {
                     *ty = w.clone();
+                }
+            } else if let Type::Tuple(t) = &ty {
+                // if a TypeVarTuple gets substituted with a tuple type, try to simplify the type
+                match t {
+                    Tuple::Concrete(elts) => {
+                        *ty = Type::Tuple(Tuple::Concrete(Self::flatten_unpacked_elements(elts)))
+                    }
+                    Tuple::Unpacked(box (prefix, middle, suffix)) => match middle {
+                        Type::Tuple(Tuple::Concrete(elts)) => {
+                            *ty = Type::Tuple(Tuple::Concrete(Self::flatten_unpacked_elements(
+                                &prefix
+                                    .iter()
+                                    .cloned()
+                                    .chain(elts.iter().cloned())
+                                    .chain(suffix.iter().cloned())
+                                    .collect::<Vec<_>>(),
+                            )));
+                        }
+                        Type::Tuple(Tuple::Unpacked(box (m_prefix, m_middle, m_suffix))) => {
+                            let mut new_prefix = Self::flatten_unpacked_elements(prefix);
+                            new_prefix.extend(Self::flatten_unpacked_elements(m_prefix));
+                            let mut new_suffix = Self::flatten_unpacked_elements(m_suffix);
+                            new_suffix.extend(Self::flatten_unpacked_elements(suffix));
+                            *ty = Type::Tuple(Tuple::Unpacked(Box::new((
+                                new_prefix,
+                                m_middle.clone(),
+                                new_suffix,
+                            ))));
+                        }
+                        _ => {
+                            *ty = Type::Tuple(Tuple::Unpacked(Box::new((
+                                Self::flatten_unpacked_elements(prefix),
+                                middle.clone(),
+                                Self::flatten_unpacked_elements(suffix),
+                            ))));
+                        }
+                    },
+                    _ => {}
                 }
             }
         })

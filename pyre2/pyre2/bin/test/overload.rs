@@ -92,3 +92,84 @@ def test(o: C):
     assert_type(o.m(1), int)
     "#,
 );
+
+testcase!(
+    test_overload_arg_errors,
+    r#"
+from typing import overload, assert_type
+
+@overload
+def f(x: int) -> int: ...
+@overload
+def f(x: str) -> str: ...
+def f(x: int | str) -> int | str: ...
+
+def g(x: str) -> int: ...
+def h(x: str) -> str: ...
+
+assert_type(f(g(0)), int) # E: EXPECTED Literal[0] <: str
+assert_type(f(h(0)), str) # E: EXPECTED Literal[0] <: str
+"#,
+);
+
+testcase!(
+    test_overload_missing_implementation,
+    r#"
+from typing import overload, assert_type
+
+@overload
+def f(x: int) -> int: ... # E: Overloaded function must have an implementation
+@overload
+def f(x: str) -> str: ...
+
+# still behaves like an overload
+assert_type(f(0), int)
+assert_type(f(""), str)
+"#,
+);
+
+testcase!(
+    test_overload_static_config,
+    r#"
+from typing import overload, assert_type
+import sys
+
+@overload
+def f(x: int) -> int: ... # E: Overloaded function must have an implementation
+
+if sys.version_info >= (3, 11):
+    @overload
+    def f(x: str) -> str: ...
+else:
+    @overload
+    def f(x: int, int) -> bool: ...
+
+if sys.version_info >= (3, 12):
+    @overload
+    def f() -> None: ...
+
+assert_type(f(0), int)
+assert_type(f(""), str)
+assert_type(f(), None)
+f(0, 0) # E: No matching overload found
+"#,
+);
+
+testcase!(
+    test_only_one_overload,
+    r#"
+from typing import overload, Protocol
+
+@overload
+def f(x: int) -> int: ...  # E: Overloaded function needs at least two signatures
+def f(x: int) -> int:
+    return x
+
+@overload
+def g(x: int) -> int: ...  # E: Overloaded function must have an implementation  # E: Overloaded function needs at least two signatures
+
+class P(Protocol):
+    @overload
+    def m(x: int) -> int: ...  # E: Overloaded function needs at least two signatures
+"#,
+);
