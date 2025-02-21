@@ -104,6 +104,34 @@ append(v, "test")  # E: Literal['test'] <: int
 );
 
 testcase!(
+    test_generic_default,
+    r#"
+from typing import assert_type
+class C[T1, T2 = int]:
+    pass
+def f9(c1: C[int, str], c2: C[str]):
+    assert_type(c1, C[int, str])
+    assert_type(c2, C[str, int])
+    "#,
+);
+
+testcase!(
+    test_generic_type,
+    r#"
+from typing import reveal_type
+class A: ...
+class B: ...
+class C[T]: ...
+class D[T = A]: ...
+def f[E](e: type[E]) -> E: ...
+reveal_type(f(A)) # E: revealed type: A
+reveal_type(f(B)) # E: revealed type: B
+reveal_type(f(C)) # E: revealed type: C[Unknown]
+reveal_type(f(D)) # E: revealed type: D[A]
+"#,
+);
+
+testcase!(
     test_list_class_basic,
     r#"
 from typing import assert_type
@@ -652,6 +680,15 @@ z: int = "3"  # E: Literal['3'] <: int
 );
 
 testcase_with_bug!(
+    "An ignore comment should attach to either the current line or next line, but not both",
+    test_ignore_attachment,
+    r#"
+x: int = "1"  # type: ignore
+y: int = "2"  # TODO: this error should not be suppressed
+"#,
+);
+
+testcase_with_bug!(
     "This test is a placeholder, we've commented out the check for missing type arguments because until we have configurable errors it causes too many problems.",
     test_untype_with_missing_targs,
     r#"
@@ -1067,4 +1104,21 @@ def f(x: PyreReadOnly[str]):
     pass
 f("test")
     "#,
+);
+
+// TODO(stroxler): We currently are using a raw name match to handle `Any`, which
+// causes two problems: `typing.Any` won't work correctly, and a user can't define
+// a new name `Any` in their own namespace.
+//
+// We encountered a surprising stub in typeshed that affects our options for
+// solving this, so we are deferring the fix for now, this test records the problem.
+testcase_with_bug!(
+    "Any should be resolved properly rather than using a raw name match",
+    test_resolving_any_correctly,
+    r#"
+import typing
+x: typing.Any = 1  # E: untype, got object
+class Any: ...
+a: Any = Any()  # E: Expected a callable, got type[Any]
+"#,
 );

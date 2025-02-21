@@ -425,18 +425,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Expr::Tuple(x) => {
-                let ts = match hint {
+                // These hints could be more precise
+                let hint_ts = match hint {
                     Some(Type::Tuple(Tuple::Concrete(elts))) => elts,
-                    Some(ty) => match self.decompose_tuple(ty) {
-                        Some(elem_ty) => &vec![elem_ty; x.elts.len()],
-                        None => &Vec::new(),
-                    },
-                    None => &Vec::new(),
+                    Some(Type::Tuple(Tuple::Unpacked(box (prefix, _, _)))) => prefix,
+                    _ => &Vec::new(),
+                };
+                let default_hint = match hint {
+                    Some(Type::Tuple(Tuple::Unbounded(box elt))) => Some(elt),
+                    _ => None,
                 };
                 let mut prefix = Vec::new();
                 let mut unbounded = Vec::new();
                 let mut suffix = Vec::new();
-                let mut ts_idx = 0;
+                let mut hint_ts_idx: usize = 0;
                 for elt in x.elts.iter() {
                     match elt {
                         Expr::Starred(ExprStarred { box value, .. }) => {
@@ -444,7 +446,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             match ty {
                                 Type::Tuple(Tuple::Concrete(elts)) => {
                                     if unbounded.is_empty() {
-                                        ts_idx += elts.len();
+                                        hint_ts_idx = hint_ts_idx.saturating_add(elts.len());
                                         prefix.extend(elts);
                                     } else {
                                         suffix.extend(elts)
@@ -456,6 +458,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     prefix.extend(pre);
                                     suffix.extend(suff);
                                     unbounded.push(middle);
+                                    hint_ts_idx = usize::MAX;
                                 }
                                 _ => {
                                     if let Some(iterable_ty) = self.unwrap_iterable(&ty) {
@@ -466,6 +469,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                             suffix = Vec::new();
                                         }
                                         unbounded.push(Type::Tuple(Tuple::unbounded(iterable_ty)));
+                                        hint_ts_idx = usize::MAX;
                                     } else {
                                         return self.error(
                                             errors,
@@ -480,13 +484,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             let ty = self.expr_infer_with_hint(
                                 elt,
                                 if unbounded.is_empty() {
-                                    ts.get(ts_idx)
+                                    hint_ts.get(hint_ts_idx).or(default_hint)
                                 } else {
                                     None
                                 },
                                 errors,
                             );
-                            ts_idx += 1;
+                            hint_ts_idx = hint_ts_idx.saturating_add(1);
                             if unbounded.is_empty() {
                                 prefix.push(ty)
                             } else {
@@ -902,15 +906,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     Type::Tuple(Tuple::Concrete(elts)) if xs.len() == 1 => {
                         self.infer_tuple_index(elts, &x.slice, x.range, errors)
                     }
-                    Type::Tuple(Tuple::Unbounded(elt)) if xs.len() == 1 => self
-                        .call_method_or_error(
-                            &Type::Tuple(Tuple::Unbounded(elt)),
-                            &dunder::GETITEM,
-                            x.range,
-                            &[CallArg::Expr(&x.slice)],
-                            &[],
-                            errors,
-                        ),
+                    Type::Tuple(_) if xs.len() == 1 => self.call_method_or_error(
+                        &fun,
+                        &dunder::GETITEM,
+                        x.range,
+                        &[CallArg::Expr(&x.slice)],
+                        &[],
+                        errors,
+                    ),
                     Type::Any(style) => style.propagate(),
                     Type::ClassType(cls)
                         if let Some(elts) = self.named_tuple_element_types(&cls) =>
@@ -969,6 +972,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Expr::Name(x) => match x.id.as_str() {
                 "" => Type::any_error(), // Must already have a parse error
+                // TODO(stroxler): The handling of `typing.Any` should use proper name resolution.
                 "Any" => Type::type_form(Type::any_explicit()),
                 _ => self
                     .get(&Key::Usage(ShortIdentifier::expr_name(x)))
@@ -985,7 +989,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 "IPython escapes are not supported".to_owned(),
             ),
         };
-        self.record_trace(x.range(), &ty);
+        self.record_type_trace(x.range(), &ty);
         ty
     }
 

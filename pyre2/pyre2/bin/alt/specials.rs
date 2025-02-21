@@ -63,7 +63,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         if let [t] = prefix.as_slice()
                             && middle.is_none()
                         {
-                            return Type::type_form(Type::Tuple(Tuple::unbounded(t.clone())));
+                            if t.is_unpack() {
+                                return self.error(
+                                    errors,
+                                    value.range(),
+                                    "`...` cannot be used with an unpacked TypeVarTuple or tuple"
+                                        .to_owned(),
+                                );
+                            } else {
+                                return Type::type_form(Type::Tuple(Tuple::unbounded(t.clone())));
+                            }
                         } else {
                             return self.error(
                                 errors,
@@ -108,14 +117,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             return self.error(
                                 errors,
                                 value.range(),
-                                format!("Expected a tuple or type var tuple, got `{}`", ty),
+                                format!("Expected a tuple or TypeVarTuple, got `{}`", ty),
                             );
                         }
                         ty if ty.is_kind_type_var_tuple() => {
                             return self.error(
                                 errors,
                                 value.range(),
-                                format!("Type var tuple `{}` must be unpacked", ty),
+                                "TypeVarTuple must be unpacked".to_owned(),
                             );
                         }
                         _ => {

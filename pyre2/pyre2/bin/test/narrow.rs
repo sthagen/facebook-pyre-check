@@ -589,3 +589,35 @@ def g(x: int | str):
         assert_type(x, int)
     "#,
 );
+
+testcase!(
+    test_implicit_else,
+    r#"
+from typing import assert_type
+def f(x: int | None):
+    if not x:
+        return
+    assert_type(x, int)
+    "#,
+);
+
+testcase!(
+    test_narrowed_elif_test,
+    r#"
+def f(x: int | None, y: bool):
+    if not x:
+        pass
+    elif x > 42:
+        pass
+"#,
+);
+
+testcase!(
+    test_narrow_comprehension,
+    r#"
+from typing import assert_type
+def f(xs: list[int | None]):
+    ys = [x for x in xs if x]
+    assert_type(ys, list[int])
+"#,
+);

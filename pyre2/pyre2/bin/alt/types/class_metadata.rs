@@ -39,6 +39,7 @@ pub struct ClassMetadata {
     protocol_metadata: Option<ProtocolMetadata>,
     dataclass_metadata: Option<DataclassMetadata>,
     bases_with_metadata: Vec<(ClassType, Arc<ClassMetadata>)>,
+    has_base_any: bool,
 }
 
 impl Display for ClassMetadata {
@@ -58,6 +59,7 @@ impl ClassMetadata {
         enum_metadata: Option<EnumMetadata>,
         protocol_metadata: Option<ProtocolMetadata>,
         dataclass_metadata: Option<DataclassMetadata>,
+        has_base_any: bool,
         errors: &ErrorCollector,
     ) -> ClassMetadata {
         let mro = Mro::new(cls, &bases_with_metadata, errors);
@@ -71,6 +73,7 @@ impl ClassMetadata {
             protocol_metadata,
             dataclass_metadata,
             bases_with_metadata,
+            has_base_any,
         }
     }
 
@@ -85,6 +88,7 @@ impl ClassMetadata {
             protocol_metadata: None,
             dataclass_metadata: None,
             bases_with_metadata: Vec::new(),
+            has_base_any: false,
         }
     }
 
@@ -99,6 +103,10 @@ impl ClassMetadata {
 
     pub fn is_typed_dict(&self) -> bool {
         self.typed_dict_metadata.is_some()
+    }
+
+    pub fn has_base_any(&self) -> bool {
+        self.has_base_any
     }
 
     pub fn typed_dict_metadata(&self) -> Option<&TypedDictMetadata> {
@@ -162,6 +170,7 @@ impl ClassSynthesizedField {
         Self {
             inner: Arc::new(ClassField(ClassFieldInner::Simple {
                 ty,
+                range: None,
                 annotation: None,
                 initialization: ClassFieldInitialization::Class(None),
                 readonly: false,

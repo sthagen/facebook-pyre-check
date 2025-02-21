@@ -236,7 +236,9 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                     false
                 }
             }
-            (Tuple::Unbounded(box Type::Any(_)), _) => true,
+            (Tuple::Unbounded(box Type::Any(_)), _) | (_, Tuple::Unbounded(box Type::Any(_))) => {
+                true
+            }
             (Tuple::Concrete(lelts), Tuple::Unbounded(box u)) => {
                 lelts.iter().all(|l| self.is_subset_eq(l, u))
             }
@@ -258,9 +260,9 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                     }) && self.is_subset_eq(&Type::Tuple(Tuple::Concrete(l_middle)), u_middle)
                 }
             }
-            (Tuple::Unbounded(box l), Tuple::Unpacked(box (u_prefix, u_middle, u_suffix))) => {
-                u_prefix.iter().all(|u| self.is_subset_eq(l, u))
-                    && u_suffix.iter().all(|u| self.is_subset_eq(l, u))
+            (Tuple::Unbounded(_), Tuple::Unpacked(box (u_prefix, u_middle, u_suffix))) => {
+                u_prefix.is_empty()
+                    && u_suffix.is_empty()
                     && self.is_subset_eq(&Type::Tuple(got.clone()), u_middle)
             }
             (Tuple::Unpacked(box (l_prefix, l_middle, l_suffix)), Tuple::Unbounded(box u)) => {
@@ -512,8 +514,8 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             (Type::ClassDef(got), Type::ClassDef(want)) => {
                 self.type_order.has_superclass(got, want)
             }
-            (Type::ClassDef(got), Type::Type(box Type::ClassType(want))) => {
-                self.type_order.has_superclass(got, want.class_object())
+            (Type::ClassDef(got), Type::Type(want)) => {
+                self.is_subset_eq(&self.type_order.promote_silently(got), want)
             }
             (Type::Type(box Type::ClassType(got)), Type::ClassDef(want)) => {
                 self.type_order.has_superclass(got.class_object(), want)
@@ -524,8 +526,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             (Type::Type(box Type::ClassType(got)), Type::ClassType(want)) => {
                 self.type_order.has_metaclass(got.class_object(), want)
             }
-            (Type::ClassDef(_), Type::Type(box Type::Any(_)))
-            | (Type::Type(box Type::Any(_)), Type::ClassDef(_)) => true,
+            (Type::Type(box Type::Any(_)), Type::ClassDef(_)) => true,
             (Type::ClassType(cls), want @ Type::Tuple(_))
                 if let Some(elts) = self.type_order.named_tuple_element_types(cls) =>
             {
