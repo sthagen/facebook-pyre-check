@@ -726,6 +726,7 @@ let initialize
       ~dependency_graph
       ~override_graph_shared_memory
       ~initial_callables
+      ~skip_analysis_targets:Target.Set.empty
       ~decorator_resolution
       ~method_kinds:(CallGraph.MethodKind.SharedMemory.read_only method_kinds)
       ~max_iterations:higher_order_call_graph_max_iterations
@@ -892,6 +893,7 @@ let end_to_end_integration_test path context =
            stubs;
            class_interval_graph_shared_memory;
            global_constants;
+           call_graph_fixpoint_state;
            _;
          } as test_environment)
       =
@@ -925,6 +927,12 @@ let end_to_end_integration_test path context =
         ~initial_callables
         ~call_graph:whole_program_call_graph
         ~overrides:override_graph_heap
+    in
+    let initial_models =
+      SharedModels.initialize_for_parameterized_callables
+        ~higher_order_call_graph_fixpoint:
+          (Some call_graph_fixpoint_state.CallGraphFixpoint.fixpoint)
+        initial_models
     in
     let fixpoint_state =
       TaintFixpoint.record_initial_models

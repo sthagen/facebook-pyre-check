@@ -11,7 +11,6 @@
     "Line 90: Expected 1 errors",
     "Line 27: Unexpected errors [\"Expected `GoodTypeAlias13` to be a type alias, got Literal['int | str']\"]",
     "Line 28: Unexpected errors [\"untype, got Literal['int | str']\"]",
-    "Line 29: Unexpected errors ['Invalid literal expression']",
     "Line 38: Unexpected errors [\"Can't apply arguments to non-class, got LegacyExplicitTypeAlias[GoodTypeAlias6, type[tuple[int, int, TypeVar[S], TypeVar[T]]]]\"]",
     "Line 41: Unexpected errors ['untype, got list[type[str]]']",
     "Line 53: Unexpected errors ['assert_type(list[str] | tuple[TypeVar[T], ...], list[str] | tuple[str, ...]) failed']",
@@ -20,7 +19,6 @@
     "Line 60: Unexpected errors ['assert_type((ParamSpec(ParamSpec[P])) -> None, (...) -> None) failed']",
     "Line 61: Unexpected errors ['assert_type(Any, int | str) failed']",
     "Line 62: Unexpected errors ['assert_type(list[Any], list[int | str]) failed']",
-    "Line 63: Unexpected errors ['Invalid literal expression']",
     "Line 98: Unexpected errors ['assert_type(list[Any], list[str]) failed']"
   ],
   "aliases_implicit.py": [
@@ -771,23 +769,15 @@
   "literals_parameterizations.py": [
     "Line 46: Expected 1 errors",
     "Line 60: Expected 1 errors",
-    "Line 26: Unexpected errors ['Invalid literal expression']",
     "Line 33: Unexpected errors ['Invalid literal expression', 'Invalid literal expression', 'Invalid literal expression', 'Invalid literal expression']",
-    "Line 35: Unexpected errors ['Invalid literal expression', 'Invalid literal expression']"
+    "Line 35: Unexpected errors ['Invalid literal expression']"
   ],
   "literals_semantics.py": [
-    "Line 38: Unexpected errors ['Invalid literal expression', 'Could not find name `foo`', 'Invalid literal expression']",
-    "Line 39: Unexpected errors ['Invalid literal expression']"
+    "Line 38: Unexpected errors ['Could not find name `foo`', 'Invalid literal expression']"
   ],
   "namedtuples_define_class.py": [
     "Line 59: Expected 1 errors",
-    "Line 79: Expected 1 errors",
-    "Line 21: Unexpected errors ['No matching overload found']",
-    "Line 35: Unexpected errors ['No matching overload found']",
-    "Line 38: Unexpected errors ['No matching overload found']",
-    "Line 41: Unexpected errors ['No matching overload found']",
-    "Line 72: Unexpected errors ['No matching overload found']",
-    "Line 93: Unexpected errors ['No matching overload found']"
+    "Line 79: Expected 1 errors"
   ],
   "namedtuples_define_functional.py": [
     "Line 14: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point1, type[tuple[Any, ...]]]']",
@@ -808,13 +798,9 @@
     "Line 64: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[NT5, type[tuple[Any, ...]]]']",
     "Line 65: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[NT5, type[tuple[Any, ...]]]']"
   ],
-  "namedtuples_type_compat.py": [
-    "Line 19: Unexpected errors ['No matching overload found']"
-  ],
+  "namedtuples_type_compat.py": [],
   "namedtuples_usage.py": [
-    "Line 40: Expected 1 errors",
-    "Line 19: Unexpected errors ['No matching overload found']",
-    "Line 60: Unexpected errors ['No matching overload found']"
+    "Line 40: Expected 1 errors"
   ],
   "narrowing_typeguard.py": [
     "Line 102: Expected 1 errors",
@@ -871,8 +857,8 @@
   "protocols_definition.py": [
     "Line 117: Expected 1 errors",
     "Line 157: Expected 1 errors",
+    "Line 340: Expected 1 errors",
     "Line 341: Expected 1 errors",
-    "Line 216: Unexpected errors ['No matching overload found']",
     "Line 281: Unexpected errors ['EXPECTED Concrete5_Good2 <: Template5']"
   ],
   "protocols_explicit.py": [
@@ -940,7 +926,6 @@
     "Line 85: Expected 1 errors",
     "Line 92: Expected 1 errors",
     "Line 93: Expected 1 errors",
-    "Line 36: Unexpected errors ['Invalid literal expression']",
     "Line 81: Unexpected errors ['Expected a callable, got type[?_TypeVar]']",
     "Line 98: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `ClassVar[int]`']",
     "Line 100: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `Final[int]`']",
@@ -1037,11 +1022,7 @@
     "Line 44: Expected 1 errors"
   ],
   "tuples_unpacked.py": [],
-  "typeddicts_alt_syntax.py": [
-    "Line 45: Expected 1 errors",
-    "Line 10: Unexpected errors ['Expected a callable, got type[TypedDict]']",
-    "Line 14: Unexpected errors ['Expected a callable, got type[TypedDict]']"
-  ],
+  "typeddicts_alt_syntax.py": [],
   "typeddicts_class_syntax.py": [
     "Line 33: Expected 1 errors",
     "Line 38: Expected 1 errors",
@@ -1060,10 +1041,7 @@
     "Line 64: Unexpected errors ['TODO: StmtDelete - Bindings::stmt']"
   ],
   "typeddicts_readonly.py": [
-    "Line 36: Expected 1 errors",
     "Line 61: Expected 1 errors",
-    "Line 31: Unexpected errors ['Expected a callable, got type[TypedDict]', 'TODO: Answers::apply_special_form cannot handle `ReadOnly[list[str]]`']",
-    "Line 37: Unexpected errors ['Object of class `str` has no attribute `append`']",
     "Line 56: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `NotRequired[ReadOnly[int]]`']"
   ],
   "typeddicts_readonly_consistency.py": [
@@ -1091,17 +1069,15 @@
     "Line 63: Expected 1 errors",
     "Line 68: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `Required[int]`']",
     "Line 70: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `Required[Annotated[int, \"\"]]`']",
-    "Line 73: Unexpected errors ['Expected a callable, got type[TypedDict]']",
-    "Line 74: Unexpected errors ['TODO: Answers::apply_special_form cannot handle `Required[str]`', 'TODO: Answers::apply_special_form cannot handle `NotRequired[\"RecursiveMovie\"]`']"
+    "Line 74: Unexpected errors [\"untype, got Literal['RecursiveMovie']\"]"
   ],
   "typeddicts_type_consistency.py": [
     "Line 21: Expected 1 errors",
-    "Line 88: Unexpected errors ['Expected a callable, got type[TypedDict]']",
-    "Line 91: Unexpected errors ['EXPECTED int | str <: str']",
-    "Line 92: Unexpected errors ['EXPECTED int | str <: int']",
-    "Line 94: Unexpected errors ['Expected a callable, got type[TypedDict]']",
-    "Line 97: Unexpected errors ['EXPECTED int | str | None <: str | None']",
-    "Line 103: Unexpected errors ['EXPECTED int | str <: int']",
+    "Line 91: Unexpected errors ['EXPECTED object | @_ <: str']",
+    "Line 92: Unexpected errors ['EXPECTED object | @_ <: int']",
+    "Line 97: Unexpected errors ['EXPECTED object | None <: str | None']",
+    "Line 103: Unexpected errors ['EXPECTED object | @_ <: int']",
+    "Line 105: Unexpected errors ['EXPECTED object | @_ <: int | str']",
     "Line 151: Unexpected errors [\"EXPECTED dict[str, int] <: Literal[''] | TypedDict[Inner3]\"]"
   ],
   "typeddicts_usage.py": [
