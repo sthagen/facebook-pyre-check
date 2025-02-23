@@ -245,9 +245,63 @@ f: Callable[[], list[A]] = lambda: [B()]
 testcase!(
     test_context_lambda_arity,
     r#"
-from typing import Callable, reveal_type
+from typing import Callable
 f: Callable[[int], None] = lambda x, y: None # E: EXPECTED (x: int, y: Unknown) -> None <: (int) -> None
 g: Callable[[int, int], None] = lambda x: None # E: EXPECTED (x: int) -> None <: (int, int) -> None
+"#,
+);
+
+// This case is tricky. The call to `f` uses `g` to determine the paramspec `P`
+// We then use `P` to contextually type the lambda. Importantly, the lambda's params
+// need to match, including stuff like parameter name.
+testcase!(
+    test_context_lambda_paramspec,
+    r#"
+from typing import Callable, reveal_type
+
+def f[**P, R](f: Callable[P, R], g: Callable[P, R]) -> Callable[P, R]:
+    ...
+
+def g(x: int, y: str):
+    pass
+
+x1 = f(g, lambda x, y: None)
+reveal_type(x1) # E: revealed type: (x: int, y: str) -> None
+
+x2 = f(g, lambda x, z: None) # E: EXPECTED (x: int, z: Unknown) -> None <: (x: int, y: str) -> None
+reveal_type(x2) # E: revealed type: (x: int, y: str) -> None
+"#,
+);
+
+testcase_with_bug!(
+    "Push expected return type context through generic function call",
+    test_context_return,
+    r#"
+from typing import Callable
+
+class A: ...
+class B(A): ...
+
+def f[T](x: T) -> T: ...
+
+x: list[A] = f([B()]) # TODO # E: EXPECTED list[B] <: list[A]
+
+y = f([B()])
+z: list[A] = y # E: EXPECTED list[B] <: list[A]
+"#,
+);
+
+testcase_with_bug!(
+    "Push expected return type context through generic constructor call",
+    test_context_ctor_return,
+    r#"
+class A: ...
+class B(A): ...
+
+class C[T]:
+    def __init__(self, x: T) -> None: ...
+
+x: C[list[A]] = C([B()]) # E: EXPECTED C[list[B]] <: C[list[A]]
 "#,
 );
 

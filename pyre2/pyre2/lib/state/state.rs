@@ -6,6 +6,8 @@
  */
 
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -50,8 +52,10 @@ use crate::state::loader::Loader;
 use crate::state::loader::LoaderFindCache;
 use crate::state::loader::LoaderId;
 use crate::state::steps::Context;
+use crate::state::steps::Load;
 use crate::state::steps::Step;
 use crate::state::steps::Steps;
+use crate::state::subscriber::Subscriber;
 use crate::types::class::Class;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
@@ -75,8 +79,12 @@ pub struct State {
     /// the highest step (the module that is closest to being finished)
     /// gets picked first, ensuring we release its memory quickly.
     todo: Mutex<EnumHeap<Step, Arc<ModuleData>>>,
+    /// Handles whose solutions changed value since the last time we recomputed
+    changed: Mutex<Vec<Handle>>,
     /// The current epoch, gets incremented every time we recompute
     now: Epoch,
+    /// Thing to tell about each action.
+    subscriber: Option<Box<dyn Subscriber>>,
 
     // Set to true to keep data around forever.
     retain_memory: bool,
@@ -118,6 +126,8 @@ impl State {
             modules: Default::default(),
             loaders: Default::default(),
             todo: Default::default(),
+            changed: Default::default(),
+            subscriber: None,
             retain_memory: true, // Will always be overwritten by entry points
         }
     }
@@ -146,12 +156,108 @@ impl State {
             // Someone already checked us
             return;
         }
-        if exclusive.dirty.is_dirty() {
-            panic!("Should make the code not dirty");
+        // We need to clean up the state.
+        // If things have changed, we need to update the last_step.
+        // We clear memory as an optimisation only.
+        let cleanup = |w: &mut ModuleState| {
+            w.epochs.checked = self.now;
+            w.dirty.clean();
+            if w.steps.last_step != Some(Step::last()) {
+                w.epochs.computed = self.now;
+                if let Some(subscriber) = &self.subscriber {
+                    subscriber.start_work(module_data.handle.dupe());
+                }
+            }
+        };
+
+        // Validate the load flag.
+        if exclusive.dirty.is_dirty_load()
+            && let Some(old_load) = exclusive.steps.load.dupe()
+        {
+            let (code, self_error) =
+                Load::load_from_path(module_data.handle.path(), module_data.handle.loader());
+            if self_error.is_some() || &code != old_load.module_info.contents() {
+                let mut write = exclusive.write();
+                write.steps.last_step = Some(Step::Load);
+                write.steps.load = Some(Arc::new(Load::load_from_data(
+                    module_data.handle.module(),
+                    module_data.handle.path().dupe(),
+                    old_load.errors.style(),
+                    code,
+                    self_error,
+                )));
+                // Clear the memory
+                write.steps.ast = None;
+                write.steps.exports = None;
+                write.steps.answers = None;
+                module_data.dependencies.write().clear();
+                // Don't clear solutions, since we can use that for equality
+                cleanup(&mut write);
+                return;
+            }
+            // The contents are the same, so we can just reuse the old load
+        }
+
+        // Validate the find flag.
+        if exclusive.dirty.is_dirty_find() {
+            let loader = self.get_cached_loader(module_data.handle.loader());
+            let mut is_dirty = false;
+            for x in module_data.dependencies.read().values() {
+                match loader.find(x.handle.module()) {
+                    Ok((path, _)) if &path == x.handle.path() => {}
+                    _ => {
+                        is_dirty = true;
+                        break;
+                    }
+                }
+            }
+            if is_dirty {
+                let mut write = exclusive.write();
+                write.steps.last_step = Some(if write.steps.ast.is_none() {
+                    Step::Load
+                } else {
+                    Step::Ast
+                });
+                write.steps.exports = None;
+                write.steps.answers = None;
+                module_data.dependencies.write().clear();
+                cleanup(&mut write);
+                // Don't clear solutions, since we can use that for equality
+                return;
+            }
+        }
+
+        // Validate the dependencies.
+        let mut is_dirty_deps = exclusive.dirty.is_dirty_deps();
+        if !is_dirty_deps {
+            for x in module_data.dependencies.read().values() {
+                if exclusive.epochs.computed < x.state.read().epochs.changed {
+                    is_dirty_deps = true;
+                    break;
+                }
+            }
         }
         let mut write = exclusive.write();
-        write.dirty.clean();
-        write.epochs.checked = self.now;
+        if is_dirty_deps {
+            write.steps.last_step = Some(if write.steps.ast.is_none() {
+                Step::Load
+            } else {
+                Step::Ast
+            });
+            write.steps.exports = None;
+            write.steps.answers = None;
+            module_data.dependencies.write().clear();
+        }
+        cleanup(&mut write);
+        if !is_dirty_deps {
+            drop(write);
+            // I am clean, but I need to make sure my dependencies are too
+            let mut todo = self.todo.lock();
+            for x in module_data.dependencies.read().values() {
+                // Important we use solutions, so they don't early exit
+                todo.push_lifo(Step::Solutions, x.dupe());
+            }
+        }
     }
 
     fn demand(&self, module_data: &Arc<ModuleData>, step: Step) {
@@ -207,17 +313,34 @@ impl State {
             {
                 let mut to_drop = None;
                 let mut writer = exclusive.write();
+                let mut load_result = None;
+                let old_solutions = if todo == Step::Solutions {
+                    writer.steps.solutions.take()
+                } else {
+                    None
+                };
                 set(&mut writer.steps);
                 if todo == Step::Solutions {
-                    writer.epochs.changed = self.now;
+                    if old_solutions != writer.steps.solutions {
+                        if old_solutions.is_some() {
+                            self.changed.lock().push(module_data.handle.dupe());
+                        }
+                        writer.epochs.changed = self.now;
+                    }
                     if !self.retain_memory {
                         // From now on we can use the answers directly, so evict the bindings/answers.
                         to_drop = writer.steps.answers.take();
                     }
+                    load_result = writer.steps.load.dupe();
                 }
                 drop(writer);
                 // Release the lock before dropping
                 drop(to_drop);
+                if let Some(load) = load_result
+                    && let Some(subscriber) = &self.subscriber
+                {
+                    subscriber.finish_work(module_data.handle.dupe(), load);
+                }
             }
             if todo == step {
                 break; // Fast path - avoid asking again since we just did it.
@@ -231,11 +354,18 @@ impl State {
     }
 
     fn get_module(&self, handle: &Handle) -> Arc<ModuleData> {
-        self.modules
+        let mut created = false;
+        let res = self
+            .modules
             .ensure(handle, || {
+                created = true;
                 Arc::new(ModuleData::new(handle.dupe(), self.now))
             })
-            .dupe()
+            .dupe();
+        if created && let Some(subscriber) = &self.subscriber {
+            subscriber.start_work(handle.dupe());
+        }
+        res
     }
 
     fn add_error(&self, module_data: &Arc<ModuleData>, range: TextRange, msg: String) {
@@ -447,7 +577,7 @@ impl State {
         }
     }
 
-    fn run_internal(&mut self, handles: &[Handle]) {
+    fn run_step(&mut self, handles: &[Handle]) {
         self.now.next();
         let configs = handles
             .iter()
@@ -480,18 +610,92 @@ impl State {
         }
     }
 
+    fn invalidate_rdeps(&mut self, changed: &[Handle]) {
+        // We need to invalidate all modules that depend on anything in changed, including transitively.
+        fn f(
+            dirty_handles: &mut SmallMap<Handle, bool>,
+            stack: &mut HashSet<Handle>,
+            x: &ModuleData,
+        ) -> bool {
+            if let Some(res) = dirty_handles.get(&x.handle) {
+                *res
+            } else if stack.contains(&x.handle) {
+                // Recursive hypothesis - do not write to dirty
+                false
+            } else {
+                stack.insert(x.handle.dupe());
+                let reader = x.dependencies.read();
+                let res = reader.values().any(|y| f(dirty_handles, stack, y));
+                stack.remove(&x.handle);
+                dirty_handles.insert(x.handle.dupe(), res);
+                res
+            }
+        }
+
+        let mut dirty_handles = changed
+            .iter()
+            .map(|x| (x.dupe(), true))
+            .collect::<SmallMap<_, _>>();
+        let mut stack = HashSet::new();
+        for x in self.modules.values() {
+            f(&mut dirty_handles, &mut stack, x);
+        }
+
+        for (x, dirty) in dirty_handles {
+            if dirty {
+                self.modules
+                    .get(&x)
+                    .unwrap()
+                    .state
+                    .write(Step::Load)
+                    .unwrap()
+                    .dirty
+                    .set_dirty_deps();
+            }
+        }
+    }
+
+    fn run_internal(&mut self, handles: &[Handle]) {
+        // We first compute all the modules that are either new or have changed.
+        // Then we repeatedly compute all the modules who depend on modules that changed.
+        // To ensure we guarantee termination, and don't endure more than a linear overhead,
+        // if we end up spotting the same module changing twice, we just invalidate
+        // everything in the cycle and force it to compute.
+        let mut changed_twice = SmallSet::new();
+        loop {
+            self.run_step(handles);
+            let changed = mem::take(&mut *self.changed.lock());
+            if changed.is_empty() {
+                return;
+            }
+            for c in &changed {
+                if !changed_twice.insert(c.dupe()) {
+                    // We are in a cycle of mutual dependencies, so give up.
+                    // Just invalidate everything in the cycle and recompute it all.
+                    self.invalidate_rdeps(&changed);
+                    self.run_step(handles);
+                    return;
+                }
+            }
+        }
+    }
+
     /// Run, collecting all errors and destroying the state.
     /// The state afterwards will be useful for timing queries.
     /// Note we grab the `mut` only to stop other people accessing us simultaneously,
     /// we don't actually need it.
-    pub fn run_one_shot(&mut self, handles: &[Handle]) {
+    pub fn run_one_shot(&mut self, handles: &[Handle], subscriber: Option<Box<dyn Subscriber>>) {
         self.retain_memory = false;
-        self.run_internal(handles)
+        self.subscriber = subscriber;
+        self.run_internal(handles);
+        self.subscriber = None;
     }
 
-    pub fn run(&mut self, handles: &[Handle]) {
+    pub fn run(&mut self, handles: &[Handle], subscriber: Option<Box<dyn Subscriber>>) {
         self.retain_memory = true;
-        self.run_internal(handles)
+        self.subscriber = subscriber;
+        self.run_internal(handles);
+        self.subscriber = None;
     }
 
     pub fn handles(&self) -> Vec<Handle> {
@@ -569,10 +773,6 @@ impl State {
         Ok(())
     }
 
-    fn invalidate_everything(&mut self) {
-        *self = State::new(self.parallel);
-    }
-
     /// Called if the `find` portion of loading might have changed.
     /// E.g. you have include paths, and a new file appeared earlier on the path.
     #[expect(dead_code)]
@@ -590,8 +790,6 @@ impl State {
                     .set_dirty_find();
             }
         }
-
-        self.invalidate_everything();
     }
 
     /// Called if the `load_from_memory` portion of loading might have changed.
@@ -611,8 +809,6 @@ impl State {
                     .set_dirty_load();
             }
         }
-
-        self.invalidate_everything();
     }
 
     /// Called if the files read from the disk might have changed.
@@ -633,8 +829,6 @@ impl State {
                     .set_dirty_load();
             }
         }
-
-        self.invalidate_everything();
     }
 
     /* Notes on how to move to incremental

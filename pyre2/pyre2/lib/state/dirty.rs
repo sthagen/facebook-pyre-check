@@ -9,6 +9,7 @@
 pub struct Dirty {
     dirty_load: bool,
     dirty_find: bool,
+    dirty_deps: bool,
 }
 
 impl Dirty {
@@ -20,12 +21,25 @@ impl Dirty {
         self.dirty_find = true;
     }
 
-    pub fn is_dirty(&self) -> bool {
-        self.dirty_load || self.dirty_find
+    pub fn set_dirty_deps(&mut self) {
+        self.dirty_deps = true;
+    }
+
+    pub fn is_dirty_load(&self) -> bool {
+        self.dirty_load
+    }
+
+    pub fn is_dirty_find(&self) -> bool {
+        self.dirty_find
+    }
+
+    pub fn is_dirty_deps(&self) -> bool {
+        self.dirty_deps
     }
 
     pub fn clean(&mut self) {
         self.dirty_load = false;
         self.dirty_find = false;
+        self.dirty_deps = false;
     }
 }
