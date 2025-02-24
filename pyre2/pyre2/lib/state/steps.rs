@@ -82,10 +82,9 @@ impl Load {
         self_error: Option<anyhow::Error>,
     ) -> Self {
         let module_info = ModuleInfo::new(name, path, code);
-        let errors = ErrorCollector::new(error_style);
+        let errors = ErrorCollector::new(module_info.dupe(), error_style);
         if let Some(err) = self_error {
             errors.add(
-                &module_info,
                 TextRange::default(),
                 format!(
                     "Failed to load `{name}` from `{}`, got {err:#}",
