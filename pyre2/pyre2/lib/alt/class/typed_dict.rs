@@ -18,19 +18,16 @@ use starlark_map::smallmap;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
-use crate::alt::class::class_field::ClassField;
-use crate::alt::class::class_field::ClassFieldInitialization;
-use crate::alt::class::class_field::ClassFieldInner;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::ClassSynthesizedField;
 use crate::alt::types::class_metadata::ClassSynthesizedFields;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
-use crate::types::annotation::Annotation;
-use crate::types::annotation::Qualifier;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
+use crate::types::callable::Param;
 use crate::types::callable::ParamList;
+use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
 use crate::types::class::Substitution;
@@ -143,32 +140,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             .fields
             .iter()
             .filter_map(|(name, is_total)| {
-                if let ClassField(ClassFieldInner::Simple {
-                    annotation:
-                        Some(Annotation {
-                            ty: Some(ty),
-                            qualifiers,
-                        }),
-                    ..
-                }) = &*self.get_class_member(cls, name).unwrap().value
-                {
-                    Some((
-                        name.clone(),
-                        TypedDictField {
-                            ty: substitution.substitute(ty.clone()),
-                            required: if qualifiers.contains(&Qualifier::Required) {
-                                true
-                            } else if qualifiers.contains(&Qualifier::NotRequired) {
-                                false
-                            } else {
-                                *is_total
-                            },
-                            read_only: qualifiers.contains(&Qualifier::ReadOnly),
-                        },
-                    ))
-                } else {
-                    None
-                }
+                self.get_class_member(cls, name)
+                    .and_then(|member| {
+                        Arc::unwrap_or_clone(member.value).as_typed_dict_field_info(*is_total)
+                    })
+                    .map(|field| (name.clone(), field.substitute(&substitution)))
             })
             .collect()
     }
@@ -179,16 +155,23 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         fields: &SmallMap<Name, bool>,
     ) -> ClassSynthesizedField {
         let mut params = vec![cls.self_param()];
-        for (name, _) in fields {
-            let field = self.get_class_member(cls, name).unwrap().value;
-            let default = matches!(
-                &*field,
-                ClassField(ClassFieldInner::Simple {
-                    initialization: ClassFieldInitialization::Class(_),
-                    ..
-                })
-            );
-            params.push(Arc::unwrap_or_clone(field).as_param(name, default, true));
+        for (name, is_total) in fields {
+            // TODO(stroxler): Look into whether we can re-wire the code so that it is not possible to
+            // have the typed dict think a field exists that cannot be converted to a `TypedDictField`
+            // (this can happen for any unannotated field - e.g. a classmethod or staticmethod).
+            if let Some(field) = self.get_class_member(cls, name).and_then(|member| {
+                Arc::unwrap_or_clone(member.value).as_typed_dict_field_info(*is_total)
+            }) {
+                params.push(Param::Pos(
+                    name.clone(),
+                    field.ty,
+                    if field.required {
+                        Required::Required
+                    } else {
+                        Required::Optional
+                    },
+                ));
+            }
         }
         let ty = Type::Callable(
             Box::new(Callable::list(ParamList::new(params), Type::None)),

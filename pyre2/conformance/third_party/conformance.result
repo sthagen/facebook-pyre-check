@@ -150,24 +150,23 @@
     "Line 59: Expected 1 errors",
     "Line 51: Unexpected errors ['assert_type(int, tuple[int, ...]) failed']",
     "Line 52: Unexpected errors ['assert_type(int, dict[str, int]) failed']",
-    "Line 90: Unexpected errors ['EXPECTED (x: int) -> str <: (int, ParamSpec(Ellipsis)) -> str']",
-    "Line 92: Unexpected errors ['EXPECTED (a: int, b: int, c: int) -> str <: (int, ParamSpec(Ellipsis)) -> str']",
-    "Line 151: Unexpected errors ['EXPECTED Proto2 <: (int, ParamSpec(Ellipsis)) -> None']",
+    "Line 90: Unexpected errors ['EXPECTED (x: int) -> str <: (int, ParamSpec(...)) -> str']",
+    "Line 92: Unexpected errors ['EXPECTED (a: int, b: int, c: int) -> str <: (int, ParamSpec(...)) -> str']",
+    "Line 151: Unexpected errors ['EXPECTED Proto2 <: (int, ParamSpec(...)) -> None']",
     "Line 155: Unexpected errors ['EXPECTED Proto3 <: Proto4[Ellipsis]']",
     "Line 156: Unexpected errors ['EXPECTED Proto4[Ellipsis] <: Proto3']",
     "Line 157: Unexpected errors ['EXPECTED Proto7 <: Proto6']",
     "Line 171: Unexpected errors [\"Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback1, type[(ParamSpec(ParamSpec[P])) -> str]]\"]",
     "Line 174: Unexpected errors [\"Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback1, type[(ParamSpec(ParamSpec[P])) -> str]]\"]",
     "Line 175: Unexpected errors [\"Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback2, type[(int, ParamSpec(ParamSpec[P])) -> str]]\"]",
-    "Line 186: Unexpected errors ['EXPECTED (int, str) -> str <: (int, ParamSpec(Ellipsis)) -> str']",
+    "Line 186: Unexpected errors ['EXPECTED (int, str) -> str <: (int, ParamSpec(...)) -> str']",
     "Line 188: Unexpected errors [\"Can't apply arguments to non-class, got LegacyExplicitTypeAlias[CallbackWithInt, type[(int, ParamSpec(ParamSpec[P])) -> str]]\"]"
   ],
   "callables_kwargs.py": [
     "Line 101: Expected 1 errors",
     "Line 102: Expected 1 errors",
     "Line 111: Expected 1 errors",
-    "Line 122: Expected 1 errors",
-    "Line 49: Unexpected errors ['Missing argument `v2`']"
+    "Line 122: Expected 1 errors"
   ],
   "callables_protocol.py": [
     "Line 35: Expected 1 errors",
@@ -772,12 +771,6 @@
     "Line 25: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point3, type[tuple[Any, ...]]]']",
     "Line 29: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point4, type[tuple[Any, ...]]]']",
     "Line 30: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[Point4, type[tuple[Any, ...]]]']",
-    "Line 33: Unexpected errors ['Expected 2 positional arguments, got 3']",
-    "Line 34: Unexpected errors ['Expected a callable, got tuple[Any]']",
-    "Line 35: Unexpected errors ['Expected a callable, got tuple[Any]']",
-    "Line 39: Unexpected errors ['Expected 2 positional arguments, got 3']",
-    "Line 40: Unexpected errors ['Expected a callable, got tuple[Any]']",
-    "Line 41: Unexpected errors ['Expected a callable, got tuple[Any]']",
     "Line 57: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[NT4, type[tuple[Any, ...]]]']",
     "Line 64: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[NT5, type[tuple[Any, ...]]]']",
     "Line 65: Unexpected errors ['Expected a callable, got LegacyImplicitTypeAlias[NT5, type[tuple[Any, ...]]]']"
@@ -930,8 +923,8 @@
     "Line 152: Expected 1 errors",
     "Line 155: Expected 1 errors",
     "Line 96: Unexpected errors ['Class member `__private` overrides parent class `ClassC` in an inconsistent manner']",
-    "Line 131: Unexpected errors ['Expected 2 positional arguments, got 3']",
-    "Line 133: Unexpected errors ['Expected a callable, got tuple[Any]']",
+    "Line 131: Unexpected errors ['Expected first item to be a string literal', 'Expected first item to be a string literal']",
+    "Line 133: Unexpected errors ['Unexpected keyword argument `x`', 'Unexpected keyword argument `y`']",
     "Line 139: Unexpected errors ['TODO: StmtGlobal - Bindings::stmt']"
   ],
   "qualifiers_final_decorator.py": [
