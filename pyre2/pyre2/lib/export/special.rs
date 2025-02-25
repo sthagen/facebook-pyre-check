@@ -17,6 +17,8 @@ use crate::module::module_name::ModuleName;
 pub enum SpecialExport {
     TypeAlias,
     TypeVar,
+    ParamSpec,
+    TypeVarTuple,
     Annotated,
     Literal,
     Enum,
@@ -25,6 +27,7 @@ pub enum SpecialExport {
     TypedDict,
     CollectionsNamedTuple,
     TypingNamedTuple,
+    AssertType,
 }
 
 impl SpecialExport {
@@ -32,6 +35,8 @@ impl SpecialExport {
         match name.as_str() {
             "TypeAlias" => Some(Self::TypeAlias),
             "TypeVar" => Some(Self::TypeVar),
+            "ParamSpec" => Some(Self::ParamSpec),
+            "TypeVarTuple" => Some(Self::TypeVarTuple),
             "Annotated" => Some(Self::Annotated),
             "Literal" => Some(Self::Literal),
             "Enum" => Some(Self::Enum),
@@ -40,6 +45,7 @@ impl SpecialExport {
             "TypedDict" => Some(Self::TypedDict),
             "namedtuple" => Some(Self::CollectionsNamedTuple),
             "NamedTuple" => Some(Self::TypingNamedTuple),
+            "assert_type" => Some(Self::AssertType),
             _ => None,
         }
     }
@@ -48,10 +54,13 @@ impl SpecialExport {
         match self {
             Self::TypeAlias
             | Self::TypeVar
+            | Self::ParamSpec
+            | Self::TypeVarTuple
             | Self::Annotated
             | Self::Literal
             | Self::TypedDict
-            | Self::TypingNamedTuple => {
+            | Self::TypingNamedTuple
+            | Self::AssertType => {
                 matches!(m.as_str(), "typing" | "typing_extensions")
             }
             Self::CollectionsNamedTuple => matches!(m.as_str(), "collections"),

@@ -13,7 +13,6 @@ use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprDict;
 use ruff_python_ast::ExprList;
-use ruff_python_ast::ExprName;
 use ruff_python_ast::ExprTuple;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Keyword;
@@ -92,20 +91,22 @@ impl<'a> BindingsBuilder<'a> {
         });
 
         let mut keywords = Vec::new();
-        x.keywords().iter().for_each(|keyword| {
-            if let Some(name) = &keyword.arg {
-                self.ensure_expr(&keyword.value);
-                keywords.push((name.id.clone(), keyword.value.clone()));
-            } else {
-                self.error(
-                    keyword.range(),
-                    format!(
-                        "The use of unpacking in class header of `{}` is not supported",
-                        x.name
-                    ),
-                )
-            }
-        });
+        if let Some(args) = &mut x.arguments {
+            args.keywords.iter_mut().for_each(|keyword| {
+                if let Some(name) = &keyword.arg {
+                    self.ensure_expr(&mut keyword.value);
+                    keywords.push((name.id.clone(), keyword.value.clone()));
+                } else {
+                    self.error(
+                        keyword.range(),
+                        format!(
+                            "The use of unpacking in class header of `{}` is not supported",
+                            x.name
+                        ),
+                    )
+                }
+            });
+        }
 
         self.table.insert(
             KeyClassMetadata(class_name.clone()),
@@ -257,7 +258,7 @@ impl<'a> BindingsBuilder<'a> {
     fn synthesize_class_def(
         &mut self,
         class_name: Identifier,
-        base_name: ExprName,
+        base: Expr,
         keywords: Box<[(Name, Expr)]>,
         // name, position, annotation, value
         member_definitions: Vec<(String, TextRange, Option<Expr>, Option<Expr>)>,
@@ -271,7 +272,7 @@ impl<'a> BindingsBuilder<'a> {
             KeyClassMetadata(short_class_name.clone()),
             BindingClassMetadata {
                 def: definition_key,
-                bases: Box::new([Expr::Name(base_name)]),
+                bases: Box::new([base]),
                 keywords,
                 decorators: Box::new([]),
             },
@@ -356,12 +357,7 @@ impl<'a> BindingsBuilder<'a> {
         );
     }
 
-    pub fn synthesize_enum_def(
-        &mut self,
-        class_name: Identifier,
-        base_name: ExprName,
-        members: &[Expr],
-    ) {
+    pub fn synthesize_enum_def(&mut self, class_name: Identifier, base: Expr, members: &[Expr]) {
         let member_definitions: Vec<(String, TextRange, Option<Expr>, Option<Expr>)> =
             match members {
                 // Enum('Color', 'RED, GREEN, BLUE')
@@ -438,7 +434,7 @@ impl<'a> BindingsBuilder<'a> {
             .collect();
         self.synthesize_class_def(
             class_name,
-            base_name,
+            base,
             Box::new([]),
             member_definitions,
             IllegalIdentifierHandling::Error,
@@ -450,7 +446,7 @@ impl<'a> BindingsBuilder<'a> {
     pub fn synthesize_typing_named_tuple_def(
         &mut self,
         class_name: Identifier,
-        base_name: ExprName,
+        base: Expr,
         members: &[Expr],
     ) {
         let member_definitions: Vec<(String, TextRange, Option<Expr>, Option<Expr>)> =
@@ -487,7 +483,7 @@ impl<'a> BindingsBuilder<'a> {
             .collect();
         self.synthesize_class_def(
             class_name,
-            base_name,
+            base,
             Box::new([]),
             member_definitions,
             IllegalIdentifierHandling::Error,
@@ -498,12 +494,13 @@ impl<'a> BindingsBuilder<'a> {
     pub fn synthesize_typed_dict_def(
         &mut self,
         class_name: Identifier,
-        base_name: ExprName,
-        args: &[Expr],
-        keywords: &[Keyword],
+        base: Expr,
+        args: &mut [Expr],
+        keywords: &mut [Keyword],
     ) {
         let mut base_class_keywords: Box<[(Name, Expr)]> = Box::new([]);
         for kw in keywords {
+            self.ensure_expr(&mut kw.value);
             if let Some(name) = &kw.arg
                 && name.id == "total"
                 && matches!(kw.value, Expr::BooleanLiteral(_))
@@ -519,9 +516,9 @@ impl<'a> BindingsBuilder<'a> {
         let member_definitions: Vec<(String, TextRange, Option<Expr>, Option<Expr>)> = match args {
             // Movie = TypedDict('Movie', {'name': str, 'year': int})
             [Expr::Dict(ExprDict { items, .. })] => items
-                .iter()
+                .iter_mut()
                 .filter_map(|item| {
-                    if let Some(key) = &item.key {
+                    if let Some(key) = &mut item.key {
                         self.ensure_expr(key);
                     }
                     self.ensure_type(&mut item.value.clone(), &mut None);
@@ -553,7 +550,7 @@ impl<'a> BindingsBuilder<'a> {
         };
         self.synthesize_class_def(
             class_name,
-            base_name,
+            base,
             base_class_keywords,
             member_definitions,
             IllegalIdentifierHandling::Allow,

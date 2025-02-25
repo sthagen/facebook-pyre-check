@@ -73,10 +73,10 @@ impl ClassFieldInitialization {
 /// know whether it is initialized in the class body in order to determine
 /// both visibility rules and whether method binding should be performed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClassField(pub ClassFieldInner);
+pub struct ClassField(ClassFieldInner);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClassFieldInner {
+enum ClassFieldInner {
     Simple {
         ty: Type,
         range: Option<TextRange>,
@@ -110,6 +110,16 @@ impl ClassField {
             annotation,
             initialization,
             readonly,
+        })
+    }
+
+    pub fn new_synthesized(ty: Type) -> Self {
+        ClassField(ClassFieldInner::Simple {
+            ty,
+            range: None,
+            annotation: None,
+            initialization: ClassFieldInitialization::Class(None),
+            readonly: false,
         })
     }
 
@@ -291,6 +301,55 @@ impl ClassField {
                 },
             }),
             _ => None,
+        }
+    }
+
+    pub fn as_enum_member(self, enum_cls: &Class) -> Option<Lit> {
+        match self.0 {
+            ClassFieldInner::Simple {
+                ty: Type::Literal(lit),
+                ..
+            } if matches!(&lit, Lit::Enum(box (lit_cls, ..)) if lit_cls.class_object() == enum_cls) => {
+                Some(lit)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn is_dataclass_kwonly_marker(&self) -> bool {
+        match &self.0 {
+            ClassFieldInner::Simple { ty, .. } => {
+                matches!(ty, Type::ClassType(cls) if cls.class_object().has_qname("dataclasses", "KW_ONLY"))
+            }
+        }
+    }
+
+    pub fn dataclass_props_of(&self, kw_only: bool) -> Option<BoolKeywords> {
+        match &self.0 {
+            ClassFieldInner::Simple {
+                initialization,
+                annotation,
+                ..
+            } => {
+                if let Some(annot) = annotation
+                    && annot.qualifiers.contains(&Qualifier::ClassVar)
+                {
+                    return None; // Class variables are not dataclass fields
+                }
+                let mut props = match initialization {
+                    ClassFieldInitialization::Class(Some(field_props)) => field_props.clone(),
+                    ClassFieldInitialization::Class(None) => {
+                        let mut kws = BoolKeywords::new();
+                        kws.set(DataclassKeywords::DEFAULT.0, true);
+                        kws
+                    }
+                    ClassFieldInitialization::Instance => BoolKeywords::new(),
+                };
+                if kw_only {
+                    props.set(DataclassKeywords::KW_ONLY.0, true);
+                }
+                Some(props)
+            }
         }
     }
 }
