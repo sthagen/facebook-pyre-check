@@ -112,3 +112,41 @@ def decorated(x: int) -> int:
    return x
     "#,
 );
+
+testcase!(
+    test_classmethod_first_param,
+    r#"
+from typing import assert_type
+
+class C:
+    @classmethod
+    def f(cls) -> int:
+        return cls.g()
+
+    @classmethod
+    def g(cls) -> int:
+        return 42
+
+assert_type(C.f(), int)
+assert_type(C.g(), int)
+    "#,
+);
+
+testcase!(
+    test_staticmethod_first_param,
+    r#"
+from typing import assert_type, Any
+
+class C:
+    @staticmethod
+    def f(x):
+        assert_type(x, Any)
+
+    @staticmethod
+    def g(x: int):
+        return x
+
+C.f(0)
+assert_type(C.g(0), int)
+    "#,
+);

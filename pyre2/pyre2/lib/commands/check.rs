@@ -24,11 +24,12 @@ use tracing::info;
 
 use crate::commands::common::CommonArgs;
 use crate::commands::util::module_from_path;
-use crate::config::Config;
-use crate::config::PythonVersion;
+use crate::config::ConfigFile;
 use crate::error::error::Error;
 use crate::error::legacy::LegacyErrors;
 use crate::error::style::ErrorStyle;
+use crate::metadata::PythonVersion;
+use crate::metadata::RuntimeMetadata;
 use crate::module::bundled::typeshed;
 use crate::module::finder::find_module;
 use crate::module::module_name::ModuleName;
@@ -70,7 +71,7 @@ pub struct Args {
     check_all: bool,
     /// Watch for file changes and re-check them.
     #[clap(long)]
-    watch: bool,
+    pub watch: bool,
     /// Produce debugging information about the type checking process.
     #[clap(long)]
     debug_info: Option<PathBuf>,
@@ -147,27 +148,35 @@ impl OutputFormat {
 }
 
 impl Args {
-    pub fn run(self, allow_forget: bool) -> anyhow::Result<CommandExitStatus> {
-        if self.watch {
-            self.run_watch()?;
+    pub fn run(
+        self,
+        watcher: Option<Box<dyn Watcher>>,
+        config_finder: &dyn Fn(&Path) -> ConfigFile,
+        allow_forget: bool,
+    ) -> anyhow::Result<CommandExitStatus> {
+        if let Some(watcher) = watcher {
+            self.run_watch(watcher, config_finder)?;
             Ok(CommandExitStatus::Success)
         } else {
-            self.run_inner(allow_forget)
+            self.run_inner(config_finder, allow_forget)
         }
     }
 
-    fn run_watch(self) -> anyhow::Result<()> {
-        let mut watch = Watcher::new()?;
+    fn run_watch(
+        self,
+        mut watcher: Box<dyn Watcher>,
+        config_finder: &dyn Fn(&Path) -> ConfigFile,
+    ) -> anyhow::Result<()> {
         for path in Globs::new(self.files.clone()).roots() {
-            watch.watch_dir(&path)?;
+            watcher.watch_dir(&path)?;
         }
         loop {
-            let res = self.clone().run_inner(false);
+            let res = self.clone().run_inner(config_finder, false);
             if let Err(e) = res {
                 eprintln!("{e:#}");
             }
             loop {
-                let events = watch.wait()?;
+                let events = watcher.wait()?;
                 if events.iter().any(|x| !x.kind.is_access()) {
                     break;
                 }
@@ -175,7 +184,12 @@ impl Args {
         }
     }
 
-    fn run_inner(self, allow_forget: bool) -> anyhow::Result<CommandExitStatus> {
+    fn run_inner(
+        self,
+        // TODO: use this to calculate the config for each checked file
+        _config_finder: &dyn Fn(&Path) -> ConfigFile,
+        allow_forget: bool,
+    ) -> anyhow::Result<CommandExitStatus> {
         let args = self;
         let include = args.include;
 
@@ -190,8 +204,10 @@ impl Args {
             to_check.entry(module).or_insert_with(|| file.clone());
         }
         let config = match &args.python_version {
-            None => Config::default(),
-            Some(version) => Config::new(PythonVersion::from_str(version)?, "linux".to_owned()),
+            None => RuntimeMetadata::default(),
+            Some(version) => {
+                RuntimeMetadata::new(PythonVersion::from_str(version)?, "linux".to_owned())
+            }
         };
         let error_style_for_sources = ErrorStyle::Delayed;
         let loader = LoaderId::new(CheckLoader {

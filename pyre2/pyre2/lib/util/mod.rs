@@ -19,6 +19,7 @@ pub mod lock;
 pub mod locked_map;
 pub mod memory;
 pub mod no_hash;
+pub mod notify_watcher;
 pub mod prelude;
 pub mod recurser;
 pub mod trace;

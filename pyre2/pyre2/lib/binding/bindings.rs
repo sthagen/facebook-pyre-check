@@ -15,6 +15,7 @@ use dupe::Dupe;
 use itertools::Either;
 use itertools::Itertools;
 use ruff_python_ast::name::Name;
+use ruff_python_ast::AnyParameterRef;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprName;
@@ -32,12 +33,14 @@ use starlark_map::small_set::SmallSet;
 use vec1::Vec1;
 
 use crate::binding::binding::Binding;
+use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::BindingYield;
 use crate::binding::binding::BindingYieldFrom;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyExport;
+use crate::binding::binding::KeyFunction;
 use crate::binding::binding::KeyLegacyTypeParam;
 use crate::binding::binding::KeyYield;
 use crate::binding::binding::KeyYieldFrom;
@@ -52,8 +55,8 @@ use crate::binding::scope::LoopExit;
 use crate::binding::scope::ScopeKind;
 use crate::binding::scope::Scopes;
 use crate::binding::table::TableKeyed;
-use crate::config::Config;
 use crate::error::collector::ErrorCollector;
+use crate::error::kind::ErrorKind;
 use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
 use crate::export::special::SpecialEntry;
@@ -62,6 +65,7 @@ use crate::export::special::SpecialExport;
 use crate::graph::index::Idx;
 use crate::graph::index::Index;
 use crate::graph::index_map::IndexMap;
+use crate::metadata::RuntimeMetadata;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::module::short_identifier::ShortIdentifier;
@@ -116,7 +120,7 @@ impl Display for Bindings {
 pub struct BindingsBuilder<'a> {
     pub module_info: ModuleInfo,
     pub lookup: &'a dyn LookupExport,
-    pub config: &'a Config,
+    pub config: &'a RuntimeMetadata,
     errors: &'a ErrorCollector,
     solver: &'a Solver,
     uniques: &'a UniqueFactory,
@@ -209,13 +213,32 @@ impl Bindings {
         }
     }
 
+    pub fn get_function_param(&self, name: &Identifier) -> Either<Idx<KeyAnnotation>, Var> {
+        let b = self.get(self.key_to_idx(&Key::Definition(ShortIdentifier::new(name))));
+        if let Binding::FunctionParameter(p) = b {
+            match p {
+                Either::Left(idx) => Either::Left(*idx),
+                Either::Right((var, _)) => Either::Right(*var),
+            }
+        } else {
+            panic!(
+                "Internal error: unexpected binding for parameter `{}` @  {:?}: {}, module={}, path={}",
+                &name.id,
+                name.range,
+                b.display_with(self),
+                self.module_info().name(),
+                self.module_info().path(),
+            )
+        }
+    }
+
     pub fn new(
         x: Vec<Stmt>,
         module_info: ModuleInfo,
         exports: Exports,
         solver: &Solver,
         lookup: &dyn LookupExport,
-        config: &Config,
+        config: &RuntimeMetadata,
         errors: &ErrorCollector,
         uniques: &UniqueFactory,
     ) -> Self {
@@ -257,7 +280,11 @@ impl Bindings {
                     .table
                     .insert(Key::Anon(x.range()), Binding::Expr(None, *x));
             }
-            errors.add(x.range, "Invalid `return` outside of a function".to_owned());
+            errors.add(
+                x.range,
+                "Invalid `return` outside of a function".to_owned(),
+                ErrorKind::Unknown,
+            );
         }
         let last_scope = builder.scopes.finish();
         for (k, static_info) in last_scope.stat.0 {
@@ -276,6 +303,7 @@ impl Bindings {
                     errors.add(
                         static_info.loc,
                         format!("Could not find flow binding for `{k}`"),
+                        ErrorKind::Unknown,
                     );
                     Binding::AnyType(AnyStyle::Error)
                 }
@@ -389,7 +417,7 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     pub fn error(&self, range: TextRange, msg: String) {
-        self.errors.add(range, msg);
+        self.errors.add(range, msg, ErrorKind::Unknown);
     }
 
     fn lookup_name(&mut self, name: &Name) -> Option<Idx<Key>> {
@@ -600,6 +628,47 @@ impl<'a> BindingsBuilder<'a> {
             .stat
             .add(name.id.clone(), name.range, None);
         self.bind_key(&name.id, bind_key, None);
+    }
+
+    pub fn bind_function_param(
+        &mut self,
+        x: AnyParameterRef,
+        function_idx: Idx<KeyFunction>,
+        self_type: Option<Idx<Key>>,
+    ) {
+        let name = x.name();
+        let annot = x.annotation().map(|x| {
+            self.table.insert(
+                KeyAnnotation::Annotation(ShortIdentifier::new(name)),
+                BindingAnnotation::AnnotateExpr(x.clone(), self_type),
+            )
+        });
+        let (annot, def) = match annot {
+            Some(annot) => (annot, Either::Left(annot)),
+            None => {
+                let var = self.solver.fresh_contained(self.uniques);
+                let annot = self.table.insert(
+                    KeyAnnotation::Annotation(ShortIdentifier::new(name)),
+                    BindingAnnotation::Type(var.to_type()),
+                );
+                (annot, Either::Right((var, function_idx)))
+            }
+        };
+        let key = self.table.insert(
+            Key::Definition(ShortIdentifier::new(name)),
+            Binding::FunctionParameter(def),
+        );
+        self.scopes
+            .current_mut()
+            .stat
+            .add(name.id.clone(), name.range, Some(annot));
+        self.bind_key(
+            &name.id,
+            key,
+            Some(FlowStyle::Annotated {
+                is_initialized: x.default().is_some(),
+            }),
+        );
     }
 
     /// Helper for loops, inserts a phi key for every name in the given flow.

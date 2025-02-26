@@ -37,54 +37,26 @@ use crate::binding::bindings::LegacyTParamBuilder;
 use crate::binding::scope::FlowStyle;
 use crate::binding::scope::Scope;
 use crate::binding::scope::ScopeKind;
-use crate::config::Config;
 use crate::dunder;
 use crate::graph::index::Idx;
+use crate::metadata::RuntimeMetadata;
 use crate::module::short_identifier::ShortIdentifier;
-use crate::types::types::AnyStyle;
-use crate::types::types::Type;
 use crate::util::prelude::SliceExt;
 use crate::util::prelude::VecExt;
 
 impl<'a> BindingsBuilder<'a> {
-    fn parameters(&mut self, x: &mut Parameters, self_type: Option<Idx<Key>>) {
+    fn parameters(
+        &mut self,
+        x: &mut Parameters,
+        function_idx: Idx<KeyFunction>,
+        self_type: Option<Idx<Key>>,
+    ) {
         let mut self_name = None;
         for x in x.iter() {
-            let name = x.name();
             if self_type.is_some() && self_name.is_none() {
-                self_name = Some(name.clone());
+                self_name = Some(x.name().clone());
             }
-            let ann_val = match x.annotation() {
-                Some(a) => BindingAnnotation::AnnotateExpr(a.clone(), self_type),
-                None => {
-                    if let Some(self_name) = &self_name
-                        && name.id == *self_name.id
-                    {
-                        BindingAnnotation::Forward(self_type.unwrap())
-                    } else {
-                        BindingAnnotation::Type(Type::any_implicit())
-                    }
-                }
-            };
-            let ann_key = self.table.insert(
-                KeyAnnotation::Annotation(ShortIdentifier::new(name)),
-                ann_val,
-            );
-            let bind_key = self.table.insert(
-                Key::Definition(ShortIdentifier::new(name)),
-                Binding::AnnotatedType(ann_key, Box::new(Binding::AnyType(AnyStyle::Implicit))),
-            );
-            self.scopes
-                .current_mut()
-                .stat
-                .add(name.id.clone(), name.range, Some(ann_key));
-            self.bind_key(
-                &name.id,
-                bind_key,
-                Some(FlowStyle::Annotated {
-                    is_initialized: x.default().is_some(),
-                }),
-            );
+            self.bind_function_param(x, function_idx, self_type);
         }
         if let Scope {
             kind: ScopeKind::Method(method),
@@ -178,8 +150,14 @@ impl<'a> BindingsBuilder<'a> {
 
         let legacy_tparams = legacy_tparam_builder.lookup_keys();
 
+        let function_idx = self
+            .table
+            .functions
+            .0
+            .insert(KeyFunction(ShortIdentifier::new(&func_name)));
         self.parameters(
             &mut x.parameters,
+            function_idx,
             if func_name.id == dunder::NEW {
                 // __new__ is a staticmethod that is special-cased at runtime to not need @staticmethod decoration.
                 None
@@ -266,6 +244,7 @@ impl<'a> BindingsBuilder<'a> {
             FunctionBinding {
                 def: x,
                 kind,
+                self_type,
                 decorators: decorators.into_boxed_slice(),
                 legacy_tparams: legacy_tparams.into_boxed_slice(),
                 successor: None,
@@ -291,8 +270,8 @@ impl<'a> BindingsBuilder<'a> {
 /// * Return None to say there are branches that fall off the end always.
 /// * Return Some([]) to say that we can never reach the end (e.g. always return, raise)
 /// * Return Some(xs) to say this set might be the last expression.
-fn function_last_expressions<'a>(x: &'a [Stmt], config: &Config) -> Option<Vec<&'a Expr>> {
-    fn f<'a>(config: &Config, x: &'a [Stmt], res: &mut Vec<&'a Expr>) -> Option<()> {
+fn function_last_expressions<'a>(x: &'a [Stmt], config: &RuntimeMetadata) -> Option<Vec<&'a Expr>> {
+    fn f<'a>(config: &RuntimeMetadata, x: &'a [Stmt], res: &mut Vec<&'a Expr>) -> Option<()> {
         match x.last()? {
             Stmt::Expr(x) => res.push(&x.value),
             Stmt::Return(_) | Stmt::Raise(_) => {}

@@ -43,11 +43,53 @@ def test(f: Callable[..., None]) -> Callable[[int, str], None]:
 );
 
 testcase!(
+    test_callable_invalid_annotation,
+    r#"
+from typing import Callable, assert_type, Any
+x: Callable[int]  # E: Callable requires exactly two arguments but 1 was found
+assert_type(x, Callable[..., Any])
+"#,
+);
+
+testcase!(
     test_callable_unpack,
     r#"
 from typing import Callable
 def test(f: Callable[[bool, *tuple[int, str], bool], None]) -> Callable[[*tuple[bool, int, str, bool]], None]:
     return f
+"#,
+);
+
+testcase!(
+    test_callable_unpack_vararg,
+    r#"
+from typing import Protocol
+class P1(Protocol):
+    def __call__(self, *args: int): ...
+class P2(Protocol):
+    def __call__(self, *args: *tuple[int, int]): ...
+class P3(Protocol):
+    def __call__(self, *args: *tuple[int, str]): ...
+class P4(Protocol):
+    def __call__(self, *args: *tuple[int, ...]): ...
+class P5(Protocol):
+    def __call__(self, x: int, y: int, /): ...
+class P6(Protocol):
+    def __call__(self, x: int, /, *args: *tuple[int]): ...
+class P7(Protocol):
+    def __call__(self, x: int, y: int = 2, /): ...
+
+def test(p1: P1, p2: P2, p3: P3, p4: P4, p5: P5, p6: P6, p7: P7):
+    x1: P2 = p1
+    x2: P1 = p2  # E: EXPECTED P2 <: P1
+    x3: P2 = p3  # E: EXPECTED P3 <: P2
+    x4: P2 = p4
+    x5: P4 = p2  # E: EXPECTED P2 <: P4
+    x6: P5 = p2
+    x7: P2 = p5
+    x8: P2 = p6
+    x9: P6 = p2
+    x10: P2 = p7
 "#,
 );
 
@@ -242,6 +284,27 @@ test(*[1, 2]) # OK
 test(*[1, 2, 3, 4]) # OK
 test(*[1], 2) # E: Expected 3 positional arguments, got 4
 test(1, 2, 3, *[4]) # OK
+"#,
+);
+
+testcase!(
+    test_splat_unpacked_args,
+    r#"
+from typing import assert_type
+
+def test1(*args: *tuple[int, int, int]): ...
+test1(*(1, 2, 3)) # OK
+test1(*(1, 2)) # E: EXPECTED tuple[Literal[1], Literal[2]] <: tuple[int, int, int]
+test1(*(1, 2, 3, 4)) # E: EXPECTED tuple[Literal[1], Literal[2], Literal[3], Literal[4]] <: tuple[int, int, int]
+
+def test2[*T](*args: *tuple[int, *T, int]) -> tuple[*T]: ...
+assert_type(test2(*(1, 2, 3)), tuple[int])
+assert_type(test2(*(1, 2)), tuple[()])
+assert_type(test2(*(1, 2, 3, 4)), tuple[int, int])
+assert_type(test2(1, 2, *(3, 4), 5), tuple[int, int, int])
+assert_type(test2(1, *(2, 3), *("4", 5)), tuple[int, int, str])
+assert_type(test2(1, *[2, 3], 4), tuple[int, ...])
+test2(1, *(2, 3), *(4, "5"))  # E: EXPECTED tuple[Literal[1], Literal[2], Literal[3], Literal[4], Literal['5']] <: tuple[int, *@_, int]
 "#,
 );
 

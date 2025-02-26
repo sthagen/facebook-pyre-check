@@ -167,6 +167,15 @@ impl<'a> BindingsBuilder<'a> {
         );
     }
 
+    fn assign_new_type(&mut self, name: &ExprName, new_type_name: &Expr, base: &Expr) {
+        self.check_functional_definition_name(&name.id, new_type_name);
+        self.ensure_type(&mut base.clone(), &mut None);
+        self.synthesize_typing_new_type(
+            Identifier::new(name.id.clone(), name.range()),
+            base.clone(),
+        );
+    }
+
     /// Evaluate the statements and update the bindings.
     /// Every statement should end up in the bindings, perhaps with a location that is never used.
     pub fn stmt(&mut self, x: Stmt) {
@@ -231,6 +240,13 @@ impl<'a> BindingsBuilder<'a> {
                             if let Some((arg_name, members)) = call.arguments.args.split_first_mut()
                             {
                                 self.assign_named_tuple(name, &mut call.func, arg_name, members);
+                                return;
+                            }
+                        }
+                        SpecialExport::NewType => {
+                            let args = &call.arguments.args;
+                            if args.len() == 2 {
+                                self.assign_new_type(name, &args[0], &args[1]);
                                 return;
                             }
                         }

@@ -5,8 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+mod oss_watcher;
+
 use std::backtrace::Backtrace;
 use std::env::args_os;
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -14,6 +17,7 @@ use pyre2::get_args_expanded;
 use pyre2::init_tracing;
 use pyre2::run::Command;
 use pyre2::run::CommandExitStatus;
+use pyre2::ConfigFile;
 
 #[derive(Debug, Parser)]
 #[command(name = "pyre2")]
@@ -40,6 +44,11 @@ fn exit_on_panic() {
     }));
 }
 
+fn get_open_source_config(_: &Path) -> ConfigFile {
+    // TODO: Implement upward-searching for open source config.
+    ConfigFile
+}
+
 fn to_exit_code(status: CommandExitStatus) -> ExitCode {
     match status {
         CommandExitStatus::Success => ExitCode::SUCCESS,
@@ -49,7 +58,18 @@ fn to_exit_code(status: CommandExitStatus) -> ExitCode {
 
 fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<CommandExitStatus> {
     match command {
-        Command::Check(args) => args.run(allow_forget),
+        Command::Check(args) => {
+            let is_watch_mode = args.watch;
+            args.run(
+                if is_watch_mode {
+                    Some(Box::new(oss_watcher::OpenSourceWatcher::new()?))
+                } else {
+                    None
+                },
+                &get_open_source_config,
+                allow_forget,
+            )
+        }
         Command::BuckCheck(args) => args.run(),
         Command::Lsp(args) => args.run(),
     }

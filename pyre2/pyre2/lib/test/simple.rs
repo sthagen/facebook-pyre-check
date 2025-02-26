@@ -410,20 +410,6 @@ y = "bar" # TODO: y can not be assigned
 "#,
 );
 
-testcase_with_bug!(
-    "todo zeina: Incorrect error message. The error message should be that a final class cannot be overridden",
-    test_final_annotated_override,
-    r#"
-from typing import Final
-
-class Base:
-    p: Final = 0
-    
-class Derived(Base):
-    p = 1  # E: Class member `p` overrides parent class `Base` in an inconsistent manner
-"#,
-);
-
 testcase!(
     test_solver_variables,
     r#"
