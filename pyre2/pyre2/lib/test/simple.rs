@@ -458,7 +458,7 @@ testcase!(
     test_reveal_type,
     r#"
 from typing import reveal_type
-reveal_type()  # E: reveal_type needs 1 argument, got 0
+reveal_type()  # E: reveal_type needs 1 positional argument, got 0
 reveal_type(1)  # E: revealed type: Literal[1]
     "#,
 );
@@ -870,7 +870,7 @@ testcase!(
     r#"
 x = 42
 def foo(y): ...
-z: foo(y=x)  # E: untype, got Never
+z: foo(y=x)  # E: Expected a type form, got instance of `Never`
 "#,
 );
 
@@ -1144,7 +1144,7 @@ testcase_with_bug!(
     test_resolving_any_correctly,
     r#"
 import typing
-x: typing.Any = 1  # E: untype, got object
+x: typing.Any = 1  # E: Expected a type form, got instance of `object`
 class Any: ...
 a: Any = Any()  # E: Expected a callable, got type[Any]
 "#,
@@ -1174,5 +1174,83 @@ x: "ForwardRef"
 assert_type(x, "ForwardRef")
 class ForwardRef:
     pass
+    "#,
+);
+
+testcase!(
+    test_assert_type_variations,
+    r#"
+import typing
+# Calling by fully qualified name should work.
+typing.assert_type(0, str)  # E: assert_type(Literal[0], str) failed
+# Make sure that calling by bare name without importing performs the assertion, as this is very convenient for debugging.
+# It's fine if a name error is also generated.
+assert_type(0, str)  # E: assert_type(Literal[0], str) failed  # E: Could not find name `assert_type`
+    "#,
+);
+
+testcase!(
+    test_reveal_type_variations,
+    r#"
+import typing
+# Calling by fully qualified name should work.
+typing.reveal_type(0)  # E: revealed type: Literal[0]
+# Make sure that calling by bare name without importing reveals the type, as this is very convenient for debugging.
+# It's fine if a name error is also generated.
+reveal_type(0)  # E: revealed type: Literal[0]  # E: Could not find name `reveal_type`
+    "#,
+);
+
+testcase!(
+    test_cast,
+    r#"
+from typing import assert_type, cast
+
+x = cast(str, 1)
+assert_type(x, str)
+
+y = cast("str", 1)
+assert_type(y, str)
+
+z = cast(val=1, typ=str)
+assert_type(z, str)
+
+w = cast(val=1, typ="str")
+assert_type(w, str)
+
+cast()  # E: `typing.cast` missing required argument `typ`  # E: `typing.cast` missing required argument `val`
+cast(1, 1)  # E: First argument to `typing.cast` must be a type
+    "#,
+);
+
+testcase!(
+    test_special_calls_unexpected_keyword,
+    r#"
+from typing import assert_type, reveal_type, Literal
+assert_type(0, Literal[0], oops=1)  # E: `assert_type` got an unexpected keyword argument `oops`
+reveal_type(0, oops=1)  # E: revealed type: Literal[0]  # E: `reveal_type` got an unexpected keyword argument `oops`
+    "#,
+);
+
+testcase!(
+    test_special_calls_alias,
+    r#"
+from typing import assert_type, reveal_type
+at = assert_type
+rt = reveal_type
+at(0, str)  # E: assert_type(Literal[0], str) failed
+rt(0)  # E: revealed type: Literal[0]
+    "#,
+);
+
+testcase!(
+    test_special_calls_name_clash,
+    r#"
+def assert_type():
+    pass
+def reveal_type(x, y, z):
+    pass
+assert_type()
+reveal_type(1, 2, 3)
     "#,
 );

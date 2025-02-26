@@ -131,19 +131,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         errors: &ErrorCollector,
     ) -> Type {
-        let mut def_opt = None;
-        let ty = self.distribute_over_union(obj, |obj| {
-            let (def_range, ty) =
-                self.type_of_attr_get(obj.clone(), attr_name, range, errors, "Expr::attr_infer");
-            if def_opt.is_none() {
-                def_opt = def_range;
-            }
-            ty
-        });
-        if let Some(def) = def_opt {
-            self.record_definition_trace(range, &def);
-        }
-        ty
+        self.distribute_over_union(obj, |obj| {
+            self.type_of_attr_get(obj.clone(), attr_name, range, errors, "Expr::attr_infer")
+        })
     }
 
     fn binop_infer(&self, x: &ExprBinOp, errors: &ErrorCollector) -> Type {
@@ -907,80 +897,67 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 self.stdlib.bool().to_type()
             }
-            Expr::Call(x) if is_special_name(&x.func, "assert_type") => {
-                if x.arguments.args.len() == 2 {
-                    let expr_a = &x.arguments.args[0];
-                    let expr_b = &x.arguments.args[1];
-                    let a = self.expr_infer(expr_a, errors);
-                    let b = self.expr_untype(expr_b, errors);
-                    let a = self.canonicalize_all_class_types(
-                        self.solver().deep_force(a).explicit_any().anon_callables(),
-                        expr_a.range(),
-                    );
-                    let b = self.canonicalize_all_class_types(
-                        self.solver().deep_force(b).explicit_any().anon_callables(),
-                        expr_b.range(),
-                    );
-                    if a != b {
-                        self.error(
-                            errors,
-                            x.range,
-                            format!(
-                                "assert_type({}, {}) failed",
-                                a.deterministic_printing(),
-                                b.deterministic_printing()
-                            ),
-                        );
-                    }
-                } else {
-                    self.error(
-                        errors,
-                        x.range,
-                        format!(
-                            "assert_type needs 2 arguments, got {:#?}",
-                            x.arguments.args.len()
-                        ),
-                    );
-                }
-                Type::None
-            }
-            Expr::Call(x) if is_special_name(&x.func, "reveal_type") => {
-                if x.arguments.args.len() == 1 {
-                    let t = self
-                        .solver()
-                        .deep_force(self.expr_infer(&x.arguments.args[0], errors));
-                    self.error(
-                        errors,
-                        x.range,
-                        format!("revealed type: {}", t.deterministic_printing()),
-                    );
-                } else {
-                    self.error(
-                        errors,
-                        x.range,
-                        format!(
-                            "reveal_type needs 1 argument, got {}",
-                            x.arguments.args.len()
-                        ),
-                    );
-                }
-                Type::None
-            }
             Expr::Call(x) => {
                 let ty_fun = self.expr_infer(&x.func, errors);
                 let func_range = x.func.range();
-                let args = x.arguments.args.map(|arg| match arg {
-                    Expr::Starred(x) => CallArg::Star(&x.value, x.range),
-                    _ => CallArg::Expr(arg),
-                });
-                self.distribute_over_union(&ty_fun, |ty| {
-                    let callable = self.as_call_target_or_error(
-                        ty.clone(),
-                        CallStyle::FreeForm,
-                        func_range,
+                self.distribute_over_union(&ty_fun, |ty| match ty.callee_kind() {
+                    Some(CalleeKind::Callable(CallableKind::AssertType)) => self.call_assert_type(
+                        &x.arguments.args,
+                        &x.arguments.keywords,
+                        x.range,
                         errors,
-                    );
-                    self.call_infer(callable, &args, &x.arguments.keywords, func_range, errors)
+                    ),
+                    Some(CalleeKind::Callable(CallableKind::RevealType)) => self.call_reveal_type(
+                        &x.arguments.args,
+                        &x.arguments.keywords,
+                        x.range,
+                        errors,
+                    ),
+                    Some(CalleeKind::Callable(CallableKind::Cast)) => {
+                        // For typing.cast, we have to hard-code a check for whether the first argument
+                        // is a type, so it's simplest to special-case the entire call.
+                        self.call_typing_cast(
+                            &x.arguments.args,
+                            &x.arguments.keywords,
+                            func_range,
+                            errors,
+                        )
+                    }
+                    // Treat assert_type and reveal_type like pseudo-builtins for convenience. Note that we still
+                    // log a name-not-found error, but we also assert/reveal the type as requested.
+                    None if matches!(ty, Type::Any(AnyStyle::Error))
+                        && is_special_name(&x.func, "assert_type") =>
+                    {
+                        self.call_assert_type(
+                            &x.arguments.args,
+                            &x.arguments.keywords,
+                            x.range,
+                            errors,
+                        )
+                    }
+                    None if matches!(ty, Type::Any(AnyStyle::Error))
+                        && is_special_name(&x.func, "reveal_type") =>
+                    {
+                        self.call_reveal_type(
+                            &x.arguments.args,
+                            &x.arguments.keywords,
+                            x.range,
+                            errors,
+                        )
+                    }
+                    _ => {
+                        let args = x.arguments.args.map(|arg| match arg {
+                            Expr::Starred(x) => CallArg::Star(&x.value, x.range),
+                            _ => CallArg::Expr(arg),
+                        });
+                        let callable = self.as_call_target_or_error(
+                            ty.clone(),
+                            CallStyle::FreeForm,
+                            func_range,
+                            errors,
+                        );
+                        self.call_infer(callable, &args, &x.arguments.keywords, func_range, errors)
+                    }
                 })
             }
             Expr::FString(x) => {
@@ -1278,8 +1255,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 }
 
+/// Match on an expression by name. Should be used only for special names that we essentially treat like keywords,
+/// like reveal_type.
 fn is_special_name(x: &Expr, name: &str) -> bool {
     match x {
+        // Note that this matches on a bare name regardless of whether it's been imported.
+        // It's convenient to be able to call functions like reveal_type in the course of
+        // debugging without scrolling to the top of the file to add an import.
         Expr::Name(x) => x.id.as_str() == name,
         _ => false,
     }

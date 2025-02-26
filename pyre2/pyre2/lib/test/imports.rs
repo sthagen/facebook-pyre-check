@@ -156,7 +156,8 @@ fn env_redefine_class() -> TestEnv {
     TestEnv::one("foo", "class Foo: ...")
 }
 
-testcase!(
+testcase_with_bug!(
+    "The anywhere lookup of Foo in the function body finds both the imported and locally defined classes",
     test_redefine_class,
     env_redefine_class(),
     r#"
@@ -164,7 +165,7 @@ from typing import assert_type
 from foo import *
 class Foo: ...
 def f(x: Foo) -> Foo:
-    return Foo()
+    return Foo() # E: EXPECTED foo.Foo | main.Foo <: main.Foo
 assert_type(f(Foo()), Foo)
 "#,
 );
@@ -333,16 +334,23 @@ foo.bar.x  # E: No attribute `bar` in module `foo`
 "#,
 );
 
-testcase_with_bug!(
-    "TODO: `foo.x` should be an error. The assert_type(foo.x) call should fail",
+fn env_dunder_init_with_submodule2() -> TestEnv {
+    let mut t = TestEnv::new();
+    t.add_with_path("foo", "x: str = ''", "foo/__init__.py");
+    t.add_with_path("foo.bar", "x: int = 0", "foo/bar/__init__.py");
+    t.add_with_path("foo.bar.baz", "x: float = 4.2", "foo/bar/baz.py");
+    t
+}
+
+testcase!(
     test_import_dunder_init_submodule_only,
-    env_dunder_init_with_submodule(),
+    env_dunder_init_with_submodule2(),
     r#"
 from typing import assert_type
-import foo.bar
-foo.x  # Should error
-assert_type(foo.x, str)  # Should error
+import foo.bar.baz
+assert_type(foo.x, str)
 assert_type(foo.bar.x, int)
+assert_type(foo.bar.baz.x, float)
 "#,
 );
 

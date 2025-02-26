@@ -98,7 +98,7 @@ impl Keyed for KeyExpect {
 }
 impl Keyed for KeyClass {
     type Value = BindingClass;
-    type Answer = Class;
+    type Answer = NoneIfRecursive<Class>;
 }
 impl Keyed for KeyClassField {
     const EXPORTED: bool = true;
@@ -317,6 +317,21 @@ pub struct EmptyAnswer;
 impl Display for EmptyAnswer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "()")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoneIfRecursive<T>(pub Option<T>);
+
+impl<T> Display for NoneIfRecursive<T>
+where
+    T: Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match &self.0 {
+            Some(x) => x.fmt(f),
+            None => write!(f, "recursive"),
+        }
     }
 }
 
@@ -940,11 +955,14 @@ impl DisplayWith<Bindings> for BindingClassField {
 /// The value that the class field is initialized to.
 #[derive(Clone, Debug)]
 pub enum ClassFieldInitialValue {
-    /// The field has an initial value. Stores the expression that the field is assigned to.
-    /// None means that we have something that isn't an assignment to an expression, like a function.
-    Class(Option<Expr>),
     /// The field does not have an initial value.
     Instance,
+    /// The field has an initial value.
+    ///
+    /// If the value is from an assignment, stores the expression that the field is assigned to,
+    /// which is needed for some cases like dataclass fields. The `None` case is for fields that
+    /// have values which don't come from assignment (e.g. function defs, imports in a class body)
+    Class(Option<Expr>),
 }
 
 /// Bindings for fields synthesized by a class, such as a dataclass's `__init__` method. This

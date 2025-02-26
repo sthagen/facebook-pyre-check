@@ -49,7 +49,8 @@ use crate::types::types::Type;
 /// are assigned values in the class body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClassFieldInitialization {
-    /// If this is a dataclass field, BoolKeywords stores the field's dataclass properties.
+    /// If this is a dataclass field, BoolKeywords stores the field's dataclass
+    /// flags (which are boolean options that control how fields behave).
     Class(Option<BoolKeywords>),
     Instance,
 }
@@ -324,7 +325,7 @@ impl ClassField {
         }
     }
 
-    pub fn dataclass_props_of(&self, kw_only: bool) -> Option<BoolKeywords> {
+    pub fn dataclass_flags_of(&self, kw_only: bool) -> Option<BoolKeywords> {
         match &self.0 {
             ClassFieldInner::Simple {
                 initialization,
@@ -336,8 +337,8 @@ impl ClassField {
                 {
                     return None; // Class variables are not dataclass fields
                 }
-                let mut props = match initialization {
-                    ClassFieldInitialization::Class(Some(field_props)) => field_props.clone(),
+                let mut flags = match initialization {
+                    ClassFieldInitialization::Class(Some(field_flags)) => field_flags.clone(),
                     ClassFieldInitialization::Class(None) => {
                         let mut kws = BoolKeywords::new();
                         kws.set(DataclassKeywords::DEFAULT.0, true);
@@ -346,9 +347,9 @@ impl ClassField {
                     ClassFieldInitialization::Instance => BoolKeywords::new(),
                 };
                 if kw_only {
-                    props.set(DataclassKeywords::KW_ONLY.0, true);
+                    flags.set(DataclassKeywords::KW_ONLY.0, true);
                 }
-                Some(props)
+                Some(flags)
             }
         }
     }
@@ -451,23 +452,22 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let metadata = self.get_metadata_for_class(class);
         let initialization = self.get_class_field_initialization(&metadata, initial_value);
 
-        let is_override = value_ty.contains_override();
-
         // todo: consider revisiting the attr subset check to account for override decorator
         // stripping the override decorator from the type when we don't know where it appears
         // may not be the most efficient approach
+        let is_override = value_ty.contains_override(); // save the result of override checks before stripping them from the type
         let value_ty = match value_ty {
             Type::Decoration(Decoration::Override(ty)) => ty.as_ref(),
             _ => value_ty,
         };
 
+        // Enum handling
         let value_ty = if let Some(enum_) = metadata.enum_metadata()
             && self.is_valid_enum_member(name, value_ty, &initialization)
         {
             if annotation.is_some() {
                 self.error(errors, range, format!("Enum member `{}` may not be annotated directly. Instead, annotate the _value_ attribute.", name));
             }
-
             if let Some(enum_value_ty) = self.type_of_enum_value(enum_) {
                 if !matches!(value_ty, Type::Tuple(_))
                     && !self
@@ -486,6 +486,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             value_ty
         };
+
+        // TypedDict handling
         if metadata.is_typed_dict() && matches!(initialization, ClassFieldInitialization::Class(_))
         {
             self.error(
@@ -494,6 +496,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 format!("TypedDict item `{}` may not be initialized.", name),
             );
         }
+
+        // Types provided in annotations shadow inferred types
         let (ty, ann) = if let Some(ann) = annotation {
             match &ann.ty {
                 Some(ty) => (ty, Some(ann)),
@@ -502,13 +506,83 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             (value_ty, None)
         };
+
+        // Dataclass read-onlyness (does not currently handle other kinds of readonlyness)
         let readonly = metadata
             .dataclass_metadata()
             .is_some_and(|dataclass| dataclass.kws.is_set(&DataclassKeywords::FROZEN));
+
+        // Create the resulting field and check for override inconsistencies before returning
         let class_field =
             ClassField::new(ty.clone(), range, ann.cloned(), initialization, readonly);
+        self.check_class_field_for_override_mismatch(
+            name,
+            &class_field,
+            class,
+            is_override,
+            range,
+            errors,
+        );
+        class_field
+    }
 
-        // check if this attribute is compatible with the parent attribute
+    fn get_class_field_initialization(
+        &self,
+        metadata: &ClassMetadata,
+        initial_value: &ClassFieldInitialValue,
+    ) -> ClassFieldInitialization {
+        match initial_value {
+            ClassFieldInitialValue::Instance => ClassFieldInitialization::Instance,
+            ClassFieldInitialValue::Class(None) => ClassFieldInitialization::Class(None),
+            ClassFieldInitialValue::Class(Some(e)) => {
+                // If this field was created via a call to a dataclass field specifier, extract field flags from the call.
+                if metadata.dataclass_metadata().is_some()
+                    && let Expr::Call(ExprCall {
+                        range: _,
+                        func,
+                        arguments: Arguments { keywords, .. },
+                    }) = e
+                {
+                    let mut flags = BoolKeywords::new();
+                    // We already type-checked this expression as part of computing the type for the ClassField,
+                    // so we can ignore any errors encountered here.
+                    let ignore_errors =
+                        ErrorCollector::new(self.module_info().dupe(), ErrorStyle::Never);
+                    let func_ty = self.expr_infer(func, &ignore_errors);
+                    if matches!(
+                        func_ty.callee_kind(),
+                        Some(CalleeKind::Callable(CallableKind::DataclassField))
+                    ) {
+                        for kw in keywords {
+                            if let Some(id) = &kw.arg
+                                && (id.id == DataclassKeywords::DEFAULT.0
+                                    || id.id == "default_factory")
+                            {
+                                flags.set(DataclassKeywords::DEFAULT.0, true);
+                            } else {
+                                let val = self.expr_infer(&kw.value, &ignore_errors);
+                                flags.set_keyword(kw.arg.as_ref(), val);
+                            }
+                        }
+                    }
+                    ClassFieldInitialization::Class(Some(flags))
+                } else {
+                    ClassFieldInitialization::Class(None)
+                }
+            }
+        }
+    }
+
+    fn check_class_field_for_override_mismatch(
+        &self,
+        name: &Name,
+        class_field: &ClassField,
+        class: &Class,
+        is_override: bool,
+        range: TextRange,
+        errors: &ErrorCollector,
+    ) {
+        // Perform override checks
         let class_type = match class.self_type() {
             Type::ClassType(class_type) => Some(class_type),
             _ => None,
@@ -559,55 +633,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 );
             }
         };
-
-        class_field
-    }
-
-    fn get_class_field_initialization(
-        &self,
-        metadata: &ClassMetadata,
-        initial_value: &ClassFieldInitialValue,
-    ) -> ClassFieldInitialization {
-        match initial_value {
-            ClassFieldInitialValue::Instance => ClassFieldInitialization::Instance,
-            ClassFieldInitialValue::Class(None) => ClassFieldInitialization::Class(None),
-            ClassFieldInitialValue::Class(Some(e)) => {
-                // If this field was created via a call to a dataclass field specifier, extract field properties from the call.
-                if metadata.dataclass_metadata().is_some()
-                    && let Expr::Call(ExprCall {
-                        range: _,
-                        func,
-                        arguments: Arguments { keywords, .. },
-                    }) = e
-                {
-                    let mut props = BoolKeywords::new();
-                    // We already type-checked this expression as part of computing the type for the ClassField,
-                    // so we can ignore any errors encountered here.
-                    let ignore_errors =
-                        ErrorCollector::new(self.module_info().dupe(), ErrorStyle::Never);
-                    let func_ty = self.expr_infer(func, &ignore_errors);
-                    if matches!(
-                        func_ty.callee_kind(),
-                        Some(CalleeKind::Callable(CallableKind::DataclassField))
-                    ) {
-                        for kw in keywords {
-                            if let Some(id) = &kw.arg
-                                && (id.id == DataclassKeywords::DEFAULT.0
-                                    || id.id == "default_factory")
-                            {
-                                props.set(DataclassKeywords::DEFAULT.0, true);
-                            } else {
-                                let val = self.expr_infer(&kw.value, &ignore_errors);
-                                props.set_keyword(kw.arg.as_ref(), val);
-                            }
-                        }
-                    }
-                    ClassFieldInitialization::Class(Some(props))
-                } else {
-                    ClassFieldInitialization::Class(None)
-                }
-            }
-        }
     }
 
     pub fn get_class_field_non_synthesized(

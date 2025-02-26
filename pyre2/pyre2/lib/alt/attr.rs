@@ -18,6 +18,7 @@ use crate::alt::types::class_metadata::EnumMetadata;
 use crate::binding::binding::KeyExport;
 use crate::error::collector::ErrorCollector;
 use crate::export::exports::Exports;
+use crate::export::exports::LookupExport;
 use crate::module::module_info::TextRangeWithModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::types::callable::Param;
@@ -47,7 +48,7 @@ enum LookupResult {
 /// on an attribute, each of which can be allowed with some type or disallowed.
 #[derive(Debug)]
 pub struct Attribute {
-    definition_range: Option<TextRangeWithModuleInfo>,
+    pub definition_range: Option<TextRangeWithModuleInfo>,
     inner: AttributeInner,
 }
 
@@ -227,14 +228,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         errors: &ErrorCollector,
         todo_ctx: &str,
-    ) -> (Option<TextRangeWithModuleInfo>, Type) {
+    ) -> Type {
         let lookup_result = self.lookup_attr(base, attr_name);
-        let def_range = match &lookup_result {
-            LookupResult::Found(attribute) => attribute.definition_range.clone(),
-            LookupResult::NotFound(_) => None,
-            LookupResult::InternalError(_) => None,
-        };
-        let ty = match self.get_type_or_conflated_error_msg(
+        match self.get_type_or_conflated_error_msg(
             lookup_result,
             attr_name,
             range,
@@ -243,8 +239,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         ) {
             Ok(ty) => ty,
             Err(msg) => self.error(errors, range, msg),
-        };
-        (def_range, ty)
+        }
     }
 
     /// Compute the get (i.e. read) type of an attribute, if it can be found. If read is not
@@ -500,6 +495,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    pub fn lookup_attr_def_range(
+        &self,
+        base: Type,
+        attr_name: &Name,
+    ) -> Option<TextRangeWithModuleInfo> {
+        match self.lookup_attr(base, attr_name) {
+            LookupResult::Found(attribute) => attribute.definition_range.clone(),
+            LookupResult::NotFound(_) => None,
+            LookupResult::InternalError(_) => None,
+        }
+    }
+
     fn lookup_attr(&self, base: Type, attr_name: &Name) -> LookupResult {
         match self.as_attribute_base(base.clone(), self.stdlib) {
             Some(AttributeBase::ClassInstance(class)) => {
@@ -614,13 +621,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     // `module_name.attr_name`:
                     // - Has been imported directly. Unless `module_name` re-exports `attr_name` from itself
                     //   (in which can `attr_name` will be included in the exports map), we want to make sure that
-                    //   `module_name.attr_name` is only valid when there's an explicit `import module_name.attr_name`
-                    //   statement. Just importing `module_name` shouldn't automatically make the submodule name
-                    //   `module_name.attr_name` accessible.
+                    //   `module_name.attr_name` is only valid when there's an explicit import statement for either
+                    //   `module_name.attr_name` or its submodules. Just importing `module_name`, for example,
+                    //   shouldn't automatically make the submodule name `module_name.attr_name` accessible.
                     // - Actually exists as a submodule on the filesystem.
                     let submodule = module.push_path(attr_name.clone());
                     let submodule_name = module_name.append(attr_name);
-                    if submodule.is_imported_directly()
+                    if submodule.is_submodules_imported_directly()
                         && self.get_module_exports(submodule_name).is_some()
                     {
                         Some(submodule.to_type())
@@ -715,6 +722,45 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             | Type::Concatenate(_, _)
             | Type::ParamSpecValue(_)
             | Type::Quantified(_) => None,
+        }
+    }
+}
+
+impl<'a, Ans: LookupAnswer + LookupExport> AnswersSolver<'a, Ans> {
+    pub fn lookup_all_attributes(&self, base: Type) -> Vec<Name> {
+        match self.as_attribute_base(base.clone(), self.stdlib) {
+            Some(AttributeBase::ClassInstance(class)) => {
+                class.class_object().fields().cloned().collect()
+            }
+            Some(AttributeBase::ClassObject(class)) => class.fields().cloned().collect(),
+            Some(AttributeBase::Module(module)) => self.get_module_export_names(&module),
+            Some(AttributeBase::Quantified(q)) => {
+                let class = q.as_value(self.stdlib);
+                class.class_object().fields().cloned().collect()
+            }
+            Some(AttributeBase::TypeAny(_)) => {
+                let builtins_type_classtype = self.stdlib.builtins_type();
+                builtins_type_classtype
+                    .class_object()
+                    .fields()
+                    .cloned()
+                    .collect()
+            }
+            Some(AttributeBase::Any(_)) => Vec::new(),
+            Some(AttributeBase::Never) => Vec::new(),
+            Some(AttributeBase::Property(_)) => {
+                // TODO(samzhou19815): Support autocomplete for properties
+                vec![]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn get_module_export_names(&self, module: &Module) -> Vec<Name> {
+        let module_name = ModuleName::from_parts(module.path());
+        match self.get_module_exports(module_name) {
+            None => Vec::new(),
+            Some(exports) => exports.wildcard(self.exports).iter().cloned().collect(),
         }
     }
 }
