@@ -71,6 +71,7 @@ use crate::util::prelude::SliceExt;
 use crate::util::recurser::Recurser;
 use crate::util::uniques::UniqueFactory;
 use crate::util::upgrade_lock::UpgradeLock;
+use crate::util::upgrade_lock::UpgradeLockExclusiveGuard;
 
 pub struct State {
     uniques: UniqueFactory,
@@ -96,7 +97,7 @@ pub struct State {
 struct ModuleData {
     handle: Handle,
     state: UpgradeLock<Step, ModuleState>,
-    dependencies: RwLock<HashMap<ModuleName, Arc<ModuleData>, BuildNoHash>>,
+    deps: RwLock<HashMap<ModuleName, Arc<ModuleData>, BuildNoHash>>,
 }
 
 struct ModuleState {
@@ -114,7 +115,7 @@ impl ModuleData {
                 dirty: Dirty::default(),
                 steps: Steps::default(),
             }),
-            dependencies: Default::default(),
+            deps: Default::default(),
         }
     }
 }
@@ -144,33 +145,39 @@ impl State {
         ))
     }
 
-    fn clean(&self, module_data: &Arc<ModuleData>) {
-        let exclusive;
-        loop {
-            match module_data.state.exclusive(Step::first()) {
-                None => continue,
-                Some(ex) => {
-                    exclusive = ex;
-                    break;
-                }
-            }
-        }
-        if exclusive.epochs.checked == self.now {
-            // Someone already checked us
-            return;
-        }
+    fn clean(
+        &self,
+        module_data: &Arc<ModuleData>,
+        exclusive: UpgradeLockExclusiveGuard<Step, ModuleState>,
+    ) {
         // We need to clean up the state.
         // If things have changed, we need to update the last_step.
         // We clear memory as an optimisation only.
-        let cleanup = |w: &mut ModuleState| {
+
+        // Mark ourselves as having completed everything.
+        let finish = |w: &mut ModuleState| {
             w.epochs.checked = self.now;
             w.dirty.clean();
-            if w.steps.last_step != Some(Step::last()) {
-                w.epochs.computed = self.now;
-                if let Some(subscriber) = &self.subscriber {
-                    subscriber.start_work(module_data.handle.dupe());
-                }
+        };
+        // Rebuild stuff. Pass clear_ast to indicate we need to rebuild the AST, otherwise can reuse it (if present).
+        let rebuild = |w: &mut ModuleState, clear_ast: bool| {
+            w.steps.last_step = if clear_ast || w.steps.ast.is_none() {
+                Some(Step::Load)
+            } else {
+                Some(Step::Ast)
+            };
+            if clear_ast {
+                w.steps.ast = None;
             }
+            w.steps.exports = None;
+            w.steps.answers = None;
+            // Do not clear solutions, since we can use that for equality
+            w.epochs.computed = self.now;
+            if let Some(subscriber) = &self.subscriber {
+                subscriber.start_work(module_data.handle.dupe());
+            }
+            module_data.deps.write().clear();
+            finish(w);
         };
 
         // Validate the load flag.
@@ -181,7 +188,6 @@ impl State {
                 Load::load_from_path(module_data.handle.path(), module_data.handle.loader());
             if self_error.is_some() || &code != old_load.module_info.contents() {
                 let mut write = exclusive.write();
-                write.steps.last_step = Some(Step::Load);
                 write.steps.load = Some(Arc::new(Load::load_from_data(
                     module_data.handle.module(),
                     module_data.handle.path().dupe(),
@@ -189,13 +195,7 @@ impl State {
                     code,
                     self_error,
                 )));
-                // Clear the memory
-                write.steps.ast = None;
-                write.steps.exports = None;
-                write.steps.answers = None;
-                module_data.dependencies.write().clear();
-                // Don't clear solutions, since we can use that for equality
-                cleanup(&mut write);
+                rebuild(&mut write, true);
                 return;
             }
             // The contents are the same, so we can just reuse the old load
@@ -205,7 +205,7 @@ impl State {
         if exclusive.dirty.find {
             let loader = self.get_cached_loader(module_data.handle.loader());
             let mut is_dirty = false;
-            for x in module_data.dependencies.read().values() {
+            for x in module_data.deps.read().values() {
                 match loader.find(x.handle.module()) {
                     Ok((path, _)) if &path == x.handle.path() => {}
                     _ => {
@@ -216,16 +216,7 @@ impl State {
             }
             if is_dirty {
                 let mut write = exclusive.write();
-                write.steps.last_step = Some(if write.steps.ast.is_none() {
-                    Step::Load
-                } else {
-                    Step::Ast
-                });
-                write.steps.exports = None;
-                write.steps.answers = None;
-                module_data.dependencies.write().clear();
-                cleanup(&mut write);
-                // Don't clear solutions, since we can use that for equality
+                rebuild(&mut write, false);
                 return;
             }
         }
@@ -233,33 +224,27 @@ impl State {
         // Validate the dependencies.
         let mut is_dirty_deps = exclusive.dirty.deps;
         if !is_dirty_deps {
-            for x in module_data.dependencies.read().values() {
+            for x in module_data.deps.read().values() {
                 if exclusive.epochs.computed < x.state.read().epochs.changed {
                     is_dirty_deps = true;
                     break;
                 }
             }
         }
-        let mut write = exclusive.write();
         if is_dirty_deps {
-            write.steps.last_step = Some(if write.steps.ast.is_none() {
-                Step::Load
-            } else {
-                Step::Ast
-            });
-            write.steps.exports = None;
-            write.steps.answers = None;
-            module_data.dependencies.write().clear();
+            let mut write = exclusive.write();
+            rebuild(&mut write, false);
+            return;
         }
-        cleanup(&mut write);
-        if !is_dirty_deps {
-            drop(write);
-            // I am clean, but I need to make sure my dependencies are too
-            let mut todo = self.todo.lock();
-            for x in module_data.dependencies.read().values() {
-                // Important we use solutions, so they don't early exit
-                todo.push_lifo(Step::Solutions, x.dupe());
-            }
+
+        // The module was not dirty. Make sure our dependencies aren't dirty either.
+        let mut write = exclusive.write();
+        finish(&mut write);
+        drop(write);
+        let mut todo = self.todo.lock();
+        for x in module_data.deps.read().values() {
+            // Important we use solutions, so they don't early exit
+            todo.push_lifo(Step::Solutions, x.dupe());
         }
     }
 
@@ -268,8 +253,9 @@ impl State {
         loop {
             let reader = module_data.state.read();
             if reader.epochs.checked != self.now {
-                drop(reader);
-                self.clean(module_data);
+                if let Some(ex) = reader.exclusive(Step::first()) {
+                    self.clean(module_data, ex);
+                }
                 continue;
             }
 
@@ -627,7 +613,7 @@ impl State {
                 false
             } else {
                 stack.insert(x.handle.dupe());
-                let reader = x.dependencies.read();
+                let reader = x.deps.read();
                 let res = reader.values().any(|y| f(dirty_handles, stack, y));
                 stack.remove(&x.handle);
                 dirty_handles.insert(x.handle.dupe(), res);
@@ -869,16 +855,13 @@ pub struct StateHandle<'a> {
 
 impl<'a> StateHandle<'a> {
     fn get_module(&self, module: ModuleName) -> Result<Arc<ModuleData>, FindError> {
-        if let Some(res) = self.module_data.dependencies.read().get(&module) {
+        if let Some(res) = self.module_data.deps.read().get(&module) {
             return Ok(res.dupe());
         }
 
         let handle = self.state.import_handle(&self.module_data.handle, module)?;
         let res = self.state.get_module(&handle);
-        self.module_data
-            .dependencies
-            .write()
-            .insert(module, res.dupe());
+        self.module_data.deps.write().insert(module, res.dupe());
         Ok(res)
     }
 }

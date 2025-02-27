@@ -7,16 +7,32 @@
 
 use clap::Subcommand;
 
+use crate::clap_env;
+pub use crate::commands::buck_check::Args as BuckCheckArgs;
+pub use crate::commands::check::Args as CheckArgs;
+pub use crate::commands::lsp::Args as LspArgs;
+
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
     /// Full type checking on a file or a project
-    Check(crate::commands::check::Args),
+    Check {
+        /// Files to check (glob supported).
+        /// If no file is specified, switch to project-checking mode where the files to
+        /// check are determined from the closest configuration file.
+        files: Vec<String>,
+        /// Watch for file changes and re-check them.
+        #[clap(long, env = clap_env("WATCH"))]
+        watch: bool,
+
+        #[clap(flatten)]
+        args: CheckArgs,
+    },
 
     /// Entry point for Buck integration
-    BuckCheck(crate::commands::buck_check::Args),
+    BuckCheck(BuckCheckArgs),
 
     /// Start an LSP server
-    Lsp(crate::commands::lsp::Args),
+    Lsp(LspArgs),
 }
 
 /// Exit status of a command, if the run is completed.

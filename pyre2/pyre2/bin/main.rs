@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-mod oss_watcher;
+mod notify_watcher;
 
 use std::backtrace::Backtrace;
 use std::env::args_os;
@@ -13,23 +13,26 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
+use pyre2::clap_env;
 use pyre2::get_args_expanded;
 use pyre2::init_tracing;
 use pyre2::run::Command;
 use pyre2::run::CommandExitStatus;
 use pyre2::ConfigFile;
+use pyre2::Globs;
+use pyre2::Watcher;
 
 #[derive(Debug, Parser)]
 #[command(name = "pyre2")]
 #[command(about = "Next generation of Pyre type checker", long_about = None)]
 struct Args {
     /// Enable verbose logging.
-    #[clap(long = "verbose", short = 'v', global = true)]
+    #[clap(long = "verbose", short = 'v', global = true, env = clap_env("VERBOSE"))]
     verbose: bool,
 
     /// Set this to true to run profiling of fast jobs.
     /// Will run the command repeatedly.
-    #[clap(long = "profiling", global = true, hide = true)]
+    #[clap(long = "profiling", global = true, hide = true, env = clap_env("PROFILING"))]
     profiling: bool,
 
     #[command(subcommand)]
@@ -56,19 +59,41 @@ fn to_exit_code(status: CommandExitStatus) -> ExitCode {
     }
 }
 
+fn run_check_on_project(
+    _watcher: Option<Box<dyn Watcher>>,
+    _args: pyre2::run::CheckArgs,
+    _allow_forget: bool,
+) -> anyhow::Result<CommandExitStatus> {
+    panic!("Project-checking mode has not been implemented yet")
+}
+
+fn run_check_on_files(
+    files_to_check: Globs,
+    watcher: Option<Box<dyn Watcher>>,
+    args: pyre2::run::CheckArgs,
+    allow_forget: bool,
+) -> anyhow::Result<CommandExitStatus> {
+    args.run(
+        watcher,
+        files_to_check,
+        &get_open_source_config,
+        allow_forget,
+    )
+}
+
 fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<CommandExitStatus> {
     match command {
-        Command::Check(args) => {
-            let is_watch_mode = args.watch;
-            args.run(
-                if is_watch_mode {
-                    Some(Box::new(oss_watcher::OpenSourceWatcher::new()?))
-                } else {
-                    None
-                },
-                &get_open_source_config,
-                allow_forget,
-            )
+        Command::Check { files, watch, args } => {
+            let watcher: Option<Box<dyn Watcher>> = if watch {
+                Some(Box::new(notify_watcher::NotifyWatcher::new()?))
+            } else {
+                None
+            };
+            if files.is_empty() {
+                run_check_on_project(watcher, args, allow_forget)
+            } else {
+                run_check_on_files(Globs::new(files), watcher, args, allow_forget)
+            }
         }
         Command::BuckCheck(args) => args.run(),
         Command::Lsp(args) => args.run(),

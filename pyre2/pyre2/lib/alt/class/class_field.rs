@@ -458,26 +458,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             );
         }
 
+        // Determine whether this is an explicit `@override` and remove the decoration from the type if so.
+        let (value_ty, is_override) = value_ty.clone().extract_override();
+
         // Promote literals. The check on `annotation` is an optimization, it does not (currently) affect semantics.
         // TODO(stroxler): if we see a read-only `Qualifier` like `Final`, it is sound to preserve literals.
         let value_ty = if annotation.map_or(true, |a| a.ty.is_none()) && value_ty.is_literal() {
-            &value_ty.clone().promote_literals(self.stdlib)
+            value_ty.promote_literals(self.stdlib)
         } else {
             value_ty
         };
 
-        // todo: consider revisiting the attr subset check to account for override decorator
-        // stripping the override decorator from the type when we don't know where it appears
-        // may not be the most efficient approach
-        let is_override = value_ty.contains_override(); // save the result of override checks before stripping them from the type
-        let value_ty = match value_ty {
-            Type::Decoration(Decoration::Override(ty)) => ty.as_ref(),
-            _ => value_ty,
-        };
-
-        // Enum handling
+        // Enum handling:
+        // - Check whether the field is a member (which depends only on its type and name)
+        // - Validate that a member should not have an annotation, and should respect any explicit annotatin on `_value_`
+        //
+        // TODO(stroxler, yangdanny): We currently operate on promoted types, which means we do not infer `Literal[...]`
+        // types for the `.value` / `._value_` attributes of literals. This is permitted in the spec although not optimal
+        // for most cases; we are handling it this way in part because generic enum behavior is not yet well-specified.
         let value_ty = if let Some(enum_) = metadata.enum_metadata()
-            && self.is_valid_enum_member(name, value_ty, &initialization)
+            && self.is_valid_enum_member(name, &value_ty, &initialization)
         {
             if annotation.is_some() {
                 self.error(errors, range, format!("Enum member `{}` may not be annotated directly. Instead, annotate the _value_ attribute.", name));
@@ -486,29 +486,28 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 if !matches!(value_ty, Type::Tuple(_))
                     && !self
                         .solver()
-                        .is_subset_eq(value_ty, &enum_value_ty, self.type_order())
+                        .is_subset_eq(&value_ty, &enum_value_ty, self.type_order())
                 {
                     self.error(errors, range, format!("The value for enum member `{}` must match the annotation of the _value_ attribute.", name));
                 }
             }
-
             &Type::Literal(Lit::Enum(Box::new((
                 enum_.cls.clone(),
                 name.clone(),
                 value_ty.clone(),
             ))))
         } else {
-            value_ty
+            &value_ty
         };
 
         // Types provided in annotations shadow inferred types
-        let (ty, ann) = if let Some(ann) = annotation {
+        let ty = if let Some(ann) = annotation {
             match &ann.ty {
-                Some(ty) => (ty, Some(ann)),
-                None => (value_ty, Some(ann)),
+                Some(ty) => ty,
+                None => value_ty,
             }
         } else {
-            (value_ty, None)
+            value_ty
         };
 
         // Dataclass read-onlyness (does not currently handle other kinds of readonlyness)
@@ -517,8 +516,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             .is_some_and(|dataclass| dataclass.kws.is_set(&DataclassKeywords::FROZEN));
 
         // Create the resulting field and check for override inconsistencies before returning
-        let class_field =
-            ClassField::new(ty.clone(), range, ann.cloned(), initialization, readonly);
+        let class_field = ClassField::new(
+            ty.clone(),
+            range,
+            annotation.cloned(),
+            initialization,
+            readonly,
+        );
         self.check_class_field_for_override_mismatch(
             name,
             &class_field,
