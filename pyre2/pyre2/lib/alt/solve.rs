@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::f64::consts::E;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -1387,14 +1386,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     }
                                     t => {
                                         // TODO: handle the case when the second argument is a class
-                                        self.error(errors, *range, ErrorKind::Unknown, format!("Expected second argument to `super` to be a class instance, got `{}`", t.clone().deterministic_printing()))
+                                        self.error(errors, *range, ErrorKind::InvalidArgument, format!("Expected second argument to `super` to be a class instance, got `{}`", t.clone().deterministic_printing()))
                                     }
                                 }
                             }
                             t => self.error(
                                 errors,
                                 *range,
-                                ErrorKind::Unknown,
+                                ErrorKind::InvalidArgument,
                                 format!(
                                     "Expected first argument to `super` to be a class object, got `{}`",
                                     t.clone().deterministic_printing()

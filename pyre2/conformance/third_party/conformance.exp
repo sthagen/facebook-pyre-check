@@ -457,6 +457,16 @@
     },
     {
       "code": -2,
+      "column": 1,
+      "concise_description": "NewType `UserId` not allowed in isinstance.",
+      "description": "NewType `UserId` not allowed in isinstance.",
+      "line": 20,
+      "name": "unknown",
+      "stop_column": 23,
+      "stop_line": 20
+    },
+    {
+      "code": -2,
       "column": 20,
       "concise_description": "Expected string literal \"GoodName\"",
       "description": "Expected string literal \"GoodName\"",
@@ -474,6 +484,26 @@
       "name": "unknown",
       "stop_column": 23,
       "stop_line": 38
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Second argument to NewType must be a proper class",
+      "description": "Second argument to NewType must be a proper class",
+      "line": 44,
+      "name": "unknown",
+      "stop_column": 12,
+      "stop_line": 44
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Second argument to NewType must be a proper class",
+      "description": "Second argument to NewType must be a proper class",
+      "line": 51,
+      "name": "unknown",
+      "stop_column": 12,
+      "stop_line": 51
     },
     {
       "code": -2,
@@ -6175,16 +6205,6 @@
   "generics_paramspec_semantics.py": [
     {
       "code": -2,
-      "column": 1,
-      "concise_description": "assert_type((str, bool) -> str, (str, bool) -> str) failed",
-      "description": "assert_type((str, bool) -> str, (str, bool) -> str) failed",
-      "line": 22,
-      "name": "unknown",
-      "stop_column": 44,
-      "stop_line": 22
-    },
-    {
-      "code": -2,
       "column": 4,
       "concise_description": "Expected 2 more positional arguments",
       "description": "Expected 2 more positional arguments",
@@ -6242,16 +6262,6 @@
       "name": "unknown",
       "stop_column": 37,
       "stop_line": 61
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "assert_type((int) -> str, (int) -> str) failed",
-      "description": "assert_type((int) -> str, (int) -> str) failed",
-      "line": 84,
-      "name": "unknown",
-      "stop_column": 42,
-      "stop_line": 84
     },
     {
       "code": -2,
@@ -9174,7 +9184,7 @@
       "concise_description": "Named tuples do not support multiple inheritance",
       "description": "Named tuples do not support multiple inheritance",
       "line": 105,
-      "name": "unknown",
+      "name": "invalid-inheritance",
       "stop_column": 11,
       "stop_line": 105
     }

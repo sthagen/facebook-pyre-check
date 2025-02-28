@@ -153,7 +153,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     // todo zeina: Ideally, we can directly add this class to the list of base classes. Revist this when fixing the "Any" representation.  
                     Type::Any(_) =>  {has_base_any = true; None}
-                    _ => None,
+                    _ =>
+                    {if is_new_type {
+                        self.error(
+                            errors,
+                            cls.range(),
+                            ErrorKind::Unknown,
+                            "Second argument to NewType must be a proper class".to_owned(),
+                        );
+                    }
+                    None},
                 },
                 BaseClass::TypedDict => {
                     is_typed_dict = true;
@@ -166,7 +175,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.error(
                 errors,
                 cls.range(),
-                ErrorKind::Unknown,
+                ErrorKind::InvalidInheritance,
                 "Named tuples do not support multiple inheritance".to_owned(),
             );
         }
@@ -454,7 +463,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             {
                 self.error(errors,
                     cls.range(),
-                    ErrorKind::Unknown,
+                    ErrorKind::InvalidInheritance,
                     format!(
                         "Class `{}` has metaclass `{}` which is not a subclass of metaclass `{}` from base class `{}`",
                         cls.name(),
@@ -485,7 +494,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         errors,
                         raw_metaclass.range(),
-                        ErrorKind::Unknown,
+                        ErrorKind::InvalidInheritance,
                         format!(
                             "Metaclass of `{}` has type `{}` which is not a subclass of `type`",
                             cls.name(),
@@ -499,7 +508,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.error(
                     errors,
                     cls.range(),
-                    ErrorKind::Unknown,
+                    ErrorKind::InvalidInheritance,
                     format!(
                         "Metaclass of `{}` has type `{}` is not a simple class type.",
                         cls.name(),
