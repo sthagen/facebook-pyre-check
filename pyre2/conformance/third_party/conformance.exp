@@ -1497,18 +1497,8 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "EXPECTED (x: int) -> str <: (int, ParamSpec(...)) -> str",
-      "description": "EXPECTED (x: int) -> str <: (int, ParamSpec(...)) -> str",
-      "line": 90,
-      "name": "unknown",
-      "stop_column": 15,
-      "stop_line": 90
-    },
-    {
-      "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED () -> str <: (int, ParamSpec(...)) -> str",
-      "description": "EXPECTED () -> str <: (int, ParamSpec(...)) -> str",
+      "concise_description": "EXPECTED () -> str <: (int, ...) -> str",
+      "description": "EXPECTED () -> str <: (int, ...) -> str",
       "line": 91,
       "name": "unknown",
       "stop_column": 15,
@@ -1517,32 +1507,12 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "EXPECTED (a: int, b: int, c: int) -> str <: (int, ParamSpec(...)) -> str",
-      "description": "EXPECTED (a: int, b: int, c: int) -> str <: (int, ParamSpec(...)) -> str",
-      "line": 92,
-      "name": "unknown",
-      "stop_column": 15,
-      "stop_line": 92
-    },
-    {
-      "code": -2,
-      "column": 7,
-      "concise_description": "EXPECTED (*, a: int) -> str <: (int, ParamSpec(...)) -> str",
-      "description": "EXPECTED (*, a: int) -> str <: (int, ParamSpec(...)) -> str",
+      "concise_description": "EXPECTED (*, a: int) -> str <: (int, ...) -> str",
+      "description": "EXPECTED (*, a: int) -> str <: (int, ...) -> str",
       "line": 93,
       "name": "unknown",
       "stop_column": 15,
       "stop_line": 93
-    },
-    {
-      "code": -2,
-      "column": 50,
-      "concise_description": "EXPECTED Proto2 <: (int, ParamSpec(...)) -> None",
-      "description": "EXPECTED Proto2 <: (int, ParamSpec(...)) -> None",
-      "line": 151,
-      "name": "unknown",
-      "stop_column": 52,
-      "stop_line": 151
     },
     {
       "code": -2,
@@ -1627,18 +1597,8 @@
     {
       "code": -2,
       "column": 48,
-      "concise_description": "EXPECTED (int, str) -> str <: (int, ParamSpec(...)) -> str",
-      "description": "EXPECTED (int, str) -> str <: (int, ParamSpec(...)) -> str",
-      "line": 186,
-      "name": "unknown",
-      "stop_column": 50,
-      "stop_line": 186
-    },
-    {
-      "code": -2,
-      "column": 48,
-      "concise_description": "EXPECTED (int, str) -> str <: (str, ParamSpec(...)) -> str",
-      "description": "EXPECTED (int, str) -> str <: (str, ParamSpec(...)) -> str",
+      "concise_description": "EXPECTED (int, str) -> str <: (str, ...) -> str",
+      "description": "EXPECTED (int, str) -> str <: (str, ...) -> str",
       "line": 187,
       "name": "unknown",
       "stop_column": 50,
@@ -2561,16 +2521,6 @@
     {
       "code": -2,
       "column": 16,
-      "concise_description": "Object of class `super` has no attribute `__call__`",
-      "description": "Object of class `super` has no attribute `__call__`",
-      "line": 43,
-      "name": "unknown",
-      "stop_column": 32,
-      "stop_line": 43
-    },
-    {
-      "code": -2,
-      "column": 16,
       "concise_description": "EXPECTED object <: Class3",
       "description": "EXPECTED object <: Class3",
       "line": 48,
@@ -2597,16 +2547,6 @@
       "name": "unknown",
       "stop_column": 7,
       "stop_line": 51
-    },
-    {
-      "code": -2,
-      "column": 16,
-      "concise_description": "Object of class `super` has no attribute `__call__`",
-      "description": "Object of class `super` has no attribute `__call__`",
-      "line": 57,
-      "name": "unknown",
-      "stop_column": 32,
-      "stop_line": 57
     },
     {
       "code": -2,
@@ -2977,8 +2917,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 37,
       "name": "unknown",
       "stop_column": 15,
@@ -2987,8 +2927,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 38,
       "name": "unknown",
       "stop_column": 3,
@@ -2997,8 +2937,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 39,
       "name": "unknown",
       "stop_column": 3,
@@ -3037,8 +2977,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 50,
       "name": "unknown",
       "stop_column": 15,
@@ -3047,8 +2987,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 51,
       "name": "unknown",
       "stop_column": 3,
@@ -3087,8 +3027,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 64,
       "name": "unknown",
       "stop_column": 15,
@@ -3097,8 +3037,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 65,
       "name": "unknown",
       "stop_column": 3,
@@ -3107,8 +3047,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 66,
       "name": "unknown",
       "stop_column": 3,
@@ -3117,8 +3057,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 67,
       "name": "unknown",
       "stop_column": 3,
@@ -3157,8 +3097,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 78,
       "name": "unknown",
       "stop_column": 15,
@@ -3167,8 +3107,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 79,
       "name": "unknown",
       "stop_column": 3,
@@ -3177,8 +3117,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 80,
       "name": "unknown",
       "stop_column": 3,
@@ -3237,8 +3177,8 @@
     {
       "code": -2,
       "column": 17,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 100,
       "name": "unknown",
       "stop_column": 19,
@@ -3257,8 +3197,8 @@
     {
       "code": -2,
       "column": 17,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 105,
       "name": "unknown",
       "stop_column": 19,
@@ -3297,8 +3237,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 126,
       "name": "unknown",
       "stop_column": 15,
@@ -3307,8 +3247,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 127,
       "name": "unknown",
       "stop_column": 3,
@@ -3347,8 +3287,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 143,
       "name": "unknown",
       "stop_column": 19,
@@ -3357,8 +3297,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 144,
       "name": "unknown",
       "stop_column": 7,
@@ -3397,8 +3337,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 164,
       "name": "unknown",
       "stop_column": 15,
@@ -3417,8 +3357,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 165,
       "name": "unknown",
       "stop_column": 15,
@@ -3477,8 +3417,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 183,
       "name": "unknown",
       "stop_column": 15,
@@ -3487,8 +3427,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 184,
       "name": "unknown",
       "stop_column": 3,
@@ -3527,8 +3467,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 194,
       "name": "unknown",
       "stop_column": 15,
@@ -3537,8 +3477,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Unexpected ParamSpec type",
-      "description": "Unexpected ParamSpec type",
+      "concise_description": "Unexpected ParamSpec type: `Unknown`",
+      "description": "Unexpected ParamSpec type: `Unknown`",
       "line": 195,
       "name": "unknown",
       "stop_column": 3,
@@ -10146,16 +10086,6 @@
     }
   ],
   "protocols_explicit.py": [
-    {
-      "code": -2,
-      "column": 16,
-      "concise_description": "Object of class `super` has no attribute `draw`",
-      "description": "Object of class `super` has no attribute `draw`",
-      "line": 27,
-      "name": "unknown",
-      "stop_column": 28,
-      "stop_line": 27
-    },
     {
       "code": -2,
       "column": 14,

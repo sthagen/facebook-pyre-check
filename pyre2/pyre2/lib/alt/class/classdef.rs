@@ -17,15 +17,12 @@ use starlark_map::small_map::SmallMap;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
-use crate::alt::attr::Attribute;
-use crate::alt::class::class_field::ClassField;
-use crate::alt::class::class_field::WithDefiningClass;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::EnumMetadata;
 use crate::binding::binding::KeyClassMetadata;
 use crate::binding::binding::KeyLegacyTypeParam;
-use crate::dunder;
 use crate::error::collector::ErrorCollector;
+use crate::error::kind::ErrorKind;
 use crate::graph::index::Idx;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
@@ -34,6 +31,7 @@ use crate::types::class::Class;
 use crate::types::class::ClassFieldProperties;
 use crate::types::class::ClassType;
 use crate::types::class::TArgs;
+use crate::types::quantified::QuantifiedKind;
 use crate::types::tuple::Tuple;
 use crate::types::typed_dict::TypedDict;
 use crate::types::types::TParams;
@@ -130,6 +128,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 self.error(
                                     errors,
                                     range,
+                                    ErrorKind::Unknown,
                                     "TypeVarTuple must be unpacked".to_owned(),
                                 )
                             } else {
@@ -166,8 +165,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                 };
                 checked_targs.push(tuple_type);
-            } else if param.quantified.is_type_var_tuple() {
-                checked_targs.push(Type::any_tuple())
             } else if param.quantified.is_param_spec()
                 && nparams == 1
                 && let Some(arg) = targs.get(targ_idx)
@@ -193,19 +190,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         errors,
                         range,
+                        ErrorKind::Unknown,
                         "Expected a valid ParamSpec expression".to_owned(),
                     );
                     checked_targs.push(Type::Ellipsis);
                 }
                 targ_idx += 1;
-            } else if param.quantified.is_param_spec() {
-                checked_targs.push(Type::Ellipsis);
             } else if let Some(arg) = targs.get(targ_idx) {
                 match arg {
                     Type::Unpack(_) => {
                         checked_targs.push(self.error(
                             errors,
                             range,
+                            ErrorKind::Unknown,
                             format!(
                                 "Unpacked argument cannot be used for type parameter {}.",
                                 param.name
@@ -214,11 +211,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     _ => {
                         let arg = if arg.is_kind_type_var_tuple() {
-                            self.error(errors, range, "TypeVarTuple must be unpacked".to_owned())
+                            self.error(
+                                errors,
+                                range,
+                                ErrorKind::Unknown,
+                                "TypeVarTuple must be unpacked".to_owned(),
+                            )
                         } else if arg.is_kind_param_spec() {
                             self.error(
                                 errors,
                                 range,
+                                ErrorKind::Unknown,
                                 "ParamSpec cannot be used for type parameter".to_owned(),
                             )
                         } else {
@@ -231,17 +234,32 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             } else if let Some(default) = &param.default {
                 checked_targs.push(default.clone());
             } else {
-                self.error(
-                    errors,
-                    range,
-                    format!(
-                        "Expected {} for class `{}`, got {}.",
-                        count(tparams.len(), "type argument"),
-                        cls.name(),
-                        nargs
-                    ),
-                );
-                checked_targs.extend(vec![Type::any_error(); tparams.len().saturating_sub(nargs)]);
+                let only_type_var_tuples_left = tparams
+                    .iter()
+                    .skip(param_idx)
+                    .all(|x| x.quantified.is_type_var_tuple());
+                if !only_type_var_tuples_left {
+                    self.error(
+                        errors,
+                        range,
+                        ErrorKind::Unknown,
+                        format!(
+                            "Expected {} for class `{}`, got {}.",
+                            count(tparams.len(), "type argument"),
+                            cls.name(),
+                            nargs
+                        ),
+                    );
+                }
+                let defaults = tparams
+                    .iter()
+                    .skip(param_idx)
+                    .map(|x| match x.quantified.kind() {
+                        QuantifiedKind::TypeVarTuple => Type::any_tuple(),
+                        QuantifiedKind::TypeVar => Type::any_error(),
+                        QuantifiedKind::ParamSpec => Type::Ellipsis,
+                    });
+                checked_targs.extend(defaults);
                 break;
             }
         }
@@ -249,6 +267,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.error(
                 errors,
                 range,
+                ErrorKind::Unknown,
                 format!(
                     "Expected {} for class `{}`, got {}.",
                     count(tparams.len(), "type argument"),
@@ -380,93 +399,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             self.get_ancestor(class.class_object(), want)
                 .map(|ancestor| ancestor.substitute(&class.substitution()))
-        }
-    }
-
-    pub(in crate::alt::class) fn get_class_member(
-        &self,
-        cls: &Class,
-        name: &Name,
-    ) -> Option<WithDefiningClass<Arc<ClassField>>> {
-        if let Some(field) = self.get_class_field(cls, name) {
-            Some(WithDefiningClass {
-                value: field,
-                defining_class: cls.dupe(),
-            })
-        } else {
-            self.get_metadata_for_class(cls)
-                .ancestors(self.stdlib)
-                .filter_map(|ancestor| {
-                    self.get_class_field(ancestor.class_object(), name)
-                        .map(|field| WithDefiningClass {
-                            value: Arc::new(field.instantiate_for(ancestor)),
-                            defining_class: ancestor.class_object().dupe(),
-                        })
-                })
-                .next()
-        }
-    }
-
-    pub fn get_instance_attribute(&self, cls: &ClassType, name: &Name) -> Option<Attribute> {
-        self.get_class_member(cls.class_object(), name)
-            .map(|member| Arc::unwrap_or_clone(member.value).as_instance_attribute(cls))
-    }
-
-    /// Gets an attribute from a class definition.
-    ///
-    /// Returns `None` if there is no such attribute, otherwise an `Attribute` object
-    /// that describes whether access is allowed and the type if so.
-    ///
-    /// Access is disallowed for instance-only attributes and for attributes whose
-    /// type contains a class-scoped type parameter - e.g., `class A[T]: x: T`.
-    pub fn get_class_attribute(&self, cls: &Class, name: &Name) -> Option<Attribute> {
-        let member = self.get_class_member(cls, name)?.value;
-        Some(Arc::unwrap_or_clone(member).as_class_attribute(cls))
-    }
-
-    /// Get the class's `__new__` method.
-    ///
-    /// This lookup skips normal method binding logic (it behaves like a cross
-    /// between a classmethod and a constructor; downstream code handles this
-    /// using the raw callable type).
-    pub fn get_dunder_new(&self, cls: &ClassType) -> Option<Type> {
-        let new_member = self.get_class_member(cls.class_object(), &dunder::NEW)?;
-        if new_member.defined_on(self.stdlib.object_class_type().class_object()) {
-            // The default behavior of `object.__new__` is already baked into our implementation of
-            // class construction; we only care about `__new__` if it is overridden.
-            None
-        } else {
-            Arc::unwrap_or_clone(new_member.value).as_raw_special_method_type(cls)
-        }
-    }
-
-    /// Get the class's `__init__` method, if we should analyze it
-    /// We skip analyzing the call to `__init__` if:
-    /// (1) it isn't defined (possible if we've been passed a custom typeshed), or
-    /// (2) the class overrides `object.__new__` but not `object.__init__`, in wich case the
-    ///     `__init__` call always succeeds at runtime.
-    pub fn get_dunder_init(&self, cls: &ClassType, overrides_new: bool) -> Option<Type> {
-        let init_method = self.get_class_member(cls.class_object(), &dunder::INIT)?;
-        if !(overrides_new
-            && init_method.defined_on(self.stdlib.object_class_type().class_object()))
-        {
-            Arc::unwrap_or_clone(init_method.value).as_special_method_type(cls)
-        } else {
-            None
-        }
-    }
-
-    /// Get the metaclass `__call__` method.
-    pub fn get_metaclass_dunder_call(&self, cls: &ClassType) -> Option<Type> {
-        let metadata = self.get_metadata_for_class(cls.class_object());
-        let metaclass = metadata.metaclass()?;
-        let attr = self.get_class_member(metaclass.class_object(), &dunder::CALL)?;
-        if attr.defined_on(self.stdlib.builtins_type().class_object()) {
-            // The behavior of `type.__call__` is already baked into our implementation of constructors,
-            // so we can skip analyzing it at the type level.
-            None
-        } else {
-            Arc::unwrap_or_clone(attr.value).as_special_method_type(metaclass)
         }
     }
 }

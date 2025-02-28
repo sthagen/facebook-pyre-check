@@ -49,12 +49,25 @@ let create_call_graph ?(other_sources = []) ~context source_text =
   in
   let initial_callables = FetchCallables.from_source ~configuration ~pyre_api ~source in
   let definitions = FetchCallables.get_definitions initial_callables in
+  let scheduler = Test.mock_scheduler () in
+  let scheduler_policy = Scheduler.Policy.legacy_fixed_chunk_count () in
+  let definitions_and_stubs =
+    Interprocedural.FetchCallables.get initial_callables ~definitions:true ~stubs:true
+  in
+  let callables_to_definitions_map =
+    Interprocedural.Target.DefinesSharedMemory.from_callables
+      ~scheduler
+      ~scheduler_policy
+      ~pyre_api
+      definitions_and_stubs
+  in
   let method_kinds =
     CallGraph.MethodKind.SharedMemory.from_targets
-      ~scheduler:(Test.mock_scheduler ())
-      ~scheduler_policy:(Scheduler.Policy.legacy_fixed_chunk_count ())
-      ~pyre_api
-      (FetchCallables.get ~definitions:true ~stubs:true initial_callables)
+      ~scheduler
+      ~scheduler_policy
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+      definitions_and_stubs
   in
   let fold call_graph callable =
     let callees =
@@ -66,6 +79,8 @@ let create_call_graph ?(other_sources = []) ~context source_text =
         ~attribute_targets:(Target.HashSet.create ())
         ~decorators:CallGraph.CallableToDecoratorsMap.empty
         ~method_kinds:(CallGraph.MethodKind.SharedMemory.read_only method_kinds)
+        ~callables_to_definitions_map:
+          (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
         ~callable
       |> CallGraph.DefineCallGraph.all_targets
            ~use_case:CallGraph.AllTargetsUseCase.TaintAnalysisDependency

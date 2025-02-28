@@ -79,6 +79,24 @@ assert_type(x, C)
 );
 
 testcase!(
+    test_type_argument_error_default,
+    r#"
+from typing import Any, assert_type
+class C[T1, *Ts, T2]: pass
+C_Alias = C[int]  # E: Expected 3 type arguments for class `C`, got 1.
+assert_type(C[int], type[C[int, *tuple[Any, ...], Any]])  # E: Expected 3 type arguments for class `C`, got 1.
+
+AnyClassMethod = classmethod[Any]  # E: Expected 3 type arguments for class `classmethod`, got 1.
+assert_type(classmethod[Any], type[classmethod[Any, ..., Any]])  # E: Expected 3 type arguments for class `classmethod`, got 1.
+
+# No error if it's a TypeVarTuple w/ nothing after, because a TypeVarTuple can be empty
+class C2[T, *Ts]: pass
+C2_Alias = C2[int]
+assert_type(C2[int], type[C2[int, *tuple[Any, ...]]])
+"#,
+);
+
+testcase!(
     test_class_method,
     r#"
 from typing import assert_type
@@ -116,13 +134,12 @@ append(v, "test")  # E: Literal['test'] <: int
 "#,
 );
 
-testcase_with_bug!(
-    "special_base_class doesn't support qualified names",
+testcase!(
     test_generics_legacy_qualified,
     r#"
 import typing
 T = typing.TypeVar("T")
-class C(typing.Generic[T]): ...  # E: TODO: Answers::apply_special_form cannot handle `Generic[T]`
+class C(typing.Generic[T]): ...
 def append(x: C[T], y: T):
     pass
 v: C[int]
@@ -1255,5 +1272,15 @@ for _ in []:
 # Enum's functional form is detected via a special export.
 X = Enum('X', ['X'])
 assert_type(X, type[X])
+    "#,
+);
+
+testcase!(
+    test_bad_type_in_cast,
+    r#"
+from typing import cast
+cast(lambda x: x, 1)  # E: First argument to `typing.cast` must be a type
+# Passing a listcomp as a type is nonsense; it's okay if we don't handle it optimally as long as we don't crash.
+cast([x for x in []], 1)  # E: First argument to `typing.cast` must be a type  # E: Could not find name `x`
     "#,
 );

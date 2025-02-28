@@ -8,6 +8,7 @@
 use std::mem;
 
 use itertools::Either;
+use ruff_python_ast::Arguments;
 use ruff_python_ast::BoolOp;
 use ruff_python_ast::Comprehension;
 use ruff_python_ast::Decorator;
@@ -23,15 +24,18 @@ use ruff_text_size::TextRange;
 use crate::ast::Ast;
 use crate::binding::binding::Binding;
 use crate::binding::binding::Key;
+use crate::binding::binding::SuperStyle;
 use crate::binding::bindings::BindingsBuilder;
 use crate::binding::bindings::LegacyTParamBuilder;
 use crate::binding::narrow::NarrowOps;
 use crate::binding::scope::Flow;
 use crate::binding::scope::Scope;
+use crate::binding::scope::ScopeKind;
 use crate::dunder;
 use crate::export::special::SpecialExport;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
+use crate::types::callable::unexpected_keyword;
 use crate::types::types::AnyStyle;
 use crate::visitors::Visitors;
 
@@ -66,8 +70,8 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
-    fn bind_comprehensions(&mut self, comprehensions: &mut [Comprehension]) {
-        self.scopes.push(Scope::comprehension());
+    fn bind_comprehensions(&mut self, range: TextRange, comprehensions: &mut [Comprehension]) {
+        self.scopes.push(Scope::comprehension(range));
         for comp in comprehensions.iter_mut() {
             self.scopes.current_mut().stat.expr_lvalue(&comp.target);
             let make_binding = |k| Binding::IterableValue(k, comp.iter.clone());
@@ -81,7 +85,7 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     pub fn bind_lambda(&mut self, lambda: &ExprLambda) {
-        self.scopes.push(Scope::function());
+        self.scopes.push(Scope::function(lambda.range));
         if let Some(parameters) = &lambda.parameters {
             for x in parameters.iter() {
                 self.bind_lambda_param(x.name());
@@ -189,6 +193,70 @@ impl<'a> BindingsBuilder<'a> {
                 }
                 return;
             }
+            Expr::Call(ExprCall {
+                range,
+                func,
+                arguments:
+                    Arguments {
+                        range: _,
+                        args: posargs,
+                        keywords,
+                    },
+            }) if self.as_special_export(func) == Some(SpecialExport::Super) => {
+                self.ensure_expr(func);
+                for kw in keywords {
+                    self.ensure_expr(&mut kw.value);
+                    unexpected_keyword(&|msg| self.error(*range, msg), "super", kw);
+                }
+                let nargs = posargs.len();
+                let style = if nargs == 0 {
+                    let mut self_type = None;
+                    for scope in self.scopes.iter_rev() {
+                        if let ScopeKind::ClassBody(class_body) = &scope.kind {
+                            self_type = Some(class_body.as_self_type_key());
+                            break;
+                        }
+                    }
+                    match self_type {
+                        Some(key) => SuperStyle::ImplicitArgs(self.table.types.0.insert(key)),
+                        None => {
+                            self.error(
+                                *range,
+                                "`super` call with no arguments is valid only inside a method"
+                                    .to_owned(),
+                            );
+                            SuperStyle::Any
+                        }
+                    }
+                } else if nargs == 2 {
+                    let mut bind = |expr: &mut Expr| {
+                        self.ensure_expr(expr);
+                        self.table
+                            .insert(Key::Anon(expr.range()), Binding::Expr(None, expr.clone()))
+                    };
+                    let cls_key = bind(&mut posargs[0]);
+                    let obj_key = bind(&mut posargs[1]);
+                    SuperStyle::ExplicitArgs(cls_key, obj_key)
+                } else {
+                    if nargs != 1 {
+                        // Calling super() with one argument is technically legal: https://stackoverflow.com/a/30190341.
+                        // This is a very niche use case, and we don't support it aside from not erroring.
+                        self.error(
+                            *range,
+                            format!("`super` takes at most 2 arguments, got {}", nargs),
+                        );
+                    }
+                    for arg in posargs {
+                        self.ensure_expr(arg);
+                    }
+                    SuperStyle::Any
+                };
+                self.table.insert(
+                    Key::SuperInstance(*range),
+                    Binding::SuperInstance(style, *range),
+                );
+                return;
+            }
             Expr::Name(x) => {
                 let name = Ast::expr_name_identifier(x.clone());
                 let binding = self.forward_lookup(&name);
@@ -202,19 +270,19 @@ impl<'a> BindingsBuilder<'a> {
                 false
             }
             Expr::ListComp(x) => {
-                self.bind_comprehensions(&mut x.generators);
+                self.bind_comprehensions(x.range, &mut x.generators);
                 true
             }
             Expr::SetComp(x) => {
-                self.bind_comprehensions(&mut x.generators);
+                self.bind_comprehensions(x.range, &mut x.generators);
                 true
             }
             Expr::DictComp(x) => {
-                self.bind_comprehensions(&mut x.generators);
+                self.bind_comprehensions(x.range, &mut x.generators);
                 true
             }
             Expr::Generator(x) => {
-                self.bind_comprehensions(&mut x.generators);
+                self.bind_comprehensions(x.range, &mut x.generators);
                 true
             }
             Expr::Lambda(x) => {
@@ -299,6 +367,8 @@ impl<'a> BindingsBuilder<'a> {
                     }
                 }
             }
+            // Bind the lambda so we don't crash on undefined parameter names.
+            Expr::Lambda(_) => self.ensure_expr(x),
             _ => Visitors::visit_expr_mut(x, |x| self.ensure_type(x, tparams_builder)),
         }
     }

@@ -157,12 +157,16 @@ reveal_type(MyEnum.D)  # E: revealed type: (self: MyEnum) -> None
 );
 
 testcase!(
-    test_member_annotation,
+    test_member_with_explicit_annotation,
     r#"
+from typing import assert_type, Literal
 from enum import Enum
 
 class MyEnum(Enum):
-    X: int = 1  # E: Enum member `X` may not be annotated directly. Instead, annotate the _value_ attribute.
+    X: float = 5  # E: Enum member `X` may not be annotated directly. Instead, annotate the _value_ attribute
+
+assert_type(MyEnum.X, Literal[MyEnum.X])
+assert_type(MyEnum.X.value, float)
 "#,
 );
 

@@ -39,15 +39,31 @@ let assert_higher_order_call_graph_fixpoint
   let definitions = FetchCallables.get_definitions initial_callables in
   let scheduler = Test.mock_scheduler () in
   let scheduler_policy = Scheduler.Policy.legacy_fixed_chunk_count () in
+  let definitions_and_stubs =
+    Interprocedural.FetchCallables.get initial_callables ~definitions:true ~stubs:true
+  in
+  let callables_to_definitions_map =
+    Interprocedural.Target.DefinesSharedMemory.from_callables
+      ~scheduler
+      ~scheduler_policy
+      ~pyre_api
+      definitions_and_stubs
+  in
   let decorators =
-    CallGraph.CallableToDecoratorsMap.create ~pyre_api ~scheduler ~scheduler_policy definitions
+    CallGraph.CallableToDecoratorsMap.create
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+      ~scheduler
+      ~scheduler_policy
+      definitions
   in
   let method_kinds =
     CallGraph.MethodKind.SharedMemory.from_targets
-      ~scheduler:(Test.mock_scheduler ())
-      ~scheduler_policy:(Scheduler.Policy.legacy_fixed_chunk_count ())
-      ~pyre_api
-      (FetchCallables.get ~definitions:true ~stubs:true initial_callables)
+      ~scheduler
+      ~scheduler_policy
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+      definitions_and_stubs
   in
   let decorator_resolution =
     CallGraph.DecoratorResolution.Results.resolve_batch_exn
@@ -74,6 +90,8 @@ let assert_higher_order_call_graph_fixpoint
       ~skip_analysis_targets
       ~definitions
       ~decorator_resolution
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
   in
   let dependency_graph =
     DependencyGraph.build_whole_program_dependency_graph
@@ -94,6 +112,8 @@ let assert_higher_order_call_graph_fixpoint
       ~skip_analysis_targets
       ~decorator_resolution
       ~method_kinds:(CallGraph.MethodKind.SharedMemory.read_only method_kinds)
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
       ~max_iterations
   in
   List.iter expected ~f:(fun { Expected.callable; call_graph; returned_callables } ->
@@ -993,6 +1013,38 @@ let test_higher_order_call_graph_fixpoint =
                                      (Target.Regular.Function { name = "test.foo"; kind = Normal });
                                  ]
                                ())) );
+                   ];
+                 returned_callables = [];
+               };
+             ]
+           ();
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_higher_order_call_graph_fixpoint
+           ~source:
+             {|
+     class A:
+       @classmethod
+       def f(x, g):
+         return g
+     def foo():
+       return
+     @functools.partial(A.f, "abc")
+     def bar():
+       return foo
+     def baz():
+       return bar()  # Test resolving calls that require redirecting expressions
+  |}
+           ~expected:
+             [
+               {
+                 Expected.callable =
+                   Target.Regular.Function { name = "test.baz"; kind = Normal }
+                   |> Target.from_regular;
+                 call_graph =
+                   [
+                     ( "12:9-12:14",
+                       LocationCallees.Singleton
+                         (ExpressionCallees.from_call (CallCallees.create ())) );
                    ];
                  returned_callables = [];
                };

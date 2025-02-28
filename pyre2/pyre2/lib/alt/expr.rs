@@ -34,6 +34,7 @@ use crate::binding::binding::KeyYield;
 use crate::binding::binding::KeyYieldFrom;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
+use crate::error::kind::ErrorKind;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::callable::Callable;
@@ -193,6 +194,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.error(
                     errors,
                     x.range(),
+                    ErrorKind::Unknown,
                     format!("Expected literal True or False, got {ty}"),
                 );
                 false
@@ -217,6 +219,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         errors,
                         x.range,
+                        ErrorKind::Unknown,
                         format!(
                             "TypeVar must be assigned to a variable named `{}`",
                             lit.value.to_str()
@@ -227,6 +230,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.error(
                     errors,
                     arg.range(),
+                    ErrorKind::Unknown,
                     "Expected first argument of TypeVar to be a string literal".to_owned(),
                 );
             }
@@ -238,6 +242,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         errors,
                         kw.range,
+                        ErrorKind::Unknown,
                         "Contradictory variance specifications".to_owned(),
                     );
                 } else {
@@ -268,6 +273,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.error(
                                 errors,
                                 kw.range,
+                                ErrorKind::Unknown,
                                 "TypeVar cannot have both constraints and bound".to_owned(),
                             );
                         } else {
@@ -283,6 +289,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.error(
                                 errors,
                                 kw.range,
+                                ErrorKind::Unknown,
                                 "Multiple values for argument `name`".to_owned(),
                             );
                         } else {
@@ -294,6 +301,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         self.error(
                             errors,
                             kw.range,
+                            ErrorKind::Unknown,
                             format!("Unexpected keyword argument `{}` to TypeVar", id.id),
                         );
                     }
@@ -302,6 +310,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         errors,
                         kw.range,
+                        ErrorKind::Unknown,
                         "Cannot pass unpacked keyword arguments to TypeVar".to_owned(),
                     );
                 }
@@ -309,7 +318,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
 
         if !arg_name {
-            self.error(errors, x.range, "Missing `name` argument".to_owned());
+            self.error(
+                errors,
+                x.range,
+                ErrorKind::Unknown,
+                "Missing `name` argument".to_owned(),
+            );
         }
 
         TypeVar::new(
@@ -336,6 +350,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         errors,
                         x.range,
+                        ErrorKind::Unknown,
                         format!(
                             "ParamSpec must be assigned to a variable named `{}`",
                             lit.value.to_str()
@@ -346,6 +361,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.error(
                     errors,
                     arg.range(),
+                    ErrorKind::Unknown,
                     "Expected first argument of ParamSpec to be a string literal".to_owned(),
                 );
             }
@@ -364,6 +380,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.error(
                                 errors,
                                 kw.range,
+                                ErrorKind::Unknown,
                                 "Multiple values for argument `name`".to_owned(),
                             );
                         } else {
@@ -375,6 +392,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         self.error(
                             errors,
                             kw.range,
+                            ErrorKind::Unknown,
                             format!("Unexpected keyword argument `{}` to ParamSpec", id.id),
                         );
                     }
@@ -383,6 +401,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         errors,
                         kw.range,
+                        ErrorKind::Unknown,
                         "Cannot pass unpacked keyword arguments to ParamSpec".to_owned(),
                     );
                 }
@@ -390,7 +409,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
 
         if !arg_name {
-            self.error(errors, x.range, "Missing `name` argument".to_owned());
+            self.error(
+                errors,
+                x.range,
+                ErrorKind::Unknown,
+                "Missing `name` argument".to_owned(),
+            );
         }
 
         ParamSpec::new(name, self.module_info().dupe())
@@ -411,6 +435,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         errors,
                         x.range,
+                        ErrorKind::Unknown,
                         format!(
                             "TypeVarTuple must be assigned to a variable named `{}`",
                             lit.value.to_str()
@@ -421,6 +446,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.error(
                     errors,
                     arg.range(),
+                    ErrorKind::Unknown,
                     "Expected first argument of TypeVarTuple to be a string literal".to_owned(),
                 );
             }
@@ -439,6 +465,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.error(
                                 errors,
                                 kw.range,
+                                ErrorKind::Unknown,
                                 "Multiple values for argument `name`".to_owned(),
                             );
                         } else {
@@ -450,6 +477,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         self.error(
                             errors,
                             kw.range,
+                            ErrorKind::Unknown,
                             format!("Unexpected keyword argument `{}` to TypeVarTuple", id.id),
                         );
                     }
@@ -458,6 +486,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         errors,
                         kw.range,
+                        ErrorKind::Unknown,
                         "Cannot pass unpacked keyword arguments to TypeVarTuple".to_owned(),
                     );
                 }
@@ -465,7 +494,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
 
         if !arg_name {
-            self.error(errors, x.range, "Missing `name` argument".to_owned());
+            self.error(
+                errors,
+                x.range,
+                ErrorKind::Unknown,
+                "Missing `name` argument".to_owned(),
+            );
         }
 
         TypeVarTuple::new(name, self.module_info().dupe())
@@ -550,6 +584,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     _ => self.error(
                         errors,
                         x.range,
+                        ErrorKind::Unknown,
                         format!("Unary {} is not supported on {}", x.op.as_str(), t),
                     ),
                 };
@@ -656,6 +691,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                         return self.error(
                                             errors,
                                             x.range(),
+                                            ErrorKind::Unknown,
                                             format!("Expected an iterable, got {}", ty),
                                         );
                                     }
@@ -718,6 +754,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 self.error(
                                     errors,
                                     x.range(),
+                                    ErrorKind::Unknown,
                                     format!("Expected an iterable, got {}", unpacked_ty),
                                 )
                             }
@@ -775,6 +812,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     self.error(
                                         errors,
                                         x.value.range(),
+                                        ErrorKind::Unknown,
                                         format!("Expected a mapping, got {}", ty),
                                     );
                                 }
@@ -833,7 +871,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let awaiting_ty = self.expr_infer(&x.value, errors);
                 match self.unwrap_awaitable(&awaiting_ty) {
                     Some(ty) => ty,
-                    None => self.error(errors, x.range, "Expression is not awaitable".to_owned()),
+                    None => self.error(
+                        errors,
+                        x.range,
+                        ErrorKind::Unknown,
+                        "Expression is not awaitable".to_owned(),
+                    ),
                 }
             }
             Expr::Yield(x) => self.get(&KeyYield(x.range)).send_ty.clone(),
@@ -851,6 +894,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         self.error(
                             errors,
                             x.range,
+                            ErrorKind::Unknown,
                             format!(
                                 "`{}` not supported between `{}` and `{}`",
                                 op.as_str(),
@@ -899,6 +943,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Expr::Call(x) => {
                 let ty_fun = self.expr_infer(&x.func, errors);
+                if matches!(&ty_fun, Type::ClassDef(cls) if cls.has_qname("builtins", "super")) {
+                    if is_special_name(&x.func, "super") {
+                        return self.get(&Key::SuperInstance(x.range)).arc_clone();
+                    } else {
+                        // Because we have to construct a binding for super in order to fill in
+                        // implicit arguments, we can't handle things like local aliases to super.
+                        return Type::any_implicit();
+                    }
+                }
                 let func_range = x.func.range();
                 self.distribute_over_union(&ty_fun, |ty| match ty.callee_kind() {
                     Some(CalleeKind::Callable(CallableKind::AssertType)) => self.call_assert_type(
@@ -1023,6 +1076,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             _ => self.error(
                                 errors,
                                 x.range,
+                                ErrorKind::Unknown,
                                 format!(
                                     "Expected 1 type argument for class `type`, got {}",
                                     xs.len()
@@ -1044,6 +1098,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             _ => self.error(
                                 errors,
                                 x.range,
+                                ErrorKind::Unknown,
                                 format!(
                                     "Expected 1 type argument for class `PyreReadOnly`, got {}",
                                     xs.len()
@@ -1097,6 +1152,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     self.error(
                                         errors,
                                         x.slice.range(),
+                                        ErrorKind::Unknown,
                                         format!(
                                             "TypedDict `{}` does not have key `{}`",
                                             typed_dict.name(),
@@ -1108,6 +1164,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             _ => self.error(
                                 errors,
                                 x.slice.range(),
+                                ErrorKind::Unknown,
                                 format!(
                                     "Invalid key for TypedDict `{}`, got `{}`",
                                     typed_dict.name(),
@@ -1119,6 +1176,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     t => self.error(
                         errors,
                         x.range,
+                        ErrorKind::Unknown,
                         format!(
                             "Can't apply arguments to non-class, got {}",
                             t.deterministic_printing()
@@ -1146,6 +1204,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::IpyEscapeCommand(x) => self.error(
                 errors,
                 x.range,
+                ErrorKind::Unknown,
                 "IPython escapes are not supported".to_owned(),
             ),
         };
@@ -1234,6 +1293,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.error(
                                 errors,
                                 range,
+                                ErrorKind::Unknown,
                                 format!(
                                     "Index {idx} out of range for tuple with {} elements",
                                     elts.len()

@@ -637,7 +637,16 @@ let run_taint_analysis
         let initial_callables =
           Interprocedural.FetchCallables.from_qualifiers
             ~scheduler
-            ~scheduler_policies
+            ~scheduler_policy:
+              (Scheduler.Policy.from_configuration_or_default
+                 scheduler_policies
+                 Configuration.ScheduleIdentifier.TaintFetchCallables
+                 ~default:
+                   (Scheduler.Policy.fixed_chunk_count
+                      ~minimum_chunks_per_worker:1
+                      ~minimum_chunk_size:1
+                      ~preferred_chunks_per_worker:1
+                      ()))
             ~configuration
             ~pyre_api
             ~qualifiers
@@ -650,22 +659,43 @@ let run_taint_analysis
         initial_callables)
   in
 
+  let definitions_and_stubs =
+    Interprocedural.FetchCallables.get initial_callables ~definitions:true ~stubs:true
+  in
+  let step_logger =
+    StepLogger.start
+      ~start_message:"Building a map from callable names to definitions"
+      ~end_message:"Map from callable names to definitions built"
+  in
+  let callables_to_definitions_map =
+    Interprocedural.Target.DefinesSharedMemory.from_callables
+      ~scheduler
+      ~scheduler_policy:
+        (Scheduler.Policy.from_configuration_or_default
+           scheduler_policies
+           Configuration.ScheduleIdentifier.DefinesSharedMemory
+           ~default:Interprocedural.CallGraph.SharedMemory.default_scheduler_policy)
+      ~pyre_api
+      definitions_and_stubs
+  in
+  let () = StepLogger.finish step_logger in
+
   let definitions = Interprocedural.FetchCallables.get_definitions initial_callables in
   let step_logger =
     StepLogger.start ~start_message:"Computing method kinds" ~end_message:"Method kinds computed"
   in
   let method_kinds =
     (* TODO(T215258952): Cache this step. *)
-    initial_callables
-    |> Interprocedural.FetchCallables.get ~definitions:true ~stubs:true
-    |> Interprocedural.CallGraph.MethodKind.SharedMemory.from_targets
-         ~scheduler
-         ~scheduler_policy:
-           (Scheduler.Policy.from_configuration_or_default
-              scheduler_policies
-              Configuration.ScheduleIdentifier.MethodKinds
-              ~default:Interprocedural.CallGraph.SharedMemory.default_scheduler_policy)
-         ~pyre_api
+    Interprocedural.CallGraph.MethodKind.SharedMemory.from_targets
+      ~scheduler
+      ~scheduler_policy:
+        (Scheduler.Policy.from_configuration_or_default
+           scheduler_policies
+           Configuration.ScheduleIdentifier.MethodKinds
+           ~default:Interprocedural.CallGraph.SharedMemory.default_scheduler_policy)
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+      definitions_and_stubs
   in
   let () = StepLogger.finish step_logger in
 
@@ -748,7 +778,8 @@ let run_taint_analysis
       in
       let callables_to_decorators_map =
         Interprocedural.CallGraph.CallableToDecoratorsMap.create
-          ~pyre_api
+          ~callables_to_definitions_map:
+            (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
           ~scheduler
           ~scheduler_policy:
             (Scheduler.Policy.from_configuration_or_default
@@ -814,7 +845,9 @@ let run_taint_analysis
           ~decorators:Interprocedural.CallGraph.CallableToDecoratorsMap.empty
           ~method_kinds:(Interprocedural.CallGraph.MethodKind.SharedMemory.read_only method_kinds)
           ~definitions
-          ~decorator_resolution)
+          ~decorator_resolution
+          ~callables_to_definitions_map:
+            (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map))
   in
   let () = StepLogger.finish step_logger in
 
@@ -880,6 +913,8 @@ let run_taint_analysis
           ~skip_analysis_targets
           ~decorator_resolution
           ~method_kinds:(Interprocedural.CallGraph.MethodKind.SharedMemory.read_only method_kinds)
+          ~callables_to_definitions_map:
+            (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
           ~max_iterations:(Option.value higher_order_call_graph_max_iterations ~default:50)
       in
       let () = StepLogger.finish step_logger in
@@ -996,6 +1031,8 @@ let run_taint_analysis
           get_define_call_graph;
           global_constants = Interprocedural.GlobalConstants.SharedMemory.read_only global_constants;
           decorator_inlined = inline_decorators || not higher_order_call_graph;
+          callables_to_definitions_map =
+            Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map;
         }
       ~callables_to_analyze
       ~max_iterations:100

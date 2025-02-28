@@ -456,6 +456,7 @@ module TestEnvironment = struct
     global_constants: GlobalConstants.SharedMemory.t;
     stubs_shared_memory_handle: Target.HashsetSharedMemory.t;
     method_kinds: CallGraph.MethodKind.SharedMemory.t;
+    callables_to_definitions_map: Interprocedural.Target.DefinesSharedMemory.t;
   }
 
   let cleanup
@@ -479,6 +480,7 @@ module TestEnvironment = struct
         global_constants;
         stubs_shared_memory_handle;
         method_kinds;
+        callables_to_definitions_map;
       }
     =
     CallGraph.SharedMemory.cleanup define_call_graphs;
@@ -492,7 +494,8 @@ module TestEnvironment = struct
       class_interval_graph;
     Target.HashsetSharedMemory.cleanup stubs_shared_memory_handle;
     GlobalConstants.SharedMemory.cleanup global_constants;
-    CallGraph.MethodKind.SharedMemory.cleanup method_kinds
+    CallGraph.MethodKind.SharedMemory.cleanup method_kinds;
+    Interprocedural.Target.DefinesSharedMemory.cleanup callables_to_definitions_map
 end
 
 let set_up_decorator_preprocessing ~handle models =
@@ -558,7 +561,6 @@ let initialize
   let configuration, pyre_api =
     initialize_pyre_and_fail_on_errors ~context ~handle ~source_content ~models_source
   in
-  let scheduler = Test.mock_scheduler () in
   let taint_configuration_shared_memory =
     TaintConfiguration.SharedMemory.from_heap taint_configuration
   in
@@ -567,18 +569,40 @@ let initialize
   in
   let qualifier = Reference.create (String.chop_suffix_exn handle ~suffix:".py") in
   let source = source_from_qualifier ~pyre_api qualifier in
-  let initial_callables = FetchCallables.from_source ~configuration ~pyre_api ~source in
-  let stubs = FetchCallables.get_stubs initial_callables in
-  let definitions = FetchCallables.get_definitions initial_callables in
+  let initial_callables_in_source = FetchCallables.from_source ~configuration ~pyre_api ~source in
+  let stubs = FetchCallables.get_stubs initial_callables_in_source in
+  let definitions = FetchCallables.get_definitions initial_callables_in_source in
   let class_hierarchy_graph = ClassHierarchyGraph.Heap.from_source ~pyre_api ~source in
   let stubs_shared_memory_handle = Target.HashsetSharedMemory.from_heap stubs in
+  let scheduler = Test.mock_scheduler () in
   let scheduler_policy = Scheduler.Policy.legacy_fixed_chunk_count () in
+  let qualifiers = PyrePysaEnvironment.ReadOnly.explicit_qualifiers pyre_api in
+  let all_initial_callables =
+    (* Also include typeshed stubs so that we can build `qualifiers_defines` for them. *)
+    Interprocedural.FetchCallables.from_qualifiers
+      ~scheduler
+      ~scheduler_policy
+      ~configuration
+      ~pyre_api
+      ~qualifiers
+  in
+  let definitions_and_stubs =
+    Interprocedural.FetchCallables.get all_initial_callables ~definitions:true ~stubs:true
+  in
+  let callables_to_definitions_map =
+    Interprocedural.Target.DefinesSharedMemory.from_callables
+      ~scheduler
+      ~scheduler_policy
+      ~pyre_api
+      definitions_and_stubs
+  in
   let method_kinds =
     CallGraph.MethodKind.SharedMemory.from_targets
       ~scheduler
       ~scheduler_policy
-      ~pyre_api
-      definitions
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+      definitions_and_stubs
   in
   let user_models, model_query_results =
     let models_source =
@@ -677,9 +701,13 @@ let initialize
 
   (* Initialize models *)
   (* The call graph building depends on initial models for global targets. *)
-  let scheduler_policy = Scheduler.Policy.legacy_fixed_chunk_count () in
   let decorators =
-    CallGraph.CallableToDecoratorsMap.create ~pyre_api ~scheduler ~scheduler_policy definitions
+    CallGraph.CallableToDecoratorsMap.create
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+      ~scheduler
+      ~scheduler_policy
+      definitions
   in
   let decorator_resolution =
     CallGraph.DecoratorResolution.Results.resolve_batch_exn
@@ -706,12 +734,14 @@ let initialize
       ~skip_analysis_targets:Target.Set.empty
       ~definitions
       ~decorator_resolution
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
   in
   let dependency_graph =
     DependencyGraph.build_whole_program_dependency_graph
       ~static_analysis_configuration
       ~prune:DependencyGraph.PruneMethod.None
-      ~initial_callables
+      ~initial_callables:initial_callables_in_source
       ~call_graph:whole_program_call_graph
       ~overrides:override_graph_heap
   in
@@ -728,6 +758,8 @@ let initialize
       ~skip_analysis_targets:Target.Set.empty
       ~decorator_resolution
       ~method_kinds:(CallGraph.MethodKind.SharedMemory.read_only method_kinds)
+      ~callables_to_definitions_map:
+        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
       ~max_iterations:higher_order_call_graph_max_iterations
   in
   let initial_models =
@@ -752,7 +784,7 @@ let initialize
     call_graph_fixpoint_state;
     override_graph_heap;
     override_graph_shared_memory;
-    initial_callables;
+    initial_callables = initial_callables_in_source;
     model_query_results;
     stubs;
     initial_models;
@@ -762,6 +794,7 @@ let initialize
     global_constants;
     stubs_shared_memory_handle;
     method_kinds;
+    callables_to_definitions_map;
   }
 
 
@@ -893,6 +926,7 @@ let end_to_end_integration_test path context =
            class_interval_graph_shared_memory;
            global_constants;
            call_graph_fixpoint_state;
+           callables_to_definitions_map;
            _;
          } as test_environment)
       =
@@ -960,6 +994,8 @@ let end_to_end_integration_test path context =
             global_constants =
               Interprocedural.GlobalConstants.SharedMemory.read_only global_constants;
             decorator_inlined = false;
+            callables_to_definitions_map =
+              Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map;
           }
         ~callables_to_analyze
         ~max_iterations:100

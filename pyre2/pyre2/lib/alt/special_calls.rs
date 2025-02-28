@@ -19,6 +19,8 @@ use ruff_text_size::TextRange;
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::error::collector::ErrorCollector;
+use crate::error::kind::ErrorKind;
+use crate::types::callable::unexpected_keyword;
 use crate::types::types::Type;
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
@@ -46,6 +48,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.error(
                     errors,
                     range,
+                    ErrorKind::Unknown,
                     format!(
                         "assert_type({}, {}) failed",
                         a.deterministic_printing(),
@@ -57,6 +60,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.error(
                 errors,
                 range,
+                ErrorKind::Unknown,
                 format!(
                     "assert_type needs 2 positional arguments, got {:#?}",
                     args.len()
@@ -64,15 +68,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             );
         }
         for keyword in keywords {
-            let desc = if let Some(id) = &keyword.arg {
-                format!(" `{}`", id)
-            } else {
-                "".to_owned()
-            };
-            self.error(
-                errors,
-                range,
-                format!("`assert_type` got an unexpected keyword argument{desc}"),
+            unexpected_keyword(
+                &|msg| {
+                    self.error(errors, range, ErrorKind::Unknown, msg);
+                },
+                "assert_type",
+                keyword,
             );
         }
         Type::None
@@ -90,12 +91,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.error(
                 errors,
                 range,
+                ErrorKind::Unknown,
                 format!("revealed type: {}", t.deterministic_printing()),
             );
         } else {
             self.error(
                 errors,
                 range,
+                ErrorKind::Unknown,
                 format!(
                     "reveal_type needs 1 positional argument, got {}",
                     args.len()
@@ -103,15 +106,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             );
         }
         for keyword in keywords {
-            let desc = if let Some(id) = &keyword.arg {
-                format!(" `{}`", id)
-            } else {
-                "".to_owned()
-            };
-            self.error(
-                errors,
-                range,
-                format!("`reveal_type` got an unexpected keyword argument{desc}"),
+            unexpected_keyword(
+                &|msg| {
+                    self.error(errors, range, ErrorKind::Unknown, msg);
+                },
+                "reveal_type",
+                keyword,
             );
         }
         Type::None
@@ -150,6 +150,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         self.error(
                             errors,
                             range,
+                            ErrorKind::Unknown,
                             "`typing.cast` got multiple values for argument `typ`".to_owned(),
                         );
                     }
@@ -160,6 +161,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         self.error(
                             errors,
                             range,
+                            ErrorKind::Unknown,
                             "`typing.cast` got multiple values for argument `val`".to_owned(),
                         );
                     }
@@ -174,6 +176,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.error(
                 errors,
                 range,
+                ErrorKind::Unknown,
                 format!("`typing.cast` expected 2 arguments, got {}", extra + 2),
             );
         }
@@ -183,6 +186,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 None => self.error(
                     errors,
                     range,
+                    ErrorKind::Unknown,
                     "First argument to `typing.cast` must be a type".to_owned(),
                 ),
             }
@@ -190,6 +194,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.error(
                 errors,
                 range,
+                ErrorKind::Unknown,
                 "`typing.cast` missing required argument `typ`".to_owned(),
             )
         };
@@ -197,6 +202,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.error(
                 errors,
                 range,
+                ErrorKind::Unknown,
                 "`typing.cast` missing required argument `val`".to_owned(),
             );
         }

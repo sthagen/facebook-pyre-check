@@ -203,10 +203,10 @@ module CallableToDecoratorsMap = struct
     not (SerializableStringSet.mem decorator_name ignored_decorators_for_higher_order)
 
 
-  let create ~pyre_api ~scheduler ~scheduler_policy callables =
+  let create ~callables_to_definitions_map ~scheduler ~scheduler_policy callables =
     let collect_decorators callable =
       callable
-      |> Target.get_module_and_definition ~pyre_api
+      |> Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map
       >>= fun ( _,
                 {
                   Node.value = { Define.signature = { decorators; _ }; _ };
@@ -271,11 +271,13 @@ module MethodKind = struct
 
     let read_only = T.read_only
 
-    let compute_method_kind ~pyre_api target =
+    let compute_method_kind ~callables_to_definitions_map target =
       match Target.get_regular target with
       | Target.Regular.Method { method_name = "__new__"; _ } -> Some Static
       | Target.Regular.Method _ as target ->
-          Target.get_module_and_definition ~pyre_api (Target.from_regular target)
+          target
+          |> Target.from_regular
+          |> Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map
           >>| fun (_, { Node.value = define; _ }) ->
           if List.exists class_method_decorators ~f:(Ast.Statement.Define.has_decorator define) then
             Class
@@ -290,13 +292,13 @@ module MethodKind = struct
 
     let empty = T.create
 
-    let from_targets ~scheduler ~scheduler_policy ~pyre_api targets =
+    let from_targets ~scheduler ~scheduler_policy ~callables_to_definitions_map targets =
       let shared_memory = T.create () in
       let shared_memory_add_only = T.add_only shared_memory in
       let empty_shared_memory = T.AddOnly.create_empty shared_memory_add_only in
       let map =
         List.fold ~init:empty_shared_memory ~f:(fun shared_memory target ->
-            match compute_method_kind ~pyre_api target with
+            match compute_method_kind ~callables_to_definitions_map target with
             | Some method_kind -> T.AddOnly.add shared_memory target method_kind
             | None -> shared_memory)
       in
@@ -3519,7 +3521,9 @@ module CalleeVisitor = struct
       let register_targets ~expression_identifier ?(location = location) callees =
         log
           ~debug
-          "Resolved callees for expression `%a`:@,%a"
+          "Resolved callees at `%a` for expression `%a`:@,%a "
+          Location.pp
+          location
           Expression.pp
           expression
           ExpressionCallees.pp
@@ -3940,7 +3944,7 @@ module DecoratorResolution = struct
         ~context
         ~callees_at_location:call_graph
     in
-    let create_and_resolve_decorator_call previous_argument decorator =
+    let create_decorator_call previous_argument decorator =
       Node.create
         ~location:decorator.Node.location
           (* Avoid later registering all callees to the same location. *)
@@ -3974,7 +3978,7 @@ module DecoratorResolution = struct
             List.fold
               decorators
               ~init:(Expression.Name callable_name |> Node.create ~location:define_location)
-              ~f:create_and_resolve_decorator_call
+              ~f:create_decorator_call
           in
           let call_graph = ref DefineCallGraph.empty in
           resolve_callees ~call_graph expression;
@@ -4259,6 +4263,12 @@ module HigherOrderCallGraph = struct
 
     val debug : bool
 
+    val define : Ast.Statement.Define.t
+
+    val define_name : Reference.t
+
+    val callables_to_definitions_map : Target.DefinesSharedMemory.ReadOnly.t
+
     val input_define_call_graph : DefineCallGraph.t
 
     (* Outputs. *)
@@ -4314,7 +4324,7 @@ module HigherOrderCallGraph = struct
         decorated_targets, non_decorated_targets
 
 
-      let rec analyze_call ~location ~call ~arguments ~state =
+      let rec analyze_call ~pyre_in_context ~location ~call ~arguments ~state =
         let formal_arguments_if_non_stub target =
           if Target.is_override target || Target.is_object target then
             (* TODO(T204630385): It is possible for a target to be an `Override`, which we do not
@@ -4323,7 +4333,7 @@ module HigherOrderCallGraph = struct
             None
           else
             target
-            |> Target.get_module_and_definition ~pyre_api:Context.pyre_api
+            |> Target.DefinesSharedMemory.ReadOnly.get Context.callables_to_definitions_map
             >>= fun (_, { Node.value = define; _ }) -> formal_arguments_from_non_stub_define define
         in
         let create_parameter_target_excluding_args_kwargs (parameter_target, (_, argument_matches)) =
@@ -4344,7 +4354,9 @@ module HigherOrderCallGraph = struct
             state_so_far
             { Call.Argument.value = argument; _ }
           =
-          let callees, new_state = analyze_expression ~state:state_so_far ~expression:argument in
+          let callees, new_state =
+            analyze_expression ~pyre_in_context ~state:state_so_far ~expression:argument
+          in
           let call_targets_from_higher_order_parameters =
             match HigherOrderParameterMap.Map.find_opt index higher_order_parameters with
             | Some { HigherOrderParameter.call_targets; _ } -> call_targets
@@ -4379,22 +4391,24 @@ module HigherOrderCallGraph = struct
           |> Option.value_exn
                ~message:
                  (Format.asprintf
-                    "Could not find callees for `%a` in `%a` at `%a` in the call graph."
-                    Expression.pp
-                    (Expression.Call call
-                    |> Node.create_with_default_location
-                    |> Ast.Expression.delocalize)
+                    "Could not find callees for `%a` in `%a` at `%a` in the call graph: `%a`"
+                    Ast.Expression.Call.pp
+                    call
                     Reference.pp
                     Context.qualifier
                     Location.pp
-                    location)
+                    location
+                    DefineCallGraph.pp
+                    Context.input_define_call_graph)
         in
         let decorated_targets, non_decorated_targets =
           partition_decorated_targets original_call_targets
         in
         (* The analysis of the callee AST handles the redirection to artifically created decorator
            defines. *)
-        let callee_return_values, state = analyze_expression ~state ~expression:call.Call.callee in
+        let callee_return_values, state =
+          analyze_expression ~pyre_in_context ~state ~expression:call.Call.callee
+        in
         let call_targets_from_callee =
           non_decorated_targets
           |> CallTarget.Set.of_list
@@ -4502,7 +4516,11 @@ module HigherOrderCallGraph = struct
 
 
       (* Return possible callees and the new state. *)
-      and analyze_expression ~state ~expression:({ Node.value; location } as expression) =
+      and analyze_expression
+          ~pyre_in_context
+          ~state
+          ~expression:({ Node.value; location } as expression)
+        =
         log
           "Analyzing expression `%a` with state `%a`"
           Expression.pp_expression
@@ -4510,13 +4528,13 @@ module HigherOrderCallGraph = struct
           State.pp
           state;
         let call_targets, state =
-          match value with
-          | Expression.Await expression -> analyze_expression ~state ~expression
+          match redirect_expressions ~pyre_in_context ~location value with
+          | Expression.Await expression -> analyze_expression ~pyre_in_context ~state ~expression
           | BinaryOperator _ -> CallTarget.Set.bottom, state
           | BooleanOperator _ -> CallTarget.Set.bottom, state
           | ComparisonOperator _ -> CallTarget.Set.bottom, state
           | Call ({ callee = _; arguments } as call) ->
-              analyze_call ~location ~call ~arguments ~state
+              analyze_call ~pyre_in_context ~location ~call ~arguments ~state
           | Constant _ -> CallTarget.Set.bottom, state
           | Dictionary _ -> CallTarget.Set.bottom, state
           | DictionaryComprehension _ -> CallTarget.Set.bottom, state
@@ -4593,7 +4611,7 @@ module HigherOrderCallGraph = struct
           | Yield None -> CallTarget.Set.bottom, state
           | Yield (Some expression)
           | YieldFrom expression ->
-              let callees, state = analyze_expression ~state ~expression in
+              let callees, state = analyze_expression ~pyre_in_context ~state ~expression in
               ( callees,
                 store_callees ~weak:true ~root:TaintAccessPath.Root.LocalResult ~callees state )
         in
@@ -4606,7 +4624,7 @@ module HigherOrderCallGraph = struct
         call_targets, state
 
 
-      let analyze_statement ~state ~statement =
+      let analyze_statement ~pyre_in_context ~state ~statement =
         log "Analyzing statement `%a` with state `%a`" Statement.pp statement State.pp state;
         let state =
           match Node.value statement with
@@ -4614,7 +4632,9 @@ module HigherOrderCallGraph = struct
               match TaintAccessPath.of_expression ~self_variable:None target with
               | None -> state
               | Some { root; path = _ } ->
-                  let callees, state = analyze_expression ~state ~expression:value in
+                  let callees, state =
+                    analyze_expression ~pyre_in_context ~state ~expression:value
+                  in
                   store_callees ~weak:false ~root ~callees state)
           | Assign { Assign.target; value = None; _ } -> (
               match TaintAccessPath.of_expression ~self_variable:None target with
@@ -4702,7 +4722,8 @@ module HigherOrderCallGraph = struct
                 ~callees
                 state
           | Delete _ -> state
-          | Expression expression -> analyze_expression ~state ~expression |> Core.snd
+          | Expression expression ->
+              analyze_expression ~pyre_in_context ~state ~expression |> Core.snd
           | For _
           | Global _
           | If _
@@ -4714,7 +4735,7 @@ module HigherOrderCallGraph = struct
               state
           | Raise { expression = Some _; _ } -> state
           | Return { expression = Some expression; _ } ->
-              let callees, state = analyze_expression ~state ~expression in
+              let callees, state = analyze_expression ~pyre_in_context ~state ~expression in
               store_callees ~weak:true ~root:TaintAccessPath.Root.LocalResult ~callees state
           | Return { expression = None; _ }
           | Try _
@@ -4727,7 +4748,16 @@ module HigherOrderCallGraph = struct
         state
 
 
-      let forward ~statement_key:_ state ~statement = analyze_statement ~state ~statement
+      let forward ~statement_key state ~statement =
+        let pyre_in_context =
+          PyrePysaEnvironment.InContext.create_at_statement_key
+            Context.pyre_api
+            ~define_name:Context.define_name
+            ~define:Context.define
+            ~statement_key
+        in
+        analyze_statement ~pyre_in_context ~state ~statement
+
 
       let backward ~statement_key:_ _ ~statement:_ = failwith "unused"
     end)
@@ -4740,7 +4770,7 @@ let debug_higher_order_call_graph define =
   || Ast.Statement.Define.dump_higher_order_call_graph define
 
 
-let get_module_and_definition_exn ~pyre_api ~decorator_resolution callable =
+let get_module_and_definition_exn ~callables_to_definitions_map ~decorator_resolution callable =
   let no_definition_error_message =
     Format.asprintf "Found no definition for `%a`" Target.pp_pretty
   in
@@ -4751,13 +4781,14 @@ let get_module_and_definition_exn ~pyre_api ~decorator_resolution callable =
   else
     callable
     |> Target.strip_parameters
-    |> Target.get_module_and_definition ~pyre_api
+    |> Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map
     |> Option.value_exn ~message:(no_definition_error_message callable)
 
 
 let higher_order_call_graph_of_define
     ~define_call_graph
     ~pyre_api
+    ~callables_to_definitions_map
     ~qualifier
     ~define
     ~initial_state
@@ -4775,6 +4806,12 @@ let higher_order_call_graph_of_define
     let get_callee_model = get_callee_model
 
     let debug = debug_higher_order_call_graph define
+
+    let define = define
+
+    let define_name = PyrePysaLogic.qualified_name_of_define ~module_name:qualifier define
+
+    let callables_to_definitions_map = callables_to_definitions_map
   end
   in
   log
@@ -4882,9 +4919,10 @@ let call_graph_of_callable
     ~attribute_targets
     ~decorators
     ~method_kinds
+    ~callables_to_definitions_map
     ~callable
   =
-  match Target.get_module_and_definition callable ~pyre_api with
+  match Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map callable with
   | None -> Format.asprintf "Found no definition for `%a`" Target.pp_pretty callable |> failwith
   | Some (qualifier, define) ->
       call_graph_of_define
@@ -5014,6 +5052,7 @@ module SharedMemory = struct
       ~skip_analysis_targets
       ~definitions
       ~decorator_resolution
+      ~callables_to_definitions_map
     =
     let attribute_targets = attribute_targets |> Target.Set.elements |> Target.HashSet.of_list in
     let define_call_graphs, whole_program_call_graph =
@@ -5034,6 +5073,7 @@ module SharedMemory = struct
                   ~attribute_targets
                   ~decorators
                   ~method_kinds
+                  ~callables_to_definitions_map
                   ~callable)
               ()
           in
