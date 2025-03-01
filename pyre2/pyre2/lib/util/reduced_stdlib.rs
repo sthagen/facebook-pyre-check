@@ -6,7 +6,7 @@
  */
 
 //! A minimal stdlib that is meant to be approximately the same as from typeshed,
-//! but only contain the bits that matter for our tests.
+//! but only contain the bits that matter for our tests and web playground
 
 use crate::module::module_name::ModuleName;
 
@@ -335,6 +335,18 @@ class PyreReadOnly[T]:
     pass
 "#;
 
+static COLLECTIONS: &str = r#"
+from typing import Iterable, Any
+def namedtuple(
+    typename: str,
+    field_names: str | Iterable[str],
+    *,
+    rename: bool = False,
+    module: str | None = None,
+    defaults: Iterable[Any] | None = None,
+) -> type[tuple[Any, ...]]: ...
+"#;
+
 static STDLIB: &[(&str, &str)] = &[
     ("builtins", BUILTINS),
     ("typing", TYPING),
@@ -343,9 +355,10 @@ static STDLIB: &[(&str, &str)] = &[
     ("dataclasses", DATACLASSES),
     ("sys", SYS),
     ("pyre_extensions", PYRE_EXTENSIONS),
+    ("collections", COLLECTIONS),
 ];
 
-pub fn lookup_test_stdlib(module: ModuleName) -> Option<&'static str> {
+pub fn lookup_stdlib(module: ModuleName) -> Option<&'static str> {
     STDLIB.iter().find_map(|(name, source)| {
         if *name == module.as_str() {
             Some(*source)

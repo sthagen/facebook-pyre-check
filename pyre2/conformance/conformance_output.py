@@ -17,6 +17,7 @@ import sys
 import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -187,26 +188,19 @@ def compare_conformance_output(
     return messages
 
 
-def get_pyre2_command(test: bool) -> list[str]:
-    command = ["buck2"]
-    if test:
-        command += ["--isolation-dir", "pyre2"]
-    return command + [
-        "run",
-        "--reuse-current-config",
-        "fbcode//tools/pyre/pyre2:pyre2",
-        "--",
-        "check",
-        "--expectations",
-        # We seem to be a bit non-deterministic in some places, so let's disable
-        # parallelism for now.
-        "--threads=1",
-    ]
+def get_pyre2_command() -> list[str]:
+    with resources.path(__package__, "pyre2.exe") as pyre2_path:
+        return [
+            str(pyre2_path),
+            "check",
+            "--expectations",
+            # We seem to be a bit non-deterministic in some places, so let's disable
+            # parallelism for now.
+            "--threads=1",
+        ]
 
 
-def get_conformance_output(
-    directory: str, test: bool
-) -> Dict[str, List[Dict[str, Any]]]:
+def get_conformance_output(directory: str) -> Dict[str, List[Dict[str, Any]]]:
     """
     Run minpyre on conformance test suite, parse and group the output by file
     """
@@ -218,7 +212,7 @@ def get_conformance_output(
     outputs = defaultdict(lambda: [])
     with tempfile.NamedTemporaryFile() as tmp_file:
         cmd = (
-            get_pyre2_command(test)
+            get_pyre2_command()
             + [
                 "--output",
                 tmp_file.name,
@@ -244,9 +238,7 @@ def get_conformance_output(
     return outputs
 
 
-def get_conformance_output_separate(
-    directory: str, test: bool
-) -> Dict[str, List[Dict[str, Any]]]:
+def get_conformance_output_separate(directory: str) -> Dict[str, List[Dict[str, Any]]]:
     """
     Run minpyre on conformance test suite, parse and group the output by file
     This function runs Pyre2 separately for each file, which is slower but more robust to failures
@@ -260,7 +252,7 @@ def get_conformance_output_separate(
     for file in files_to_check:
         with tempfile.NamedTemporaryFile() as tmp_file:
             cmd = (
-                get_pyre2_command(test)
+                get_pyre2_command()
                 + [
                     "--output",
                     tmp_file.name,
@@ -302,7 +294,7 @@ def main() -> None:
         "directory", help="path to directory containing files to process"
     )
     parser.add_argument(
-        "--mode", "-m", choices=["update", "check", "compare", "test"], default="update"
+        "--mode", "-m", choices=["update", "check", "compare"], default="update"
     )
     parser.add_argument(
         "--separate", action="store_true", help="run Pyre2 separately for each case"
@@ -311,12 +303,10 @@ def main() -> None:
     if args.separate:
         conformance_output = get_conformance_output_separate(
             directory=args.directory,
-            test=args.mode == "test",
         )
     else:
         conformance_output = get_conformance_output(
             directory=args.directory,
-            test=args.mode == "test",
         )
     if len(conformance_output) == 0:
         logger.error(f"Failed to get conformance output for directory {args.directory}")
@@ -324,7 +314,7 @@ def main() -> None:
     if not os.path.exists(args.directory):
         logger.error(f"Directory {args.directory} does not exist")
         sys.exit(1)
-    if args.mode == "check" or args.mode == "test":
+    if args.mode == "check":
         messages = []
         test_cases = collect_test_cases(args.directory)
         expected_output_path = os.path.join(args.directory, EXPECTED_OUTPUT)

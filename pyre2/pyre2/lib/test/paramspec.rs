@@ -78,7 +78,7 @@ assert_type(f("A", True), str)
 );
 
 testcase_with_bug!(
-    "All these cases should be rejected, but they are not",
+    "ParamSpec types can only be used in argument positions or when a ParamSpec is expected by a generic",
     test_paramspec_in_right_place,
     r#"
 from typing import Callable, Concatenate, ParamSpec
@@ -92,8 +92,7 @@ def foo(x: Callable[[int, str], P]) -> None: ...  # Rejected
 "#,
 );
 
-testcase_with_bug!(
-    "Reject some things that should be accepted, accept some things that should be rejected",
+testcase!(
     test_paramspec_generic,
     r#"
 from typing import Callable, Concatenate, ParamSpec, Generic, TypeVar
@@ -214,7 +213,7 @@ reveal_type(transform(bar)) # Should return (a: str, /, *args: bool) -> bool # E
 );
 
 testcase_with_bug!(
-    "None of the rejected ones are actually rejected",
+    "P.args and P.kwargs should only work when P is in scope",
     test_paramspec_component_usage,
     r#"
 from typing import Callable, ParamSpec
@@ -238,7 +237,7 @@ def out_of_scope(*args: P.args, **kwargs: P.kwargs) -> None: # Rejected
 );
 
 testcase_with_bug!(
-    "None of these are rejected, but they should be",
+    "P.args and P.kwargs can't be used as annotations",
     test_paramspec_together,
     r#"
 from typing import Callable, ParamSpec
@@ -251,10 +250,10 @@ def puts_p_into_scope(f: Callable[P, int]) -> None:
 
   stored_kwargs: P.kwargs                       # Rejected
 
-  def just_args(*args: P.args) -> None:         # Rejected
+  def just_args(*args: P.args) -> None:         # E: ParamSpec *args and **kwargs must be used together
     pass
 
-  def just_kwargs(**kwargs: P.kwargs) -> None:  # Rejected
+  def just_kwargs(**kwargs: P.kwargs) -> None:  # E: ParamSpec *args and **kwargs must be used together
     pass
 "#,
 );
@@ -296,6 +295,18 @@ def outer(f: Callable[P, None]) -> Callable[P, None]:
     foo(x=1, *args, **kwargs) # Rejected # E: Expected 1 more positional argument # E: Unexpected keyword argument `x`
 
   return bar
+"#,
+);
+
+testcase!(
+    test_paramspec_different_origins,
+    r#"
+from typing import Callable, ParamSpec
+
+P1 = ParamSpec("P1")
+P2 = ParamSpec("P2")
+
+def foo(x: int, *args: P1.args, **kwargs: P2.kwargs) -> None: ...  # E: *args and **kwargs must come from the same ParamSpec
 "#,
 );
 
