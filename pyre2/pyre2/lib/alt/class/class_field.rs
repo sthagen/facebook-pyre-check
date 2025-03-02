@@ -20,6 +20,7 @@ use starlark_map::small_set::SmallSet;
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::attr::Attribute;
+use crate::alt::attr::DescriptorBase;
 use crate::alt::attr::NoAccessReason;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::binding::binding::ClassFieldInitialValue;
@@ -80,12 +81,17 @@ pub struct ClassField(ClassFieldInner);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ClassFieldInner {
+    // TODO(stroxler): We should refactor `ClassFieldInner` into enum cases; currently
+    // the semantics are encoded ad-hoc into the fields of a large product which
+    // has made hacking features relatively easy, but makes the code hard to read.
     Simple {
         ty: Type,
         range: Option<TextRange>,
         annotation: Option<Annotation>,
         initialization: ClassFieldInitialization,
         readonly: bool,
+        // Descriptor getter method, if there is one. `None`` if this is not a desciptor.
+        descriptor_getter: Option<Type>,
     },
 }
 
@@ -106,6 +112,7 @@ impl ClassField {
         annotation: Option<Annotation>,
         initialization: ClassFieldInitialization,
         readonly: bool,
+        descriptor_getter: Option<Type>,
     ) -> Self {
         Self(ClassFieldInner::Simple {
             ty,
@@ -113,6 +120,7 @@ impl ClassField {
             annotation,
             initialization,
             readonly,
+            descriptor_getter,
         })
     }
 
@@ -123,6 +131,7 @@ impl ClassField {
             annotation: None,
             initialization: ClassFieldInitialization::Class(None),
             readonly: false,
+            descriptor_getter: None,
         })
     }
 
@@ -133,6 +142,7 @@ impl ClassField {
             annotation: None,
             initialization: ClassFieldInitialization::recursive(),
             readonly: false,
+            descriptor_getter: None,
         })
     }
 
@@ -161,12 +171,16 @@ impl ClassField {
                 annotation,
                 initialization,
                 readonly,
+                descriptor_getter,
             } => Self(ClassFieldInner::Simple {
                 ty: cls.instantiate_member(ty.clone()),
                 range: *range,
                 annotation: annotation.clone(),
                 initialization: initialization.clone(),
                 readonly: *readonly,
+                descriptor_getter: descriptor_getter
+                    .as_ref()
+                    .map(|ty| cls.instantiate_member(ty.clone())),
             }),
         }
     }
@@ -473,6 +487,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             .dataclass_metadata()
             .is_some_and(|dataclass| dataclass.kws.is_set(&DataclassKeywords::FROZEN));
 
+        // Identify whether this is a descriptor
+        let __get__ = &Name::new("__get__");
+        let descriptor_getter = match ty {
+            // TODO(stroxler): This works for simple descriptors. There three known gaps, there may be others:
+            // - If the field is instance-only, descriptor dispatching won't occur, an instance-only attribute
+            //   that happens to be a descriptor just behaves like a normal instance-only attribute.
+            // - Gracefully handle instance-only `__get__`. Descriptors only seem to be detected
+            //   when the descriptor attribute is initialized on the class body of the descriptor.
+            // - Do we care about distributing descriptor behavior over unions? If so, what about the case when
+            //   the raw class field is a union of a descriptor and a non-descriptor? Do we want to allow this?
+            Type::ClassType(c) if c.class_object().contains(__get__) => {
+                if c.class_object().contains(__get__) {
+                    Some(self.attr_infer(ty, __get__, range, errors))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
         // Create the resulting field and check for override inconsistencies before returning
         let class_field = ClassField::new(
             ty.clone(),
@@ -480,6 +514,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             annotation.cloned(),
             initialization,
             readonly,
+            descriptor_getter,
         );
         self.check_class_field_for_override_mismatch(
             name,
@@ -542,6 +577,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn as_instance_attribute(&self, field: ClassField, cls: &ClassType) -> Attribute {
         match field.instantiate_for(cls).0 {
             ClassFieldInner::Simple {
+                range,
+                ty,
+                descriptor_getter: Some(getter),
+                ..
+            } => {
+                let module_info = cls.qname().module_info().dupe();
+                Attribute::descriptor(
+                    TextRangeWithModuleInfo::opt_new(module_info, range),
+                    ty,
+                    DescriptorBase::Instance(cls.clone()),
+                    Some(getter),
+                )
+            }
+            ClassFieldInner::Simple {
                 ty,
                 range,
                 readonly,
@@ -565,6 +614,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     fn as_class_attribute(&self, field: ClassField, cls: &Class) -> Attribute {
         match &field.0 {
+            ClassFieldInner::Simple {
+                range,
+                ty,
+                descriptor_getter: Some(getter),
+                ..
+            } => {
+                let module_info = cls.qname().module_info().dupe();
+                Attribute::descriptor(
+                    TextRangeWithModuleInfo::opt_new(module_info, *range),
+                    ty.clone(),
+                    DescriptorBase::ClassDef(cls.clone()),
+                    Some(getter.clone()),
+                )
+            }
             ClassFieldInner::Simple {
                 initialization: ClassFieldInitialization::Instance,
                 range,
