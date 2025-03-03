@@ -10,6 +10,7 @@ use itertools::Either;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_text_size::TextRange;
+use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
@@ -20,7 +21,7 @@ use crate::error::collector::ErrorCollector;
 use crate::error::kind::ErrorKind;
 use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
-use crate::module::module_info::TextRangeWithModuleInfo;
+use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
@@ -49,7 +50,6 @@ enum LookupResult {
 /// on an attribute, each of which can be allowed with some type or disallowed.
 #[derive(Debug)]
 pub struct Attribute {
-    pub definition_range: Option<TextRangeWithModuleInfo>,
     inner: AttributeInner,
 }
 
@@ -88,6 +88,9 @@ struct Descriptor {
     /// a user to erronously define a `__get__` with any type, including a
     /// non-callable one.
     getter: Option<Type>,
+    /// If `__set__` exists on the descriptor, this is the type of `__set__`. Similar considerations
+    /// to `getter` apply.
+    setter: Option<Type>,
 }
 
 #[derive(Clone, Debug)]
@@ -127,54 +130,42 @@ enum InternalError {
 }
 
 impl Attribute {
-    pub fn no_access(
-        definition_range: Option<TextRangeWithModuleInfo>,
-        reason: NoAccessReason,
-    ) -> Self {
+    pub fn no_access(reason: NoAccessReason) -> Self {
         Attribute {
-            definition_range,
             inner: AttributeInner::NoAccess(reason),
         }
     }
 
-    pub fn read_write(definition_range: Option<TextRangeWithModuleInfo>, ty: Type) -> Self {
+    pub fn read_write(ty: Type) -> Self {
         Attribute {
-            definition_range,
             inner: AttributeInner::ReadWrite(ty),
         }
     }
 
-    pub fn read_only(definition_range: Option<TextRangeWithModuleInfo>, ty: Type) -> Self {
+    pub fn read_only(ty: Type) -> Self {
         Attribute {
-            definition_range,
             inner: AttributeInner::ReadOnly(ty),
         }
     }
 
-    pub fn property(
-        definition_range: Option<TextRangeWithModuleInfo>,
-        getter: Type,
-        setter: Option<Type>,
-        cls: Class,
-    ) -> Self {
+    pub fn property(getter: Type, setter: Option<Type>, cls: Class) -> Self {
         Attribute {
-            definition_range,
             inner: AttributeInner::Property(getter, setter, cls),
         }
     }
 
     pub fn descriptor(
-        definition_range: Option<TextRangeWithModuleInfo>,
         ty: Type,
         base: DescriptorBase,
         getter: Option<Type>,
+        setter: Option<Type>,
     ) -> Self {
         Attribute {
-            definition_range,
             inner: AttributeInner::Descriptor(Descriptor {
                 descriptor_ty: ty,
                 base,
                 getter,
+                setter,
             }),
         }
     }
@@ -224,8 +215,8 @@ impl LookupResult {
     ///
     /// TODO(stroxler) The uses of this eventually need to be audited, but we
     /// need to prioiritize the class logic first.
-    fn found_type(def_range: Option<TextRangeWithModuleInfo>, ty: Type) -> Self {
-        Self::Found(Attribute::read_write(def_range, ty))
+    fn found_type(ty: Type) -> Self {
+        Self::Found(Attribute::read_write(ty))
     }
 }
 
@@ -262,6 +253,7 @@ impl InternalError {
 /// A normalized type representation which is convenient for attribute lookup,
 /// since many cases are collapsed. For example, Type::Literal is converted to
 /// it's corresponding class type.
+#[derive(Debug)]
 enum AttributeBase {
     ClassInstance(ClassType),
     ClassObject(Class),
@@ -403,20 +395,36 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     };
                     self.call_property_setter(setter, got, range, errors);
                 }
-                // TODO(stroxler) Descriptors can define setters. We don't analyze those yet, so we are
-                // currently treating all descriptors as read-only.
                 AttributeInner::Descriptor(d) => {
-                    let e = match d.base {
-                        DescriptorBase::Instance(class_type) => {
-                            NoAccessReason::SettingReadOnlyDescriptor(
-                                class_type.class_object().dupe(),
-                            )
+                    match (d.base, d.setter) {
+                        (DescriptorBase::Instance(class_type), Some(setter)) => {
+                            let got = match &got {
+                                Either::Left(got) => CallArg::Expr(got),
+                                Either::Right(got) => CallArg::Type(got, range),
+                            };
+                            self.call_descriptor_setter(setter, class_type, got, range, errors);
                         }
-                        DescriptorBase::ClassDef(class) => {
-                            NoAccessReason::SettingDescriptorOnClass(class.dupe())
+                        (DescriptorBase::Instance(class_type), None) => {
+                            let e = NoAccessReason::SettingReadOnlyDescriptor(
+                                class_type.class_object().dupe(),
+                            );
+                            self.error(
+                                errors,
+                                range,
+                                ErrorKind::Unknown,
+                                e.to_error_msg(attr_name),
+                            );
+                        }
+                        (DescriptorBase::ClassDef(class), _) => {
+                            let e = NoAccessReason::SettingDescriptorOnClass(class.dupe());
+                            self.error(
+                                errors,
+                                range,
+                                ErrorKind::Unknown,
+                                e.to_error_msg(attr_name),
+                            );
                         }
                     };
-                    self.error(errors, range, ErrorKind::Unknown, e.to_error_msg(attr_name));
                 }
             },
             LookupResult::InternalError(e) => {
@@ -621,18 +629,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    pub fn lookup_attr_def_range(
-        &self,
-        base: Type,
-        attr_name: &Name,
-    ) -> Option<TextRangeWithModuleInfo> {
-        match self.lookup_attr(base, attr_name) {
-            LookupResult::Found(attribute) => attribute.definition_range.clone(),
-            LookupResult::NotFound(_) => None,
-            LookupResult::InternalError(_) => None,
-        }
-    }
-
     fn lookup_attr(&self, base: Type, attr_name: &Name) -> LookupResult {
         match self.as_attribute_base(base.clone(), self.stdlib) {
             Some(AttributeBase::ClassInstance(class)) => {
@@ -668,14 +664,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Some(AttributeBase::Module(module)) => match self.get_module_attr(&module, attr_name) {
                 // TODO(samzhou19815): Support module attribute go-to-definition
-                Some(attr) => LookupResult::found_type(None, attr),
+                Some(attr) => LookupResult::found_type(attr),
                 None => LookupResult::NotFound(NotFound::ModuleExport(module)),
             },
             Some(AttributeBase::Quantified(q)) => {
                 if q.is_param_spec() && attr_name == "args" {
-                    LookupResult::found_type(None, Type::type_form(Type::Args(q)))
+                    LookupResult::found_type(Type::type_form(Type::Args(q)))
                 } else if q.is_param_spec() && attr_name == "kwargs" {
-                    LookupResult::found_type(None, Type::type_form(Type::Kwargs(q)))
+                    LookupResult::found_type(Type::type_form(Type::Kwargs(q)))
                 } else {
                     let class = q.as_value(self.stdlib);
                     match self.get_instance_attribute(&class, attr_name) {
@@ -687,29 +683,23 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Some(AttributeBase::TypeAny(style)) => {
                 let builtins_type_classtype = self.stdlib.builtins_type();
                 self.get_instance_attribute(&builtins_type_classtype, attr_name)
-                    .and_then(
-                        |Attribute {
-                             definition_range,
-                             inner,
-                         }| {
-                            self.resolve_as_instance_method_with_attribute_inner(inner)
-                                .map(|ty| LookupResult::found_type(definition_range, ty))
-                        },
-                    )
+                    .and_then(|Attribute { inner }| {
+                        self.resolve_as_instance_method_with_attribute_inner(inner)
+                            .map(LookupResult::found_type)
+                    })
                     .map_or_else(
-                        || LookupResult::found_type(None, style.propagate()),
+                        || LookupResult::found_type(style.propagate()),
                         |result| result,
                     )
             }
-            Some(AttributeBase::Any(style)) => LookupResult::found_type(None, style.propagate()),
-            Some(AttributeBase::Never) => LookupResult::found_type(None, Type::never()),
+            Some(AttributeBase::Any(style)) => LookupResult::found_type(style.propagate()),
+            Some(AttributeBase::Never) => LookupResult::found_type(Type::never()),
             Some(AttributeBase::Property(getter)) => {
                 // TODO(stroxler): it is probably possible to synthesize a forall type here
                 // that uses a type var to propagate the setter instead of using a `Decoration`
                 // with hardcoded support in `apply_decorator`. Investigate this option later.
                 LookupResult::found_type(
                     // TODO(samzhou19815): Support go-to-definition for @property applied symbols
-                    None,
                     Type::Decoration(Decoration::PropertySetterDecorator(Box::new(getter))),
                 )
             }
@@ -859,44 +849,81 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 }
 
+#[derive(Debug)]
+pub struct AttrInfo {
+    pub name: Name,
+    pub module: Option<ModuleInfo>,
+    pub range: Option<TextRange>,
+}
+
 impl<'a, Ans: LookupAnswer + LookupExport> AnswersSolver<'a, Ans> {
-    pub fn lookup_all_attributes(&self, base: Type) -> Vec<Name> {
-        match self.as_attribute_base(base.clone(), self.stdlib) {
-            Some(AttributeBase::ClassInstance(class)) => {
-                class.class_object().fields().cloned().collect()
+    fn completions_class(&self, cls: &Class, res: &mut Vec<AttrInfo>) {
+        let mut seen = SmallSet::new();
+        for c in std::iter::once(cls).chain(
+            self.get_metadata_for_class(cls)
+                .ancestors(self.stdlib)
+                .map(|x| x.class_object()),
+        ) {
+            if c == self.stdlib.object_class_type().class_object() {
+                // Don't want to suggest `__hash__`
+                break;
             }
-            Some(AttributeBase::SuperInstance(class, _)) => {
-                class.class_object().fields().cloned().collect()
+            for fld in c.fields() {
+                if seen.insert(fld.clone()) {
+                    res.push(AttrInfo {
+                        name: fld.clone(),
+                        module: Some(c.module_info().dupe()),
+                        range: c.field_decl_range(fld),
+                    });
+                }
             }
-            Some(AttributeBase::ClassObject(class)) => class.fields().cloned().collect(),
-            Some(AttributeBase::Module(module)) => self.get_module_export_names(&module),
-            Some(AttributeBase::Quantified(q)) => {
-                let class = q.as_value(self.stdlib);
-                class.class_object().fields().cloned().collect()
-            }
-            Some(AttributeBase::TypeAny(_)) => {
-                let builtins_type_classtype = self.stdlib.builtins_type();
-                builtins_type_classtype
-                    .class_object()
-                    .fields()
-                    .cloned()
-                    .collect()
-            }
-            Some(AttributeBase::Any(_)) => Vec::new(),
-            Some(AttributeBase::Never) => Vec::new(),
-            Some(AttributeBase::Property(_)) => {
-                // TODO(samzhou19815): Support autocomplete for properties
-                vec![]
-            }
-            None => Vec::new(),
         }
     }
 
-    fn get_module_export_names(&self, module: &Module) -> Vec<Name> {
+    fn completions_class_type(&self, cls: &ClassType, res: &mut Vec<AttrInfo>) {
+        self.completions_class(cls.class_object(), res);
+    }
+
+    fn completions_module(&self, module: &Module, res: &mut Vec<AttrInfo>) {
         let module_name = ModuleName::from_parts(module.path());
-        match self.get_module_exports(module_name) {
-            None => Vec::new(),
-            Some(exports) => exports.wildcard(self.exports).iter().cloned().collect(),
+        if let Some(exports) = self.get_module_exports(module_name) {
+            res.extend(exports.wildcard(self.exports).iter().map(|x| AttrInfo {
+                name: x.clone(),
+                module: None,
+                range: None,
+            }))
         }
+    }
+
+    /// List all the attributes available from a type. Used to power completion.
+    pub fn completions(&self, base: Type) -> Vec<AttrInfo> {
+        let mut res = Vec::new();
+
+        match self.as_attribute_base(base, self.stdlib) {
+            Some(AttributeBase::ClassInstance(class)) => {
+                self.completions_class_type(&class, &mut res)
+            }
+            Some(AttributeBase::SuperInstance(class, _)) => {
+                self.completions_class_type(&class, &mut res)
+            }
+            Some(AttributeBase::ClassObject(class)) => self.completions_class(&class, &mut res),
+            Some(AttributeBase::Quantified(q)) => {
+                self.completions_class_type(&q.as_value(self.stdlib), &mut res)
+            }
+            Some(AttributeBase::TypeAny(_)) => {
+                self.completions_class_type(&self.stdlib.builtins_type(), &mut res)
+            }
+            Some(AttributeBase::Module(module)) => {
+                self.completions_module(&module, &mut res);
+            }
+            Some(AttributeBase::Any(_)) => {}
+            Some(AttributeBase::Never) => {}
+            Some(AttributeBase::Property(_)) => {
+                // TODO(samzhou19815): Support autocomplete for properties
+                {}
+            }
+            None => {}
+        }
+        res
     }
 }

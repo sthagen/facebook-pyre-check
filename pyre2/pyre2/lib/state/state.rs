@@ -43,7 +43,6 @@ use crate::metadata::RuntimeMetadata;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::module::module_path::ModulePath;
-use crate::module::module_path::ModulePathDetails;
 use crate::report::debug_info::DebugInfo;
 use crate::state::dirty::Dirty;
 use crate::state::epoch::Epoch;
@@ -243,8 +242,7 @@ impl State {
         drop(write);
         let mut todo = self.todo.lock();
         for x in module_data.deps.read().values() {
-            // Important we use solutions, so they don't early exit
-            todo.push_lifo(Step::Solutions, x.dupe());
+            todo.push_lifo(Step::first(), x.dupe());
         }
     }
 
@@ -572,11 +570,7 @@ impl State {
             .iter()
             .map(|x| (x.config().dupe(), x.loader().dupe()))
             .collect::<SmallSet<_>>();
-
-        self.loaders = configs
-            .iter()
-            .map(|x| (x.1.dupe(), Arc::new(LoaderFindCache::new(x.1.dupe()))))
-            .collect::<SmallMap<_, _>>();
+        self.compute_stdlib(configs);
 
         {
             let mut lock = self.todo.lock();
@@ -584,8 +578,6 @@ impl State {
                 lock.push_fifo(Step::first(), self.get_module(h));
             }
         }
-
-        self.compute_stdlib(configs);
 
         if self.parallel {
             rayon::scope(|s| {
@@ -596,6 +588,14 @@ impl State {
             });
         } else {
             self.work();
+        }
+    }
+
+    fn ensure_loaders(&mut self, handles: &[Handle]) {
+        for h in handles {
+            self.loaders
+                .entry(h.loader().dupe())
+                .or_insert_with(|| Arc::new(LoaderFindCache::new(h.loader().dupe())));
         }
     }
 
@@ -651,6 +651,7 @@ impl State {
         // if we end up spotting the same module changing twice, we just invalidate
         // everything in the cycle and force it to compute.
         let mut changed_twice = SmallSet::new();
+        self.ensure_loaders(handles);
         loop {
             self.run_step(handles);
             let changed = mem::take(&mut *self.changed.lock());
@@ -805,12 +806,12 @@ impl State {
     /// Called if the `load_from_memory` portion of loading might have changed.
     /// Specify which in-memory files might have changed.
     pub fn invalidate_memory(&mut self, loader: LoaderId, files: &[PathBuf]) {
-        let files = SmallSet::from_iter(files);
+        let files = files
+            .iter()
+            .map(|x| ModulePath::memory(x.clone()))
+            .collect::<SmallSet<_>>();
         for (handle, module_data) in self.modules.iter_unordered() {
-            if handle.loader() == &loader
-                && let ModulePathDetails::Memory(x) = handle.path().details()
-                && files.contains(x)
-            {
+            if handle.loader() == &loader && files.contains(handle.path()) {
                 module_data.state.write(Step::Load).unwrap().dirty.load = true;
             }
         }
@@ -821,11 +822,14 @@ impl State {
     /// You must use the same absolute/relative paths as were given by `find`.
     #[expect(dead_code)]
     pub fn invalidate_disk(&mut self, files: &[PathBuf]) {
-        let files = SmallSet::from_iter(files);
+        // We create the set out of ModulePath as it allows us to reuse the fact `ModulePath` has cheap hash
+        // when checking the modules.
+        let files = files
+            .iter()
+            .map(|x| ModulePath::filesystem(x.clone()))
+            .collect::<SmallSet<_>>();
         for (handle, module_data) in self.modules.iter_unordered() {
-            if let ModulePathDetails::FileSystem(x) = handle.path().details()
-                && files.contains(x)
-            {
+            if files.contains(handle.path()) {
                 module_data.state.write(Step::Load).unwrap().dirty.load = true;
             }
         }

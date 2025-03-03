@@ -30,7 +30,6 @@ use crate::dunder;
 use crate::error::collector::ErrorCollector;
 use crate::error::kind::ErrorKind;
 use crate::error::style::ErrorStyle;
-use crate::module::module_info::TextRangeWithModuleInfo;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
 use crate::types::callable::BoolKeywords;
@@ -86,12 +85,13 @@ enum ClassFieldInner {
     // has made hacking features relatively easy, but makes the code hard to read.
     Simple {
         ty: Type,
-        range: Option<TextRange>,
         annotation: Option<Annotation>,
         initialization: ClassFieldInitialization,
         readonly: bool,
-        // Descriptor getter method, if there is one. `None`` if this is not a desciptor.
+        // Descriptor getter method, if there is one. `None` indicates no getter.
         descriptor_getter: Option<Type>,
+        // Descriptor setter method, if there is one. `None` indicates no setter.
+        descriptor_setter: Option<Type>,
     },
 }
 
@@ -108,41 +108,41 @@ impl Display for ClassField {
 impl ClassField {
     fn new(
         ty: Type,
-        range: TextRange,
         annotation: Option<Annotation>,
         initialization: ClassFieldInitialization,
         readonly: bool,
         descriptor_getter: Option<Type>,
+        descriptor_setter: Option<Type>,
     ) -> Self {
         Self(ClassFieldInner::Simple {
             ty,
-            range: Some(range),
             annotation,
             initialization,
             readonly,
             descriptor_getter,
+            descriptor_setter,
         })
     }
 
     pub fn new_synthesized(ty: Type) -> Self {
         ClassField(ClassFieldInner::Simple {
             ty,
-            range: None,
             annotation: None,
             initialization: ClassFieldInitialization::Class(None),
             readonly: false,
             descriptor_getter: None,
+            descriptor_setter: None,
         })
     }
 
     pub fn recursive() -> Self {
         Self(ClassFieldInner::Simple {
             ty: Type::any_implicit(),
-            range: None,
             annotation: None,
             initialization: ClassFieldInitialization::recursive(),
             readonly: false,
             descriptor_getter: None,
+            descriptor_setter: None,
         })
     }
 
@@ -167,18 +167,20 @@ impl ClassField {
         match &self.0 {
             ClassFieldInner::Simple {
                 ty,
-                range,
                 annotation,
                 initialization,
                 readonly,
                 descriptor_getter,
+                descriptor_setter,
             } => Self(ClassFieldInner::Simple {
                 ty: cls.instantiate_member(ty.clone()),
-                range: *range,
                 annotation: annotation.clone(),
                 initialization: initialization.clone(),
                 readonly: *readonly,
                 descriptor_getter: descriptor_getter
+                    .as_ref()
+                    .map(|ty| cls.instantiate_member(ty.clone())),
+                descriptor_setter: descriptor_setter
                     .as_ref()
                     .map(|ty| cls.instantiate_member(ty.clone())),
             }),
@@ -328,20 +330,16 @@ pub fn is_unbound_function(ty: &Type) -> bool {
     }
 }
 
-pub fn bind_class_attribute(cls: &Class, range: Option<TextRange>, attr: Type) -> Attribute {
-    let def_range = TextRangeWithModuleInfo::opt_new(cls.module_info().dupe(), range);
+pub fn bind_class_attribute(cls: &Class, attr: Type) -> Attribute {
     match attr {
-        Type::Decoration(Decoration::StaticMethod(box attr)) => {
-            Attribute::read_write(def_range, attr)
+        Type::Decoration(Decoration::StaticMethod(box attr)) => Attribute::read_write(attr),
+        Type::Decoration(Decoration::ClassMethod(box attr)) => {
+            Attribute::read_write(make_bound_method(Type::ClassDef(cls.dupe()), attr))
         }
-        Type::Decoration(Decoration::ClassMethod(box attr)) => Attribute::read_write(
-            def_range,
-            make_bound_method(Type::ClassDef(cls.dupe()), attr),
-        ),
         // Accessing a property descriptor on the class gives the property itself,
         // with no magic access rules at runtime.
-        p @ Type::Decoration(Decoration::Property(_)) => Attribute::read_write(def_range, p),
-        attr => Attribute::read_write(def_range, attr),
+        p @ Type::Decoration(Decoration::Property(_)) => Attribute::read_write(p),
+        attr => Attribute::read_write(attr),
     }
 }
 
@@ -352,30 +350,22 @@ pub fn make_bound_method(obj: Type, attr: Type) -> Type {
     Type::BoundMethod(Box::new(BoundMethod { obj, func: attr }))
 }
 
-fn bind_instance_attribute(cls: &ClassType, range: Option<TextRange>, attr: Type) -> Attribute {
-    let def_range = TextRangeWithModuleInfo::opt_new(cls.qname().module_info().dupe(), range);
+fn bind_instance_attribute(cls: &ClassType, attr: Type) -> Attribute {
     match attr {
-        Type::Decoration(Decoration::StaticMethod(box attr)) => {
-            Attribute::read_write(def_range, attr)
-        }
+        Type::Decoration(Decoration::StaticMethod(box attr)) => Attribute::read_write(attr),
         Type::Decoration(Decoration::ClassMethod(box attr)) => Attribute::read_write(
-            def_range,
             make_bound_method(Type::ClassDef(cls.class_object().dupe()), attr),
         ),
         Type::Decoration(Decoration::Property(box (getter, setter))) => Attribute::property(
-            def_range,
             make_bound_method(Type::ClassType(cls.clone()), getter),
             setter.map(|setter| make_bound_method(Type::ClassType(cls.clone()), setter)),
             cls.class_object().dupe(),
         ),
-        attr => Attribute::read_write(
-            def_range,
-            if is_unbound_function(&attr) {
-                make_bound_method(cls.self_type(), attr)
-            } else {
-                attr
-            },
-        ),
+        attr => Attribute::read_write(if is_unbound_function(&attr) {
+            make_bound_method(cls.self_type(), attr)
+        } else {
+            attr
+        }),
     }
 }
 
@@ -488,33 +478,34 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             .is_some_and(|dataclass| dataclass.kws.is_set(&DataclassKeywords::FROZEN));
 
         // Identify whether this is a descriptor
-        let __get__ = &Name::new("__get__");
-        let descriptor_getter = match ty {
+        let (mut descriptor_getter, mut descriptor_setter) = (None, None);
+        match ty {
             // TODO(stroxler): This works for simple descriptors. There three known gaps, there may be others:
             // - If the field is instance-only, descriptor dispatching won't occur, an instance-only attribute
             //   that happens to be a descriptor just behaves like a normal instance-only attribute.
-            // - Gracefully handle instance-only `__get__`. Descriptors only seem to be detected
+            // - Gracefully handle instance-only `__get__`/`__set__`. Descriptors only seem to be detected
             //   when the descriptor attribute is initialized on the class body of the descriptor.
             // - Do we care about distributing descriptor behavior over unions? If so, what about the case when
             //   the raw class field is a union of a descriptor and a non-descriptor? Do we want to allow this?
-            Type::ClassType(c) if c.class_object().contains(__get__) => {
-                if c.class_object().contains(__get__) {
-                    Some(self.attr_infer(ty, __get__, range, errors))
-                } else {
-                    None
+            Type::ClassType(c) => {
+                if c.class_object().contains(&dunder::GET) {
+                    descriptor_getter = Some(self.attr_infer(ty, &dunder::GET, range, errors));
+                }
+                if c.class_object().contains(&dunder::SET) {
+                    descriptor_setter = Some(self.attr_infer(ty, &dunder::SET, range, errors));
                 }
             }
-            _ => None,
+            _ => {}
         };
 
         // Create the resulting field and check for override inconsistencies before returning
         let class_field = ClassField::new(
             ty.clone(),
-            range,
             annotation.cloned(),
             initialization,
             readonly,
             descriptor_getter,
+            descriptor_setter,
         );
         self.check_class_field_for_override_mismatch(
             name,
@@ -576,79 +567,57 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     fn as_instance_attribute(&self, field: ClassField, cls: &ClassType) -> Attribute {
         match field.instantiate_for(cls).0 {
+            // TODO(stroxler): Clean up this match by making `ClassFieldInner` an
+            // enum; the match is messy
             ClassFieldInner::Simple {
-                range,
                 ty,
-                descriptor_getter: Some(getter),
+                descriptor_getter,
+                descriptor_setter,
                 ..
-            } => {
-                let module_info = cls.qname().module_info().dupe();
+            } if descriptor_getter.is_some() || descriptor_setter.is_some() => {
                 Attribute::descriptor(
-                    TextRangeWithModuleInfo::opt_new(module_info, range),
                     ty,
                     DescriptorBase::Instance(cls.clone()),
-                    Some(getter),
+                    descriptor_getter,
+                    descriptor_setter,
                 )
             }
-            ClassFieldInner::Simple {
-                ty,
-                range,
-                readonly,
-                ..
-            } => {
-                let module_info = cls.qname().module_info().dupe();
-                match field.initialization() {
-                    ClassFieldInitialization::Class(_) => bind_instance_attribute(cls, range, ty),
-                    ClassFieldInitialization::Instance if readonly => {
-                        let def_range = TextRangeWithModuleInfo::opt_new(module_info, range);
-                        Attribute::read_only(def_range, ty)
-                    }
-                    ClassFieldInitialization::Instance => {
-                        let def_range = TextRangeWithModuleInfo::opt_new(module_info, range);
-                        Attribute::read_write(def_range, ty)
-                    }
-                }
-            }
+            ClassFieldInner::Simple { ty, readonly, .. } => match field.initialization() {
+                ClassFieldInitialization::Class(_) => bind_instance_attribute(cls, ty),
+                ClassFieldInitialization::Instance if readonly => Attribute::read_only(ty),
+                ClassFieldInitialization::Instance => Attribute::read_write(ty),
+            },
         }
     }
 
     fn as_class_attribute(&self, field: ClassField, cls: &Class) -> Attribute {
         match &field.0 {
             ClassFieldInner::Simple {
-                range,
                 ty,
-                descriptor_getter: Some(getter),
+                descriptor_getter,
+                descriptor_setter,
                 ..
-            } => {
-                let module_info = cls.qname().module_info().dupe();
+            } if descriptor_getter.is_some() || descriptor_setter.is_some() => {
                 Attribute::descriptor(
-                    TextRangeWithModuleInfo::opt_new(module_info, *range),
                     ty.clone(),
                     DescriptorBase::ClassDef(cls.clone()),
-                    Some(getter.clone()),
+                    descriptor_getter.clone(),
+                    descriptor_setter.clone(),
                 )
             }
             ClassFieldInner::Simple {
                 initialization: ClassFieldInitialization::Instance,
-                range,
                 ..
-            } => Attribute::no_access(
-                TextRangeWithModuleInfo::opt_new(cls.module_info().dupe(), *range),
-                NoAccessReason::ClassUseOfInstanceAttribute(cls.clone()),
-            ),
+            } => Attribute::no_access(NoAccessReason::ClassUseOfInstanceAttribute(cls.clone())),
             ClassFieldInner::Simple {
-                range,
                 initialization: ClassFieldInitialization::Class(_),
                 ty,
                 ..
             } => {
                 if field.depends_on_class_type_parameter(cls) {
-                    Attribute::no_access(
-                        TextRangeWithModuleInfo::opt_new(cls.module_info().dupe(), *range),
-                        NoAccessReason::ClassAttributeIsGeneric(cls.clone()),
-                    )
+                    Attribute::no_access(NoAccessReason::ClassAttributeIsGeneric(cls.clone()))
                 } else {
-                    bind_class_attribute(cls, *range, ty.clone())
+                    bind_class_attribute(cls, ty.clone())
                 }
             }
         }
@@ -756,14 +725,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             self.get_metadata_for_class(cls)
                 .ancestors(self.stdlib)
-                .filter_map(|ancestor| {
+                .find_map(|ancestor| {
                     self.get_class_field(ancestor.class_object(), name)
                         .map(|field| WithDefiningClass {
                             value: Arc::new(field.instantiate_for(ancestor)),
                             defining_class: ancestor.class_object().dupe(),
                         })
                 })
-                .next()
         }
     }
 

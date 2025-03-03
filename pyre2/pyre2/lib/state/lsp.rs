@@ -25,6 +25,7 @@ use crate::module::short_identifier::ShortIdentifier;
 use crate::state::handle::Handle;
 use crate::state::state::State;
 use crate::types::types::Type;
+use crate::util::prelude::VecExt;
 use crate::visitors::Visitors;
 
 impl State {
@@ -150,14 +151,14 @@ impl State {
             .get_answers(handle)?
             .get_type_trace(attribute.value.range())?;
         self.ad_hoc_solve(handle, |solver| {
-            let mut def_opt = None;
-            solver.distribute_over_union(&base_type, |obj| {
-                if def_opt.is_none() {
-                    def_opt = solver.lookup_attr_def_range(obj.clone(), attribute.attr.id());
+            let items = solver.completions(base_type.arc_clone());
+            items.into_iter().find_map(|x| {
+                if x.name == attribute.attr.id {
+                    Some(TextRangeWithModuleInfo::new(x.module?, x.range?))
+                } else {
+                    None
                 }
-                obj.clone()
-            });
-            def_opt
+            })
         })
         .flatten()
     }
@@ -188,7 +189,9 @@ impl State {
             .get_answers(handle)?
             .get_type_trace(attribute.value.range())?;
         self.ad_hoc_solve(handle, |solver| {
-            solver.lookup_all_attributes(base_type.arc_clone())
+            solver
+                .completions(base_type.arc_clone())
+                .into_map(|x| x.name)
         })
     }
 
