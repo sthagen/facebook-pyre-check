@@ -6,6 +6,8 @@
  */
 
 pub mod collector;
+pub mod context;
+pub mod display;
 pub mod error;
 pub mod expectation;
 pub mod kind;

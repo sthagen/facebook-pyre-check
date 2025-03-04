@@ -69,10 +69,6 @@
   background-color: rgba(255, 255, 255, 0.7);
 }
 
-.navbar .twitter__link:before {
-  background: url(/img/icon-twitter.svg);
-  background-repeat: no-repeat;
-}
 .navbar .stackoverflow__link:before {
   background: url(/img/icon-stackoverflow.svg);
   background-repeat: no-repeat;
@@ -94,6 +90,15 @@
 }
 .navbar-sidebar .navbar__icon:active {
   opacity: 1;
+}
+
+/* PyreFly Navbar Styling */
+.navbar__title {
+  font-family: "Orbitron", sans-serif; /* Sci-fi & glowing effect */
+  font-size: 1.5rem; /* Adjust size */
+  font-weight: bold;
+  color: #ffcc00; /* Bright yellow-orange */
+  text-shadow: 0px 0px 8px rgba(255, 204, 0, 0.8), 0px 0px 16px rgba(255, 140, 0, 0.5);
 }
 
 .rounded {

@@ -72,6 +72,51 @@ impl BaseClass {
 }
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
+    pub fn check_new_type_base(
+        &self,
+        base_type_and_range: &Option<(Type, TextRange)>,
+        cls: &Class,
+        errors: &ErrorCollector,
+        is_new_type: bool,
+    ) {
+        match (base_type_and_range.clone(), is_new_type) {
+            (Some((Type::ClassType(c), _)), false) => {
+                let base_cls = c.class_object();
+                let base_class_metadata = self.get_metadata_for_class(base_cls);
+                if base_class_metadata.is_new_type() {
+                    self.error(
+                        errors,
+                        cls.range(),
+                        ErrorKind::Unknown,
+                        "Subclassing a NewType not allowed".to_owned(),
+                    );
+                }
+            }
+            // TODO: raise an error for generic classes and other forbidden types such as hashable
+            (Some((Type::ClassType(c), _)), true) => {
+                let base_cls = c.class_object();
+                let base_class_metadata = self.get_metadata_for_class(base_cls);
+                if base_class_metadata.is_protocol() {
+                    self.error(
+                        errors,
+                        cls.range(),
+                        ErrorKind::Unknown,
+                        "Second argument to NewType cannot be a protocol".to_owned(),
+                    );
+                }
+            }
+            (_, true) => {
+                self.error(
+                    errors,
+                    cls.range(),
+                    ErrorKind::Unknown,
+                    "Second argument to NewType is incorrect".to_owned(),
+                );
+            }
+            (_, _) => {}
+        }
+    }
+
     pub fn class_metadata_of(
         &self,
         cls: &Class,
@@ -112,18 +157,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     _ => None,
                 };
+                self.check_new_type_base(&base_type_and_range.clone(), cls, errors, is_new_type);
                 match base_type_and_range {
                     Some((Type::ClassType(c), range)) => {
                         let base_cls = c.class_object();
                         let base_class_metadata = self.get_metadata_for_class(base_cls);
-                        if base_class_metadata.is_new_type() && !is_new_type {
-                                self.error(
-                                    errors,
-                                    cls.range(),
-                                    ErrorKind::Unknown,
-                                    "Subclassing a NewType not allowed".to_owned(),
-                                );
-                        }
                         if base_class_metadata.is_typed_dict() {
                             is_typed_dict = true;
                         }
@@ -145,7 +183,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             } else {
                                 self.error(errors,
                                     range,
-                                    ErrorKind::Unknown,
+                                    ErrorKind::InvalidInheritance,
                                     "If `Protocol` is included as a base class, all other bases must be protocols.".to_owned(),
                                 );
                             }
@@ -178,16 +216,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     // todo zeina: Ideally, we can directly add this class to the list of base classes. Revist this when fixing the "Any" representation.  
                     Some((Type::Any(_), _)) =>  {has_base_any = true; None}
-                    _ =>
-                    {if is_new_type {
-                        self.error(
-                            errors,
-                            cls.range(),
-                            ErrorKind::Unknown,
-                            "Second argument to NewType must be a proper class".to_owned(),
-                        );
-                    }
-                    None},
+                    _ => None,
                 }
             })
             .collect::<Vec<_>>();
@@ -254,7 +283,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.error(
                     errors,
                     cls.range(),
-                    ErrorKind::Unknown,
+                    ErrorKind::InvalidInheritance,
                     "Typed dictionary definitions may not specify a metaclass.".to_owned(),
                 );
             }

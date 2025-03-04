@@ -7,7 +7,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[GoodTypeAlias6, type[tuple[int, int, TypeVar[S], TypeVar[T]]]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[GoodTypeAlias6, type[tuple[int, int, TypeVar[S], TypeVar[T]]]]",
       "line": 38,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 33,
       "stop_line": 38
     },
@@ -57,7 +57,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[GoodTypeAlias2, type[int | None]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[GoodTypeAlias2, type[int | None]]",
       "line": 67,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 28,
       "stop_line": 67
     },
@@ -67,7 +67,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[GoodTypeAlias3, type[list[int | None]]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[GoodTypeAlias3, type[list[int | None]]]",
       "line": 68,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 28,
       "stop_line": 68
     },
@@ -87,7 +87,7 @@
       "concise_description": "Expected `BadTypeAlias2` to be a type alias, got list[type[int] | type[str]]",
       "description": "Expected `BadTypeAlias2` to be a type alias, got list[type[int] | type[str]]",
       "line": 80,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 31,
       "stop_line": 80
     },
@@ -97,7 +97,7 @@
       "concise_description": "Expected `BadTypeAlias3` to be a type alias, got tuple[tuple[type[int], type[str]]]",
       "description": "Expected `BadTypeAlias3` to be a type alias, got tuple[tuple[type[int], type[str]]]",
       "line": 81,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 34,
       "stop_line": 81
     },
@@ -107,7 +107,7 @@
       "concise_description": "Expected `BadTypeAlias4` to be a type alias, got list[type[int]]",
       "description": "Expected `BadTypeAlias4` to be a type alias, got list[type[int]]",
       "line": 82,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 44,
       "stop_line": 82
     },
@@ -117,7 +117,7 @@
       "concise_description": "Expected `BadTypeAlias5` to be a type alias, got dict[Error, Error]",
       "description": "Expected `BadTypeAlias5` to be a type alias, got dict[Error, Error]",
       "line": 83,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 31,
       "stop_line": 83
     },
@@ -147,7 +147,7 @@
       "concise_description": "Expected `BadTypeAlias9` to be a type alias, got Literal[3]",
       "description": "Expected `BadTypeAlias9` to be a type alias, got Literal[3]",
       "line": 87,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 25,
       "stop_line": 87
     },
@@ -157,7 +157,7 @@
       "concise_description": "Expected `BadTypeAlias10` to be a type alias, got Literal[True]",
       "description": "Expected `BadTypeAlias10` to be a type alias, got Literal[True]",
       "line": 88,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 26,
       "stop_line": 88
     },
@@ -167,7 +167,7 @@
       "concise_description": "Expected `BadTypeAlias11` to be a type alias, got Literal[1]",
       "description": "Expected `BadTypeAlias11` to be a type alias, got Literal[1]",
       "line": 89,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 23,
       "stop_line": 89
     },
@@ -177,7 +177,7 @@
       "concise_description": "Expected `BadTypeAlias13` to be a type alias, got str",
       "description": "Expected `BadTypeAlias13` to be a type alias, got str",
       "line": 91,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 32,
       "stop_line": 91
     },
@@ -197,7 +197,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[ListAlias, type[list[Error]]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[ListAlias, type[list[Error]]]",
       "line": 100,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 19,
       "stop_line": 100
     },
@@ -217,7 +217,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[ListOrSetAlias, type[list[Error] | set[Error]]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[ListOrSetAlias, type[list[Error] | set[Error]]]",
       "line": 102,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 24,
       "stop_line": 102
     }
@@ -229,7 +229,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[Vector, type[Iterable[tuple[TypeVar[TFloat], TypeVar[TFloat]]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[Vector, type[Iterable[tuple[TypeVar[TFloat], TypeVar[TFloat]]]]]",
       "line": 14,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 33,
       "stop_line": 14
     },
@@ -239,7 +239,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[Vector, type[Iterable[tuple[TypeVar[TFloat], TypeVar[TFloat]]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[Vector, type[Iterable[tuple[TypeVar[TFloat], TypeVar[TFloat]]]]]",
       "line": 18,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 28,
       "stop_line": 18
     },
@@ -249,7 +249,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[Vector, type[Iterable[tuple[TypeVar[TFloat], TypeVar[TFloat]]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[Vector, type[Iterable[tuple[TypeVar[TFloat], TypeVar[TFloat]]]]]",
       "line": 18,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 60,
       "stop_line": 18
     },
@@ -259,7 +259,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GoodTypeAlias6, type[tuple[int, int, TypeVar[S], TypeVar[T]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GoodTypeAlias6, type[tuple[int, int, TypeVar[S], TypeVar[T]]]]",
       "line": 51,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 33,
       "stop_line": 51
     },
@@ -309,7 +309,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GoodTypeAlias2, type[int | None]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GoodTypeAlias2, type[int | None]]",
       "line": 76,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 28,
       "stop_line": 76
     },
@@ -319,7 +319,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GoodTypeAlias3, type[list[int | None]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GoodTypeAlias3, type[list[int | None]]]",
       "line": 77,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 28,
       "stop_line": 77
     },
@@ -329,7 +329,7 @@
       "concise_description": "Expected a type form, got instance of `list[type[int] | type[str]]`",
       "description": "Expected a type form, got instance of `list[type[int] | type[str]]`",
       "line": 107,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 22,
       "stop_line": 107
     },
@@ -339,7 +339,7 @@
       "concise_description": "Expected a type form, got instance of `tuple[tuple[type[int], type[str]]]`",
       "description": "Expected a type form, got instance of `tuple[tuple[type[int], type[str]]]`",
       "line": 108,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 22,
       "stop_line": 108
     },
@@ -349,7 +349,7 @@
       "concise_description": "Expected a type form, got instance of `list[type[int]]`",
       "description": "Expected a type form, got instance of `list[type[int]]`",
       "line": 109,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 22,
       "stop_line": 109
     },
@@ -359,7 +359,7 @@
       "concise_description": "Expected a type form, got instance of `dict[str, str]`",
       "description": "Expected a type form, got instance of `dict[str, str]`",
       "line": 110,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 22,
       "stop_line": 110
     },
@@ -369,7 +369,7 @@
       "concise_description": "Expected a type form, got instance of `Literal[3]`",
       "description": "Expected a type form, got instance of `Literal[3]`",
       "line": 114,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 22,
       "stop_line": 114
     },
@@ -379,7 +379,7 @@
       "concise_description": "Expected a type form, got instance of `Literal[True]`",
       "description": "Expected a type form, got instance of `Literal[True]`",
       "line": 115,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 24,
       "stop_line": 115
     },
@@ -389,7 +389,7 @@
       "concise_description": "Expected a type form, got instance of `Literal[1]`",
       "description": "Expected a type form, got instance of `Literal[1]`",
       "line": 116,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 24,
       "stop_line": 116
     },
@@ -399,7 +399,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['int']`",
       "description": "Expected a type form, got instance of `Literal['int']`",
       "line": 118,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 24,
       "stop_line": 118
     },
@@ -409,7 +409,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['int | str']`",
       "description": "Expected a type form, got instance of `Literal['int | str']`",
       "line": 119,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 24,
       "stop_line": 119
     },
@@ -429,7 +429,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[ListOrSetAlias, type[list[Error] | set[Error]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[ListOrSetAlias, type[list[Error] | set[Error]]]",
       "line": 135,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 24,
       "stop_line": 135
     }
@@ -461,7 +461,7 @@
       "concise_description": "NewType `UserId` not allowed in isinstance.",
       "description": "NewType `UserId` not allowed in isinstance.",
       "line": 20,
-      "name": "unknown",
+      "name": "invalid-argument",
       "stop_column": 23,
       "stop_line": 20
     },
@@ -498,8 +498,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Second argument to NewType must be a proper class",
-      "description": "Second argument to NewType must be a proper class",
+      "concise_description": "Second argument to NewType is incorrect",
+      "description": "Second argument to NewType is incorrect",
       "line": 44,
       "name": "unknown",
       "stop_column": 12,
@@ -508,12 +508,32 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "Second argument to NewType must be a proper class",
-      "description": "Second argument to NewType must be a proper class",
+      "concise_description": "Second argument to NewType cannot be a protocol",
+      "description": "Second argument to NewType cannot be a protocol",
+      "line": 49,
+      "name": "unknown",
+      "stop_column": 12,
+      "stop_line": 49
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Second argument to NewType is incorrect",
+      "description": "Second argument to NewType is incorrect",
       "line": 51,
       "name": "unknown",
       "stop_column": 12,
       "stop_line": 51
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Second argument to NewType is incorrect",
+      "description": "Second argument to NewType is incorrect",
+      "line": 58,
+      "name": "unknown",
+      "stop_column": 12,
+      "stop_line": 58
     },
     {
       "code": -2,
@@ -524,6 +544,16 @@
       "name": "unknown",
       "stop_column": 46,
       "stop_line": 60
+    },
+    {
+      "code": -2,
+      "column": 1,
+      "concise_description": "Second argument to NewType is incorrect",
+      "description": "Second argument to NewType is incorrect",
+      "line": 62,
+      "name": "unknown",
+      "stop_column": 12,
+      "stop_line": 62
     }
   ],
   "aliases_recursive.py": [
@@ -533,7 +563,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['Json']`",
       "description": "Expected a type form, got instance of `Literal['Json']`",
       "line": 14,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 48,
       "stop_line": 14
     },
@@ -543,7 +573,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['Json']`",
       "description": "Expected a type form, got instance of `Literal['Json']`",
       "line": 14,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 67,
       "stop_line": 14
     },
@@ -553,7 +583,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['Json2']`",
       "description": "Expected a type form, got instance of `Literal['Json2']`",
       "line": 24,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 50,
       "stop_line": 24
     },
@@ -563,7 +593,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['Json2']`",
       "description": "Expected a type form, got instance of `Literal['Json2']`",
       "line": 24,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 70,
       "stop_line": 24
     },
@@ -573,7 +603,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['RecursiveTuple']`",
       "description": "Expected a type form, got instance of `Literal['RecursiveTuple']`",
       "line": 30,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 52,
       "stop_line": 30
     },
@@ -583,7 +613,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['RecursiveMapping']`",
       "description": "Expected a type form, got instance of `Literal['RecursiveMapping']`",
       "line": 42,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 63,
       "stop_line": 42
     },
@@ -593,7 +623,7 @@
       "concise_description": "Object of class `str` has no attribute `__or__`",
       "description": "Object of class `str` has no attribute `__or__`",
       "line": 58,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 54,
       "stop_line": 58
     },
@@ -603,7 +633,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias1, type[list[Error]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias1, type[list[Error]]]",
       "line": 59,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 47,
       "stop_line": 59
     },
@@ -613,7 +643,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias1, type[list[Error]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias1, type[list[Error]]]",
       "line": 62,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 27,
       "stop_line": 62
     },
@@ -623,7 +653,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias1, type[list[Error]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias1, type[list[Error]]]",
       "line": 63,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 27,
       "stop_line": 63
     },
@@ -633,7 +663,7 @@
       "concise_description": "Object of class `str` has no attribute `__or__`",
       "description": "Object of class `str` has no attribute `__or__`",
       "line": 65,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 58,
       "stop_line": 65
     },
@@ -643,7 +673,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias2, type[list[Error]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias2, type[list[Error]]]",
       "line": 67,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 32,
       "stop_line": 67
     },
@@ -653,7 +683,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias2, type[list[Error]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias2, type[list[Error]]]",
       "line": 68,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 34,
       "stop_line": 68
     },
@@ -663,7 +693,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias2, type[list[Error]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[GenericTypeAlias2, type[list[Error]]]",
       "line": 69,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 32,
       "stop_line": 69
     }
@@ -675,7 +705,7 @@
       "concise_description": "Object of class `TypeAliasType` has no attribute `bit_count`",
       "description": "Object of class `TypeAliasType` has no attribute `bit_count`",
       "line": 17,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 21,
       "stop_line": 17
     },
@@ -695,7 +725,7 @@
       "concise_description": "Object of class `TypeAliasType` has no attribute `other_attrib`",
       "description": "Object of class `TypeAliasType` has no attribute `other_attrib`",
       "line": 23,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 30,
       "stop_line": 23
     },
@@ -735,7 +765,7 @@
       "concise_description": "Expected `BadTypeAlias2` to be a type alias, got list[type[int] | type[str]]",
       "description": "Expected `BadTypeAlias2` to be a type alias, got list[type[int] | type[str]]",
       "line": 38,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 32,
       "stop_line": 38
     },
@@ -745,7 +775,7 @@
       "concise_description": "Expected `BadTypeAlias3` to be a type alias, got tuple[tuple[type[int], type[str]]]",
       "description": "Expected `BadTypeAlias3` to be a type alias, got tuple[tuple[type[int], type[str]]]",
       "line": 39,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 35,
       "stop_line": 39
     },
@@ -755,7 +785,7 @@
       "concise_description": "Expected `BadTypeAlias4` to be a type alias, got list[type[int]]",
       "description": "Expected `BadTypeAlias4` to be a type alias, got list[type[int]]",
       "line": 40,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 45,
       "stop_line": 40
     },
@@ -765,7 +795,7 @@
       "concise_description": "Expected `BadTypeAlias5` to be a type alias, got dict[Error, Error]",
       "description": "Expected `BadTypeAlias5` to be a type alias, got dict[Error, Error]",
       "line": 41,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 32,
       "stop_line": 41
     },
@@ -795,7 +825,7 @@
       "concise_description": "Expected `BadTypeAlias9` to be a type alias, got Literal[1]",
       "description": "Expected `BadTypeAlias9` to be a type alias, got Literal[1]",
       "line": 45,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 26,
       "stop_line": 45
     },
@@ -805,7 +835,7 @@
       "concise_description": "Expected `BadTypeAlias10` to be a type alias, got Literal[True]",
       "description": "Expected `BadTypeAlias10` to be a type alias, got Literal[True]",
       "line": 46,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 27,
       "stop_line": 46
     },
@@ -815,7 +845,7 @@
       "concise_description": "Expected `BadTypeAlias11` to be a type alias, got Literal[1]",
       "description": "Expected `BadTypeAlias11` to be a type alias, got Literal[1]",
       "line": 47,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 24,
       "stop_line": 47
     },
@@ -825,7 +855,7 @@
       "concise_description": "Expected `BadTypeAlias13` to be a type alias, got str",
       "description": "Expected `BadTypeAlias13` to be a type alias, got str",
       "line": 49,
-      "name": "unknown",
+      "name": "type-alias-error",
       "stop_column": 33,
       "stop_line": 49
     },
@@ -835,7 +865,7 @@
       "concise_description": "Type parameters used in `TA1` but not declared",
       "description": "Type parameters used in `TA1` but not declared",
       "line": 64,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 25,
       "stop_line": 64
     },
@@ -845,7 +875,7 @@
       "concise_description": "Type parameters used in `TA2` but not declared",
       "description": "Type parameters used in `TA2` but not declared",
       "line": 69,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 20,
       "stop_line": 69
     }
@@ -897,7 +927,7 @@
       "concise_description": "Object of class `TypeAliasType` has no attribute `other_attrib`",
       "description": "Object of class `TypeAliasType` has no attribute `other_attrib`",
       "line": 32,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 30,
       "stop_line": 32
     },
@@ -907,7 +937,7 @@
       "concise_description": "Expected a type form, got instance of `GenericAlias`",
       "description": "Expected a type form, got instance of `GenericAlias`",
       "line": 35,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 20,
       "stop_line": 35
     },
@@ -917,7 +947,7 @@
       "concise_description": "Expected a type form, got instance of `GenericAlias`",
       "description": "Expected a type form, got instance of `GenericAlias`",
       "line": 36,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 20,
       "stop_line": 36
     },
@@ -927,7 +957,7 @@
       "concise_description": "Expected a type form, got instance of `GenericAlias`",
       "description": "Expected a type form, got instance of `GenericAlias`",
       "line": 37,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 40,
       "stop_line": 37
     },
@@ -937,7 +967,7 @@
       "concise_description": "Expected a type form, got instance of `GenericAlias`",
       "description": "Expected a type form, got instance of `GenericAlias`",
       "line": 38,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 40,
       "stop_line": 38
     },
@@ -947,7 +977,7 @@
       "concise_description": "Expected a type form, got instance of `GenericAlias`",
       "description": "Expected a type form, got instance of `GenericAlias`",
       "line": 39,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 60,
       "stop_line": 39
     },
@@ -957,7 +987,7 @@
       "concise_description": "Expected an iterable, got type[tuple[int, str, int]]",
       "description": "Expected an iterable, got type[tuple[int, str, int]]",
       "line": 39,
-      "name": "unknown",
+      "name": "not-iterable",
       "stop_column": 59,
       "stop_line": 39
     },
@@ -967,7 +997,7 @@
       "concise_description": "Expected a type form, got instance of `GenericAlias`",
       "description": "Expected a type form, got instance of `GenericAlias`",
       "line": 40,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 30,
       "stop_line": 40
     },
@@ -1009,7 +1039,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[A_Alias_2, LegacyExplicitTypeAlias[A_Alias_1, type[ClassA[TypeVar[T_co]]]]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[A_Alias_2, LegacyExplicitTypeAlias[A_Alias_1, type[ClassA[TypeVar[T_co]]]]]",
       "line": 32,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 31,
       "stop_line": 32
     }
@@ -1019,32 +1049,72 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Expected a type form, got instance of `tuple[type[int], type[str]]`",
-      "description": "Expected a type form, got instance of `tuple[type[int], type[str]]`",
+      "concise_description": "Invalid annotation: function call cannot be used in annotations",
+      "description": "Invalid annotation: function call cannot be used in annotations",
+      "line": 41,
+      "name": "invalid-annotation",
+      "stop_column": 49,
+      "stop_line": 41
+    },
+    {
+      "code": -2,
+      "column": 9,
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
+      "line": 42,
+      "name": "invalid-annotation",
+      "stop_column": 19,
+      "stop_line": 42
+    },
+    {
+      "code": -2,
+      "column": 9,
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 43,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 19,
       "stop_line": 43
     },
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Expected a type form, got instance of `list[type[int]]`",
-      "description": "Expected a type form, got instance of `list[type[int]]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 44,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 32,
       "stop_line": 44
     },
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Expected a type form, got instance of `dict[@_, @_]`",
-      "description": "Expected a type form, got instance of `dict[@_, @_]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 45,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 11,
       "stop_line": 45
+    },
+    {
+      "code": -2,
+      "column": 9,
+      "concise_description": "Invalid annotation: function call cannot be used in annotations",
+      "description": "Invalid annotation: function call cannot be used in annotations",
+      "line": 46,
+      "name": "invalid-annotation",
+      "stop_column": 25,
+      "stop_line": 46
+    },
+    {
+      "code": -2,
+      "column": 9,
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
+      "line": 48,
+      "name": "invalid-annotation",
+      "stop_column": 30,
+      "stop_line": 48
     },
     {
       "code": -2,
@@ -1052,47 +1122,57 @@
       "concise_description": "Expected a type form, got instance of `Literal[1]`",
       "description": "Expected a type form, got instance of `Literal[1]`",
       "line": 49,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 13,
       "stop_line": 49
     },
     {
       "code": -2,
       "column": 10,
-      "concise_description": "Expected a type form, got instance of `Literal[True]`",
-      "description": "Expected a type form, got instance of `Literal[True]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 50,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 14,
       "stop_line": 50
     },
     {
       "code": -2,
       "column": 10,
-      "concise_description": "Expected a type form, got instance of `Literal[1]`",
-      "description": "Expected a type form, got instance of `Literal[1]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 51,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 11,
       "stop_line": 51
     },
     {
       "code": -2,
       "column": 10,
-      "concise_description": "Expected a type form, got instance of `Literal[-1]`",
-      "description": "Expected a type form, got instance of `Literal[-1]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 52,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 12,
       "stop_line": 52
     },
     {
       "code": -2,
       "column": 10,
-      "concise_description": "Expected a type form, got instance of `Literal['int']`",
-      "description": "Expected a type form, got instance of `Literal['int']`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
+      "line": 53,
+      "name": "invalid-annotation",
+      "stop_column": 20,
+      "stop_line": 53
+    },
+    {
+      "code": -2,
+      "column": 10,
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 54,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 16,
       "stop_line": 54
     },
@@ -1102,7 +1182,7 @@
       "concise_description": "Expected a type form, got instance of `Module[types]`",
       "description": "Expected a type form, got instance of `Module[types]`",
       "line": 55,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 15,
       "stop_line": 55
     },
@@ -1122,7 +1202,7 @@
       "concise_description": "Expected a type form, got instance of `(self: ClassD) -> None`",
       "description": "Expected a type form, got instance of `(self: ClassD) -> None`",
       "line": 87,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 11,
       "stop_line": 87
     },
@@ -1132,7 +1212,7 @@
       "concise_description": "Expected a type form, got instance of `(self: ClassD) -> None`",
       "description": "Expected a type form, got instance of `(self: ClassD) -> None`",
       "line": 89,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 11,
       "stop_line": 89
     },
@@ -1214,7 +1294,7 @@
       "concise_description": "Generator function should return `Generator`",
       "description": "Generator function should return `Generator`",
       "line": 86,
-      "name": "unknown",
+      "name": "bad-return",
       "stop_column": 24,
       "stop_line": 86
     },
@@ -1224,7 +1304,7 @@
       "concise_description": "Async generator function should return `AsyncGenerator`",
       "description": "Async generator function should return `AsyncGenerator`",
       "line": 91,
-      "name": "unknown",
+      "name": "bad-return",
       "stop_column": 30,
       "stop_line": 91
     },
@@ -1314,6 +1394,16 @@
   "annotations_typeexpr.py": [
     {
       "code": -2,
+      "column": 9,
+      "concise_description": "Invalid annotation: function call cannot be used in annotations",
+      "description": "Invalid annotation: function call cannot be used in annotations",
+      "line": 88,
+      "name": "invalid-annotation",
+      "stop_column": 49,
+      "stop_line": 88
+    },
+    {
+      "code": -2,
       "column": 14,
       "concise_description": "Could not parse type string: , got Expected an expression at byte range 2016..2016",
       "description": "Could not parse type string: , got Expected an expression at byte range 2016..2016",
@@ -1325,32 +1415,62 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Expected a type form, got instance of `tuple[type[int], type[str]]`",
-      "description": "Expected a type form, got instance of `tuple[type[int], type[str]]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
+      "line": 89,
+      "name": "invalid-annotation",
+      "stop_column": 19,
+      "stop_line": 89
+    },
+    {
+      "code": -2,
+      "column": 9,
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 90,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 19,
       "stop_line": 90
     },
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Expected a type form, got instance of `list[type[int]]`",
-      "description": "Expected a type form, got instance of `list[type[int]]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 91,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 32,
       "stop_line": 91
     },
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Expected a type form, got instance of `dict[@_, @_]`",
-      "description": "Expected a type form, got instance of `dict[@_, @_]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 92,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 11,
       "stop_line": 92
+    },
+    {
+      "code": -2,
+      "column": 9,
+      "concise_description": "Invalid annotation: function call cannot be used in annotations",
+      "description": "Invalid annotation: function call cannot be used in annotations",
+      "line": 93,
+      "name": "invalid-annotation",
+      "stop_column": 24,
+      "stop_line": 93
+    },
+    {
+      "code": -2,
+      "column": 9,
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
+      "line": 95,
+      "name": "invalid-annotation",
+      "stop_column": 30,
+      "stop_line": 95
     },
     {
       "code": -2,
@@ -1358,47 +1478,57 @@
       "concise_description": "Expected a type form, got instance of `Literal[3]`",
       "description": "Expected a type form, got instance of `Literal[3]`",
       "line": 96,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 13,
       "stop_line": 96
     },
     {
       "code": -2,
       "column": 10,
-      "concise_description": "Expected a type form, got instance of `Literal[True]`",
-      "description": "Expected a type form, got instance of `Literal[True]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 97,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 14,
       "stop_line": 97
     },
     {
       "code": -2,
       "column": 10,
-      "concise_description": "Expected a type form, got instance of `Literal[1]`",
-      "description": "Expected a type form, got instance of `Literal[1]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 98,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 11,
       "stop_line": 98
     },
     {
       "code": -2,
       "column": 10,
-      "concise_description": "Expected a type form, got instance of `Literal[-1]`",
-      "description": "Expected a type form, got instance of `Literal[-1]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 99,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 12,
       "stop_line": 99
     },
     {
       "code": -2,
       "column": 10,
-      "concise_description": "Expected a type form, got instance of `Literal['int']`",
-      "description": "Expected a type form, got instance of `Literal['int']`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
+      "line": 100,
+      "name": "invalid-annotation",
+      "stop_column": 20,
+      "stop_line": 100
+    },
+    {
+      "code": -2,
+      "column": 10,
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 101,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 16,
       "stop_line": 101
     },
@@ -1408,7 +1538,7 @@
       "concise_description": "Expected a type form, got instance of `Module[types]`",
       "description": "Expected a type form, got instance of `Module[types]`",
       "line": 102,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 15,
       "stop_line": 102
     }
@@ -1447,18 +1577,18 @@
     {
       "code": -2,
       "column": 8,
-      "concise_description": "Expected 2 more positional arguments",
-      "description": "Expected 2 more positional arguments",
+      "concise_description": "Unexpected keyword argument `a`",
+      "description": "Unexpected keyword argument `a`",
       "line": 29,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 11,
       "stop_line": 29
     },
     {
       "code": -2,
       "column": 8,
-      "concise_description": "Unexpected keyword argument `a`",
-      "description": "Unexpected keyword argument `a`",
+      "concise_description": "Expected 2 more positional arguments",
+      "description": "Expected 2 more positional arguments",
       "line": 29,
       "name": "unknown",
       "stop_column": 11,
@@ -1470,7 +1600,7 @@
       "concise_description": "Unexpected keyword argument `b`",
       "description": "Unexpected keyword argument `b`",
       "line": 29,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 17,
       "stop_line": 29
     },
@@ -1600,7 +1730,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback1, type[(ParamSpec(ParamSpec[P])) -> str]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback1, type[(ParamSpec(ParamSpec[P])) -> str]]",
       "line": 171,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 23,
       "stop_line": 171
     },
@@ -1610,7 +1740,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback2, type[(int, ParamSpec(ParamSpec[P])) -> str]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback2, type[(int, ParamSpec(ParamSpec[P])) -> str]]",
       "line": 172,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 23,
       "stop_line": 172
     },
@@ -1620,7 +1750,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback1, type[(ParamSpec(ParamSpec[P])) -> str]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback1, type[(ParamSpec(ParamSpec[P])) -> str]]",
       "line": 174,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 23,
       "stop_line": 174
     },
@@ -1630,7 +1760,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback2, type[(int, ParamSpec(ParamSpec[P])) -> str]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[Callback2, type[(int, ParamSpec(ParamSpec[P])) -> str]]",
       "line": 175,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 23,
       "stop_line": 175
     },
@@ -1650,7 +1780,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[CallbackWithInt, type[(int, ParamSpec(ParamSpec[P])) -> str]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[CallbackWithInt, type[(int, ParamSpec(ParamSpec[P])) -> str]]",
       "line": 188,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 29,
       "stop_line": 188
     },
@@ -1660,7 +1790,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[CallbackWithStr, type[(str, ParamSpec(ParamSpec[P])) -> str]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[CallbackWithStr, type[(str, ParamSpec(ParamSpec[P])) -> str]]",
       "line": 189,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 29,
       "stop_line": 189
     }
@@ -1672,7 +1802,7 @@
       "concise_description": "Missing argument `v1`",
       "description": "Missing argument `v1`",
       "line": 46,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 10,
       "stop_line": 46
     },
@@ -1682,7 +1812,7 @@
       "concise_description": "Missing argument `v3`",
       "description": "Missing argument `v3`",
       "line": 46,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 10,
       "stop_line": 46
     },
@@ -1692,7 +1822,7 @@
       "concise_description": "Unexpected keyword argument `v4`",
       "description": "Unexpected keyword argument `v4`",
       "line": 51,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 36,
       "stop_line": 51
     },
@@ -1702,7 +1832,7 @@
       "concise_description": "Missing argument `v1`",
       "description": "Missing argument `v1`",
       "line": 52,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 10,
       "stop_line": 52
     },
@@ -1712,7 +1842,7 @@
       "concise_description": "Missing argument `v3`",
       "description": "Missing argument `v3`",
       "line": 52,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 10,
       "stop_line": 52
     },
@@ -1874,7 +2004,7 @@
       "concise_description": "Object of class `Proto9` has no attribute `xxx`",
       "description": "Object of class `Proto9` has no attribute `xxx`",
       "line": 187,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 18,
       "stop_line": 187
     },
@@ -1884,7 +2014,7 @@
       "concise_description": "Object of class `Proto9` has no attribute `other_attribute2`",
       "description": "Object of class `Proto9` has no attribute `other_attribute2`",
       "line": 197,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 32,
       "stop_line": 197
     },
@@ -2176,7 +2306,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TypeAliasWithP, type[(ParamSpec(ParamSpec[P])) -> None]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TypeAliasWithP, type[(ParamSpec(ParamSpec[P])) -> None]]",
       "line": 211,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 57,
       "stop_line": 211
     },
@@ -2186,7 +2316,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TypeAliasWithP, type[(ParamSpec(ParamSpec[P])) -> None]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TypeAliasWithP, type[(ParamSpec(ParamSpec[P])) -> None]]",
       "line": 213,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 26,
       "stop_line": 213
     },
@@ -2265,10 +2395,10 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "Expected a type form, got instance of `Literal[3]`",
-      "description": "Expected a type form, got instance of `Literal[3]`",
+      "concise_description": "Invalid annotation: this expression cannot be used in annotations",
+      "description": "Invalid annotation: this expression cannot be used in annotations",
       "line": 39,
-      "name": "unknown",
+      "name": "invalid-annotation",
       "stop_column": 15,
       "stop_line": 39
     },
@@ -2318,7 +2448,7 @@
       "concise_description": "Object of class `ClassA` has no attribute `xx`",
       "description": "Object of class `ClassA` has no attribute `xx`",
       "line": 65,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 16,
       "stop_line": 65
     },
@@ -2534,7 +2664,7 @@
       "concise_description": "Missing argument `x`",
       "description": "Missing argument `x`",
       "line": 23,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 19,
       "stop_line": 23
     },
@@ -2584,7 +2714,7 @@
       "concise_description": "Missing argument `x`",
       "description": "Missing argument `x`",
       "line": 51,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 7,
       "stop_line": 51
     },
@@ -2614,7 +2744,7 @@
       "concise_description": "Missing argument `x`",
       "description": "Missing argument `x`",
       "line": 65,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 7,
       "stop_line": 65
     }
@@ -2686,7 +2816,7 @@
       "concise_description": "Missing argument `x`",
       "description": "Missing argument `x`",
       "line": 64,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 19,
       "stop_line": 64
     },
@@ -2706,7 +2836,7 @@
       "concise_description": "Missing argument `x`",
       "description": "Missing argument `x`",
       "line": 76,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 23,
       "stop_line": 76
     },
@@ -2758,7 +2888,7 @@
       "concise_description": "Missing argument `x`",
       "description": "Missing argument `x`",
       "line": 30,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 8,
       "stop_line": 30
     },
@@ -2768,7 +2898,7 @@
       "concise_description": "Missing argument `y`",
       "description": "Missing argument `y`",
       "line": 30,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 8,
       "stop_line": 30
     },
@@ -2798,7 +2928,7 @@
       "concise_description": "Missing argument `x`",
       "description": "Missing argument `x`",
       "line": 40,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 8,
       "stop_line": 40
     },
@@ -2808,7 +2938,7 @@
       "concise_description": "Missing argument `y`",
       "description": "Missing argument `y`",
       "line": 40,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 8,
       "stop_line": 40
     },
@@ -2818,7 +2948,7 @@
       "concise_description": "Missing argument `x`",
       "description": "Missing argument `x`",
       "line": 50,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 8,
       "stop_line": 50
     },
@@ -2828,7 +2958,7 @@
       "concise_description": "Missing argument `y`",
       "description": "Missing argument `y`",
       "line": 50,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 8,
       "stop_line": 50
     },
@@ -3566,7 +3696,7 @@
       "concise_description": "Instance-only attribute `final_no_default` of class `D` is not visible on the class",
       "description": "Instance-only attribute `final_no_default` of class `D` is not visible on the class",
       "line": 37,
-      "name": "unknown",
+      "name": "no-access",
       "stop_column": 19,
       "stop_line": 37
     }
@@ -3578,7 +3708,7 @@
       "concise_description": "Could not assign to read-only field `a`",
       "description": "Could not assign to read-only field `a`",
       "line": 16,
-      "name": "unknown",
+      "name": "read-only",
       "stop_column": 6,
       "stop_line": 16
     },
@@ -3588,7 +3718,7 @@
       "concise_description": "Could not assign to read-only field `b`",
       "description": "Could not assign to read-only field `b`",
       "line": 17,
-      "name": "unknown",
+      "name": "read-only",
       "stop_column": 6,
       "stop_line": 17
     }
@@ -3633,7 +3763,7 @@
       "concise_description": "Missing argument `a`",
       "description": "Missing argument `a`",
       "line": 32,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 4,
       "stop_line": 32
     },
@@ -3653,7 +3783,7 @@
       "concise_description": "Missing argument `a`",
       "description": "Missing argument `a`",
       "line": 35,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 4,
       "stop_line": 35
     },
@@ -3673,7 +3803,7 @@
       "concise_description": "Missing argument `a`",
       "description": "Missing argument `a`",
       "line": 38,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 4,
       "stop_line": 38
     },
@@ -3693,7 +3823,7 @@
       "concise_description": "Missing argument `a`",
       "description": "Missing argument `a`",
       "line": 47,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 4,
       "stop_line": 47
     },
@@ -3713,7 +3843,7 @@
       "concise_description": "Missing argument `a`",
       "description": "Missing argument `a`",
       "line": 50,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 4,
       "stop_line": 50
     },
@@ -3733,7 +3863,7 @@
       "concise_description": "Missing argument `a`",
       "description": "Missing argument `a`",
       "line": 53,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 4,
       "stop_line": 53
     },
@@ -3753,7 +3883,7 @@
       "concise_description": "Missing argument `c`",
       "description": "Missing argument `c`",
       "line": 61,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 4,
       "stop_line": 61
     },
@@ -3819,7 +3949,7 @@
       "concise_description": "Class `DC5` has no class attribute `__slots__`",
       "description": "Class `DC5` has no class attribute `__slots__`",
       "line": 56,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 14,
       "stop_line": 56
     },
@@ -3829,7 +3959,7 @@
       "concise_description": "Object of class `DC5` has no attribute `__slots__`",
       "description": "Object of class `DC5` has no attribute `__slots__`",
       "line": 57,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 17,
       "stop_line": 57
     },
@@ -3839,7 +3969,7 @@
       "concise_description": "Class `DC6` has no class attribute `__slots__`",
       "description": "Class `DC6` has no class attribute `__slots__`",
       "line": 66,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 14,
       "stop_line": 66
     },
@@ -3849,7 +3979,7 @@
       "concise_description": "Object of class `DC6` has no attribute `__slots__`",
       "description": "Object of class `DC6` has no attribute `__slots__`",
       "line": 69,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 17,
       "stop_line": 69
     }
@@ -3861,7 +3991,7 @@
       "concise_description": "Missing argument `not_a_field`",
       "description": "Missing argument `not_a_field`",
       "line": 60,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 17,
       "stop_line": 60
     },
@@ -3871,7 +4001,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 60,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 60
     },
@@ -3881,7 +4011,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 60,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 34,
       "stop_line": 60
     },
@@ -3891,7 +4021,7 @@
       "concise_description": "Unexpected keyword argument `other_name`",
       "description": "Unexpected keyword argument `other_name`",
       "line": 60,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 54,
       "stop_line": 60
     },
@@ -3921,7 +4051,7 @@
       "concise_description": "Missing argument `not_a_field`",
       "description": "Missing argument `not_a_field`",
       "line": 68,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 17,
       "stop_line": 68
     },
@@ -3931,7 +4061,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 68,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 68
     },
@@ -3941,7 +4071,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 68,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 35,
       "stop_line": 68
     },
@@ -3951,7 +4081,7 @@
       "concise_description": "`<` not supported between `Customer1` and `Customer1`",
       "description": "`<` not supported between `Customer1` and `Customer1`",
       "line": 72,
-      "name": "unknown",
+      "name": "unsupported-operand",
       "stop_column": 17,
       "stop_line": 72
     },
@@ -3961,7 +4091,7 @@
       "concise_description": "Missing argument `not_a_field`",
       "description": "Missing argument `not_a_field`",
       "line": 74,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 17,
       "stop_line": 74
     },
@@ -3971,7 +4101,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 74,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 74
     },
@@ -3981,7 +4111,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 74,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 35,
       "stop_line": 74
     },
@@ -3991,7 +4121,7 @@
       "concise_description": "Missing argument `not_a_field`",
       "description": "Missing argument `not_a_field`",
       "line": 76,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 17,
       "stop_line": 76
     },
@@ -4001,7 +4131,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 76,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 76
     },
@@ -4011,7 +4141,7 @@
       "concise_description": "`<` not supported between `Customer2` and `Customer2`",
       "description": "`<` not supported between `Customer2` and `Customer2`",
       "line": 78,
-      "name": "unknown",
+      "name": "unsupported-operand",
       "stop_column": 17,
       "stop_line": 78
     },
@@ -4041,7 +4171,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 106,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 28,
       "stop_line": 106
     },
@@ -4051,7 +4181,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 119,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 119
     },
@@ -4061,7 +4191,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 119,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 33,
       "stop_line": 119
     }
@@ -4245,7 +4375,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 60,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 25,
       "stop_line": 60
     },
@@ -4255,7 +4385,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 64,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 20,
       "stop_line": 64
     },
@@ -4265,7 +4395,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 64,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 31,
       "stop_line": 64
     },
@@ -4285,7 +4415,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 77,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 27,
       "stop_line": 77
     }
@@ -4297,7 +4427,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 50,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 50
     },
@@ -4307,7 +4437,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 50,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 34,
       "stop_line": 50
     },
@@ -4337,7 +4467,7 @@
       "concise_description": "`<` not supported between `Customer1` and `Customer1`",
       "description": "`<` not supported between `Customer1` and `Customer1`",
       "line": 61,
-      "name": "unknown",
+      "name": "unsupported-operand",
       "stop_column": 17,
       "stop_line": 61
     },
@@ -4347,7 +4477,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 65,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 65
     },
@@ -4357,7 +4487,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 65,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 34,
       "stop_line": 65
     },
@@ -4367,7 +4497,7 @@
       "concise_description": "Unexpected keyword argument `salary`",
       "description": "Unexpected keyword argument `salary`",
       "line": 65,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 48,
       "stop_line": 65
     },
@@ -4377,7 +4507,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 67,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 67
     },
@@ -4387,7 +4517,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 67,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 35,
       "stop_line": 67
     },
@@ -4407,7 +4537,7 @@
       "concise_description": "`<` not supported between `Customer2` and `Customer2`",
       "description": "`<` not supported between `Customer2` and `Customer2`",
       "line": 73,
-      "name": "unknown",
+      "name": "unsupported-operand",
       "stop_column": 17,
       "stop_line": 73
     },
@@ -4417,7 +4547,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 94,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 94
     },
@@ -4427,7 +4557,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 94,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 33,
       "stop_line": 94
     }
@@ -4439,7 +4569,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 60,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 60
     },
@@ -4449,7 +4579,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 60,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 34,
       "stop_line": 60
     },
@@ -4459,7 +4589,7 @@
       "concise_description": "Unexpected keyword argument `other_name`",
       "description": "Unexpected keyword argument `other_name`",
       "line": 60,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 54,
       "stop_line": 60
     },
@@ -4479,7 +4609,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 69,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 69
     },
@@ -4489,7 +4619,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 69,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 35,
       "stop_line": 69
     },
@@ -4499,7 +4629,7 @@
       "concise_description": "`<` not supported between `Customer1` and `Customer1`",
       "description": "`<` not supported between `Customer1` and `Customer1`",
       "line": 73,
-      "name": "unknown",
+      "name": "unsupported-operand",
       "stop_column": 17,
       "stop_line": 73
     },
@@ -4509,7 +4639,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 75,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 75
     },
@@ -4519,7 +4649,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 75,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 35,
       "stop_line": 75
     },
@@ -4529,7 +4659,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 77,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 77
     },
@@ -4539,7 +4669,7 @@
       "concise_description": "`<` not supported between `Customer2` and `Customer2`",
       "description": "`<` not supported between `Customer2` and `Customer2`",
       "line": 79,
-      "name": "unknown",
+      "name": "unsupported-operand",
       "stop_column": 17,
       "stop_line": 79
     },
@@ -4559,7 +4689,7 @@
       "concise_description": "Unexpected keyword argument `id`",
       "description": "Unexpected keyword argument `id`",
       "line": 100,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 22,
       "stop_line": 100
     },
@@ -4569,7 +4699,7 @@
       "concise_description": "Unexpected keyword argument `name`",
       "description": "Unexpected keyword argument `name`",
       "line": 100,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 33,
       "stop_line": 100
     }
@@ -4591,7 +4721,7 @@
       "concise_description": "Missing argument `unit_price`",
       "description": "Missing argument `unit_price`",
       "line": 50,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 19,
       "stop_line": 50
     },
@@ -4671,7 +4801,7 @@
       "concise_description": "Missing argument `y`",
       "description": "Missing argument `y`",
       "line": 130,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 4,
       "stop_line": 130
     },
@@ -4869,7 +4999,7 @@
       "concise_description": "Missing argument `a`",
       "description": "Missing argument `a`",
       "line": 32,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 6,
       "stop_line": 32
     },
@@ -4879,7 +5009,7 @@
       "concise_description": "Missing argument `b`",
       "description": "Missing argument `b`",
       "line": 32,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 6,
       "stop_line": 32
     }
@@ -4963,7 +5093,7 @@
       "concise_description": "Inconsistent type annotations for b: list[str], list[int]",
       "description": "Inconsistent type annotations for b: list[str], list[int]",
       "line": 16,
-      "name": "unknown",
+      "name": "annotation-mismatch",
       "stop_column": 6,
       "stop_line": 16
     },
@@ -5082,7 +5212,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['RED']`",
       "description": "Expected a type form, got instance of `Literal['RED']`",
       "line": 26,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 24,
       "stop_line": 26
     },
@@ -5241,7 +5371,7 @@
       "concise_description": "Instance-only attribute `genus` of class `Pet` is not visible on the class",
       "description": "Instance-only attribute `genus` of class `Pet` is not visible on the class",
       "line": 27,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 22,
       "stop_line": 27
     },
@@ -5261,7 +5391,7 @@
       "concise_description": "Instance-only attribute `species` of class `Pet` is not visible on the class",
       "description": "Instance-only attribute `species` of class `Pet` is not visible on the class",
       "line": 28,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 24,
       "stop_line": 28
     },
@@ -5281,7 +5411,7 @@
       "concise_description": "Instance-only attribute `genus` of class `Pet2` is not visible on the class",
       "description": "Instance-only attribute `genus` of class `Pet2` is not visible on the class",
       "line": 35,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 23,
       "stop_line": 35
     },
@@ -5301,7 +5431,7 @@
       "concise_description": "Instance-only attribute `species` of class `Pet2` is not visible on the class",
       "description": "Instance-only attribute `species` of class `Pet2` is not visible on the class",
       "line": 36,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 25,
       "stop_line": 36
     },
@@ -5557,7 +5687,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access __add__)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access __add__)",
       "line": 34,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 17,
       "stop_line": 34
     },
@@ -5649,7 +5779,7 @@
       "concise_description": "A type parameter without a default cannot follow one with a default",
       "description": "A type parameter without a default cannot follow one with a default",
       "line": 24,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 31,
       "stop_line": 24
     },
@@ -5679,7 +5809,7 @@
       "concise_description": "Unexpected keyword argument `default` to ParamSpec",
       "description": "Unexpected keyword argument `default` to ParamSpec",
       "line": 73,
-      "name": "unknown",
+      "name": "invalid-param-spec",
       "stop_column": 52,
       "stop_line": 73
     },
@@ -5709,7 +5839,7 @@
       "concise_description": "Unexpected keyword argument `default` to TypeVarTuple",
       "description": "Unexpected keyword argument `default` to TypeVarTuple",
       "line": 88,
-      "name": "unknown",
+      "name": "invalid-type-var-tuple",
       "stop_column": 70,
       "stop_line": 88
     },
@@ -5749,7 +5879,7 @@
       "concise_description": "A type parameter without a default cannot follow one with a default",
       "description": "A type parameter without a default cannot follow one with a default",
       "line": 138,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 11,
       "stop_line": 138
     },
@@ -5769,7 +5899,7 @@
       "concise_description": "Unexpected keyword argument `default` to ParamSpec",
       "description": "Unexpected keyword argument `default` to ParamSpec",
       "line": 145,
-      "name": "unknown",
+      "name": "invalid-param-spec",
       "stop_column": 41,
       "stop_line": 145
     },
@@ -5849,7 +5979,7 @@
       "concise_description": "Generic attribute `meth` of class `Foo7` is not visible on the class",
       "description": "Generic attribute `meth` of class `Foo7` is not visible on the class",
       "line": 166,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 22,
       "stop_line": 166
     },
@@ -5869,7 +5999,7 @@
       "concise_description": "Instance-only attribute `attr` of class `Foo7` is not visible on the class",
       "description": "Instance-only attribute `attr` of class `Foo7` is not visible on the class",
       "line": 167,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 22,
       "stop_line": 167
     }
@@ -5973,7 +6103,7 @@
       "concise_description": "Expected a type form, got instance of `Forall[DefaultStrT, LegacyExplicitTypeAlias[MyAlias, type[SomethingWithNoDefaults[int, DefaultStrT]]]]`",
       "description": "Expected a type form, got instance of `Forall[DefaultStrT, LegacyExplicitTypeAlias[MyAlias, type[SomethingWithNoDefaults[int, DefaultStrT]]]]`",
       "line": 25,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 22,
       "stop_line": 25
     },
@@ -6015,7 +6145,7 @@
       "concise_description": "ParamSpec must be assigned to a variable named `NotIt`",
       "description": "ParamSpec must be assigned to a variable named `NotIt`",
       "line": 10,
-      "name": "unknown",
+      "name": "invalid-param-spec",
       "stop_column": 31,
       "stop_line": 10
     },
@@ -6037,7 +6167,7 @@
       "concise_description": "ParamSpec *args and **kwargs must be used together",
       "description": "ParamSpec *args and **kwargs must be used together",
       "line": 23,
-      "name": "unknown",
+      "name": "invalid-param-spec",
       "stop_column": 13,
       "stop_line": 24
     },
@@ -6047,7 +6177,7 @@
       "concise_description": "ParamSpec *args and **kwargs must be used together",
       "description": "ParamSpec *args and **kwargs must be used together",
       "line": 26,
-      "name": "unknown",
+      "name": "invalid-param-spec",
       "stop_column": 13,
       "stop_line": 27
     },
@@ -6057,7 +6187,7 @@
       "concise_description": "ParamSpec *args and **kwargs must be used together",
       "description": "ParamSpec *args and **kwargs must be used together",
       "line": 38,
-      "name": "unknown",
+      "name": "invalid-param-spec",
       "stop_column": 13,
       "stop_line": 39
     },
@@ -6067,7 +6197,7 @@
       "concise_description": "ParamSpec *args and **kwargs must be used together",
       "description": "ParamSpec *args and **kwargs must be used together",
       "line": 41,
-      "name": "unknown",
+      "name": "invalid-param-spec",
       "stop_column": 13,
       "stop_line": 42
     },
@@ -6097,7 +6227,7 @@
       "concise_description": "Keyword-only parameter `s` may not appear after ParamSpec args parameter",
       "description": "Keyword-only parameter `s` may not appear after ParamSpec args parameter",
       "line": 60,
-      "name": "unknown",
+      "name": "bad-function-definition",
       "stop_column": 34,
       "stop_line": 60
     },
@@ -6124,18 +6254,18 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Expected 1 more positional argument",
-      "description": "Expected 1 more positional argument",
+      "concise_description": "Unexpected keyword argument `x`",
+      "description": "Unexpected keyword argument `x`",
       "line": 83,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 16,
       "stop_line": 83
     },
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Unexpected keyword argument `x`",
-      "description": "Unexpected keyword argument `x`",
+      "concise_description": "Expected 1 more positional argument",
+      "description": "Expected 1 more positional argument",
       "line": 83,
       "name": "unknown",
       "stop_column": 16,
@@ -6176,18 +6306,18 @@
     {
       "code": -2,
       "column": 4,
-      "concise_description": "Expected 2 more positional arguments",
-      "description": "Expected 2 more positional arguments",
+      "concise_description": "Unexpected keyword argument `a`",
+      "description": "Unexpected keyword argument `a`",
       "line": 26,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 9,
       "stop_line": 26
     },
     {
       "code": -2,
       "column": 4,
-      "concise_description": "Unexpected keyword argument `a`",
-      "description": "Unexpected keyword argument `a`",
+      "concise_description": "Expected 2 more positional arguments",
+      "description": "Expected 2 more positional arguments",
       "line": 26,
       "name": "unknown",
       "stop_column": 9,
@@ -6199,7 +6329,7 @@
       "concise_description": "Unexpected keyword argument `b`",
       "description": "Unexpected keyword argument `b`",
       "line": 26,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 17,
       "stop_line": 26
     },
@@ -6605,7 +6735,7 @@
       "concise_description": "Instance-only attribute `a` of class `ChildB` is not visible on the class",
       "description": "Instance-only attribute `a` of class `ChildB` is not visible on the class",
       "line": 43,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 26,
       "stop_line": 43
     },
@@ -6625,7 +6755,7 @@
       "concise_description": "Instance-only attribute `a` of class `ChildB` is not visible on the class",
       "description": "Instance-only attribute `a` of class `ChildB` is not visible on the class",
       "line": 44,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 26,
       "stop_line": 44
     },
@@ -6689,7 +6819,7 @@
       "concise_description": "Object of class `Shape` has no attribute `scale`",
       "description": "Object of class `Shape` has no attribute `scale`",
       "line": 15,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 19,
       "stop_line": 15
     },
@@ -6773,7 +6903,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: Self (trying to access x)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: Self (trying to access x)",
       "line": 60,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 31,
       "stop_line": 60
     },
@@ -6793,7 +6923,7 @@
       "concise_description": "Object of class `Foo3` has no attribute `child_value`",
       "description": "Object of class `Foo3` has no attribute `child_value`",
       "line": 93,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 22,
       "stop_line": 93
     }
@@ -6815,7 +6945,7 @@
       "concise_description": "Type parameter K is not included in the type parameter list",
       "description": "Type parameter K is not included in the type parameter list",
       "line": 14,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 23,
       "stop_line": 14
     },
@@ -6825,7 +6955,7 @@
       "concise_description": "Type parameter K is not included in the type parameter list",
       "description": "Type parameter K is not included in the type parameter list",
       "line": 26,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 36,
       "stop_line": 26
     },
@@ -6835,7 +6965,7 @@
       "concise_description": "Type parameter K is not included in the type parameter list",
       "description": "Type parameter K is not included in the type parameter list",
       "line": 26,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 46,
       "stop_line": 26
     }
@@ -6897,7 +7027,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access capitalize)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access capitalize)",
       "line": 33,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 21,
       "stop_line": 33
     },
@@ -6907,7 +7037,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access is_integer)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access is_integer)",
       "line": 34,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 21,
       "stop_line": 34
     },
@@ -6917,7 +7047,7 @@
       "concise_description": "Expected a type form, got instance of `tuple[type[bytes], type[str]]`",
       "description": "Expected a type form, got instance of `tuple[type[bytes], type[str]]`",
       "line": 73,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 19,
       "stop_line": 73
     },
@@ -6927,7 +7057,7 @@
       "concise_description": "Expected a type form, got instance of `Literal[3]`",
       "description": "Expected a type form, got instance of `Literal[3]`",
       "line": 77,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 19,
       "stop_line": 77
     },
@@ -6949,7 +7079,7 @@
       "concise_description": "Contradictory variance specifications",
       "description": "Contradictory variance specifications",
       "line": 15,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 55,
       "stop_line": 15
     },
@@ -6959,7 +7089,7 @@
       "concise_description": "Contradictory variance specifications",
       "description": "Contradictory variance specifications",
       "line": 17,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 59,
       "stop_line": 17
     },
@@ -7211,7 +7341,7 @@
       "concise_description": "Expected a type form, got instance of `int`",
       "description": "Expected a type form, got instance of `int`",
       "line": 18,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 27,
       "stop_line": 18
     },
@@ -7221,7 +7351,7 @@
       "concise_description": "Expected a type form, got instance of `int`",
       "description": "Expected a type form, got instance of `int`",
       "line": 44,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 18,
       "stop_line": 44
     },
@@ -7293,7 +7423,7 @@
       "concise_description": "Instance-only attribute `label` of class `Node` is not visible on the class",
       "description": "Instance-only attribute `label` of class `Node` is not visible on the class",
       "line": 42,
-      "name": "unknown",
+      "name": "no-access",
       "stop_column": 16,
       "stop_line": 42
     },
@@ -7303,7 +7433,7 @@
       "concise_description": "Instance-only attribute `label` of class `Node` is not visible on the class",
       "description": "Instance-only attribute `label` of class `Node` is not visible on the class",
       "line": 43,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 16,
       "stop_line": 43
     },
@@ -7313,7 +7443,7 @@
       "concise_description": "Instance-only attribute `label` of class `Node` is not visible on the class",
       "description": "Instance-only attribute `label` of class `Node` is not visible on the class",
       "line": 44,
-      "name": "unknown",
+      "name": "no-access",
       "stop_column": 11,
       "stop_line": 44
     },
@@ -7323,7 +7453,7 @@
       "concise_description": "Instance-only attribute `label` of class `Node` is not visible on the class",
       "description": "Instance-only attribute `label` of class `Node` is not visible on the class",
       "line": 45,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 11,
       "stop_line": 45
     },
@@ -7333,7 +7463,7 @@
       "concise_description": "Object of class `type` has no attribute `label`",
       "description": "Object of class `type` has no attribute `label`",
       "line": 46,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 15,
       "stop_line": 46
     },
@@ -7527,7 +7657,7 @@
       "concise_description": "Unexpected keyword argument `covariant` to TypeVarTuple",
       "description": "Unexpected keyword argument `covariant` to TypeVarTuple",
       "line": 65,
-      "name": "unknown",
+      "name": "invalid-type-var-tuple",
       "stop_column": 41,
       "stop_line": 65
     },
@@ -7537,7 +7667,7 @@
       "concise_description": "Unexpected keyword argument `bound` to TypeVarTuple",
       "description": "Unexpected keyword argument `bound` to TypeVarTuple",
       "line": 67,
-      "name": "unknown",
+      "name": "invalid-type-var-tuple",
       "stop_column": 36,
       "stop_line": 67
     },
@@ -7665,7 +7795,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTuple, type[tuple[int, *TypeVarTuple[Ts]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTuple, type[tuple[int, *TypeVarTuple[Ts]]]]",
       "line": 45,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 35,
       "stop_line": 45
     },
@@ -7675,7 +7805,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[NamedArray, type[tuple[str, Array[tuple[*TypeVarTuple[Ts]]]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[NamedArray, type[tuple[str, Array[tuple[*TypeVarTuple[Ts]]]]]]",
       "line": 45,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 58,
       "stop_line": 45
     },
@@ -7705,7 +7835,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTuple, type[tuple[int, *TypeVarTuple[Ts]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTuple, type[tuple[int, *TypeVarTuple[Ts]]]]",
       "line": 50,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 26,
       "stop_line": 50
     },
@@ -7715,7 +7845,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[NamedArray, type[tuple[str, Array[tuple[*TypeVarTuple[Ts]]]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[NamedArray, type[tuple[str, Array[tuple[*TypeVarTuple[Ts]]]]]]",
       "line": 50,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 45,
       "stop_line": 50
     },
@@ -7755,7 +7885,7 @@
       "concise_description": "Expected a type form, got instance of `Forall[DType, LegacyImplicitTypeAlias[Array1D, type[Array2[DType, tuple[Any]]]]]`",
       "description": "Expected a type form, got instance of `Forall[DType, LegacyImplicitTypeAlias[Array1D, type[Array2[DType, tuple[Any]]]]]`",
       "line": 67,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 23,
       "stop_line": 67
     },
@@ -7775,7 +7905,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[FloatArray, type[Array2[float, tuple[*TypeVarTuple[Shape]]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[FloatArray, type[Array2[float, tuple[*TypeVarTuple[Shape]]]]]",
       "line": 76,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 41,
       "stop_line": 76
     },
@@ -7785,7 +7915,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[FloatArray, type[Array2[float, tuple[*TypeVarTuple[Shape]]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[FloatArray, type[Array2[float, tuple[*TypeVarTuple[Shape]]]]]",
       "line": 80,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 71,
       "stop_line": 80
     },
@@ -7795,7 +7925,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[VariadicTuple, type[tuple[TypeVar[T], *TypeVarTuple[Ts]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[VariadicTuple, type[tuple[TypeVar[T], *TypeVarTuple[Ts]]]]",
       "line": 92,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 37,
       "stop_line": 92
     },
@@ -7805,7 +7935,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[VariadicTuple, type[tuple[TypeVar[T], *TypeVarTuple[Ts]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[VariadicTuple, type[tuple[TypeVar[T], *TypeVarTuple[Ts]]]]",
       "line": 92,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 62,
       "stop_line": 92
     },
@@ -7845,7 +7975,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleVar, type[tuple[int, *TypeVarTuple[Ts1]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleVar, type[tuple[int, *TypeVarTuple[Ts1]]]]",
       "line": 102,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 44,
       "stop_line": 102
     },
@@ -7855,7 +7985,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleVar, type[tuple[int, *TypeVarTuple[Ts1]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleVar, type[tuple[int, *TypeVarTuple[Ts1]]]]",
       "line": 103,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 52,
       "stop_line": 103
     },
@@ -7865,7 +7995,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleGeneric, type[tuple[int, TypeVar[T]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleGeneric, type[tuple[int, TypeVar[T]]]]",
       "line": 108,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 21,
       "stop_line": 108
     },
@@ -7875,7 +8005,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleGeneric, type[tuple[int, TypeVar[T]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleGeneric, type[tuple[int, TypeVar[T]]]]",
       "line": 109,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 21,
       "stop_line": 109
     },
@@ -7885,7 +8015,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleGeneric, type[tuple[int, TypeVar[T]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[IntTupleGeneric, type[tuple[int, TypeVar[T]]]]",
       "line": 110,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 36,
       "stop_line": 110
     },
@@ -7915,7 +8045,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "line": 127,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 13,
       "stop_line": 127
     },
@@ -7925,7 +8055,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "line": 130,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 30,
       "stop_line": 130
     },
@@ -7935,7 +8065,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "line": 134,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 28,
       "stop_line": 134
     },
@@ -7945,7 +8075,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "line": 134,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 54,
       "stop_line": 134
     },
@@ -7955,7 +8085,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA7, type[tuple[*TypeVarTuple[Ts], TypeVar[T1], TypeVar[T2]]]]",
       "line": 134,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 85,
       "stop_line": 134
     },
@@ -7995,7 +8125,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA8, type[tuple[TypeVar[T1], *TypeVarTuple[Ts], TypeVar[T2], TypeVar[T3]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA8, type[tuple[TypeVar[T1], *TypeVarTuple[Ts], TypeVar[T2], TypeVar[T3]]]]",
       "line": 143,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 34,
       "stop_line": 143
     },
@@ -8005,7 +8135,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA8, type[tuple[TypeVar[T1], *TypeVarTuple[Ts], TypeVar[T2], TypeVar[T3]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA8, type[tuple[TypeVar[T1], *TypeVarTuple[Ts], TypeVar[T2], TypeVar[T3]]]]",
       "line": 147,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 36,
       "stop_line": 147
     },
@@ -8015,7 +8145,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA8, type[tuple[TypeVar[T1], *TypeVarTuple[Ts], TypeVar[T2], TypeVar[T3]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA8, type[tuple[TypeVar[T1], *TypeVarTuple[Ts], TypeVar[T2], TypeVar[T3]]]]",
       "line": 147,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 67,
       "stop_line": 147
     },
@@ -8045,7 +8175,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA9, type[tuple[*TypeVarTuple[Ts], TypeVar[T1]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA9, type[tuple[*TypeVarTuple[Ts], TypeVar[T1]]]]",
       "line": 153,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 29,
       "stop_line": 153
     },
@@ -8055,7 +8185,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA9, type[tuple[*TypeVarTuple[Ts], TypeVar[T1]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA9, type[tuple[*TypeVarTuple[Ts], TypeVar[T1]]]]",
       "line": 156,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 50,
       "stop_line": 156
     },
@@ -8065,7 +8195,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA9, type[tuple[*TypeVarTuple[Ts], TypeVar[T1]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA9, type[tuple[*TypeVarTuple[Ts], TypeVar[T1]]]]",
       "line": 156,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 81,
       "stop_line": 156
     },
@@ -8105,7 +8235,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA11, type[tuple[TypeVar[T], *TypeVarTuple[Ts1]]]]",
       "description": "Can't apply arguments to non-class, got LegacyImplicitTypeAlias[TA11, type[tuple[TypeVar[T], *TypeVarTuple[Ts1]]]]",
       "line": 163,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 18,
       "stop_line": 163
     }
@@ -8169,7 +8299,7 @@
       "concise_description": "TypeVar cannot have both constraints and bound",
       "description": "TypeVar cannot have both constraints and bound",
       "line": 56,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 49,
       "stop_line": 56
     }
@@ -8181,7 +8311,7 @@
       "concise_description": "Contradictory variance specifications",
       "description": "Contradictory variance specifications",
       "line": 14,
-      "name": "unknown",
+      "name": "invalid-type-var",
       "stop_column": 54,
       "stop_line": 14
     }
@@ -8526,7 +8656,7 @@
       "concise_description": "Index 5 out of range for tuple with 3 elements",
       "description": "Index 5 out of range for tuple with 3 elements",
       "line": 15,
-      "name": "unknown",
+      "name": "index-error",
       "stop_column": 9,
       "stop_line": 15
     },
@@ -8536,7 +8666,7 @@
       "concise_description": "Index -5 out of range for tuple with 3 elements",
       "description": "Index -5 out of range for tuple with 3 elements",
       "line": 16,
-      "name": "unknown",
+      "name": "index-error",
       "stop_column": 9,
       "stop_line": 16
     },
@@ -8546,7 +8676,7 @@
       "concise_description": "Index 4 out of range for tuple with 3 elements",
       "description": "Index 4 out of range for tuple with 3 elements",
       "line": 17,
-      "name": "unknown",
+      "name": "index-error",
       "stop_column": 9,
       "stop_line": 17
     },
@@ -8556,7 +8686,7 @@
       "concise_description": "Index -4 out of range for tuple with 3 elements",
       "description": "Index -4 out of range for tuple with 3 elements",
       "line": 18,
-      "name": "unknown",
+      "name": "index-error",
       "stop_column": 10,
       "stop_line": 18
     },
@@ -9042,7 +9172,7 @@
       "concise_description": "TODO: Expr::call_method attribute base undefined for type: Literal[3, 4, 5] (trying to access __iadd__)",
       "description": "TODO: Expr::call_method attribute base undefined for type: Literal[3, 4, 5] (trying to access __iadd__)",
       "line": 33,
-      "name": "unknown",
+      "name": "internal-error",
       "stop_column": 11,
       "stop_line": 33
     }
@@ -9054,7 +9184,7 @@
       "concise_description": "Index 3 out of range for tuple with 3 elements",
       "description": "Index 3 out of range for tuple with 3 elements",
       "line": 32,
-      "name": "unknown",
+      "name": "index-error",
       "stop_column": 12,
       "stop_line": 32
     },
@@ -9064,7 +9194,7 @@
       "concise_description": "Index -4 out of range for tuple with 3 elements",
       "description": "Index -4 out of range for tuple with 3 elements",
       "line": 33,
-      "name": "unknown",
+      "name": "index-error",
       "stop_column": 13,
       "stop_line": 33
     },
@@ -9074,7 +9204,7 @@
       "concise_description": "Missing argument `y`",
       "description": "Missing argument `y`",
       "line": 44,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 11,
       "stop_line": 44
     },
@@ -9084,7 +9214,7 @@
       "concise_description": "Missing argument `y`",
       "description": "Missing argument `y`",
       "line": 45,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 11,
       "stop_line": 45
     },
@@ -9134,7 +9264,7 @@
       "concise_description": "Unexpected keyword argument `other`",
       "description": "Unexpected keyword argument `other`",
       "line": 49,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 31,
       "stop_line": 49
     },
@@ -9166,7 +9296,7 @@
       "concise_description": "Missing argument `y`",
       "description": "Missing argument `y`",
       "line": 16,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 14,
       "stop_line": 16
     },
@@ -9176,7 +9306,7 @@
       "concise_description": "Missing argument `x`",
       "description": "Missing argument `x`",
       "line": 21,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 14,
       "stop_line": 21
     },
@@ -9186,7 +9316,7 @@
       "concise_description": "Missing argument `y`",
       "description": "Missing argument `y`",
       "line": 21,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 14,
       "stop_line": 21
     },
@@ -9216,7 +9346,7 @@
       "concise_description": "Missing argument `y`",
       "description": "Missing argument `y`",
       "line": 31,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 14,
       "stop_line": 31
     },
@@ -9226,7 +9356,7 @@
       "concise_description": "Unexpected keyword argument `z`",
       "description": "Unexpected keyword argument `z`",
       "line": 31,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 21,
       "stop_line": 31
     },
@@ -9316,7 +9446,7 @@
       "concise_description": "Missing argument `a`",
       "description": "Missing argument `a`",
       "line": 66,
-      "name": "unknown",
+      "name": "missing-argument",
       "stop_column": 4,
       "stop_line": 66
     }
@@ -9350,7 +9480,7 @@
       "concise_description": "Index 3 out of range for tuple with 3 elements",
       "description": "Index 3 out of range for tuple with 3 elements",
       "line": 34,
-      "name": "unknown",
+      "name": "index-error",
       "stop_column": 11,
       "stop_line": 34
     },
@@ -9360,7 +9490,7 @@
       "concise_description": "Index -4 out of range for tuple with 3 elements",
       "description": "Index -4 out of range for tuple with 3 elements",
       "line": 35,
-      "name": "unknown",
+      "name": "index-error",
       "stop_column": 12,
       "stop_line": 35
     },
@@ -9400,7 +9530,7 @@
       "concise_description": "Cannot unpack Point (of size 3) into 2 values",
       "description": "Cannot unpack Point (of size 3) into 2 values",
       "line": 52,
-      "name": "unknown",
+      "name": "bad-unpacking",
       "stop_column": 7,
       "stop_line": 52
     },
@@ -9410,7 +9540,7 @@
       "concise_description": "Cannot unpack Point (of size 3) into 4 values",
       "description": "Cannot unpack Point (of size 3) into 4 values",
       "line": 53,
-      "name": "unknown",
+      "name": "bad-unpacking",
       "stop_column": 21,
       "stop_line": 53
     }
@@ -9514,7 +9644,7 @@
       "concise_description": "Expression is not awaitable",
       "description": "Expression is not awaitable",
       "line": 35,
-      "name": "unknown",
+      "name": "async-error",
       "stop_column": 27,
       "stop_line": 35
     },
@@ -9796,7 +9926,7 @@
       "concise_description": "Overloaded function needs at least two signatures",
       "description": "Overloaded function needs at least two signatures",
       "line": 63,
-      "name": "unknown",
+      "name": "invalid-overload",
       "stop_column": 10,
       "stop_line": 63
     },
@@ -9806,7 +9936,7 @@
       "concise_description": "Overloaded function must have an implementation",
       "description": "Overloaded function must have an implementation",
       "line": 75,
-      "name": "unknown",
+      "name": "invalid-overload",
       "stop_column": 10,
       "stop_line": 75
     }
@@ -9850,7 +9980,7 @@
       "concise_description": "Object of class `Template` has no attribute `temp`",
       "description": "Object of class `Template` has no attribute `temp`",
       "line": 67,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 18,
       "stop_line": 67
     },
@@ -10104,7 +10234,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access get_parent)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access get_parent)",
       "line": 87,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 24,
       "stop_line": 87
     },
@@ -10186,7 +10316,7 @@
       "concise_description": "If `Protocol` is included as a base class, all other bases must be protocols.",
       "description": "If `Protocol` is included as a base class, all other bases must be protocols.",
       "line": 67,
-      "name": "unknown",
+      "name": "invalid-inheritance",
       "stop_column": 33,
       "stop_line": 67
     },
@@ -10378,7 +10508,7 @@
       "concise_description": "Expected a type form, got instance of `list[type[int] | type[str]]`",
       "description": "Expected a type form, got instance of `list[type[int] | type[str]]`",
       "line": 43,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 32,
       "stop_line": 43
     },
@@ -10388,7 +10518,7 @@
       "concise_description": "Expected a type form, got instance of `tuple[tuple[type[int], type[str]]]`",
       "description": "Expected a type form, got instance of `tuple[tuple[type[int], type[str]]]`",
       "line": 44,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 35,
       "stop_line": 44
     },
@@ -10398,7 +10528,7 @@
       "concise_description": "Expected a type form, got instance of `list[type[int]]`",
       "description": "Expected a type form, got instance of `list[type[int]]`",
       "line": 45,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 45,
       "stop_line": 45
     },
@@ -10408,7 +10538,7 @@
       "concise_description": "Expected a type form, got instance of `dict[Error, Error]`",
       "description": "Expected a type form, got instance of `dict[Error, Error]`",
       "line": 46,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 32,
       "stop_line": 46
     },
@@ -10448,7 +10578,7 @@
       "concise_description": "Expected a type form, got instance of `Literal[True]`",
       "description": "Expected a type form, got instance of `Literal[True]`",
       "line": 51,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 26,
       "stop_line": 51
     },
@@ -10458,7 +10588,7 @@
       "concise_description": "Expected a type form, got instance of `Literal[1]`",
       "description": "Expected a type form, got instance of `Literal[1]`",
       "line": 52,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 24,
       "stop_line": 52
     },
@@ -10468,7 +10598,7 @@
       "concise_description": "Expected a type form, got instance of `str`",
       "description": "Expected a type form, got instance of `str`",
       "line": 54,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 33,
       "stop_line": 54
     },
@@ -10550,7 +10680,7 @@
       "concise_description": "Object of class `ClassA` has no attribute `id3`",
       "description": "Object of class `ClassA` has no attribute `id3`",
       "line": 62,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 17,
       "stop_line": 62
     },
@@ -10560,7 +10690,7 @@
       "concise_description": "Object of class `ClassA` has no attribute `id4`",
       "description": "Object of class `ClassA` has no attribute `id4`",
       "line": 63,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 17,
       "stop_line": 63
     },
@@ -10610,7 +10740,7 @@
       "concise_description": "Unexpected keyword argument `x`",
       "description": "Unexpected keyword argument `x`",
       "line": 133,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 6,
       "stop_line": 133
     },
@@ -10620,7 +10750,7 @@
       "concise_description": "Unexpected keyword argument `y`",
       "description": "Unexpected keyword argument `y`",
       "line": 133,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 11,
       "stop_line": 133
     },
@@ -10630,7 +10760,7 @@
       "concise_description": "Unexpected keyword argument `a`",
       "description": "Unexpected keyword argument `a`",
       "line": 134,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 6,
       "stop_line": 134
     },
@@ -10640,7 +10770,7 @@
       "concise_description": "Unexpected keyword argument `x`",
       "description": "Unexpected keyword argument `x`",
       "line": 135,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 7,
       "stop_line": 135
     },
@@ -10650,7 +10780,7 @@
       "concise_description": "Unexpected keyword argument `y`",
       "description": "Unexpected keyword argument `y`",
       "line": 135,
-      "name": "unknown",
+      "name": "unexpected-keyword",
       "stop_column": 13,
       "stop_line": 135
     },
@@ -10814,7 +10944,7 @@
       "concise_description": "Object of class `ClassA` has no attribute `method2`",
       "description": "Object of class `ClassA` has no attribute `method2`",
       "line": 87,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 22,
       "stop_line": 87
     },
@@ -10824,7 +10954,7 @@
       "concise_description": "Class `ClassA` has no class attribute `method3`",
       "description": "Class `ClassA` has no class attribute `method3`",
       "line": 88,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 27,
       "stop_line": 88
     }
@@ -10930,7 +11060,7 @@
       "concise_description": "Object of class `float` has no attribute `numerator`",
       "description": "Object of class `float` has no attribute `numerator`",
       "line": 13,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 16,
       "stop_line": 13
     }
@@ -10972,7 +11102,7 @@
       "concise_description": "Expected 1 type argument for class `type`, got 2",
       "description": "Expected 1 type argument for class `type`, got 2",
       "line": 76,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 26,
       "stop_line": 76
     },
@@ -10992,7 +11122,7 @@
       "concise_description": "Object of class `type` has no attribute `unknown`",
       "description": "Object of class `type` has no attribute `unknown`",
       "line": 99,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 26,
       "stop_line": 99
     },
@@ -11002,7 +11132,7 @@
       "concise_description": "Object of class `type` has no attribute `unknown`",
       "description": "Object of class `type` has no attribute `unknown`",
       "line": 100,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 26,
       "stop_line": 100
     },
@@ -11032,7 +11162,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: Type (trying to access __mro__)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: Type (trying to access __mro__)",
       "line": 106,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 26,
       "stop_line": 106
     },
@@ -11042,7 +11172,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: Type (trying to access unknown)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: Type (trying to access unknown)",
       "line": 107,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 26,
       "stop_line": 107
     },
@@ -11052,7 +11182,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: Type (trying to access unknown)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: Type (trying to access unknown)",
       "line": 108,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 26,
       "stop_line": 108
     },
@@ -11072,7 +11202,7 @@
       "concise_description": "Class `object` has no class attribute `unknown`",
       "description": "Class `object` has no class attribute `unknown`",
       "line": 117,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 14,
       "stop_line": 117
     },
@@ -11082,7 +11212,7 @@
       "concise_description": "Class `object` has no class attribute `unknown`",
       "description": "Class `object` has no class attribute `unknown`",
       "line": 120,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 14,
       "stop_line": 120
     },
@@ -11112,7 +11242,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: LegacyExplicitTypeAlias[TA1, type[Type]] (trying to access unknown)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: LegacyExplicitTypeAlias[TA1, type[Type]] (trying to access unknown)",
       "line": 143,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 12,
       "stop_line": 143
     },
@@ -11122,7 +11252,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: LegacyExplicitTypeAlias[TA2, type[type[Any]]] (trying to access unknown)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: LegacyExplicitTypeAlias[TA2, type[type[Any]]] (trying to access unknown)",
       "line": 144,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 12,
       "stop_line": 144
     },
@@ -11132,7 +11262,7 @@
       "concise_description": "Class `type` has no class attribute `unknown`",
       "description": "Class `type` has no class attribute `unknown`",
       "line": 145,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 12,
       "stop_line": 145
     },
@@ -11142,7 +11272,7 @@
       "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: LegacyExplicitTypeAlias[TA4, type[type[Any]]] (trying to access unknown)",
       "description": "TODO: Expr::attr_infer attribute base undefined for type: LegacyExplicitTypeAlias[TA4, type[type[Any]]] (trying to access unknown)",
       "line": 146,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 12,
       "stop_line": 146
     },
@@ -11152,7 +11282,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA7, type[type[TypeVar[T]]]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA7, type[type[TypeVar[T]]]]",
       "line": 152,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 22,
       "stop_line": 152
     },
@@ -11162,7 +11292,7 @@
       "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA8, type[type[TypeVar[T]]]]",
       "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA8, type[type[TypeVar[T]]]]",
       "line": 156,
-      "name": "unknown",
+      "name": "bad-specialization",
       "stop_column": 22,
       "stop_line": 156
     },
@@ -11344,7 +11474,7 @@
       "concise_description": "Cannot unpack tuple[int] | tuple[str, str] | tuple[int, *tuple[str, ...], int] (of size 2) into 1 value",
       "description": "Cannot unpack tuple[int] | tuple[str, str] | tuple[int, *tuple[str, ...], int] (of size 2) into 1 value",
       "line": 93,
-      "name": "unknown",
+      "name": "bad-unpacking",
       "stop_column": 18,
       "stop_line": 93
     },
@@ -11364,7 +11494,7 @@
       "concise_description": "Cannot unpack tuple[int] | tuple[str, str] | tuple[int, *tuple[str, ...], int] (of size 1) into 2 values",
       "description": "Cannot unpack tuple[int] | tuple[str, str] | tuple[int, *tuple[str, ...], int] (of size 1) into 2 values",
       "line": 97,
-      "name": "unknown",
+      "name": "bad-unpacking",
       "stop_column": 20,
       "stop_line": 97
     },
@@ -11384,7 +11514,7 @@
       "concise_description": "Cannot unpack tuple[int] | tuple[str, str] | tuple[int, *tuple[str, ...], int] (of size 1) into 3 values",
       "description": "Cannot unpack tuple[int] | tuple[str, str] | tuple[int, *tuple[str, ...], int] (of size 1) into 3 values",
       "line": 101,
-      "name": "unknown",
+      "name": "bad-unpacking",
       "stop_column": 23,
       "stop_line": 101
     },
@@ -11394,7 +11524,7 @@
       "concise_description": "Cannot unpack tuple[int] | tuple[str, str] | tuple[int, *tuple[str, ...], int] (of size 2) into 3 values",
       "description": "Cannot unpack tuple[int] | tuple[str, str] | tuple[int, *tuple[str, ...], int] (of size 2) into 3 values",
       "line": 101,
-      "name": "unknown",
+      "name": "bad-unpacking",
       "stop_column": 23,
       "stop_line": 101
     },
@@ -11852,7 +11982,7 @@
       "concise_description": "Typed dictionary definitions may not specify a metaclass.",
       "description": "Typed dictionary definitions may not specify a metaclass.",
       "line": 44,
-      "name": "unknown",
+      "name": "invalid-inheritance",
       "stop_column": 20,
       "stop_line": 44
     }
@@ -11887,7 +12017,7 @@
       "concise_description": "Expected str, got Literal[1982]",
       "description": "Expected str, got Literal[1982]",
       "line": 22,
-      "name": "unknown",
+      "name": "bad-assignment",
       "stop_column": 14,
       "stop_line": 22
     },
@@ -11897,7 +12027,7 @@
       "concise_description": "Expected int, got Literal['']",
       "description": "Expected int, got Literal['']",
       "line": 23,
-      "name": "unknown",
+      "name": "bad-assignment",
       "stop_column": 14,
       "stop_line": 23
     },
@@ -11907,7 +12037,7 @@
       "concise_description": "TypedDict `Movie` does not have key `other`",
       "description": "TypedDict `Movie` does not have key `other`",
       "line": 24,
-      "name": "unknown",
+      "name": "typed-dict-key-error",
       "stop_column": 14,
       "stop_line": 24
     },
@@ -11917,7 +12047,7 @@
       "concise_description": "TypedDict `Movie` does not have key `other`",
       "description": "TypedDict `Movie` does not have key `other`",
       "line": 26,
-      "name": "unknown",
+      "name": "typed-dict-key-error",
       "stop_column": 20,
       "stop_line": 26
     },
@@ -11977,7 +12107,7 @@
       "concise_description": "Object of class `Mapping` has no attribute `clear`",
       "description": "Object of class `Mapping` has no attribute `clear`",
       "line": 47,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 12,
       "stop_line": 47
     },
@@ -12007,7 +12137,7 @@
       "concise_description": "Object of class `Mapping` has no attribute `clear`",
       "description": "Object of class `Mapping` has no attribute `clear`",
       "line": 62,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 21,
       "stop_line": 62
     },
@@ -12029,7 +12159,7 @@
       "concise_description": "Key `members` in TypedDict `Band` is read-only",
       "description": "Key `members` in TypedDict `Band` is read-only",
       "line": 24,
-      "name": "unknown",
+      "name": "read-only",
       "stop_column": 13,
       "stop_line": 24
     },
@@ -12039,7 +12169,7 @@
       "concise_description": "Key `members` in TypedDict `Band2` is read-only",
       "description": "Key `members` in TypedDict `Band2` is read-only",
       "line": 36,
-      "name": "unknown",
+      "name": "read-only",
       "stop_column": 13,
       "stop_line": 36
     },
@@ -12049,7 +12179,7 @@
       "concise_description": "Key `title` in TypedDict `Movie1` is read-only",
       "description": "Key `title` in TypedDict `Movie1` is read-only",
       "line": 50,
-      "name": "unknown",
+      "name": "read-only",
       "stop_column": 11,
       "stop_line": 50
     },
@@ -12059,7 +12189,7 @@
       "concise_description": "Key `year` in TypedDict `Movie1` is read-only",
       "description": "Key `year` in TypedDict `Movie1` is read-only",
       "line": 51,
-      "name": "unknown",
+      "name": "read-only",
       "stop_column": 10,
       "stop_line": 51
     },
@@ -12079,7 +12209,7 @@
       "concise_description": "Key `title` in TypedDict `Movie2` is read-only",
       "description": "Key `title` in TypedDict `Movie2` is read-only",
       "line": 60,
-      "name": "unknown",
+      "name": "read-only",
       "stop_column": 11,
       "stop_line": 60
     }
@@ -12153,7 +12283,7 @@
       "concise_description": "Key `name` in TypedDict `Album2` is read-only",
       "description": "Key `name` in TypedDict `Album2` is read-only",
       "line": 36,
-      "name": "unknown",
+      "name": "read-only",
       "stop_column": 10,
       "stop_line": 36
     },
@@ -12203,7 +12333,7 @@
       "concise_description": "Expected str, got Literal[3]",
       "description": "Expected str, got Literal[3]",
       "line": 82,
-      "name": "unknown",
+      "name": "bad-assignment",
       "stop_column": 11,
       "stop_line": 82
     },
@@ -12235,7 +12365,7 @@
       "concise_description": "Key `key1` in TypedDict `ReadOnlyArgs` is read-only",
       "description": "Key `key1` in TypedDict `ReadOnlyArgs` is read-only",
       "line": 33,
-      "name": "unknown",
+      "name": "read-only",
       "stop_column": 18,
       "stop_line": 33
     }
@@ -12247,7 +12377,7 @@
       "concise_description": "Object of class `Mapping` has no attribute `update`",
       "description": "Object of class `Mapping` has no attribute `update`",
       "line": 23,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 10,
       "stop_line": 23
     },
@@ -12257,7 +12387,7 @@
       "concise_description": "Object of class `Mapping` has no attribute `update`",
       "description": "Object of class `Mapping` has no attribute `update`",
       "line": 34,
-      "name": "unknown",
+      "name": "missing-attribute",
       "stop_column": 13,
       "stop_line": 34
     }
@@ -12289,7 +12419,7 @@
       "concise_description": "Expected a type form, got instance of `Literal['RecursiveMovie']`",
       "description": "Expected a type form, got instance of `Literal['RecursiveMovie']`",
       "line": 74,
-      "name": "unknown",
+      "name": "not-a-type",
       "stop_column": 91,
       "stop_line": 74
     }
@@ -12463,7 +12593,7 @@
       "concise_description": "TypedDict `Movie` does not have key `director`",
       "description": "TypedDict `Movie` does not have key `director`",
       "line": 23,
-      "name": "unknown",
+      "name": "typed-dict-key-error",
       "stop_column": 17,
       "stop_line": 23
     },
@@ -12473,7 +12603,7 @@
       "concise_description": "Expected int, got Literal['1982']",
       "description": "Expected int, got Literal['1982']",
       "line": 24,
-      "name": "unknown",
+      "name": "bad-assignment",
       "stop_column": 14,
       "stop_line": 24
     },

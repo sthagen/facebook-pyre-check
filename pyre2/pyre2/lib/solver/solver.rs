@@ -18,11 +18,11 @@ use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::LookupAnswer;
 use crate::error::collector::ErrorCollector;
+use crate::error::context::TypeCheckContext;
 use crate::error::kind::ErrorKind;
 use crate::solver::type_order::TypeOrder;
 use crate::types::callable::Callable;
 use crate::types::callable::Params;
-use crate::types::display::TypeDisplayContext;
 use crate::types::module::Module;
 use crate::types::quantified::Quantified;
 use crate::types::quantified::QuantifiedKind;
@@ -306,16 +306,21 @@ impl Solver {
     }
 
     /// Generate an error message that `got <: want` failed.
-    pub fn error(&self, want: &Type, got: &Type, errors: &ErrorCollector, loc: TextRange) {
+    pub fn error(
+        &self,
+        want: &Type,
+        got: &Type,
+        errors: &ErrorCollector,
+        loc: TextRange,
+        tcc: &TypeCheckContext,
+    ) {
         let got = self.expand(got.clone()).deterministic_printing();
         let want = self.expand(want.clone()).deterministic_printing();
-        let mut ctx = TypeDisplayContext::new();
-        ctx.add(&got);
-        ctx.add(&want);
         errors.add(
             loc,
-            format!("EXPECTED {} <: {}", ctx.display(&got), ctx.display(&want)),
+            tcc.kind.format_error(&got, &want),
             ErrorKind::Unknown,
+            tcc.context.as_ref(),
         );
     }
 
@@ -408,7 +413,7 @@ impl Solver {
                 drop(lock);
                 // We got forced into choosing a type to satisfy a subset constraint, so check we are OK with that.
                 if !self.is_subset_eq(&got, &t, type_order) {
-                    self.error(&t, &got, errors, loc);
+                    self.error(&t, &got, errors, loc, &TypeCheckContext::unknown());
                 }
             }
             _ => {

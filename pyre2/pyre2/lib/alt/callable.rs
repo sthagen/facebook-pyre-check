@@ -16,6 +16,7 @@ use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::solve::Iterable;
 use crate::error::collector::ErrorCollector;
+use crate::error::context::TypeCheckContext;
 use crate::error::kind::ErrorKind;
 use crate::types::callable::Callable;
 use crate::types::callable::Param;
@@ -135,7 +136,7 @@ impl CallArgPreEval<'_> {
         match self {
             Self::Type(ty, done) => {
                 *done = true;
-                solver.check_type(hint, ty, range, call_errors);
+                solver.check_type(hint, ty, range, call_errors, &TypeCheckContext::unknown());
             }
             Self::Expr(x, done) => {
                 *done = true;
@@ -143,10 +144,16 @@ impl CallArgPreEval<'_> {
             }
             Self::Star(ty, done) => {
                 *done = vararg;
-                solver.check_type(hint, ty, range, call_errors);
+                solver.check_type(hint, ty, range, call_errors, &TypeCheckContext::unknown());
             }
             Self::Fixed(tys, i) => {
-                solver.check_type(hint, &tys[*i], range, call_errors);
+                solver.check_type(
+                    hint,
+                    &tys[*i],
+                    range,
+                    call_errors,
+                    &TypeCheckContext::unknown(),
+                );
                 *i += 1;
             }
         }
@@ -309,7 +316,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     suffix,
                 )),
             };
-            self.check_type(unpacked_param_ty, &unpacked_args_ty, range, arg_errors);
+            self.check_type(
+                unpacked_param_ty,
+                &unpacked_args_ty,
+                range,
+                arg_errors,
+                &TypeCheckContext::unknown(),
+            );
         }
         if let Some(arg_range) = extra_arg_pos {
             let (expected, actual) = if self_arg.is_none() {
@@ -404,12 +417,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 self.error(
                                     call_errors,
                                     kw.range,
-                                    ErrorKind::Unknown,
+                                    ErrorKind::UnexpectedKeyword,
                                     format!("Unexpected keyword argument `{}`", name),
                                 );
                             }
                             hint.iter().for_each(|want| {
-                                self.check_type(want, &field.ty, kw.range, call_errors);
+                                self.check_type(
+                                    want,
+                                    &field.ty,
+                                    kw.range,
+                                    call_errors,
+                                    &TypeCheckContext::unknown(),
+                                );
                             });
                         })
                     } else {
@@ -421,7 +440,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     self.type_order(),
                                 ) {
                                     kwargs.iter().for_each(|want| {
-                                        self.check_type(want, &value, kw.range, call_errors);
+                                        self.check_type(
+                                            want,
+                                            &value,
+                                            kw.range,
+                                            call_errors,
+                                            &TypeCheckContext::unknown(),
+                                        );
                                     });
                                     splat_kwargs.push((value, kw.range));
                                 } else {
@@ -468,7 +493,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         self.error(
                             call_errors,
                             kw.range,
-                            ErrorKind::Unknown,
+                            ErrorKind::UnexpectedKeyword,
                             format!("Unexpected keyword argument `{}`", id.id),
                         );
                     }
@@ -486,12 +511,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(
                         call_errors,
                         range,
-                        ErrorKind::Unknown,
+                        ErrorKind::MissingArgument,
                         format!("Missing argument `{}`", name),
                     );
                 }
                 for (ty, range) in &splat_kwargs {
-                    self.check_type(want, ty, *range, call_errors);
+                    self.check_type(want, ty, *range, call_errors, &TypeCheckContext::unknown());
                 }
             }
         }

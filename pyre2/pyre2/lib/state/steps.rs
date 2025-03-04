@@ -11,6 +11,7 @@ use anyhow::anyhow;
 use dupe::Dupe;
 use enum_iterator::Sequence;
 use parse_display::Display;
+use paste::paste;
 use ruff_python_ast::ModModule;
 use ruff_text_size::TextRange;
 
@@ -92,6 +93,7 @@ impl Load {
                     module_info.path()
                 ),
                 ErrorKind::Unknown,
+                None,
             );
         }
         Self {
@@ -138,21 +140,19 @@ pub struct ComputeStep<Lookup: LookupExport + LookupAnswer>(
     /// First you get given the `ModuleSteps`, from which you should grab what you need (cloning it).
     /// Second you get given the configs, from which you should compute the result.
     /// Thrid you get given the `ModuleSteps` to update.
-    pub  Box<
-        dyn for<'a> Fn(&Steps) -> Box<dyn FnOnce(&Context<Lookup>) -> Box<dyn FnOnce(&mut Steps)>>,
-    >,
+    pub Box<dyn Fn(&Steps) -> Box<dyn FnOnce(&Context<Lookup>) -> Box<dyn FnOnce(&mut Steps)>>>,
 );
 
 macro_rules! compute_step {
-    (<$ty:ty> $alt:ident $func:ident $output:ident = $($input:ident),*) => {
+    (<$ty:ty> $output:ident = $($input:ident),*) => {
         ComputeStep(Box::new(|steps: &Steps| {
             let _ = steps; // Not used if $input is empty.
             $(let $input = steps.$input.dupe().unwrap();)*
             Box::new(move |ctx: &Context<$ty>| {
-                let res = Step::$func(ctx, $($input),*);
+                let res = paste! { Step::[<step_ $output>] }(ctx, $($input),*);
                 Box::new(move |steps: &mut Steps| {
                     steps.$output = Some(res);
-                    steps.last_step = Some(Step::$alt);
+                    steps.last_step = Some(paste! { Step::[<$output:camel>] });
                 })
             })
         }))
@@ -172,15 +172,11 @@ impl Step {
 
     pub fn compute<Lookup: LookupExport + LookupAnswer>(self) -> ComputeStep<Lookup> {
         match self {
-            Step::Load => compute_step!(<Lookup> Load step_load load =),
-            Step::Ast => compute_step!(<Lookup> Ast step_ast ast = load),
-            Step::Exports => compute_step!(<Lookup> Exports step_exports exports = load, ast),
-            Step::Answers => {
-                compute_step!(<Lookup> Answers step_answers answers = load, ast, exports)
-            }
-            Step::Solutions => {
-                compute_step!(<Lookup> Solutions step_solutions solutions = load, answers)
-            }
+            Step::Load => compute_step!(<Lookup> load =),
+            Step::Ast => compute_step!(<Lookup> ast = load),
+            Step::Exports => compute_step!(<Lookup> exports = load, ast),
+            Step::Answers => compute_step!(<Lookup> answers = load, ast, exports),
+            Step::Solutions => compute_step!(<Lookup> solutions = load, answers),
         }
     }
 
