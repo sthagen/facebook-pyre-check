@@ -64,6 +64,15 @@ pub enum TypeCheckKind {
     ExplicitFunctionReturn,
     /// Return in a type guard function.
     TypeGuardReturn,
+    /// Check of a parameter's default value against its type annotation.
+    FunctionParameterDefault(Name),
+    /// Check against type of a TypedDict key.
+    TypedDictKey(Name),
+    /// Check of an attribute assignment against its type.
+    Attribute(Name),
+    /// A check against a user-declared type annotation. Use this only when there is no other
+    /// useful information to include about the check.
+    ExplicitTypeAnnotation,
     // TODO: categorize all type checks and remove Unknown and Test designations
     Unknown,
     #[allow(dead_code)]

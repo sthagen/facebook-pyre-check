@@ -133,11 +133,149 @@ let test_pretty_print _ =
   ()
 
 
+let test_contain_recursive_targets _ =
+  let assert_contain_recursive_target ~result ~target =
+    assert_equal ~printer:Bool.to_string result (Target.contain_recursive_target target)
+  in
+  assert_contain_recursive_target
+    ~result:false
+    ~target:(Target.Regular.Function { name = "foo"; kind = Normal } |> Target.from_regular);
+  assert_contain_recursive_target
+    ~result:false
+    ~target:
+      (Target.Parameterized
+         {
+           regular = Target.Regular.Function { name = "foo"; kind = Normal };
+           parameters =
+             [
+               ( AccessPath.Root.Variable "x",
+                 Target.Regular.Function { name = "bar"; kind = Normal } |> Target.from_regular );
+             ]
+             |> Target.ParameterMap.of_alist_exn;
+         });
+  assert_contain_recursive_target
+    ~result:true
+    ~target:
+      (Target.Parameterized
+         {
+           regular = Target.Regular.Function { name = "foo"; kind = Normal };
+           parameters =
+             [
+               ( AccessPath.Root.Variable "x",
+                 Target.Regular.Function { name = "foo"; kind = Normal } |> Target.from_regular );
+             ]
+             |> Target.ParameterMap.of_alist_exn;
+         });
+  assert_contain_recursive_target
+    ~result:true
+    ~target:
+      (Target.Parameterized
+         {
+           regular = Target.Regular.Function { name = "foo"; kind = Normal };
+           parameters =
+             [
+               ( AccessPath.Root.Variable "x",
+                 Target.Parameterized
+                   {
+                     regular = Target.Regular.Function { name = "bar"; kind = Normal };
+                     parameters =
+                       [
+                         ( AccessPath.Root.Variable "y",
+                           Target.Regular.Function { name = "foo"; kind = Normal }
+                           |> Target.from_regular );
+                       ]
+                       |> Target.ParameterMap.of_alist_exn;
+                   } );
+             ]
+             |> Target.ParameterMap.of_alist_exn;
+         })
+
+
+let test_target_depth _ =
+  let assert_depth ~result ~target =
+    assert_equal ~printer:Int.to_string result (Target.depth target)
+  in
+  assert_depth
+    ~result:1
+    ~target:(Target.Regular.Function { name = "foo"; kind = Normal } |> Target.from_regular);
+  assert_depth
+    ~result:1
+    ~target:
+      (Target.Parameterized
+         {
+           regular = Target.Regular.Function { name = "foo"; kind = Normal };
+           parameters = Target.ParameterMap.empty;
+         });
+  assert_depth
+    ~result:2
+    ~target:
+      (Target.Parameterized
+         {
+           regular = Target.Regular.Function { name = "foo"; kind = Normal };
+           parameters =
+             [
+               ( AccessPath.Root.Variable "x",
+                 Target.Regular.Function { name = "bar"; kind = Normal } |> Target.from_regular );
+             ]
+             |> Target.ParameterMap.of_alist_exn;
+         });
+  assert_depth
+    ~result:3
+    ~target:
+      (Target.Parameterized
+         {
+           regular = Target.Regular.Function { name = "foo"; kind = Normal };
+           parameters =
+             [
+               ( AccessPath.Root.Variable "x",
+                 Target.Parameterized
+                   {
+                     regular = Target.Regular.Function { name = "bar"; kind = Normal };
+                     parameters =
+                       [
+                         ( AccessPath.Root.Variable "y",
+                           Target.Regular.Function { name = "baz"; kind = Normal }
+                           |> Target.from_regular );
+                       ]
+                       |> Target.ParameterMap.of_alist_exn;
+                   } );
+             ]
+             |> Target.ParameterMap.of_alist_exn;
+         });
+  assert_depth
+    ~result:3
+    ~target:
+      (Target.Parameterized
+         {
+           regular = Target.Regular.Function { name = "foo"; kind = Normal };
+           parameters =
+             [
+               ( AccessPath.Root.Variable "x",
+                 Target.Parameterized
+                   {
+                     regular = Target.Regular.Function { name = "bar"; kind = Normal };
+                     parameters =
+                       [
+                         ( AccessPath.Root.Variable "y",
+                           Target.Regular.Function { name = "baz"; kind = Normal }
+                           |> Target.from_regular );
+                       ]
+                       |> Target.ParameterMap.of_alist_exn;
+                   } );
+               ( AccessPath.Root.Variable "y",
+                 Target.Regular.Function { name = "test"; kind = Normal } |> Target.from_regular );
+             ]
+             |> Target.ParameterMap.of_alist_exn;
+         })
+
+
 let () =
   "callable"
   >::: [
          "get_module_and_definition" >:: test_get_module_and_definition;
          "resolve_method" >:: test_resolve_method;
          "pretty_print" >:: test_pretty_print;
+         "contain_recursive_targets" >:: test_contain_recursive_targets;
+         "target_depth" >:: test_target_depth;
        ]
   |> Test.run

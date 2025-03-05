@@ -309,9 +309,9 @@
     "Line 102: Unexpected errors ['EXPECTED type[ConverterClass] <: (@_) -> @_']",
     "Line 104: Unexpected errors ['EXPECTED type[dict] <: (@_) -> @_']",
     "Line 112: Unexpected errors ['Expected 0 positional arguments, got 5']",
-    "Line 114: Unexpected errors [\"EXPECTED Literal['f1'] <: int\"]",
-    "Line 115: Unexpected errors [\"EXPECTED Literal['f6'] <: ConverterClass\"]",
-    "Line 116: Unexpected errors [\"EXPECTED Literal[b'f6'] <: ConverterClass\"]",
+    "Line 114: Unexpected errors [\"Attribute `field0` has type `int`, cannot assign `Literal['f1']`\"]",
+    "Line 115: Unexpected errors [\"Attribute `field3` has type `ConverterClass`, cannot assign `Literal['f6']`\"]",
+    "Line 116: Unexpected errors [\"Attribute `field3` has type `ConverterClass`, cannot assign `Literal[b'f6']`\"]",
     "Line 121: Unexpected errors ['Expected 0 positional arguments, got 6']",
     "Line 132: Unexpected errors ['EXPECTED type[str] <: () -> str | None']"
   ],
@@ -495,7 +495,7 @@
     "Line 45: Unexpected errors ['assert_type(ParentB, Self) failed']"
   ],
   "generics_self_attributes.py": [
-    "Line 29: Unexpected errors ['EXPECTED OrdinalLinkedList <: Self | None']"
+    "Line 29: Unexpected errors ['Attribute `next` has type `Self | None`, cannot assign `OrdinalLinkedList`']"
   ],
   "generics_self_basic.py": [
     "Line 20: Expected 1 errors",
@@ -570,7 +570,7 @@
     "Line 36: Unexpected errors ['EXPECTED Array[tuple[int, int]] <: Array[tuple[Height, Width]]']",
     "Line 37: Unexpected errors ['EXPECTED Array[tuple[int, int, int]] <: Array[tuple[Batch, Height, Width]]']",
     "Line 38: Unexpected errors ['EXPECTED Array[tuple[int, int, int, int]] <: Array[tuple[Time, Batch, Height, Width]]']",
-    "Line 85: Unexpected errors ['EXPECTED tuple[float] <: tuple[*tuple[int]]']"
+    "Line 85: Unexpected errors ['EXPECTED tuple[float] <: tuple[int]']"
   ],
   "generics_typevartuple_callable.py": [],
   "generics_typevartuple_concat.py": [
@@ -953,7 +953,7 @@
     "Line 97: Unexpected errors ['EXPECTED object | None <: str | None']",
     "Line 103: Unexpected errors ['EXPECTED object | @_ <: int']",
     "Line 105: Unexpected errors ['EXPECTED object | @_ <: int | str']",
-    "Line 151: Unexpected errors [\"EXPECTED dict[str, int] <: Literal[''] | TypedDict[Inner3]\"]"
+    "Line 151: Unexpected errors [\"TypedDict key `z` declared with type `Literal[''] | TypedDict[Inner3]`, cannot assign `dict[str, int]`\"]"
   ],
   "typeddicts_usage.py": [
     "Line 35: Expected 1 errors",

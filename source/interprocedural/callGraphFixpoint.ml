@@ -14,6 +14,7 @@ module CallGraphAnalysis = struct
       define_call_graphs: CallGraph.SharedMemory.ReadOnly.t;
       method_kinds: CallGraph.MethodKind.SharedMemory.ReadOnly.t;
       callables_to_definitions_map: Target.DefinesSharedMemory.ReadOnly.t;
+      maximum_target_depth: int;
     }
   end
 
@@ -80,7 +81,14 @@ module CallGraphAnalysis = struct
   end
 
   let analyze_define
-      ~context:{ Context.pyre_api; define_call_graphs; method_kinds; callables_to_definitions_map }
+      ~context:
+        {
+          Context.pyre_api;
+          define_call_graphs;
+          method_kinds;
+          callables_to_definitions_map;
+          maximum_target_depth;
+        }
       ~callable
       ~previous_model:{ CallGraph.HigherOrderCallGraph.call_graph = previous_call_graph; _ }
       ~get_callee_model
@@ -105,17 +113,34 @@ module CallGraphAnalysis = struct
         |> Option.value_exn
              ~message:(Format.asprintf "Missing call graph for `%a`" Target.pp callable)
       in
-      let ({ CallGraph.HigherOrderCallGraph.call_graph; _ } as model) =
-        CallGraph.higher_order_call_graph_of_define
-          ~define_call_graph
-          ~pyre_api
-          ~callables_to_definitions_map
-          ~qualifier
-          ~define
-          ~initial_state:
-            (CallGraph.HigherOrderCallGraph.State.initialize_from_callable ~method_kinds callable)
-          ~get_callee_model
+      let profiler =
+        if Ast.Statement.Define.dump_perf_higher_order_call_graph define then
+          CallGraphProfiler.start ~callable ()
+        else
+          CallGraphProfiler.disabled
       in
+      let ({ CallGraph.HigherOrderCallGraph.call_graph; _ } as model) =
+        Alarm.with_alarm
+          ~max_time_in_seconds:60
+          ~event_name:"Building higher order call graph"
+          ~callable:(Target.show_pretty callable)
+          (fun () ->
+            CallGraph.higher_order_call_graph_of_define
+              ~define_call_graph
+              ~pyre_api
+              ~callables_to_definitions_map
+              ~qualifier
+              ~define
+              ~initial_state:
+                (CallGraph.HigherOrderCallGraph.State.initialize_from_callable
+                   ~method_kinds
+                   callable)
+              ~get_callee_model
+              ~profiler
+              ~maximum_target_depth)
+          ()
+      in
+      CallGraphProfiler.stop ~max_number_expressions:50 ~max_number_apply_call_steps:50 profiler;
       let dependencies call_graph =
         call_graph
         |> CallGraph.DefineCallGraph.all_targets
@@ -206,6 +231,7 @@ let compute
     ~method_kinds
     ~callables_to_definitions_map
     ~max_iterations
+    ~maximum_target_depth
   =
   let { CallGraph.SharedMemory.define_call_graphs; _ } =
     CallGraph.DecoratorResolution.Results.register_decorator_call_graphs
@@ -278,6 +304,7 @@ let compute
           method_kinds;
           callables_to_definitions_map =
             Target.DefinesSharedMemory.read_only callables_to_definitions_map;
+          maximum_target_depth;
         }
       ~callables_to_analyze:(List.rev_append override_targets callables_with_call_graphs)
         (* Build higher order call graphs only for targets that have call graphs. *)

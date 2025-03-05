@@ -584,6 +584,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     pub fn solve_binding(&self, binding: &Binding, errors: &ErrorCollector) -> Arc<Type> {
+        // Special case for forward, as we don't want to re-expand the type
+        if let Binding::Forward(fwd) = binding {
+            return self.get_idx(*fwd);
+        }
+
         // Replace any solved recursive variables with their answers.
         // We call self.unions() to simplify cases like
         // v = @1 | int, @1 = int.
@@ -791,7 +796,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         match binding {
             Binding::Expr(ann, e) => {
                 let ty = ann.map(|k| self.get_idx(k));
-                let tcc = TypeCheckContext::unknown();
+                let tcc = TypeCheckContext::of_kind(TypeCheckKind::ExplicitTypeAnnotation);
                 self.expr(
                     e,
                     ty.as_ref().and_then(|x| x.ty.as_ref().map(|t| (t, &tcc))),
@@ -803,7 +808,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 if let Some(k) = ann
                     && let Some(want) = &self.get_idx(*k).ty
                 {
-                    self.check_type(want, &ty, x.range, errors, &TypeCheckContext::unknown())
+                    self.check_type(
+                        want,
+                        &ty,
+                        x.range,
+                        errors,
+                        &TypeCheckContext::of_kind(TypeCheckKind::ExplicitTypeAnnotation),
+                    )
                 } else {
                     ty
                 }
@@ -814,7 +825,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 if let Some(k) = ann
                     && let Some(want) = &self.get_idx(*k).ty
                 {
-                    self.check_type(want, &ty, x.range, errors, &TypeCheckContext::unknown())
+                    self.check_type(
+                        want,
+                        &ty,
+                        x.range,
+                        errors,
+                        &TypeCheckContext::of_kind(TypeCheckKind::ExplicitTypeAnnotation),
+                    )
                 } else {
                     ty
                 }
@@ -827,7 +844,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 if let Some(k) = ann
                     && let Some(want) = &self.get_idx(*k).ty
                 {
-                    self.check_type(want, &ty, x.range, errors, &TypeCheckContext::unknown())
+                    self.check_type(
+                        want,
+                        &ty,
+                        x.range,
+                        errors,
+                        &TypeCheckContext::of_kind(TypeCheckKind::ExplicitTypeAnnotation),
+                    )
                 } else {
                     ty
                 }
@@ -858,7 +881,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 &implicit_return,
                                 *range,
                                 errors,
-                                &TypeCheckContext::unknown(),
+                                &TypeCheckContext::of_kind(TypeCheckKind::ImplicitFunctionReturn(
+                                    !x.returns.is_empty(),
+                                )),
                             );
                         } else {
                             self.error(
@@ -943,7 +968,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     } else if x.is_generator {
                         let hint =
                             hint.and_then(|ty| self.decompose_generator(ty).map(|(_, _, r)| r));
-                        let tcc = TypeCheckContext::unknown();
+                        let tcc = TypeCheckContext::of_kind(TypeCheckKind::ExplicitFunctionReturn);
                         self.expr(expr, hint.as_ref().map(|t| (t, &tcc)), errors)
                     } else if matches!(hint, Some(Type::TypeGuard(_))) {
                         let hint = Some(Type::ClassType(self.stdlib.bool()));
@@ -1551,14 +1576,23 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         x: &FunctionBinding,
         errors: &ErrorCollector,
     ) -> Arc<DecoratedFunction> {
-        let check_default = |default: &Option<Box<Expr>>, ty: &Type| {
+        let check_default = |name: &Identifier, default: &Option<Box<Expr>>, ty: &Type| {
             let mut required = Required::Required;
             if let Some(default) = default {
                 required = Required::Optional;
                 if x.kind != FunctionKind::Stub
                     || !matches!(default.as_ref(), Expr::EllipsisLiteral(_))
                 {
-                    self.expr(default, Some((ty, &TypeCheckContext::unknown())), errors);
+                    self.expr(
+                        default,
+                        Some((
+                            ty,
+                            &TypeCheckContext::of_kind(TypeCheckKind::FunctionParameterDefault(
+                                name.id.clone(),
+                            )),
+                        )),
+                        errors,
+                    );
                 }
             }
             required
@@ -1612,12 +1646,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let mut params = Vec::with_capacity(x.def.parameters.len());
         params.extend(x.def.parameters.posonlyargs.iter().map(|x| {
             let ty = get_param_ty(&x.parameter.name);
-            let required = check_default(&x.default, &ty);
+            let required = check_default(&x.parameter.name, &x.default, &ty);
             Param::PosOnly(ty, required)
         }));
         params.extend(x.def.parameters.args.iter().map(|x| {
             let ty = get_param_ty(&x.parameter.name);
-            let required = check_default(&x.default, &ty);
+            let required = check_default(&x.parameter.name, &x.default, &ty);
             Param::Pos(x.parameter.name.id.clone(), ty, required)
         }));
         params.extend(x.def.parameters.vararg.iter().map(|x| {
@@ -1643,7 +1677,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
         params.extend(x.def.parameters.kwonlyargs.iter().map(|x| {
             let ty = get_param_ty(&x.parameter.name);
-            let required = check_default(&x.default, &ty);
+            let required = check_default(&x.parameter.name, &x.default, &ty);
             Param::KwOnly(x.parameter.name.id.clone(), ty, required)
         }));
         params.extend(x.def.parameters.kwarg.iter().map(|x| {

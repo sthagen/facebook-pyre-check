@@ -14,8 +14,18 @@ open Test
 open Interprocedural
 open CallGraph
 
-let compute_define_call_graph ~define ~source ~module_name ~pyre_api ~configuration ~object_targets =
-  let static_analysis_configuration = Configuration.StaticAnalysis.create configuration () in
+let compute_define_call_graph
+    ~maximum_target_depth
+    ~define
+    ~source
+    ~module_name
+    ~pyre_api
+    ~configuration
+    ~object_targets
+  =
+  let static_analysis_configuration =
+    Configuration.StaticAnalysis.create ~maximum_target_depth configuration ()
+  in
   let override_graph_heap = OverrideGraph.Heap.from_source ~pyre_api ~source in
   let override_graph_shared_memory = OverrideGraph.SharedMemory.from_heap override_graph_heap in
   let initial_callables = FetchCallables.from_source ~configuration ~pyre_api ~source in
@@ -82,6 +92,7 @@ let find_define_exn ~define_name ~module_name source =
 
 let assert_call_graph_of_define
     ?(object_targets = [])
+    ?(maximum_target_depth = Configuration.StaticAnalysis.default_maximum_target_depth)
     ~source
     ~define_name
     ~expected
@@ -95,7 +106,14 @@ let assert_call_graph_of_define
   in
   let define = find_define_exn ~define_name ~module_name source in
   let actual, _ =
-    compute_define_call_graph ~define ~source ~module_name ~pyre_api ~configuration ~object_targets
+    compute_define_call_graph
+      ~maximum_target_depth
+      ~define
+      ~source
+      ~module_name
+      ~pyre_api
+      ~configuration
+      ~object_targets
   in
   assert_equal
     ~cmp
@@ -132,8 +150,16 @@ let assert_higher_order_call_graph_of_define
   in
   let () = OverrideGraph.SharedMemory.cleanup override_graph_shared_memory in
   let define = find_define_exn ~define_name ~module_name source in
+  let maximum_target_depth = Configuration.StaticAnalysis.default_maximum_target_depth in
   let define_call_graph, callables_to_definitions_map =
-    compute_define_call_graph ~define ~source ~module_name ~pyre_api ~configuration ~object_targets
+    compute_define_call_graph
+      ~maximum_target_depth
+      ~define
+      ~source
+      ~module_name
+      ~pyre_api
+      ~configuration
+      ~object_targets
   in
   let actual =
     CallGraph.higher_order_call_graph_of_define
@@ -145,6 +171,8 @@ let assert_higher_order_call_graph_of_define
       ~define
       ~initial_state
       ~get_callee_model:(fun _ -> None)
+      ~profiler:CallGraphProfiler.disabled
+      ~maximum_target_depth
     |> HigherOrderCallGraphForTest.from_actual
   in
   assert_equal
@@ -6899,16 +6927,18 @@ let test_higher_order_call_graph_of_define =
       @@ assert_higher_order_call_graph_of_define
            ~source:
              {|
-     def foo():
-       bar(bar, 0)
-       bar(1, 2)
      def bar(x, y):
        pass
+     def baz(x, y):
+       pass
+     def foo():
+       bar(baz, 0)
+       bar(1, 2)
   |}
            ~define_name:"test.foo"
            ~expected_call_graph:
              [
-               ( "3:2-3:13",
+               ( "7:2-7:13",
                  LocationCallees.Singleton
                    (ExpressionCallees.from_call
                       (CallCallees.create
@@ -6921,22 +6951,22 @@ let test_higher_order_call_graph_of_define =
                                   ~parameters:
                                     [
                                       ( create_positional_parameter 0 "x",
-                                        Target.Regular.Function { name = "test.bar"; kind = Normal }
+                                        Target.Regular.Function { name = "test.baz"; kind = Normal }
                                         |> Target.from_regular );
                                     ]);
                            ]
                          ())) );
-               ( "3:6-3:9",
+               ( "7:6-7:9",
                  LocationCallees.Singleton
                    (ExpressionCallees.from_attribute_access
                       (AttributeAccessCallees.create
                          ~callable_targets:
                            [
                              CallTarget.create_regular
-                               (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                               (Target.Regular.Function { name = "test.baz"; kind = Normal });
                            ]
                          ())) );
-               ( "4:2-4:11",
+               ( "8:2-8:11",
                  LocationCallees.Singleton
                    (ExpressionCallees.from_call
                       (CallCallees.create
@@ -7082,16 +7112,19 @@ let test_higher_order_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_higher_order_call_graph_of_define
-           ~source:{|
+           ~source:
+             {|
      def bar(x, y):
        pass
+     def baz():
+       pass
      def foo():
-       bar(y=bar, x=0)
+       bar(y=baz, x=0)
   |}
            ~define_name:"test.foo"
            ~expected_call_graph:
              [
-               ( "5:2-5:17",
+               ( "7:2-7:17",
                  LocationCallees.Singleton
                    (ExpressionCallees.from_call
                       (CallCallees.create
@@ -7104,19 +7137,19 @@ let test_higher_order_call_graph_of_define =
                                   ~parameters:
                                     [
                                       ( create_positional_parameter 1 "y",
-                                        Target.Regular.Function { name = "test.bar"; kind = Normal }
+                                        Target.Regular.Function { name = "test.baz"; kind = Normal }
                                         |> Target.from_regular );
                                     ]);
                            ]
                          ())) );
-               ( "5:8-5:11",
+               ( "7:8-7:11",
                  LocationCallees.Singleton
                    (ExpressionCallees.from_attribute_access
                       (AttributeAccessCallees.create
                          ~callable_targets:
                            [
                              CallTarget.create_regular
-                               (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                               (Target.Regular.Function { name = "test.baz"; kind = Normal });
                            ]
                          ())) );
              ]
@@ -7167,16 +7200,19 @@ let test_higher_order_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_higher_order_call_graph_of_define
-           ~source:{|
+           ~source:
+             {|
      def bar(x):
        return x
+     def baz():
+       return
      def foo():
-       return bar(bar)
+       return bar(baz)
   |}
            ~define_name:"test.foo"
            ~expected_call_graph:
              [
-               ( "5:9-5:17",
+               ( "7:9-7:17",
                  LocationCallees.Singleton
                    (ExpressionCallees.from_call
                       (CallCallees.create
@@ -7189,19 +7225,19 @@ let test_higher_order_call_graph_of_define =
                                   ~parameters:
                                     [
                                       ( create_positional_parameter 0 "x",
-                                        Target.Regular.Function { name = "test.bar"; kind = Normal }
+                                        Target.Regular.Function { name = "test.baz"; kind = Normal }
                                         |> Target.from_regular );
                                     ]);
                            ]
                          ())) );
-               ( "5:13-5:16",
+               ( "7:13-7:16",
                  LocationCallees.Singleton
                    (ExpressionCallees.from_attribute_access
                       (AttributeAccessCallees.create
                          ~callable_targets:
                            [
                              CallTarget.create_regular
-                               (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                               (Target.Regular.Function { name = "test.baz"; kind = Normal });
                            ]
                          ())) );
              ]
@@ -7574,6 +7610,160 @@ let test_higher_order_call_graph_of_define =
                            [
                              CallTarget.create_regular
                                (Target.Regular.Function { name = "test.baz"; kind = Normal });
+                           ]
+                         ())) );
+             ]
+           ~expected_returned_callables:[]
+           ();
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_higher_order_call_graph_of_define
+           ~source:
+             {|
+     def foo():
+       for x in [1, 2]:
+         def dummy_trace():
+           return dummy_trace  # Avoid creating "recursive" targets
+         dummy_trace()
+  |}
+           ~define_name:"test.foo"
+           ~expected_call_graph:
+             [
+               ( "3:6-3:17",
+                 LocationCallees.Compound
+                   (SerializableStringMap.of_alist_exn
+                      [
+                        ( "__iter__",
+                          ExpressionCallees.from_call
+                            (CallCallees.create
+                               ~call_targets:
+                                 [
+                                   CallTarget.create_regular
+                                     ~implicit_receiver:true
+                                     ~receiver_class:"list"
+                                     (Target.Regular.Method
+                                        {
+                                          class_name = "list";
+                                          method_name = "__iter__";
+                                          kind = Normal;
+                                        });
+                                 ]
+                               ()) );
+                        ( "__next__",
+                          ExpressionCallees.from_call
+                            (CallCallees.create
+                               ~call_targets:
+                                 [
+                                   CallTarget.create_regular
+                                     ~implicit_receiver:true
+                                     ~receiver_class:"typing.Iterator"
+                                     ~return_type:(Some ReturnType.integer)
+                                     (Target.Regular.Method
+                                        {
+                                          class_name = "typing.Iterator";
+                                          method_name = "__next__";
+                                          kind = Normal;
+                                        });
+                                 ]
+                               ()) );
+                      ]) );
+               ( "6:4-6:17",
+                 LocationCallees.Singleton
+                   (ExpressionCallees.from_call
+                      (CallCallees.create
+                         ~call_targets:
+                           [
+                             CallTarget.create_regular
+                               (Target.Regular.Function
+                                  { name = "test.foo.dummy_trace"; kind = Normal });
+                           ]
+                         ())) );
+             ]
+           ~expected_returned_callables:[]
+           ();
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_higher_order_call_graph_of_define
+           ~source:
+             {|
+     def foo():
+       for x in [1, 2]:
+         def bar():
+           return baz  # Avoid creating mutually "recursive" targets
+         def baz():
+           return bar
+         bar()
+         baz()
+  |}
+           ~define_name:"test.foo"
+           ~expected_call_graph:
+             [
+               ( "3:6-3:17",
+                 LocationCallees.Compound
+                   (SerializableStringMap.of_alist_exn
+                      [
+                        ( "__iter__",
+                          ExpressionCallees.from_call
+                            (CallCallees.create
+                               ~call_targets:
+                                 [
+                                   CallTarget.create_regular
+                                     ~implicit_receiver:true
+                                     ~receiver_class:"list"
+                                     (Target.Regular.Method
+                                        {
+                                          class_name = "list";
+                                          method_name = "__iter__";
+                                          kind = Normal;
+                                        });
+                                 ]
+                               ()) );
+                        ( "__next__",
+                          ExpressionCallees.from_call
+                            (CallCallees.create
+                               ~call_targets:
+                                 [
+                                   CallTarget.create_regular
+                                     ~implicit_receiver:true
+                                     ~receiver_class:"typing.Iterator"
+                                     ~return_type:(Some ReturnType.integer)
+                                     (Target.Regular.Method
+                                        {
+                                          class_name = "typing.Iterator";
+                                          method_name = "__next__";
+                                          kind = Normal;
+                                        });
+                                 ]
+                               ()) );
+                      ]) );
+               ( "8:4-8:9",
+                 LocationCallees.Singleton
+                   (ExpressionCallees.from_call
+                      (CallCallees.create
+                         ~call_targets:
+                           [
+                             CallTarget.create_regular
+                               (Target.Regular.Function { name = "test.foo.bar"; kind = Normal });
+                             CallTarget.create
+                               (create_parameterized_target
+                                  ~regular:
+                                    (Target.Regular.Function
+                                       { name = "test.foo.bar"; kind = Normal })
+                                  ~parameters:
+                                    [
+                                      ( AccessPath.Root.Variable "$local_test?foo$baz",
+                                        Target.Regular.Function
+                                          { name = "test.foo.baz"; kind = Normal }
+                                        |> Target.from_regular );
+                                    ]);
+                           ]
+                         ())) );
+               ( "9:4-9:9",
+                 LocationCallees.Singleton
+                   (ExpressionCallees.from_call
+                      (CallCallees.create
+                         ~call_targets:
+                           [
+                             CallTarget.create_regular
+                               (Target.Regular.Function { name = "test.foo.baz"; kind = Normal });
                            ]
                          ())) );
              ]

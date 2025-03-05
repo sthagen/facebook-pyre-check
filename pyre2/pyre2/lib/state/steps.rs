@@ -93,7 +93,7 @@ impl Load {
                     "Failed to load `{name}` from `{}`, got {err:#}",
                     module_info.path()
                 ),
-                ErrorKind::Unknown,
+                ErrorKind::ImportError,
                 None,
             );
         }
@@ -259,6 +259,7 @@ impl Step {
             &load.errors,
             ctx.stdlib,
             ctx.uniques,
+            ctx.retain_memory,
         );
         let history = answers.1.id_cache_history();
         Arc::new((history, Arc::new(solutions)))

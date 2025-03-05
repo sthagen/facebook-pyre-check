@@ -13,8 +13,11 @@ This script can be used to debug false positives and false negatives in the
 taint analysis. See https://pyre-check.org/docs/pysa-explore/ for the documentation.
 """
 
+import collections
 import copy
+import enum
 import io
+import itertools
 import json
 import multiprocessing
 import pickle
@@ -31,8 +34,11 @@ from typing import (
     Iterable,
     List,
     NamedTuple,
+    NotRequired,
     Optional,
+    Set,
     Tuple,
+    TypedDict,
     Union,
 )
 
@@ -212,15 +218,15 @@ def _read(position: FilePosition) -> bytes:
     return handle.read(position.length)
 
 
-def _filter_taint_tree(
-    taint_tree: List[Dict[str, Any]],
+def _filter_taint_conditions(
+    taint_conditions: List[Dict[str, Any]],
     frame_predicate: Callable[[str, Dict[str, Any]], bool],
 ) -> List[Dict[str, Any]]:
-    new_taint_tree = []
-    for taint in taint_tree:
-        caller_port = taint["port"]
+    new_taint_conditions = []
+    for condition in taint_conditions:
+        caller_port = condition["port"]
         new_local_taints = []
-        for local_taint in taint["taint"]:
+        for local_taint in condition["taint"]:
             new_kinds = [
                 frame
                 for frame in local_taint["kinds"]
@@ -232,20 +238,22 @@ def _filter_taint_tree(
                 new_local_taints.append(new_local_taint)
 
         if len(new_local_taints) > 0:
-            new_taint = taint.copy()
-            new_taint["taint"] = new_local_taints
-            new_taint_tree.append(new_taint)
+            new_condition = condition.copy()
+            new_condition["taint"] = new_local_taints
+            new_taint_conditions.append(new_condition)
 
-    return new_taint_tree
+    return new_taint_conditions
 
 
 def filter_model(
     model: Dict[str, Any], frame_predicate: Callable[[str, Dict[str, Any]], bool]
 ) -> Dict[str, Any]:
     model = model.copy()
-    model["sources"] = _filter_taint_tree(model.get("sources", []), frame_predicate)
-    model["sinks"] = _filter_taint_tree(model.get("sinks", []), frame_predicate)
-    model["tito"] = _filter_taint_tree(model.get("tito", []), frame_predicate)
+    model["sources"] = _filter_taint_conditions(
+        model.get("sources", []), frame_predicate
+    )
+    model["sinks"] = _filter_taint_conditions(model.get("sinks", []), frame_predicate)
+    model["tito"] = _filter_taint_conditions(model.get("tito", []), frame_predicate)
     return model
 
 
@@ -263,21 +271,21 @@ def filter_model_kind(model: Dict[str, Any], kind: str) -> Dict[str, Any]:
     return filter_model(model, predicate)
 
 
-def _map_taint_tree(
-    taint_tree: List[Dict[str, Any]],
+def _map_taint_conditions(
+    taint_conditions: List[Dict[str, Any]],
     frame_map: Callable[[str, Dict[str, Any]], None],
     local_taint_map: Callable[[str, Dict[str, Any]], None],
 ) -> List[Dict[str, Any]]:
-    taint_tree = copy.deepcopy(taint_tree)
+    taint_conditions = copy.deepcopy(taint_conditions)
 
-    for taint in taint_tree:
-        caller_port = taint["port"]
-        for local_taint in taint["taint"]:
+    for condition in taint_conditions:
+        caller_port = condition["port"]
+        for local_taint in condition["taint"]:
             local_taint_map(caller_port, local_taint)
             for frame in local_taint["kinds"]:
                 frame_map(caller_port, frame)
 
-    return taint_tree
+    return taint_conditions
 
 
 def map_model(
@@ -286,11 +294,15 @@ def map_model(
     local_taint_map: Callable[[str, Dict[str, Any]], None] = lambda x, y: None,
 ) -> Dict[str, Any]:
     model = model.copy()
-    model["sources"] = _map_taint_tree(
+    model["sources"] = _map_taint_conditions(
         model.get("sources", []), frame_map, local_taint_map
     )
-    model["sinks"] = _map_taint_tree(model.get("sinks", []), frame_map, local_taint_map)
-    model["tito"] = _map_taint_tree(model.get("tito", []), frame_map, local_taint_map)
+    model["sinks"] = _map_taint_conditions(
+        model.get("sinks", []), frame_map, local_taint_map
+    )
+    model["tito"] = _map_taint_conditions(
+        model.get("tito", []), frame_map, local_taint_map
+    )
     return model
 
 
@@ -446,11 +458,13 @@ def show_formatting() -> None:
     print(__default_formatting_options)
 
 
-def get_model(
-    callable: str,
-    **kwargs: Union[str, bool],
+def get_raw_model(
+    callable: str, cache: Optional[Dict[str, Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """Get the model for the given callable."""
+    if cache is not None and callable in cache:
+        return cache[callable]
+
     directory = _assert_loaded()
 
     if callable not in directory.index_.models:
@@ -458,8 +472,20 @@ def get_model(
 
     message = json.loads(_read(directory.index_.models[callable]))
     assert message["kind"] == "model"
-
     model = message["data"]
+
+    if cache is not None:
+        cache[callable] = model
+
+    return model
+
+
+def get_model(
+    callable: str,
+    **kwargs: Union[str, bool],
+) -> Dict[str, Any]:
+    """Get the model for the given callable (with formatting options)"""
+    model = get_raw_model(callable)
 
     options = __default_formatting_options.apply_options(**kwargs)
     if not options.show_sources and "sources" in model:
@@ -501,11 +527,11 @@ def print_json(data: object) -> None:
             __warned_missing_jq = True
 
 
-def green(text: str) -> str:
+def green(text: str | int) -> str:
     return f"\033[32m{text}\033[0m"
 
 
-def blue(text: str) -> str:
+def blue(text: str | int) -> str:
     return f"\033[34m{text}\033[0m"
 
 
@@ -529,7 +555,17 @@ def leaf_name_to_string(leaf: Dict[str, str]) -> str:
     return name
 
 
-def print_location(position: Dict[str, Any], prefix: str, indent: str) -> None:
+class SourceLocationWithFilename(TypedDict):
+    filename: str
+    path: NotRequired[str]
+    line: int
+    start: int
+    end: int
+
+
+def print_location(
+    position: SourceLocationWithFilename, prefix: str, indent: str
+) -> None:
     filename = position["filename"]
     if filename == "*" and "path" in position:
         filename = position["path"]
@@ -604,11 +640,11 @@ def print_frame(frame: Dict[str, Any], indent: str) -> None:
         print(f"{indent}  Leaves: {leaves}")
 
 
-def print_taint_tree(taint_tree: List[Dict[str, Any]], is_tito: bool) -> None:
-    for taint in taint_tree:
+def print_taint_conditions(conditions: List[Dict[str, Any]], is_tito: bool) -> None:
+    for condition in conditions:
         label = "CallerPort" if not is_tito else "ParameterPath"
-        print(f'  {label}: {green(taint["port"])}')
-        for local_taint in taint["taint"]:
+        print(f'  {label}: {green(condition["port"])}')
+        for local_taint in condition["taint"]:
             print_call_info(local_taint, indent=" " * 4)
             print_local_taint(local_taint, indent=" " * 4)
 
@@ -629,11 +665,11 @@ def print_model(
     elif options.format == "text":
         print(f"Model for {green(model['callable'])}")
         print("Sources:")
-        print_taint_tree(model.get("sources", []), is_tito=False)
+        print_taint_conditions(model.get("sources", []), is_tito=False)
         print("Sinks:")
-        print_taint_tree(model.get("sinks", []), is_tito=False)
+        print_taint_conditions(model.get("sinks", []), is_tito=False)
         print("Tito:")
-        print_taint_tree(model.get("tito", []), is_tito=True)
+        print_taint_conditions(model.get("tito", []), is_tito=True)
         if "global_sanitizer" in model:
             print(f"GlobalSanitizers: {model['global_sanitizer']}")
         if "parameters_sanitizer" in model:
@@ -645,6 +681,236 @@ def print_model(
             print(f"Modes: {modes}")
     else:
         raise AssertionError(f"Unexpected format `{options.format}`")
+
+
+class ConditionKind(enum.Enum):
+    SOURCE = 0
+    SINK = 1
+
+    @staticmethod
+    def from_string(s: str) -> Optional["ConditionKind"]:
+        if s == "source":
+            return ConditionKind.SOURCE
+        elif s == "sink":
+            return ConditionKind.SINK
+        else:
+            return None
+
+    def model_key(self) -> str:
+        if self == ConditionKind.SOURCE:
+            return "sources"
+        else:
+            return "sinks"
+
+
+class TaintFrame(NamedTuple):
+    condition_kind: ConditionKind
+    caller: str
+    caller_port: str
+    callee: Optional[str]
+    callee_port: Optional[str]
+    taint_kind: str
+    distance: Optional[int]  # None for subtraces.
+    location: SourceLocationWithFilename
+    shared_local_features: List[Dict[str, str]]
+    local_features: List[Dict[str, str]]
+    type_interval: Dict[str, Any]
+
+    def key(
+        self,
+    ) -> Tuple[ConditionKind, str, str, Optional[str], Optional[str], str, str]:
+        return (
+            self.condition_kind,
+            self.caller,
+            self.caller_port,
+            self.callee,
+            self.callee_port,
+            self.taint_kind,
+            str(self.type_interval),
+        )
+
+
+def get_frames_from_extra_traces(
+    caller: str, extra_traces: List[Dict[str, Any]]
+) -> Iterable[TaintFrame]:
+    for extra_trace in extra_traces:
+        if extra_trace["trace_kind"] == "source":
+            condition_kind = ConditionKind.SOURCE
+        elif extra_trace["trace_kind"] == "sink":
+            condition_kind = ConditionKind.SINK
+        else:
+            raise AssertionError(f'unexpected trace_kind: {extra_trace["trace_kind"]}')
+
+        if "call" in extra_trace:
+            call = extra_trace["call"]
+            for resolved in call["resolves_to"]:
+                yield TaintFrame(
+                    condition_kind=condition_kind,
+                    caller=caller,
+                    caller_port="subtrace",
+                    callee=resolved,
+                    callee_port=call["port"],
+                    taint_kind=extra_trace["leaf_kind"],
+                    distance=None,
+                    location=call["position"],
+                    shared_local_features=[],
+                    local_features=[],
+                    type_interval={},
+                )
+
+
+def get_frames_from_local_taints(
+    caller: str,
+    condition_kind: ConditionKind,
+    port: str,
+    local_taints: List[Dict[str, Any]],
+    include_subtraces: bool = False,
+    deduplicate: bool = True,
+) -> Iterable[TaintFrame]:
+    for local_taint in local_taints:
+        if include_subtraces and deduplicate:
+            yield from get_frames_from_extra_traces(
+                caller, local_taint.get("extra_traces", [])
+            )
+
+        if "origin" in local_taint:
+            for flow_details in local_taint.get("kinds", []):
+                if include_subtraces and deduplicate:
+                    yield from get_frames_from_extra_traces(
+                        caller, flow_details.get("extra_traces", [])
+                    )
+
+                for leaf in flow_details.get("leaves", [{}]):
+                    if include_subtraces and not deduplicate:
+                        # subtraces are attached to a taint frame, so those will be duplicated
+                        yield from get_frames_from_extra_traces(
+                            caller, local_taint.get("extra_traces", [])
+                        )
+                        yield from get_frames_from_extra_traces(
+                            caller, flow_details.get("extra_traces", [])
+                        )
+                    yield TaintFrame(
+                        condition_kind=condition_kind,
+                        caller=caller,
+                        caller_port=port,
+                        callee=leaf.get("name", None),
+                        callee_port=leaf.get("port", None),
+                        taint_kind=flow_details["kind"],
+                        distance=flow_details.get("length", 0),
+                        location=local_taint["origin"],
+                        shared_local_features=local_taint.get("local_features", []),
+                        local_features=flow_details.get("local_features", []),
+                        type_interval=local_taint.get("type_interval", {}),
+                    )
+        elif "call" in local_taint:
+            call = local_taint["call"]
+            for flow_details in local_taint.get("kinds", []):
+                if include_subtraces and deduplicate:
+                    yield from get_frames_from_extra_traces(
+                        caller, flow_details.get("extra_traces", [])
+                    )
+
+                for resolved in call.get("resolves_to", []):
+                    if include_subtraces and not deduplicate:
+                        # subtraces are attached to a taint frame, so those will be duplicated
+                        yield from get_frames_from_extra_traces(
+                            caller, local_taint.get("extra_traces", [])
+                        )
+                        yield from get_frames_from_extra_traces(
+                            caller, flow_details.get("extra_traces", [])
+                        )
+                    yield TaintFrame(
+                        condition_kind=condition_kind,
+                        caller=caller,
+                        caller_port=port,
+                        callee=resolved,
+                        callee_port=call["port"],
+                        taint_kind=flow_details["kind"],
+                        distance=flow_details.get("length", 0),
+                        location=call["position"],
+                        shared_local_features=local_taint.get("local_features", []),
+                        local_features=flow_details.get("local_features", []),
+                        type_interval=local_taint.get("type_interval", {}),
+                    )
+        elif "declaration" in local_taint:
+            pass  # User-declared fragment.
+        else:
+            raise AssertionError("Unexpected trace fragment.")
+
+
+def get_frames_from_taint_conditions(
+    caller: str,
+    condition_kind: ConditionKind,
+    conditions: List[Dict[str, Any]],
+    include_subtraces: bool = False,
+    deduplicate: bool = True,
+) -> Iterable[TaintFrame]:
+    for taint in conditions:
+        yield from get_frames_from_local_taints(
+            caller,
+            condition_kind,
+            taint["port"],
+            taint["taint"],
+            include_subtraces=include_subtraces,
+            deduplicate=deduplicate,
+        )
+
+
+def print_model_size_stats(callable: str) -> None:
+    """Print statistics about a model size (number of frames, etc.)"""
+    model = get_raw_model(callable)
+    trace_frames = 0
+    trace_frames_for_subtraces = 0
+    source_trace_frames = 0
+    sink_trace_frames = 0
+    trace_frames_per_kind = collections.defaultdict(int)
+    trace_frames_per_callee = collections.defaultdict(int)
+    for frame in get_frames_from_taint_conditions(
+        callable,
+        ConditionKind.SOURCE,
+        model.get("sources", []),
+        include_subtraces=True,
+        deduplicate=False,
+    ):
+        trace_frames += 1
+        if frame.caller_port == "subtrace":
+            trace_frames_for_subtraces += 1
+        else:
+            source_trace_frames += 1
+        trace_frames_per_kind[frame.taint_kind] += 1
+        trace_frames_per_callee[frame.callee] += 1
+    for frame in get_frames_from_taint_conditions(
+        callable,
+        ConditionKind.SINK,
+        model.get("sinks", []),
+        include_subtraces=True,
+        deduplicate=False,
+    ):
+        trace_frames += 1
+        if frame.caller_port == "subtrace":
+            trace_frames_for_subtraces += 1
+        else:
+            sink_trace_frames += 1
+        trace_frames_per_kind[frame.taint_kind] += 1
+        trace_frames_per_callee[frame.callee] += 1
+
+    print(f"Statistics of model for callable `{callable}`:")
+    print(f"Trace frames: {trace_frames}")
+    print(f"Trace frames for subtraces: {trace_frames_for_subtraces}")
+    print(f"Source trace frames: {source_trace_frames}")
+    print(f"Sink trace frames: {sink_trace_frames}")
+    print()
+    print("Most common taint kinds:")
+    for taint_kind, count in sorted(
+        trace_frames_per_kind.items(), key=lambda p: p[1], reverse=True
+    )[:20]:
+        print(f"{taint_kind}: {count} trace frames ({count/trace_frames*100.0:.2f}%)")
+    print()
+    print("Most common callees:")
+    for callee, count in sorted(
+        trace_frames_per_callee.items(), key=lambda p: p[1], reverse=True
+    )[:20]:
+        print(f"{callee}: {count} trace frames ({count/trace_frames*100.0:.2f}%)")
 
 
 def get_issues(
@@ -706,6 +972,7 @@ def print_issues(callable: str, **kwargs: Union[str, bool]) -> None:
         for issue in issues:
             print("Issue:")
             print(f'  Code: {issue["code"]}')
+            # pyre-ignore: issue contains a location
             print_location(issue, "Location: ", indent=" " * 2)
             print(f'  Message: {blue(issue["message"])}')
             print(f'  Handle: {green(issue["master_handle"])}')
@@ -737,6 +1004,160 @@ def print_call_graph(callable: str, **kwargs: Union[str, bool]) -> None:
     print_json(call_graph)
 
 
+def taint_kind_match(a: str, b: str) -> bool:
+    return len(a) == len(b) and a.replace("@", ":") == b.replace("@", ":")
+
+
+def taint_kind_next_hop(kind: str) -> str:
+    parts = kind.split("@", 1)
+    if len(parts) == 1:
+        return kind
+    else:
+        return parts[1]
+
+
+def get_closest_next_frame(
+    condition_kind: ConditionKind,
+    callee: str,
+    port: str,
+    taint_kind: str,
+    seen: Set[TaintFrame] = set(),
+) -> Optional[TaintFrame]:
+    model = get_raw_model(callee)
+
+    shortest_frame = None
+    for frame in get_frames_from_taint_conditions(
+        caller=callee,
+        condition_kind=condition_kind,
+        conditions=model.get(condition_kind.model_key(), []),
+        include_subtraces=False,
+        deduplicate=True,
+    ):
+        if frame.caller_port != port:
+            continue
+        if not taint_kind_match(frame.taint_kind, taint_kind):
+            continue
+        if frame.key() in seen:
+            continue
+        # TODO: match on type interval
+        # pyre-ignore: distance is not None
+        if shortest_frame is None or (shortest_frame.distance > frame.distance):
+            shortest_frame = frame
+
+    return shortest_frame
+
+
+def print_shortest_trace(
+    condition_kind_string: str, callee: str, port: str, taint_kind: str
+) -> None:
+    """Print the shortest trace starting from the given callable, port, kind"""
+    condition_kind = ConditionKind.from_string(condition_kind_string)
+    if condition_kind is None:
+        print(f"error: expected source or sink as condition kind")
+        return
+
+    seen = set()
+    while True:
+        frame = get_closest_next_frame(condition_kind, callee, port, taint_kind, seen)
+
+        if frame is None:
+            print(
+                f"error: could not find next frame for callee `{callee}` port `{port}` kind `{taint_kind}`"
+            )
+            return
+
+        print()
+        print(
+            f"Callee: {blue(frame.callee or '')} Port: {blue(frame.callee_port or '')} Distance: {frame.distance}"
+        )
+        print_location(frame.location, prefix="Location: ", indent="")
+
+        if frame.distance == 0:  # leaf
+            return
+
+        seen.add(frame)
+        callee = frame.callee or ""
+        port = frame.callee_port or ""
+        taint_kind = taint_kind_next_hop(frame.taint_kind)
+
+
+def print_reachable_leaves(
+    condition_kind_string: str,
+    callable: str,
+    taint_kind: str,
+    include_subtraces: bool = False,
+) -> None:
+    condition_kind = ConditionKind.from_string(condition_kind_string)
+    if condition_kind is None:
+        print(f"error: expected source or sink as condition kind")
+        return
+
+    # Find all initial frames
+    cache = {}
+    stack = []
+    model = get_raw_model(callable, cache=cache)
+
+    # we need to iterate on both sources and sinks if `include_subtraces=True`
+    for frame in itertools.chain(
+        get_frames_from_taint_conditions(
+            caller=callable,
+            condition_kind=ConditionKind.SOURCE,
+            conditions=model.get("sources", []),
+            include_subtraces=include_subtraces,
+            deduplicate=True,
+        ),
+        get_frames_from_taint_conditions(
+            caller=callable,
+            condition_kind=ConditionKind.SINK,
+            conditions=model.get("sinks", []),
+            include_subtraces=include_subtraces,
+            deduplicate=True,
+        ),
+    ):
+        if frame.condition_kind != condition_kind:
+            continue
+        if not taint_kind_match(frame.taint_kind, taint_kind):
+            continue
+        stack.append(frame)
+
+    seen = set()
+    while len(stack) > 0:
+        frame = stack.pop()
+        if frame.key() in seen:
+            continue
+        seen.add(frame.key())
+
+        if frame.distance == 0:  # leaf
+            print()
+            print(
+                f"Caller: {blue(frame.caller or '')} Port: {blue(frame.caller_port or '')}"
+            )
+            print(
+                f"Leaf: {blue(frame.callee or '')} Port: {blue(frame.callee_port or '')}"
+            )
+            print_location(frame.location, prefix="Location: ", indent="")
+            continue
+
+        model = get_raw_model(frame.callee, cache=cache)
+        for next_frame in get_frames_from_taint_conditions(
+            caller=frame.callee,
+            condition_kind=condition_kind,
+            conditions=model.get(condition_kind.model_key(), []),
+            include_subtraces=False,
+            deduplicate=True,
+        ):
+            if next_frame.caller_port != frame.callee_port:
+                continue
+            if not taint_kind_match(
+                next_frame.taint_kind, taint_kind_next_hop(frame.taint_kind)
+            ):
+                continue
+            # TODO: match on type interval
+            if next_frame.key() in seen:
+                continue
+            stack.append(next_frame)
+
+
 def print_help() -> None:
     """Print this help message."""
     print("# Pysa Model Explorer")
@@ -751,6 +1172,15 @@ def print_help() -> None:
         (print_issues, "print_issues('foo.bar')"),
         (get_call_graph, "get_call_graph('foo.bar')"),
         (print_call_graph, "print_call_graph('foo.bar')"),
+        (print_model_size_stats, "print_model_size_stats('foo.bar')"),
+        (
+            print_shortest_trace,
+            "print_shortest_trace('source', 'foo.bar', 'result', 'UserControlled')",
+        ),
+        (
+            print_reachable_leaves,
+            "print_reachable_leaves('source', 'foo.bar', 'UserControlled')",
+        ),
         (set_formatting, "set_formatting(show_sources=False)"),
         (show_formatting, "show_formatting()"),
         (print_json, "print_json({'a': 'b'})"),

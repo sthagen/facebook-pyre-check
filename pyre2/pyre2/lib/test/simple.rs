@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use crate::test::util::TestEnv;
 use crate::testcase;
 use crate::testcase_with_bug;
 
@@ -645,7 +646,7 @@ class D:
 def f(x: list[int], y: dict[str, bool]) -> None:
     assert_type(x[0], int)
     assert_type(y["test"], bool)
-    x["foo"]  # E: Literal['foo'] <: int
+    x["foo"]  # E: No matching overload
     c = C()
     c[0]  # E: `C` has no attribute `__getitem__`
     d = D()
@@ -1121,6 +1122,7 @@ class C:
 
 testcase!(
     test_pyrereadonly,
+    TestEnv::one("pyre_extensions", "class PyreReadOnly[T]: pass"),
     r#"
 from pyre_extensions import PyreReadOnly
 def f(x: PyreReadOnly[str]):

@@ -19,6 +19,7 @@ use crate::alt::types::class_metadata::EnumMetadata;
 use crate::binding::binding::KeyExport;
 use crate::error::collector::ErrorCollector;
 use crate::error::context::TypeCheckContext;
+use crate::error::context::TypeCheckKind;
 use crate::error::kind::ErrorKind;
 use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
@@ -370,7 +371,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 AttributeInner::ReadWrite(want) => match got {
                     Either::Left(got) => {
-                        self.expr(got, Some((&want, &TypeCheckContext::unknown())), errors);
+                        self.expr(
+                            got,
+                            Some((
+                                &want,
+                                &TypeCheckContext::of_kind(TypeCheckKind::Attribute(
+                                    attr_name.clone(),
+                                )),
+                            )),
+                            errors,
+                        );
                     }
                     Either::Right(got) => {
                         if !self.solver().is_subset_eq(got, &want, self.type_order()) {
@@ -431,7 +441,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.error(
                                 errors,
                                 range,
-                                ErrorKind::Unknown,
+                                ErrorKind::ReadOnly,
                                 None,
                                 e.to_error_msg(attr_name),
                             );
@@ -441,7 +451,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.error(
                                 errors,
                                 range,
-                                ErrorKind::Unknown,
+                                ErrorKind::NoAccess,
                                 None,
                                 e.to_error_msg(attr_name),
                             );

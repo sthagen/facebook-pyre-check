@@ -411,6 +411,33 @@ let is_normal target = target |> get_regular |> Regular.is_normal
 
 let is_decorated target = target |> get_regular |> Regular.is_decorated
 
+(* A parameterized target contains recursive targets if one of its `regular` part also appears in
+   one of its `parameters` part. Such recursion may lead to non-termination in high-order call graph
+   building. *)
+let contain_recursive_target target =
+  let rec contain_recursive_target existing_regulars = function
+    | Regular regular -> List.exists existing_regulars ~f:(Regular.equal regular)
+    | Parameterized { regular; parameters } ->
+        List.exists existing_regulars ~f:(Regular.equal regular)
+        || ParameterMap.exists
+             (fun _ target -> contain_recursive_target (regular :: existing_regulars) target)
+             parameters
+  in
+  contain_recursive_target [] target
+
+
+(* Return the level of target nestedness within a given target. *)
+let rec depth = function
+  | Regular _ -> 1
+  | Parameterized { parameters; _ } ->
+      1
+      + (parameters
+        |> ParameterMap.data
+        |> List.map ~f:depth
+        |> List.max_elt ~compare:Int.compare
+        |> Option.value ~default:0)
+
+
 let rec for_issue_handle = function
   | Regular regular -> regular |> Regular.override_to_method |> from_regular
   | Parameterized { regular; parameters } ->

@@ -167,6 +167,17 @@ impl Bindings {
         }
     }
 
+    /// Within the LSP, check if a Usage key exists.
+    /// It may not exist within `if False:` or `if sys.version == 0:` style code.
+    pub fn is_valid_usage(&self, k: &Identifier) -> bool {
+        self.0
+            .table
+            .get::<Key>()
+            .0
+            .key_to_idx(&Key::Usage(ShortIdentifier::new(k)))
+            .is_some()
+    }
+
     pub fn key_to_idx<K: Keyed>(&self, k: &K) -> Idx<K>
     where
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -298,7 +309,7 @@ impl Bindings {
             errors.add(
                 x.range,
                 "Invalid `return` outside of a function".to_owned(),
-                ErrorKind::Unknown,
+                ErrorKind::BadReturn,
                 None,
             );
         }
@@ -320,7 +331,7 @@ impl Bindings {
                     errors.add(
                         static_info.loc,
                         format!("Could not find flow binding for `{k}`"),
-                        ErrorKind::Unknown,
+                        ErrorKind::InternalError,
                         None,
                     );
                     Binding::AnyType(AnyStyle::Error)
@@ -426,7 +437,11 @@ impl<'a> BindingsBuilder<'a> {
                 }
             }
             Err(err) => {
-                self.error(TextRange::default(), err.display(builtins_module));
+                self.error(
+                    TextRange::default(),
+                    err.display(builtins_module),
+                    ErrorKind::InternalError,
+                );
             }
         }
     }
@@ -439,8 +454,8 @@ impl<'a> BindingsBuilder<'a> {
         SpecialExport::as_special_export(self, e)
     }
 
-    pub fn error(&self, range: TextRange, msg: String) {
-        self.errors.add(range, msg, ErrorKind::Unknown, None);
+    pub fn error(&self, range: TextRange, msg: String, error_kind: ErrorKind) {
+        self.errors.add(range, msg, error_kind, None);
     }
 
     fn lookup_name(&mut self, name: &Name) -> Option<Idx<Key>> {
@@ -611,7 +626,12 @@ impl<'a> BindingsBuilder<'a> {
             innermost.0.push((exit, flow));
             scope.flow.no_next = true;
         } else {
-            self.error(range, format!("Cannot `{exit}` outside loop"));
+            // Python treats break and continue outside of a loop as a syntax error.
+            self.error(
+                range,
+                format!("Cannot `{exit}` outside loop"),
+                ErrorKind::ParseError,
+            );
         }
     }
 
