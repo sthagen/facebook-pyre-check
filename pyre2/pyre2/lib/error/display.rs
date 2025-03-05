@@ -26,23 +26,47 @@ impl TypeCheckKind {
         ctx.add(got);
         ctx.add(want);
         match self {
-            Self::FunctionReturn(func, defining_cls) => {
-                let func_name = match defining_cls {
-                    Some(cls) => {
-                        ctx.add(cls);
-                        format!("{}.{}", ctx.display(cls), func)
-                    }
-                    None => format!("{func}"),
-                };
+            Self::MagicMethodReturn(cls, func) => {
+                ctx.add(cls);
                 format!(
-                    "For return type of function `{}`, expected `{}`, got `{}`",
-                    func_name,
+                    "Expected `{}.{}` to return `{}`, got `{}`",
+                    ctx.display(cls),
+                    func,
                     ctx.display(want),
                     ctx.display(got)
                 )
             }
+            Self::ImplicitFunctionReturn(has_explicit_return) => {
+                if *has_explicit_return {
+                    format!(
+                        "Function declared to return `{}`, but one or more paths are missing an explicit `return`",
+                        ctx.display(want),
+                    )
+                } else {
+                    format!(
+                        "Function declared to return `{}` but is missing an explicit `return`",
+                        ctx.display(want)
+                    )
+                }
+            }
+            Self::ExplicitFunctionReturn => format!(
+                "Function declared to return `{}`, actually returns `{}`",
+                ctx.display(want),
+                ctx.display(got)
+            ),
+            Self::TypeGuardReturn => format!(
+                "Expected type guard function to return `bool`, actually returns `{}`",
+                ctx.display(got)
+            ),
             Self::Unknown => {
                 format!("EXPECTED {} <: {}", ctx.display(got), ctx.display(want))
+            }
+            Self::Test => {
+                format!(
+                    "TEST TEST TEST - got: {}, want: {}",
+                    ctx.display(got),
+                    ctx.display(want)
+                )
             }
         }
     }

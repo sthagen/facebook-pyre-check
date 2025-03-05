@@ -7,6 +7,7 @@
 
 use std::ops::Deref;
 
+use dupe::Dupe;
 use itertools::Either;
 use itertools::Itertools;
 use ruff_python_ast::name::Name;
@@ -79,7 +80,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         errors: &ErrorCollector,
         is_new_type: bool,
     ) {
-        match (base_type_and_range.clone(), is_new_type) {
+        match (base_type_and_range, is_new_type) {
             (Some((Type::ClassType(c), _)), false) => {
                 let base_cls = c.class_object();
                 let base_class_metadata = self.get_metadata_for_class(base_cls);
@@ -88,6 +89,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         cls.range(),
                         ErrorKind::Unknown,
+                        None,
                         "Subclassing a NewType not allowed".to_owned(),
                     );
                 }
@@ -101,6 +103,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         cls.range(),
                         ErrorKind::Unknown,
+                        None,
                         "Second argument to NewType cannot be a protocol".to_owned(),
                     );
                 }
@@ -110,6 +113,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     cls.range(),
                     ErrorKind::Unknown,
+                    None,
                     "Second argument to NewType is incorrect".to_owned(),
                 );
             }
@@ -157,7 +161,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     _ => None,
                 };
-                self.check_new_type_base(&base_type_and_range.clone(), cls, errors, is_new_type);
+                self.check_new_type_base(&base_type_and_range, cls, errors, is_new_type);
                 match base_type_and_range {
                     Some((Type::ClassType(c), range)) => {
                         let base_cls = c.class_object();
@@ -179,11 +183,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         }
                         if let Some(proto) = &mut protocol_metadata {
                             if let Some(base_proto) = base_class_metadata.protocol_metadata() {
-                                proto.members.extend(base_proto.members.clone());
+                                proto.members.extend(base_proto.members.iter().cloned());
                             } else {
                                 self.error(errors,
                                     range,
                                     ErrorKind::InvalidInheritance,
+                                    None,
                                     "If `Protocol` is included as a base class, all other bases must be protocols.".to_owned(),
                                 );
                             }
@@ -225,13 +230,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 errors,
                 cls.range(),
                 ErrorKind::InvalidInheritance,
+                None,
                 "Named tuples do not support multiple inheritance".to_owned(),
             );
         }
         let (metaclasses, keywords): (Vec<_>, Vec<(_, _)>) =
             keywords.iter().partition_map(|(n, x)| match n.as_str() {
                 "metaclass" => Either::Left(x),
-                _ => Either::Right((n.clone(), self.expr(x, None, errors))),
+                _ => Either::Right((n.clone(), self.expr_infer(x, errors))),
             });
         let typed_dict_metadata = if is_typed_dict {
             let is_total = !keywords.iter().any(|(n, t)| {
@@ -264,12 +270,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         cls.range(),
                         ErrorKind::Unknown,
+                        None,
                         "Enums may not be generic.".to_owned(),
                     );
                 }
                 enum_metadata = Some(EnumMetadata {
                     // A generic enum is an error, but we create Any type args anyway to handle it gracefully.
-                    cls: ClassType::new(cls.clone(), self.create_default_targs(cls, None)),
+                    cls: ClassType::new(cls.dupe(), self.create_default_targs(cls, None)),
                     is_flag: bases_with_metadata.iter().any(|(base, _)| {
                         self.solver().is_subset_eq(
                             &Type::ClassType(base.clone()),
@@ -284,6 +291,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     cls.range(),
                     ErrorKind::InvalidInheritance,
+                    None,
                     "Typed dictionary definitions may not specify a metaclass.".to_owned(),
                 );
             }
@@ -306,6 +314,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.error(errors,
                 cls.range(),
                 ErrorKind::Unknown,
+                None,
                 format!("`{}` is not a typed dictionary. Typed dictionary definitions may only extend other typed dictionaries.", bad.0),
             );
         }
@@ -389,6 +398,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     name.range,
                     ErrorKind::Unknown,
+                    None,
                     "Redundant type parameter declaration".to_owned(),
                 );
             }
@@ -424,6 +434,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 errors,
                 name.range,
                 ErrorKind::Unknown,
+                None,
                 format!(
                     "Class `{}` specifies type parameters in both `Generic` and `Protocol` bases",
                     name.id,
@@ -444,6 +455,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.error(errors,
                         name.range,
                         ErrorKind::Unknown,
+                        None,
                         format!(
                             "Class `{}` uses type variables not specified in `Generic` or `Protocol` base",
                             name.id,
@@ -513,6 +525,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.error(errors,
                     cls.range(),
                     ErrorKind::InvalidInheritance,
+                    None,
                     format!(
                         "Class `{}` has metaclass `{}` which is not a subclass of metaclass `{}` from base class `{}`",
                         cls.name(),
@@ -544,6 +557,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         raw_metaclass.range(),
                         ErrorKind::InvalidInheritance,
+                        None,
                         format!(
                             "Metaclass of `{}` has type `{}` which is not a subclass of `type`",
                             cls.name(),
@@ -558,6 +572,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     cls.range(),
                     ErrorKind::InvalidInheritance,
+                    None,
                     format!(
                         "Metaclass of `{}` has type `{}` is not a simple class type.",
                         cls.name(),

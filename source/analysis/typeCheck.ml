@@ -6651,6 +6651,25 @@ module State (Context : Context) = struct
     in
     let global_resolution = Resolution.global_resolution resolution in
     let maybe_current_class_name = Option.map maybe_current_class_reference ~f:Reference.show in
+
+    let unbound_names =
+      match maybe_current_class_name with
+      | Some current_class_name ->
+          let generic_parameters =
+            GlobalResolution.generic_parameters global_resolution current_class_name
+            |> Option.value ~default:[]
+          in
+          List.filter
+            ~f:(fun p ->
+              not
+                (List.exists
+                   ~f:(fun param ->
+                     String.equal (Type.GenericParameter.parameter_name param) p.name)
+                   generic_parameters))
+            unbound_names
+      | None -> unbound_names
+    in
+
     let look_up_current_class_variance =
       match maybe_current_class_name with
       | Some current_class_name ->
@@ -8307,7 +8326,8 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
             ~include_generated_attributes:true
             global_resolution
             (Reference.show (ClassSummary.name definition))
-          >>| List.filter ~f:(fun attribute -> AnnotatedAttribute.is_private attribute)
+          >>| List.filter ~f:(fun attribute ->
+                  AnnotatedAttribute.is_mangled_private_field attribute)
           >>| List.map ~f:(fun attribute ->
                   Error.create
                     ~location:(Location.with_module ~module_reference:Context.qualifier location)
@@ -8692,7 +8712,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                         | _ -> true
                       in
                       if
-                        AnnotatedAttribute.is_private overridden_attribute
+                        AnnotatedAttribute.is_mangled_private_field overridden_attribute
                         || (GlobalResolution.less_or_equal
                               global_resolution
                               ~left:actual

@@ -355,6 +355,7 @@ mod tests {
     use crate::types::callable::ParamList;
     use crate::types::callable::Required;
     use crate::types::class::Class;
+    use crate::types::class::ClassIndex;
     use crate::types::class::ClassType;
     use crate::types::literal::Lit;
     use crate::types::quantified::Quantified;
@@ -374,7 +375,8 @@ mod tests {
             ModulePath::filesystem(PathBuf::from(module)),
             Arc::new("1234567890".to_owned()),
         );
-        Class::new(
+        Class::new_identity(
+            ClassIndex(0),
             Identifier::new(Name::new(name), TextRange::empty(TextSize::new(range))),
             mi,
             TParams::new(tparams).unwrap(),
@@ -398,7 +400,7 @@ mod tests {
             ModulePath::filesystem(PathBuf::from(module)),
             Arc::new("1234567890".to_owned()),
         );
-        TypeVar::new(
+        TypeVar::new_identity(
             Identifier::new(Name::new(name), TextRange::empty(TextSize::new(range))),
             mi,
             Restriction::Unrestricted,

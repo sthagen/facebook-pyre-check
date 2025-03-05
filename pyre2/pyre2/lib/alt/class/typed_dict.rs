@@ -23,6 +23,7 @@ use crate::alt::types::class_metadata::ClassSynthesizedField;
 use crate::alt::types::class_metadata::ClassSynthesizedFields;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
+use crate::error::context::TypeCheckContext;
 use crate::error::kind::ErrorKind;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
@@ -51,16 +52,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let mut keys: SmallSet<Name> = SmallSet::new();
         dict_items.iter().for_each(|x| match &x.key {
             Some(key) => {
-                let key_type = self.expr(key, None, errors);
+                let key_type = self.expr_infer(key, errors);
                 if let Type::Literal(Lit::String(name)) = key_type {
                     let key_name = Name::new(name.clone());
                     if let Some(field) = fields.get(&key_name) {
-                        self.expr(&x.value, Some(&field.ty), errors);
+                        self.expr(
+                            &x.value,
+                            Some((&field.ty, &TypeCheckContext::unknown())),
+                            errors,
+                        );
                     } else {
                         self.error(
                             errors,
                             key.range(),
                             ErrorKind::Unknown,
+                            None,
                             format!(
                                 "Key `{}` is not defined in TypedDict `{}`",
                                 name,
@@ -74,6 +80,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         key.range(),
                         ErrorKind::Unknown,
+                        None,
                         format!("Expected string literal key, got `{}`", key_type),
                     );
                 }
@@ -82,7 +89,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 has_expansion = true;
                 self.expr(
                     &x.value,
-                    Some(&Type::TypedDict(Box::new(typed_dict.clone()))),
+                    Some((
+                        &Type::TypedDict(Box::new(typed_dict.clone())),
+                        &TypeCheckContext::unknown(),
+                    )),
                     errors,
                 );
             }
@@ -94,6 +104,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         range,
                         ErrorKind::Unknown,
+                        None,
                         format!(
                             "Missing required key `{}` for TypedDict `{}`",
                             key,

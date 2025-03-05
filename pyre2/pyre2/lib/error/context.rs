@@ -34,18 +34,38 @@ pub struct TypeCheckContext {
 }
 
 impl TypeCheckContext {
-    /// Temporary helper to label errors as Unknown before we properly classify them.
-    pub fn unknown() -> Self {
+    pub fn of_kind(kind: TypeCheckKind) -> Self {
         Self {
-            kind: TypeCheckKind::Unknown,
+            kind,
             context: None,
         }
     }
+
+    /// Temporary helper to label errors as Unknown before we properly classify them.
+    pub fn unknown() -> Self {
+        Self::of_kind(TypeCheckKind::Unknown)
+    }
+
+    /// Temporary helper to label errors as Test to aid classification.
+    #[allow(dead_code)]
+    pub fn test() -> Self {
+        Self::of_kind(TypeCheckKind::Test)
+    }
 }
+
 pub enum TypeCheckKind {
-    /// Return type check on a named function. `Option<Type>` is the type that the function is
-    /// defined on, if it is a method of a class.
-    FunctionReturn(Name, Option<Type>),
-    // TODO: categorize all type checks and remove Unknown designation
+    /// Check on a magic method that is expected to return a particular type; e.g., a context
+    /// manager's `__exit__` method must return `bool | None`.
+    MagicMethodReturn(Type, Name),
+    /// Implicit return via a path with no explicit return statement. The bool indicates whether
+    /// the function has *any* explicit return.
+    ImplicitFunctionReturn(bool),
+    /// Explicit return statement in a function body.
+    ExplicitFunctionReturn,
+    /// Return in a type guard function.
+    TypeGuardReturn,
+    // TODO: categorize all type checks and remove Unknown and Test designations
     Unknown,
+    #[allow(dead_code)]
+    Test,
 }

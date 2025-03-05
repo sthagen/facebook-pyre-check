@@ -14,6 +14,8 @@ use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 
+use crate::alt::id_cache::IdCache;
+use crate::alt::id_cache::IdCacheHistory;
 use crate::alt::traits::Solve;
 use crate::alt::traits::SolveRecursive;
 use crate::binding::binding::Keyed;
@@ -22,6 +24,7 @@ use crate::binding::bindings::BindingTable;
 use crate::binding::bindings::Bindings;
 use crate::binding::table::TableKeyed;
 use crate::error::collector::ErrorCollector;
+use crate::error::context::ErrorContext;
 use crate::error::context::TypeCheckContext;
 use crate::error::kind::ErrorKind;
 use crate::error::style::ErrorStyle;
@@ -62,6 +65,7 @@ pub struct Traces {
 /// We never issue contains queries on these maps.
 #[derive(Debug)]
 pub struct Answers {
+    id_cache: IdCache,
     solver: Solver,
     table: AnswerTable,
     trace: Option<Mutex<Traces>>,
@@ -180,7 +184,12 @@ pub trait LookupAnswer: Sized {
 }
 
 impl Answers {
-    pub fn new(bindings: &Bindings, solver: Solver, enable_trace: bool) -> Self {
+    pub fn new(
+        bindings: &Bindings,
+        solver: Solver,
+        history: IdCacheHistory,
+        enable_trace: bool,
+    ) -> Self {
         fn presize<K: SolveRecursive>(items: &mut AnswerEntry<K>, bindings: &Bindings)
         where
             BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -200,6 +209,7 @@ impl Answers {
         };
 
         Self {
+            id_cache: IdCache::new(history),
             solver,
             table,
             trace,
@@ -304,6 +314,10 @@ impl Answers {
         self.table.get::<K>().get(k)?.get()
     }
 
+    pub fn id_cache_history(&self) -> IdCacheHistory {
+        self.id_cache.history()
+    }
+
     pub fn get_type_trace(&self, range: TextRange) -> Option<Arc<Type>> {
         let lock = self.trace.as_ref()?.lock();
         let ty = lock.types.get(&range)?.dupe();
@@ -332,6 +346,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             recurser,
             current,
         }
+    }
+
+    pub fn id_cache(&self) -> &IdCache {
+        &self.current.id_cache
     }
 
     pub fn bindings(&self) -> &Bindings {
@@ -485,9 +503,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         errors: &ErrorCollector,
         range: TextRange,
         kind: ErrorKind,
+        context: Option<&ErrorContext>,
         msg: String,
     ) -> Type {
-        errors.add(range, msg, kind, None);
+        errors.add(range, msg, kind, context);
         Type::any_error()
     }
 }

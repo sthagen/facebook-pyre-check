@@ -5,6 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// Clippy thinks ModuleData is mutable (it is), but the ArcId makes the Hash/Eq immutable
+#![allow(clippy::mutable_key_type)]
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::mem;
@@ -60,6 +63,7 @@ use crate::state::subscriber::Subscriber;
 use crate::types::class::Class;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
+use crate::util::arc_id::ArcId;
 use crate::util::display::number_thousands;
 use crate::util::enum_heap::EnumHeap;
 use crate::util::lock::Mutex;
@@ -76,14 +80,16 @@ pub struct State {
     uniques: UniqueFactory,
     parallel: bool,
     stdlib: SmallMap<(RuntimeMetadata, LoaderId), Arc<Stdlib>>,
-    modules: LockedMap<Handle, Arc<ModuleData>>,
+    modules: LockedMap<Handle, ArcId<ModuleData>>,
     loaders: SmallMap<LoaderId, Arc<LoaderFindCache<LoaderId>>>,
     /// Items we still need to process. Stored in a max heap, so that
     /// the highest step (the module that is closest to being finished)
     /// gets picked first, ensuring we release its memory quickly.
-    todo: Mutex<EnumHeap<Step, Arc<ModuleData>>>,
-    /// Handles whose solutions changed value since the last time we recomputed
-    changed: Mutex<Vec<Handle>>,
+    todo: Mutex<EnumHeap<Step, ArcId<ModuleData>>>,
+    /// Values whose solutions changed value since the last time we recomputed
+    changed: Mutex<Vec<ArcId<ModuleData>>>,
+    /// Handles which are dirty
+    dirty: Mutex<SmallSet<ArcId<ModuleData>>>,
     /// The current epoch, gets incremented every time we recompute
     now: Epoch,
     /// Thing to tell about each action.
@@ -96,7 +102,11 @@ pub struct State {
 struct ModuleData {
     handle: Handle,
     state: UpgradeLock<Step, ModuleState>,
-    deps: RwLock<HashMap<ModuleName, Arc<ModuleData>, BuildNoHash>>,
+    deps: RwLock<HashMap<ModuleName, ArcId<ModuleData>, BuildNoHash>>,
+    /// The reverse dependencies of this module. This is used to invalidate on change.
+    /// Note that if we are only running once, e.g. on the command line, this isn't valuable.
+    /// But we create it anyway for simplicity, since it doesn't seem to add much overhead.
+    rdeps: Mutex<HashMap<Handle, ArcId<ModuleData>>>,
 }
 
 struct ModuleState {
@@ -115,6 +125,7 @@ impl ModuleData {
                 steps: Steps::default(),
             }),
             deps: Default::default(),
+            rdeps: Default::default(),
         }
     }
 }
@@ -130,6 +141,7 @@ impl State {
             loaders: Default::default(),
             todo: Default::default(),
             changed: Default::default(),
+            dirty: Default::default(),
             subscriber: None,
             retain_memory: true, // Will always be overwritten by entry points
         }
@@ -146,7 +158,7 @@ impl State {
 
     fn clean(
         &self,
-        module_data: &Arc<ModuleData>,
+        module_data: &ArcId<ModuleData>,
         exclusive: UpgradeLockExclusiveGuard<Step, ModuleState>,
     ) {
         // We need to clean up the state.
@@ -175,7 +187,11 @@ impl State {
             if let Some(subscriber) = &self.subscriber {
                 subscriber.start_work(module_data.handle.dupe());
             }
-            module_data.deps.write().clear();
+            let deps = mem::take(&mut *module_data.deps.write());
+            for d in deps.values() {
+                let removed = d.rdeps.lock().remove(&module_data.handle);
+                assert!(removed.is_some());
+            }
             finish(w);
         };
 
@@ -200,6 +216,12 @@ impl State {
             // The contents are the same, so we can just reuse the old load
         }
 
+        if exclusive.dirty.deps {
+            let mut write = exclusive.write();
+            rebuild(&mut write, false);
+            return;
+        }
+
         // Validate the find flag.
         if exclusive.dirty.find {
             let loader = self.get_cached_loader(module_data.handle.loader());
@@ -220,39 +242,20 @@ impl State {
             }
         }
 
-        // Validate the dependencies.
-        let mut is_dirty_deps = exclusive.dirty.deps;
-        if !is_dirty_deps {
-            for x in module_data.deps.read().values() {
-                if exclusive.epochs.computed < x.state.read().epochs.changed {
-                    is_dirty_deps = true;
-                    break;
-                }
-            }
-        }
-        if is_dirty_deps {
-            let mut write = exclusive.write();
-            rebuild(&mut write, false);
-            return;
-        }
-
         // The module was not dirty. Make sure our dependencies aren't dirty either.
         let mut write = exclusive.write();
         finish(&mut write);
-        drop(write);
-        let mut todo = self.todo.lock();
-        for x in module_data.deps.read().values() {
-            todo.push_lifo(Step::first(), x.dupe());
-        }
     }
 
-    fn demand(&self, module_data: &Arc<ModuleData>, step: Step) {
+    fn demand(&self, module_data: &ArcId<ModuleData>, step: Step) {
         let mut computed = false;
         loop {
             let reader = module_data.state.read();
             if reader.epochs.checked != self.now {
                 if let Some(ex) = reader.exclusive(Step::first()) {
                     self.clean(module_data, ex);
+                    // We might have done some cleaning
+                    computed = true;
                 }
                 continue;
             }
@@ -298,6 +301,7 @@ impl State {
                 lookup: &self.lookup(module_data.dupe()),
             });
             {
+                let mut changed = false;
                 let mut to_drop = None;
                 let mut writer = exclusive.write();
                 let mut load_result = None;
@@ -308,9 +312,11 @@ impl State {
                 };
                 set(&mut writer.steps);
                 if todo == Step::Solutions {
-                    if old_solutions != writer.steps.solutions {
+                    if old_solutions.as_ref().map(|x| &x.1)
+                        != writer.steps.solutions.as_ref().map(|x| &x.1)
+                    {
                         if old_solutions.is_some() {
-                            self.changed.lock().push(module_data.handle.dupe());
+                            changed = true;
                         }
                         writer.epochs.changed = self.now;
                     }
@@ -323,6 +329,30 @@ impl State {
                 drop(writer);
                 // Release the lock before dropping
                 drop(to_drop);
+                if changed {
+                    self.changed.lock().push(module_data.dupe());
+                    let mut dirtied = Vec::new();
+                    for x in module_data.rdeps.lock().values() {
+                        loop {
+                            let reader = x.state.read();
+                            if reader.epochs.computed == self.now || reader.dirty.deps {
+                                // Either doesn't need setting, or already set
+                                break;
+                            }
+                            if let Some(exclusive) = reader.exclusive(Step::first()) {
+                                if exclusive.epochs.computed == self.now || exclusive.dirty.deps {
+                                    break;
+                                }
+                                dirtied.push(x.dupe());
+                                let mut writer = exclusive.write();
+                                writer.dirty.deps = true;
+                                break;
+                            }
+                            // continue around the loop - failed to get the lock, but we really want it
+                        }
+                    }
+                    self.dirty.lock().extend(dirtied);
+                }
                 if let Some(load) = load_result
                     && let Some(subscriber) = &self.subscriber
                 {
@@ -340,24 +370,29 @@ impl State {
         }
     }
 
-    fn get_module(&self, handle: &Handle) -> Arc<ModuleData> {
+    fn get_module(&self, handle: &Handle) -> ArcId<ModuleData> {
+        self.get_module_ex(handle).0
+    }
+
+    /// Return the module, plus true if the module was newly created.
+    fn get_module_ex(&self, handle: &Handle) -> (ArcId<ModuleData>, bool) {
         let mut created = false;
         let res = self
             .modules
             .ensure(handle, || {
                 created = true;
-                Arc::new(ModuleData::new(handle.dupe(), self.now))
+                ArcId::new(ModuleData::new(handle.dupe(), self.now))
             })
             .dupe();
         if created && let Some(subscriber) = &self.subscriber {
             subscriber.start_work(handle.dupe());
         }
-        res
+        (res, created)
     }
 
     fn add_error(
         &self,
-        module_data: &Arc<ModuleData>,
+        module_data: &ArcId<ModuleData>,
         range: TextRange,
         msg: String,
         kind: ErrorKind,
@@ -366,7 +401,7 @@ impl State {
         load.errors.add(range, msg, kind, None);
     }
 
-    fn lookup<'a>(&'a self, module_data: Arc<ModuleData>) -> StateHandle<'a> {
+    fn lookup<'a>(&'a self, module_data: ArcId<ModuleData>) -> StateHandle<'a> {
         StateHandle {
             state: self,
             module_data,
@@ -409,7 +444,7 @@ impl State {
         }
     }
 
-    fn lookup_export(&self, module_data: &Arc<ModuleData>) -> Exports {
+    fn lookup_export(&self, module_data: &ArcId<ModuleData>) -> Exports {
         self.demand(module_data, Step::Exports);
         let lock = module_data.state.read();
         lock.steps.exports.dupe().unwrap()
@@ -417,7 +452,7 @@ impl State {
 
     fn lookup_answer<'b, K: Solve<StateHandle<'b>> + Keyed<EXPORTED = true>>(
         &'b self,
-        module_data: Arc<ModuleData>,
+        module_data: ArcId<ModuleData>,
         key: &K,
     ) -> Arc<<K as Keyed>::Answer>
     where
@@ -428,7 +463,7 @@ impl State {
         {
             // if we happen to have solutions available, use them instead
             if let Some(solutions) = &module_data.state.read().steps.solutions {
-                return solutions.get(key).unwrap().dupe();
+                return solutions.1.get(key).unwrap().dupe();
             }
         }
 
@@ -436,7 +471,7 @@ impl State {
         let (load, answers) = {
             let steps = module_data.state.read();
             if let Some(solutions) = &steps.steps.solutions {
-                return solutions.get(key).unwrap().dupe();
+                return solutions.1.get(key).unwrap().dupe();
             }
             (
                 steps.steps.load.dupe().unwrap(),
@@ -581,9 +616,15 @@ impl State {
         self.compute_stdlib(configs);
 
         {
+            let dirty = mem::take(&mut *self.dirty.lock());
             let mut lock = self.todo.lock();
+            for x in dirty {
+                lock.push_fifo(Step::first(), x);
+            }
             for h in handles {
-                lock.push_fifo(Step::first(), self.get_module(h));
+                if let (m, true) = self.get_module_ex(h) {
+                    lock.push_fifo(Step::first(), m);
+                }
             }
         }
 
@@ -607,24 +648,24 @@ impl State {
         }
     }
 
-    fn invalidate_rdeps(&mut self, changed: &[Handle]) {
+    fn invalidate_rdeps(&mut self, changed: &[ArcId<ModuleData>]) {
         // We need to invalidate all modules that depend on anything in changed, including transitively.
         fn f(
-            dirty_handles: &mut SmallMap<Handle, bool>,
-            stack: &mut HashSet<Handle>,
-            x: &ModuleData,
+            dirty_handles: &mut SmallMap<ArcId<ModuleData>, bool>,
+            stack: &mut HashSet<ArcId<ModuleData>>,
+            x: &ArcId<ModuleData>,
         ) -> bool {
-            if let Some(res) = dirty_handles.get(&x.handle) {
+            if let Some(res) = dirty_handles.get(x) {
                 *res
-            } else if stack.contains(&x.handle) {
+            } else if stack.contains(x) {
                 // Recursive hypothesis - do not write to dirty
                 false
             } else {
-                stack.insert(x.handle.dupe());
+                stack.insert(x.dupe());
                 let reader = x.deps.read();
                 let res = reader.values().any(|y| f(dirty_handles, stack, y));
-                stack.remove(&x.handle);
-                dirty_handles.insert(x.handle.dupe(), res);
+                stack.remove(x);
+                dirty_handles.insert(x.dupe(), res);
                 res
             }
         }
@@ -638,16 +679,11 @@ impl State {
             f(&mut dirty_handles, &mut stack, x);
         }
 
+        let mut dirty_set = self.dirty.lock();
         for (x, dirty) in dirty_handles {
             if dirty {
-                self.modules
-                    .get(&x)
-                    .unwrap()
-                    .state
-                    .write(Step::Load)
-                    .unwrap()
-                    .dirty
-                    .deps = true;
+                x.state.write(Step::Load).unwrap().dirty.deps = true;
+                dirty_set.insert(x);
             }
         }
     }
@@ -739,13 +775,8 @@ impl State {
 
     #[allow(dead_code)]
     pub fn get_solutions(&self, handle: &Handle) -> Option<Arc<Solutions>> {
-        self.modules
-            .get(handle)?
-            .state
-            .read()
-            .steps
-            .solutions
-            .dupe()
+        let reader = self.modules.get(handle)?.state.read();
+        Some(reader.steps.solutions.as_ref()?.1.dupe())
     }
 
     pub fn ad_hoc_solve<R: Sized, F: FnOnce(AnswersSolver<StateHandle>) -> R>(
@@ -784,7 +815,7 @@ impl State {
                 steps.steps.solutions.dupe().unwrap(),
             )
         });
-        DebugInfo::new(&owned.map(|x| (&x.0.module_info, &x.0.errors, &x.1.0, &*x.2)))
+        DebugInfo::new(&owned.map(|x| (&x.0.module_info, &x.0.errors, &x.1.0, &*x.2.1)))
     }
 
     pub fn check_against_expectations(&self) -> anyhow::Result<()> {
@@ -804,9 +835,11 @@ impl State {
         if let Some(cache) = self.loaders.get_mut(loader) {
             *cache = Arc::new(LoaderFindCache::new(loader.dupe()));
         }
+        let mut dirty_set = self.dirty.lock();
         for (handle, module_data) in self.modules.iter_unordered() {
             if handle.loader() == loader {
                 module_data.state.write(Step::Load).unwrap().dirty.find = true;
+                dirty_set.insert(module_data.dupe());
             }
         }
     }
@@ -818,9 +851,11 @@ impl State {
             .iter()
             .map(|x| ModulePath::memory(x.clone()))
             .collect::<SmallSet<_>>();
+        let mut dirty_set = self.dirty.lock();
         for (handle, module_data) in self.modules.iter_unordered() {
             if handle.loader() == &loader && files.contains(handle.path()) {
                 module_data.state.write(Step::Load).unwrap().dirty.load = true;
+                dirty_set.insert(module_data.dupe());
             }
         }
     }
@@ -836,9 +871,11 @@ impl State {
             .iter()
             .map(|x| ModulePath::filesystem(x.clone()))
             .collect::<SmallSet<_>>();
+        let mut dirty_set = self.dirty.lock();
         for (handle, module_data) in self.modules.iter_unordered() {
             if files.contains(handle.path()) {
                 module_data.state.write(Step::Load).unwrap().dirty.load = true;
+                dirty_set.insert(module_data.dupe());
             }
         }
     }
@@ -862,18 +899,28 @@ impl State {
 
 pub struct StateHandle<'a> {
     state: &'a State,
-    module_data: Arc<ModuleData>,
+    module_data: ArcId<ModuleData>,
 }
 
 impl<'a> StateHandle<'a> {
-    fn get_module(&self, module: ModuleName) -> Result<Arc<ModuleData>, FindError> {
+    fn get_module(&self, module: ModuleName) -> Result<ArcId<ModuleData>, FindError> {
         if let Some(res) = self.module_data.deps.read().get(&module) {
             return Ok(res.dupe());
         }
 
         let handle = self.state.import_handle(&self.module_data.handle, module)?;
         let res = self.state.get_module(&handle);
-        self.module_data.deps.write().insert(module, res.dupe());
+        if self
+            .module_data
+            .deps
+            .write()
+            .insert(module, res.dupe())
+            .is_none()
+        {
+            res.rdeps
+                .lock()
+                .insert(self.module_data.handle.dupe(), self.module_data.dupe());
+        }
         Ok(res)
     }
 }

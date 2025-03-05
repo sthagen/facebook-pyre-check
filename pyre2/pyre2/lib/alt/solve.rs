@@ -185,7 +185,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     fn expr_qualifier(&self, x: &Expr, errors: &ErrorCollector) -> Option<Qualifier> {
         let ty = match x {
-            Expr::Name(_) | Expr::Attribute(_) => Some(self.expr(x, None, errors)),
+            Expr::Name(_) | Expr::Attribute(_) => Some(self.expr_infer(x, errors)),
             _ => None,
         };
         if let Some(Type::Type(box Type::SpecialForm(special))) = ty {
@@ -285,6 +285,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             errors,
                             range,
                             ErrorKind::NotIterable,
+                            None,
                             format!(
                                 "Type `{}` is not iterable",
                                 iterable.clone().deterministic_printing()
@@ -303,7 +304,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         allow_none: bool,
         errors: &ErrorCollector,
     ) {
-        let actual_type = self.expr(x, None, errors);
+        let actual_type = self.expr_infer(x, errors);
         if allow_none && actual_type.is_none() {
             return;
         }
@@ -319,6 +320,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             self.error(errors,
                  range,
                  ErrorKind::InvalidInheritance,
+                 None,
                  format!(
                      "Expression `{}` has type `{actual_type}` which does not derive from BaseException",
                      self.module_info().display(x)
@@ -387,6 +389,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 errors,
                 range,
                 ErrorKind::TypeAliasError,
+                None,
                 format!("Expected `{name}` to be a type alias, got {ty}"),
             );
             return Type::any_error();
@@ -436,6 +439,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     range,
                     ErrorKind::AsyncError,
+                    None,
                     format!("Expected `{}` to be async", dunder::AENTER),
                 ),
             },
@@ -480,6 +484,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     range,
                     ErrorKind::AsyncError,
+                    None,
                     format!("Expected `{}` to be async", dunder::AEXIT),
                 ),
             },
@@ -501,9 +506,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             range,
             errors,
             &TypeCheckContext {
-                kind: TypeCheckKind::FunctionReturn(
+                kind: TypeCheckKind::MagicMethodReturn(
+                    context_manager_type.clone(),
                     kind.as_exit_dunder(),
-                    Some(context_manager_type.clone()),
                 ),
                 context: Some(ErrorContext::BadContextManager(context_manager_type)),
             },
@@ -569,6 +574,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     range,
                     ErrorKind::InvalidTypeVar,
+                    None,
                     "A type parameter without a default cannot follow one with a default"
                         .to_owned(),
                 );
@@ -630,6 +636,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                         errors,
                                         *range,
                                         ErrorKind::BadUnpacking,
+                                        None,
                                         format!(
                                             "Cannot unpack {} (of size {}) into {}",
                                             iterable_ty,
@@ -662,6 +669,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         self.bindings().idx_to_key(*k1).range(),
                         ErrorKind::AnnotationMismatch,
+                        None,
                         format!(
                             "Inconsistent type annotations for {}: {}, {}",
                             name,
@@ -672,7 +680,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             BindingExpect::CheckAssignTypeToAttribute(box (attr, got)) => {
-                let base = self.expr(&attr.value, None, errors);
+                let base = self.expr_infer(&attr.value, errors);
                 let got = self.solve_binding(got, errors);
                 self.check_attr_set_with_type(
                     base,
@@ -684,7 +692,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 );
             }
             BindingExpect::CheckAssignExprToAttribute(box (attr, value)) => {
-                let base = self.expr(&attr.value, None, errors);
+                let base = self.expr_infer(&attr.value, errors);
                 self.check_attr_set_with_expr(
                     base,
                     &attr.attr.id,
@@ -705,14 +713,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Arc<NoneIfRecursive<Class>> {
         let cls = match cls {
             BindingClass::ClassDef(x) => self.class_definition(
+                x.index,
                 &x.def,
                 x.fields.clone(),
                 &x.bases,
                 &x.legacy_tparams,
                 errors,
             ),
-            BindingClass::FunctionalClassDef(x, fields) => {
-                self.functional_class_definition(x, fields)
+            BindingClass::FunctionalClassDef(index, x, fields) => {
+                self.functional_class_definition(*index, x, fields)
             }
         };
         Arc::new(NoneIfRecursive(Some(cls)))
@@ -782,7 +791,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         match binding {
             Binding::Expr(ann, e) => {
                 let ty = ann.map(|k| self.get_idx(k));
-                self.expr(e, ty.as_ref().and_then(|x| x.ty.as_ref()), errors)
+                let tcc = TypeCheckContext::unknown();
+                self.expr(
+                    e,
+                    ty.as_ref().and_then(|x| x.ty.as_ref().map(|t| (t, &tcc))),
+                    errors,
+                )
             }
             Binding::TypeVar(ann, name, x) => {
                 let ty = Type::type_form(self.typevar_from_call(name.clone(), x, errors).to_type());
@@ -832,6 +846,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 *range,
                                 ErrorKind::BadReturn,
+                                None,
                                 "Async generator function should return `AsyncGenerator`"
                                     .to_owned(),
                             );
@@ -850,6 +865,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 *range,
                                 ErrorKind::BadReturn,
+                                None,
                                 "Generator function should return `Generator`".to_owned(),
                             );
                         }
@@ -859,7 +875,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             &implicit_return,
                             *range,
                             errors,
-                            &TypeCheckContext::unknown(),
+                            &TypeCheckContext::of_kind(TypeCheckKind::ImplicitFunctionReturn(
+                                !x.returns.is_empty(),
+                            )),
                         );
                     }
                     ty
@@ -913,23 +931,27 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
                 if let Some(expr) = &x.expr {
                     if x.is_async && x.is_generator {
-                        self.expr(expr, None, errors);
+                        self.expr_infer(expr, errors);
                         self.error(
                             errors,
                             expr.range(),
                             ErrorKind::BadReturn,
+                            None,
                             "Return statement with value is not allowed in async generator"
                                 .to_owned(),
                         )
                     } else if x.is_generator {
                         let hint =
                             hint.and_then(|ty| self.decompose_generator(ty).map(|(_, _, r)| r));
-                        self.expr(expr, hint.as_ref(), errors)
+                        let tcc = TypeCheckContext::unknown();
+                        self.expr(expr, hint.as_ref().map(|t| (t, &tcc)), errors)
                     } else if matches!(hint, Some(Type::TypeGuard(_))) {
                         let hint = Some(Type::ClassType(self.stdlib.bool()));
-                        self.expr(expr, hint.as_ref(), errors)
+                        let tcc = TypeCheckContext::of_kind(TypeCheckKind::TypeGuardReturn);
+                        self.expr(expr, hint.as_ref().map(|t| (t, &tcc)), errors)
                     } else {
-                        self.expr(expr, hint, errors)
+                        let tcc = TypeCheckContext::of_kind(TypeCheckKind::ExplicitFunctionReturn);
+                        self.expr(expr, hint.map(|t| (t, &tcc)), errors)
                     }
                 } else {
                     Type::None
@@ -988,6 +1010,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             errors,
                             range,
                             ErrorKind::InvalidInheritance,
+                            None,
                             "Exception handler annotation in `except*` clause may not extend `BaseExceptionGroup`".to_owned());
                     }
                     exception
@@ -997,10 +1020,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     Expr::Tuple(tup) => tup
                         .elts
                         .iter()
-                        .map(|e| check_exception_type(self.expr(e, None, errors), e.range()))
+                        .map(|e| check_exception_type(self.expr_infer(e, errors), e.range()))
                         .collect(),
                     _ => {
-                        let exception_types = self.expr(ann, None, errors);
+                        let exception_types = self.expr_infer(ann, errors);
                         match exception_types {
                             Type::Tuple(Tuple::Concrete(ts)) => ts
                                 .into_iter()
@@ -1022,7 +1045,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::AugAssign(x) => {
-                let base = self.expr(&x.target, None, errors);
+                let base = self.expr_infer(&x.target, errors);
                 self.call_method_or_error(
                     &base,
                     &inplace_dunder(x.op),
@@ -1036,8 +1059,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let ty = ann.map(|k| self.get_idx(k));
                 let hint =
                     ty.and_then(|x| x.ty.clone().map(|ty| self.stdlib.iterable(ty).to_type()));
-                let iterables =
-                    self.iterate(&self.expr(e, hint.as_ref(), errors), e.range(), errors);
+                let tcc = TypeCheckContext::unknown();
+                let iterables = self.iterate(
+                    &self.expr(e, hint.as_ref().map(|t| (t, &tcc)), errors),
+                    e.range(),
+                    errors,
+                );
                 let mut values = Vec::new();
                 for iterable in iterables {
                     match iterable {
@@ -1048,7 +1075,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.unions(values)
             }
             Binding::ContextValue(ann, e, kind) => {
-                let context_manager = self.expr(e, None, errors);
+                let context_manager = self.expr_infer(e, errors);
                 let context_value = self.context_value(context_manager, *kind, e.range(), errors);
                 let ty = ann.map(|k| self.get_idx(k));
                 match ty.as_ref().and_then(|x| x.ty.as_ref()) {
@@ -1063,8 +1090,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::SubscriptValue(box b, x) => {
-                let base = self.expr(&x.value, None, errors);
-                let slice_ty = self.expr(&x.slice, None, errors);
+                let base = self.expr_infer(&x.value, errors);
+                let slice_ty = self.expr_infer(&x.slice, errors);
                 let value_ty = self.solve_binding_inner(b, errors);
                 match (&base, &slice_ty) {
                     (Type::TypedDict(typed_dict), Type::Literal(Lit::String(field_name))) => {
@@ -1075,6 +1102,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     errors,
                                     x.slice.range(),
                                     ErrorKind::ReadOnly,
+                                    None,
                                     format!(
                                         "Key `{}` in TypedDict `{}` is read-only",
                                         field_name,
@@ -1090,6 +1118,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     errors,
                                     x.range(),
                                     ErrorKind::BadAssignment,
+                                    None,
                                     format!("Expected {}, got {}", field.ty, value_ty),
                                 )
                             } else {
@@ -1100,6 +1129,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 x.slice.range(),
                                 ErrorKind::TypedDictKeyError,
+                                None,
                                 format!(
                                     "TypedDict `{}` does not have key `{}`",
                                     typed_dict.name(),
@@ -1191,6 +1221,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 first.id_range,
                                 ErrorKind::InvalidOverload,
+                                None,
                                 "Overloaded function must have an implementation".to_owned(),
                             );
                         }
@@ -1199,6 +1230,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 first.id_range,
                                 ErrorKind::InvalidOverload,
+                                None,
                                 "Overloaded function needs at least two signatures".to_owned(),
                             );
                             acc.split_off_first().0
@@ -1223,6 +1255,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 first.id_range,
                                 ErrorKind::InvalidOverload,
+                                None,
                                 "Overloaded function needs at least two signatures".to_owned(),
                             );
                             defs.split_off_first().0
@@ -1299,6 +1332,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 *r,
                                 ErrorKind::InvalidTypeVar,
+                                None,
                                 format!(
                                     "Type parameter {} is not included in the type parameter list",
                                     self.module_info()
@@ -1313,7 +1347,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Binding::NameAssign(name, annot_key, expr) => {
                 let annot = annot_key.map(|k| self.get_idx(k));
-                let ty = self.expr(expr, annot.as_ref().and_then(|x| x.ty.as_ref()), errors);
+                let tcc = TypeCheckContext::unknown();
+                let ty = self.expr(
+                    expr,
+                    annot
+                        .as_ref()
+                        .and_then(|x| x.ty.as_ref().map(|t| (t, &tcc))),
+                    errors,
+                );
                 let expr_range = expr.range();
                 match (annot, &ty) {
                     (Some(annot), _) if annot.qualifiers.contains(&Qualifier::TypeAlias) => self
@@ -1338,7 +1379,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::ScopedTypeAlias(name, params, expr) => {
-                let ty = self.expr(expr, None, errors);
+                let ty = self.expr_infer(expr, errors);
                 let expr_range = expr.range();
                 let ta = self.as_type_alias(name, TypeAliasStyle::Scoped, ty, expr_range, errors);
                 match ta {
@@ -1346,6 +1387,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         expr.range(),
                         ErrorKind::InvalidTypeVar,
+                        None,
                         format!("Type parameters used in `{name}` but not declared"),
                     ),
                     Type::TypeAlias(_) => {
@@ -1362,7 +1404,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::PatternMatchMapping(mapping_key, binding_key) => {
                 // TODO: check that value is a mapping
                 // TODO: check against duplicate keys (optional)
-                let key_ty = self.expr(mapping_key, None, errors);
+                let key_ty = self.expr_infer(mapping_key, errors);
                 let binding_ty = self.get_idx(*binding_key).arc_clone();
                 let arg = CallArg::Type(&key_ty, mapping_key.range());
                 self.call_method_or_error(
@@ -1389,6 +1431,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     errors,
                                     *range,
                                     ErrorKind::MatchError,
+                                    None,
                                     format!(
                                         "Expected literal string in `__match_args__`, got {}",
                                         ts[*idx]
@@ -1400,6 +1443,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 *range,
                                 ErrorKind::MatchError,
+                                None,
                                 format!("Index {idx} out of range for `__match_args__`"),
                             )
                         }
@@ -1409,6 +1453,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         *range,
                         ErrorKind::MatchError,
+                        None,
                         format!(
                             "Expected concrete tuple for __match_args__, got {}",
                             match_args
@@ -1456,6 +1501,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                                     errors,
                                                     *range,
                                                     ErrorKind::InvalidSuperCall,
+                                                    None,
                                                     format!(
                                                         "Illegal `super({}, {})` call: `{}` is not an instance or subclass of `{}`",
                                                         cls_type, obj_cls, obj_cls, cls_type
@@ -1469,7 +1515,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     }
                                     t => {
                                         // TODO: handle the case when the second argument is a class
-                                        self.error(errors, *range, ErrorKind::InvalidArgument, format!("Expected second argument to `super` to be a class instance, got `{}`", t.clone().deterministic_printing()))
+                                        self.error(errors, *range, ErrorKind::InvalidArgument, None, format!("Expected second argument to `super` to be a class instance, got `{}`", t.clone().deterministic_printing()))
                                     }
                                 }
                             }
@@ -1477,6 +1523,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 *range,
                                 ErrorKind::InvalidArgument,
+                                None,
                                 format!(
                                     "Expected first argument to `super` to be a class object, got `{}`",
                                     t.clone().deterministic_printing()
@@ -1511,7 +1558,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 if x.kind != FunctionKind::Stub
                     || !matches!(default.as_ref(), Expr::EllipsisLiteral(_))
                 {
-                    self.expr(default, Some(ty), errors);
+                    self.expr(default, Some((ty, &TypeCheckContext::unknown())), errors);
                 }
             }
             required
@@ -1587,6 +1634,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 errors,
                 param.range,
                 ErrorKind::BadFunctionDefinition,
+                None,
                 format!(
                     "Keyword-only parameter `{}` may not appear after ParamSpec args parameter",
                     param.parameter.name
@@ -1639,6 +1687,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     x.def.range,
                     ErrorKind::InvalidParamSpec,
+                    None,
                     "ParamSpec *args and **kwargs must be used together".to_owned(),
                 );
             } else {
@@ -1646,6 +1695,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     x.def.range,
                     ErrorKind::InvalidParamSpec,
+                    None,
                     "*args and **kwargs must come from the same ParamSpec".to_owned(),
                 );
             }
@@ -1738,7 +1788,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 });
                 if let Some((yield_hint, send_ty)) = hint {
                     let yield_ty = if let Some(expr) = x.value.as_ref() {
-                        self.expr(expr, Some(&yield_hint), errors)
+                        self.expr(
+                            expr,
+                            Some((&yield_hint, &TypeCheckContext::unknown())),
+                            errors,
+                        )
                     } else {
                         self.check_type(
                             &yield_hint,
@@ -1751,7 +1805,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     Arc::new(YieldResult { yield_ty, send_ty })
                 } else {
                     let yield_ty = if let Some(expr) = x.value.as_ref() {
-                        self.expr(expr, None, errors)
+                        self.expr_infer(expr, errors)
                     } else {
                         Type::None
                     };
@@ -1761,12 +1815,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             BindingYield::Invalid(x) => {
                 if let Some(expr) = x.value.as_ref() {
-                    self.expr(expr, None, errors);
+                    self.expr_infer(expr, errors);
                 }
                 self.error(
                     errors,
                     x.range,
                     ErrorKind::InvalidYield,
+                    None,
                     "Invalid `yield` outside of a function".to_owned(),
                 );
                 Arc::new(YieldResult::any_error())
@@ -1785,7 +1840,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let annot = annot.map(|k| self.get_idx(k));
                 let want = annot.as_ref().and_then(|x| x.ty.as_ref());
 
-                let mut ty = self.expr(&x.value, None, errors);
+                let mut ty = self.expr_infer(&x.value, errors);
                 let res = if let Some(generator) = self.unwrap_generator(&ty) {
                     YieldFromResult::from_generator(generator)
                 } else if let Some(yield_ty) = self.unwrap_iterable(&ty) {
@@ -1804,6 +1859,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         x.range,
                         ErrorKind::InvalidYield,
+                        None,
                         format!("yield from value must be iterable, got `{ty}`"),
                     );
                     YieldFromResult::any_error()
@@ -1814,11 +1870,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Arc::new(res)
             }
             BindingYieldFrom::Invalid(x) => {
-                self.expr(&x.value, None, errors);
+                self.expr_infer(&x.value, errors);
                 self.error(
                     errors,
                     x.range,
                     ErrorKind::InvalidYield,
+                    None,
                     "Invalid `yield from` outside of a function".to_owned(),
                 );
                 Arc::new(YieldFromResult::any_error())
@@ -1837,6 +1894,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 errors,
                 range,
                 ErrorKind::NotAType,
+                None,
                 format!(
                     "Expected a type form, got instance of `{}`",
                     ty.deterministic_printing()
@@ -1885,7 +1943,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .collect();
                 Type::ParamSpecValue(ParamList::new(elts))
             }
-            _ => self.untype(self.expr(x, None, errors), x.range(), errors),
+            _ => self.untype(self.expr_infer(x, errors), x.range(), errors),
         }
     }
 }

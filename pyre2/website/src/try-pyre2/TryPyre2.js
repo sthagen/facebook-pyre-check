@@ -13,7 +13,6 @@ import clsx from 'clsx';
 import Editor from '@monaco-editor/react';
 import * as LZString from 'lz-string';
 import styles from './TryPyre2.module.css';
-import TryPyre2ConfigEditor from './TryPyre2ConfigEditor';
 import TryPyre2Results from './TryPyre2Results';
 import {
   monaco,
@@ -21,10 +20,8 @@ import {
   setGetDefFunction,
   setHoverFunctionForMonaco,
 } from './configured-monaco';
-import FlowJsServices from './flow-services';
-import flowLanguageConfiguration from './flow-configuration.json';
+import BrowserOnly from '@docusaurus/BrowserOnly';
 
-const TRY_FLOW_LAST_CONTENT_STORAGE_KEY = 'TryPyre2LastContent';
 const DEFAULT_PYTHON_PROGRAM = `
 # Pyre is being run in gradual typing mode: https://pyre-check.org/docs/types-in-python/#gradual-typing
 # Use the \`# pyre-strict\` header to run in strict mode, which requires annotations.
@@ -53,10 +50,8 @@ const pyre2WasmInitializedPromise = pyre2WasmUninitializedPromise
   .catch(e => console.log(e));
 
 export default component TryPyre2(
-  defaultFlowVersion: string,
-  flowVersions: $ReadOnlyArray<string>,
-  editorHeight: number,
-  codeSample: string,
+  editorHeight: number = 600,
+  codeSample: string = DEFAULT_PYTHON_PROGRAM,
 ) {
   const {withBaseUrl} = useBaseUrlUtils();
   const editorRef = useRef(null);
@@ -108,14 +103,14 @@ export default component TryPyre2(
     editorRef.current = editor;
   }
 
-  const height = editorHeight || '600px';
+  const height = editorHeight;
 
   return (
     <div className={styles.tryEditor}>
       <div className={styles.code}>
         <div className={styles.editorContainer}>
           <Editor
-            defaultValue={codeSample || DEFAULT_PYTHON_PROGRAM}
+            defaultValue={codeSample}
             defaultLanguage="python"
             theme="vs-light"
             height={height}

@@ -18,6 +18,7 @@ use crate::alt::callable::CallArg;
 use crate::alt::types::class_metadata::EnumMetadata;
 use crate::binding::binding::KeyExport;
 use crate::error::collector::ErrorCollector;
+use crate::error::context::TypeCheckContext;
 use crate::error::kind::ErrorKind;
 use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
@@ -291,7 +292,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             todo_ctx,
         ) {
             Ok(ty) => ty,
-            Err(msg) => self.error(errors, range, ErrorKind::MissingAttribute, msg),
+            Err(msg) => self.error(errors, range, ErrorKind::MissingAttribute, None, msg),
         }
     }
 
@@ -313,6 +314,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     range,
                     ErrorKind::MissingAttribute,
+                    None,
                     e.to_error_msg(attr_name),
                 )),
             },
@@ -320,6 +322,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 errors,
                 range,
                 ErrorKind::InternalError,
+                None,
                 e.to_error_msg(attr_name, todo_ctx),
             )),
             _ => None,
@@ -361,12 +364,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         range,
                         ErrorKind::NoAccess,
+                        None,
                         e.to_error_msg(attr_name),
                     );
                 }
                 AttributeInner::ReadWrite(want) => match got {
                     Either::Left(got) => {
-                        self.expr(got, Some(&want), errors);
+                        self.expr(got, Some((&want, &TypeCheckContext::unknown())), errors);
                     }
                     Either::Right(got) => {
                         if !self.solver().is_subset_eq(got, &want, self.type_order()) {
@@ -374,6 +378,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 range,
                                 ErrorKind::BadAssignment,
+                                None,
                                 format!(
                                     "Could not assign type `{}` to attribute `{}` with type `{}`",
                                     got.clone().deterministic_printing(),
@@ -389,6 +394,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         range,
                         ErrorKind::ReadOnly,
+                        None,
                         format!("Could not assign to read-only field `{attr_name}`"),
                     );
                 }
@@ -398,6 +404,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         range,
                         ErrorKind::ReadOnly,
+                        None,
                         e.to_error_msg(attr_name),
                     );
                 }
@@ -425,6 +432,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 range,
                                 ErrorKind::Unknown,
+                                None,
                                 e.to_error_msg(attr_name),
                             );
                         }
@@ -434,6 +442,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 range,
                                 ErrorKind::Unknown,
+                                None,
                                 e.to_error_msg(attr_name),
                             );
                         }
@@ -445,6 +454,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     range,
                     ErrorKind::InternalError,
+                    None,
                     e.to_error_msg(attr_name, todo_ctx),
                 );
             }
@@ -453,6 +463,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     errors,
                     range,
                     ErrorKind::MissingAttribute,
+                    None,
                     e.to_error_msg(attr_name),
                 );
             }
@@ -890,7 +901,7 @@ impl<'a, Ans: LookupAnswer + LookupExport> AnswersSolver<'a, Ans> {
                 if seen.insert(fld.clone()) {
                     res.push(AttrInfo {
                         name: fld.clone(),
-                        module: Some(c.module_info().dupe()),
+                        module: Some(c.module_info()),
                         range: c.field_decl_range(fld),
                     });
                 }

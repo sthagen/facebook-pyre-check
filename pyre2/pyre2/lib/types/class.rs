@@ -10,6 +10,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::hash::Hasher;
 
 use dupe::Dupe;
 use parse_display::Display;
@@ -18,9 +19,9 @@ use ruff_python_ast::Identifier;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 
+use crate::ast::AtomicTextRange;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
-use crate::module::short_identifier::ShortIdentifier;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
 use crate::types::qname::QName;
@@ -37,14 +38,50 @@ pub struct Class(ArcId<ClassInner>);
 
 /// Simple properties of class fields that can be attached to the class definition. Note that this
 /// does not include the type of a field, which needs to be computed lazily to avoid a recursive loop.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ClassFieldProperties {
-    pub is_annotated: bool,
-    pub range: TextRange,
+    is_annotated: bool,
+    range: AtomicTextRange,
 }
 
-#[derive(Clone)]
+impl Clone for ClassFieldProperties {
+    fn clone(&self) -> Self {
+        Self {
+            is_annotated: self.is_annotated,
+            range: AtomicTextRange::new(self.range.get()),
+        }
+    }
+}
+
+/// The index of a class within the file, used as a reference to data associated with the class.
+#[derive(
+    Debug, Clone, Dupe, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display
+)]
+pub struct ClassIndex(pub u32);
+
+impl ClassFieldProperties {
+    pub fn new(is_annotated: bool, range: TextRange) -> Self {
+        Self {
+            is_annotated,
+            range: AtomicTextRange::new(range),
+        }
+    }
+
+    fn immutable_hash<H: Hasher>(&self, state: &mut H) {
+        self.is_annotated.hash(state);
+    }
+
+    fn immutable_eq(&self, other: &Self) -> bool {
+        self.is_annotated == other.is_annotated
+    }
+
+    fn mutate(&self, x: &ClassFieldProperties) {
+        self.range.set(x.range.get());
+    }
+}
+
 struct ClassInner {
+    index: ClassIndex,
     qname: QName,
     tparams: TParams,
     fields: SmallMap<Name, ClassFieldProperties>,
@@ -53,6 +90,7 @@ struct ClassInner {
 impl Debug for ClassInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClassInner")
+            .field("index", &self.index)
             .field("qname", &self.qname)
             .field("tparams", &self.tparams)
             // We don't print `fields` because it's way too long.
@@ -119,13 +157,15 @@ impl Display for ClassInner {
 //   which involves subtituting type arguments for the class type parameters as
 //   well as descriptor handling (including method binding).
 impl Class {
-    pub fn new(
+    pub fn new_identity(
+        index: ClassIndex,
         name: Identifier,
         module_info: ModuleInfo,
         tparams: TParams,
         fields: SmallMap<Name, ClassFieldProperties>,
     ) -> Self {
         Self(ArcId::new(ClassInner {
+            index,
             qname: QName::new(name, module_info),
             tparams,
             fields,
@@ -134,10 +174,6 @@ impl Class {
 
     pub fn contains(&self, name: &Name) -> bool {
         self.0.fields.contains_key(name)
-    }
-
-    pub fn short_identifier(&self) -> ShortIdentifier {
-        self.0.qname.short_identifier()
     }
 
     pub fn range(&self) -> TextRange {
@@ -170,11 +206,15 @@ impl Class {
         Param::Pos(Name::new("self"), self.self_type(), Required::Required)
     }
 
+    pub fn index(&self) -> ClassIndex {
+        self.0.index
+    }
+
     pub fn module_name(&self) -> ModuleName {
         self.0.qname.module_name()
     }
 
-    pub fn module_info(&self) -> &ModuleInfo {
+    pub fn module_info(&self) -> ModuleInfo {
         self.0.qname.module_info()
     }
 
@@ -190,11 +230,44 @@ impl Class {
     }
 
     pub fn field_decl_range(&self, name: &Name) -> Option<TextRange> {
-        Some(self.0.fields.get(name)?.range)
+        Some(self.0.fields.get(name)?.range.get())
     }
 
     pub fn has_qname(&self, module: &str, name: &str) -> bool {
         self.0.qname.module_name().as_str() == module && self.0.qname.id() == name
+    }
+
+    pub fn immutable_eq(&self, other: &Class) -> bool {
+        if !(self.0.index == other.0.index
+            && self.0.qname.immutable_eq(&other.0.qname)
+            && self.0.tparams == other.0.tparams)
+        {
+            return false;
+        }
+
+        for (x, y) in self.0.fields.iter().zip(other.0.fields.iter()) {
+            if !(x.0 == y.0 && x.1.immutable_eq(y.1)) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn immutable_hash<H: Hasher>(&self, state: &mut H) {
+        self.0.index.hash(state);
+        self.0.qname.immutable_hash(state);
+        self.0.tparams.hash(state);
+        for x in self.0.fields.iter() {
+            x.0.hash(state);
+            x.1.immutable_hash(state);
+        }
+    }
+
+    pub fn mutate(&self, x: &Class) {
+        self.0.qname.mutate(&x.0.qname);
+        for (a, b) in self.0.fields.values().zip(x.0.fields.values()) {
+            a.mutate(b);
+        }
     }
 }
 
