@@ -56,7 +56,7 @@ def plus(x: int, y: int) -> int:
     return x
 
 number = input("What is your favourite number?")
-print("It is", plus(number, 1))  # E: str <: int
+print("It is", plus(number, 1))  # E: Argument `str` is not assignable to parameter `x` with type `int`
 "#,
 );
 
@@ -64,7 +64,7 @@ testcase!(
     test_error_in_function,
     r#"
 def f(x: str) -> int:
-    return x  # E: Function declared to return `int`, actually returns `str`
+    return x  # E: Returned type `str` is not assignable to declared return type `int`
 "#,
 );
 
@@ -118,7 +118,7 @@ class C[T]: ...
 def append[T](x: C[T], y: T):
     pass
 v: C[int]
-append(v, "test")  # E: Literal['test'] <: int
+append(v, "test")  # E: Argument `Literal['test']` is not assignable to parameter `y` with type `int`
 "#,
 );
 
@@ -131,7 +131,7 @@ class C(Generic[T]): ...
 def append(x: C[T], y: T):
     pass
 v: C[int]
-append(v, "test")  # E: Literal['test'] <: int
+append(v, "test")  # E: Argument `Literal['test']` is not assignable to parameter `y` with type `int`
 "#,
 );
 
@@ -144,7 +144,7 @@ class C(typing.Generic[T]): ...
 def append(x: C[T], y: T):
     pass
 v: C[int]
-append(v, "test")  # E: Literal['test'] <: int
+append(v, "test")  # E: Argument `Literal['test']` is not assignable to parameter `y` with type `int`
 "#,
 );
 
@@ -190,7 +190,7 @@ testcase!(
     test_list_class_inner_generic,
     r#"
 x = [3]
-x.append("test")  # E: Literal['test'] <: int
+x.append("test")  # E: Argument `Literal['test']` is not assignable to parameter with type `int`
 "#,
 );
 
@@ -250,7 +250,7 @@ testcase!(
     test_unordered_defs,
     r#"
 def f() -> int:
-    return g()  # E: Function declared to return `int`, actually returns `str`
+    return g()  # E: Returned type `str` is not assignable to declared return type `int`
 def g() -> str:
     return "test"
 "#,
@@ -305,7 +305,7 @@ def f(x: int | str) -> None:
     return None
 f(1)
 f("test")
-f(None)  # E: None <: int | str
+f(None)  # E: Argument `None` is not assignable to parameter `x` with type `int | str`
 "#,
 );
 
@@ -353,11 +353,11 @@ testcase!(
     r#"
 x: int = 0
 class C:
-    x: str = x # E: EXPECTED Literal[0] <: str
-    y: int = x # E: EXPECTED str <: int
+    x: str = x # E: `Literal[0]` is not assignable to `str`
+    y: int = x # E: `str` is not assignable to `int`
     def m(self) -> str:
         # x refers to global x: int
-        return x # E: Function declared to return `str`, actually returns `Literal[0]`
+        return x # E: Returned type `Literal[0]` is not assignable to declared return type `str`
 "#,
 );
 
@@ -383,7 +383,7 @@ value: """
 
 value = 1
 value = "test"
-value = None  # E: None <: int | list[int] | str
+value = None  # E: `None` is not assignable to variable `value` with type `int | list[int] | str`
 "#,
 );
 
@@ -406,7 +406,7 @@ from typing import Final, assert_type, Literal
 x: Final[int] = 1
 y: Final = "test"
 z: Final[str]
-w: Final[int] = "bad"  # E: Literal['bad'] <: int
+w: Final[int] = "bad"  # E: `Literal['bad']` is not assignable to `int`
 
 assert_type(x, Literal[1])
 assert_type(y, Literal['test'])
@@ -513,19 +513,19 @@ testcase!(
 def f(x: str) -> str:
     return x
 
-x = f"abc{f(1)}def"  # E: EXPECTED Literal[1] <: str
+x = f"abc{f(1)}def"  # E: Argument `Literal[1]` is not assignable to parameter `x` with type `str`
 "#,
 );
 
 testcase!(
     test_fstring_literal,
     r#"
-from typing import assert_type, Literal
+from typing import assert_type, Literal, LiteralString
 x0 = f"abc"
 assert_type(x0, Literal["abc"])
 
 x1 = f"abc{x0}"
-assert_type(x1, str)
+assert_type(x1, LiteralString)
 
 x2 = f"abc" "def"
 assert_type(x2, Literal["abcdef"])
@@ -537,7 +537,7 @@ x4 = "abc" f"def"
 assert_type(x4, Literal["abcdef"])
 
 x5 = "abc" f"def{x0}g" "hij" f"klm"
-assert_type(x5, str)
+assert_type(x5, LiteralString)
 "#,
 );
 
@@ -659,7 +659,7 @@ testcase!(
     r#"
 from typing import assert_type
 x1: dict[str, int] = {"foo": 1, **{"bar": 2}}
-x2: dict[str, int] = {"foo": 1, **{"bar": "bar"}}  # E: EXPECTED dict[str, int | str] <: dict[str, int]
+x2: dict[str, int] = {"foo": 1, **{"bar": "bar"}}  # E: `dict[str, int | str]` is not assignable to `dict[str, int]`
 assert_type({"foo": 1, **{"bar": "bar"}}, dict[str, int | str])
 {"foo": 1, **1}  # E: Expected a mapping, got Literal[1]
 "#,
@@ -671,7 +671,7 @@ testcase!(
 from typing import Mapping, assert_type
 def test(m: Mapping[str, int]) -> None:
     x1: dict[str, int] = {**m}
-    x2: dict[int, int] = {**m} # E: EXPECTED dict[str, int] <: dict[int, int]
+    x2: dict[int, int] = {**m} # E: `dict[str, int]` is not assignable to `dict[int, int]`
     assert_type({"foo": 1, **m}, dict[str, int])
 "#,
 );
@@ -683,7 +683,7 @@ from typing import assert_type
 class Counter[T](dict[T, int]): ...
 def test(c: Counter[str]) -> None:
     x1: dict[str, int] = {**c}
-    x2: dict[int, int] = {**c}  # E: EXPECTED dict[str, int] <: dict[int, int]
+    x2: dict[int, int] = {**c}  # E: `dict[str, int]` is not assignable to `dict[int, int]`
     assert_type({"foo": 1, **c}, dict[str, int])
 "#,
 );
@@ -706,7 +706,7 @@ x: int = "1"  # type: ignore
 # type: ignore
 y: int = "2"
 
-z: int = "3"  # E: Literal['3'] <: int
+z: int = "3"  # E: `Literal['3']` is not assignable to `int`
 "#,
 );
 
@@ -714,6 +714,9 @@ testcase_with_bug!(
     "An ignore comment should attach to either the current line or next line, but not both",
     test_ignore_attachment,
     r#"
+# type: ignore
+w: int = "0"
+
 x: int = "1"  # type: ignore
 y: int = "2"  # TODO: this error should not be suppressed
 "#,
@@ -734,7 +737,7 @@ testcase_with_bug!(
     "TODO: implement reflective operators",
     test_complex,
     r#"
-z: complex =  3 + 4j # E: EXPECTED complex <: int
+z: complex =  3 + 4j # E: Argument `complex` is not assignable to parameter with type `int`
     "#,
 );
 
@@ -826,7 +829,7 @@ class A:
     def __getitem__(self, s: str) -> str:
         return s
 def f(x: A):
-    for _ in x:  # E: EXPECTED int <: str
+    for _ in x:  # E: Argument `int` is not assignable to parameter `s` with type `str`
         pass
     "#,
 );
@@ -865,7 +868,7 @@ class A:
     def __getitem__(self, i: int) -> int:
         return i
 def f(a: A):
-    return a["oops"]  # E: EXPECTED Literal['oops'] <: int
+    return a["oops"]  # E: Argument `Literal['oops']` is not assignable to parameter `i` with type `int`
     "#,
 );
 
@@ -950,7 +953,7 @@ def test(x: list[str]) -> None:
     y = ([], x)
     # Because we pin down the `[]` first, we end up with a type error.
     # If we had backtracking we wouldn't.
-    foo(y)  # E: EXPECTED tuple[list[int], list[str]] <: tuple[list[int], list[int]] | tuple[list[str], list[str]]
+    foo(y)  # E: Argument `tuple[list[int], list[str]]` is not assignable to parameter `x` with type `tuple[list[int], list[int]] | tuple[list[str], list[str]]`
 "#,
 );
 
@@ -958,7 +961,7 @@ testcase!(
     test_reassign_parameter,
     r#"
 def foo(x: int):
-    x = "test"  # E: Literal['test'] <: int
+    x = "test"  # E: `Literal['test']` is not assignable to variable `x` with type `int`
 "#,
 );
 
@@ -1070,7 +1073,7 @@ x: Literal["little", "big"] = "big"
 testcase!(
     test_compare_int_str_error,
     r#"
-0 < "oops"  # E: EXPECTED Literal['oops'] <: int
+0 < "oops"  # E: Argument `Literal['oops']` is not assignable to parameter with type `int`
     "#,
 );
 
@@ -1082,7 +1085,7 @@ class C:
         return True
 def f(c: C, x: int, y: str):
     x in c  # OK
-    y in c  # E: EXPECTED str <: int
+    y in c  # E: Argument `str` is not assignable to parameter `x` with type `int`
     "#,
 );
 
@@ -1108,7 +1111,7 @@ testcase!(
     test_invalid_return,
     r#"
 def f(x: str): ...
-return f(0) # E: Invalid `return` outside of a function # E: EXPECTED Literal[0] <: str
+return f(0) # E: Invalid `return` outside of a function # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
 "#,
 );
 
@@ -1161,6 +1164,17 @@ testcase!(
     r#"
 from typing import Literal as L
 x: L["foo"] = "foo"
+"#,
+);
+
+testcase!(
+    test_literal_string_infer,
+    r#"
+from typing import LiteralString, assert_type
+def f(x: LiteralString):
+    assert_type(["foo"], list[str])
+    assert_type([x], list[LiteralString])
+    xs: list[str] = [x]
 "#,
 );
 
@@ -1278,4 +1292,14 @@ cast(lambda x: x, 1)  # E: First argument to `typing.cast` must be a type
 # Passing a listcomp as a type is nonsense; it's okay if we don't handle it optimally as long as we don't crash.
 cast([x for x in []], 1)  # E: First argument to `typing.cast` must be a type  # E: Could not find name `x`
     "#,
+);
+
+testcase_with_bug!(
+    "Dict should be recognised as the dict type and error",
+    test_typing_alias,
+    r#"
+from typing import Dict, assert_type
+y: Dict[str, int] = {"test": "test"}
+assert_type(y, dict[str, int]) # E: assert_type(dict[str, str], dict[str, int]) failed
+"#,
 );

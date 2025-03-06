@@ -41,11 +41,11 @@ class Coord(TypedDict):
 c1: Coord = {"x": 1, "y": 2}
 c2: Coord = {"x": 1, "y": 2, "z": 3}
 c3: Coord = {"x": 1, "y": 2, "a": 4}  # E: Key `a` is not defined in TypedDict `Coord`
-c4: Coord = {"x": 1, "y": "foo"}  # E: TypedDict key `y` declared with type `int`, cannot assign `Literal['foo']`
+c4: Coord = {"x": 1, "y": "foo"}  # E: `Literal['foo']` is not assignable to TypedDict key `y` with type `int`
 c5: Coord = {"x": 1}  # E: Missing required key `y` for TypedDict `Coord`
 c6: Coord = {"x": 1, **{"y": 2, **{"z": 3}}}
 d: dict[str, int] = {}
-c7: Coord = {"x": 1, **d}  # E: Expected declared type `TypedDict[Coord]`, got `dict[str, int]`
+c7: Coord = {"x": 1, **d}  # E: `dict[str, int]` is not assignable to `TypedDict[Coord]`
 
 def foo(c: Coord) -> None:
     pass
@@ -115,7 +115,7 @@ class Coord[T](TypedDict):
     y: T
 def foo(c: Coord[int]):
     x: int = c["x"]
-    y: str = c["y"]  # E: EXPECTED int <: str
+    y: str = c["y"]  # E: `int` is not assignable to `str`
     "#,
 );
 
@@ -175,8 +175,8 @@ class Pair(TypedDict):
 
 def foo(a: Coord, b: Coord3D, c: Pair):
     coord: Coord = b
-    coord2: Coord3D = a  # E: EXPECTED TypedDict[Coord] <: TypedDict[Coord3D]
-    coord3: Coord = c  # E: TypedDict[Pair] <: TypedDict[Coord]
+    coord2: Coord3D = a  # E: `TypedDict[Coord]` is not assignable to `TypedDict[Coord3D]`
+    coord3: Coord = c  # E: `TypedDict[Pair]` is not assignable to `TypedDict[Coord]`
     coord4: Pair = a
     "#,
 );
@@ -193,8 +193,8 @@ class CoordNotRequired(TypedDict):
     y: NotRequired[int]
 
 def foo(a: Coord, b: CoordNotRequired):
-    coord: Coord = b  # E: EXPECTED TypedDict[CoordNotRequired] <: TypedDict[Coord]
-    coord2: CoordNotRequired = a  # E: EXPECTED TypedDict[Coord] <: TypedDict[CoordNotRequired]
+    coord: Coord = b  # E: `TypedDict[CoordNotRequired]` is not assignable to `TypedDict[Coord]`
+    coord2: CoordNotRequired = a  # E: `TypedDict[Coord]` is not assignable to `TypedDict[CoordNotRequired]`
     "#,
 );
 
@@ -255,11 +255,11 @@ def f6(x: int, y: int, **kwargs: str): ...
 
 x: Coord = {"x": 1, "y": 2}
 f1(**x)
-f2(**x)  # E: EXPECTED int <: str
+f2(**x)  # E: Argument `int` is not assignable to parameter `z` with type `str` in function `f2`
 f3(**x)  # E: Unexpected keyword argument `z`
 f4(**x)
 f5(**x)  # E: Expected key `z` to be required
-f6(**x)  # E: EXPECTED int <: str
+f6(**x)  # E: Argument `int` is not assignable to parameter `z` with type `str` in function `f6`
 f1(1, **x)  # E: Multiple values for argument `x`
     "#,
 );
@@ -304,7 +304,7 @@ def g(x: Coord, x2: Coord2, x3: Coord3, x4: Coord4, x5: Coord5):
 f(x=1, y=2)
 f(x=1, y=2, z=3)
 f(x=1, y=2, z=3, a=4)  # E: Unexpected keyword argument `a`
-f(x="", y=2)  # E: EXPECTED Literal[''] <: int
+f(x="", y=2)  # E: Argument `Literal['']` is not assignable to parameter `x` with type `int` in function `f`
     "#,
 );
 
@@ -317,7 +317,7 @@ class A(TypedDict):
 class B(A):
     y: str
 B(x=0, y='1')  # OK
-B(x=0, y=1)  # E: EXPECTED Literal[1] <: str
+B(x=0, y=1)  # E: Argument `Literal[1]` is not assignable to parameter `y` with type `str` in function `B.__init__`
     "#,
 );
 

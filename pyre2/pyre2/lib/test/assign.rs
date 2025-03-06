@@ -48,7 +48,7 @@ def f(x: int) -> None:
 testcase!(
     test_error_assign,
     r#"
-x: str = 1  # E: Literal[1] <: str
+x: str = 1  # E: `Literal[1]` is not assignable to `str`
 y = x
 "#,
 );
@@ -95,7 +95,7 @@ testcase!(
     test_assign_at_types,
     r#"
 a: int = 3
-a = "test"  # E: Literal['test'] <: int
+a = "test"  # E: `Literal['test']` is not assignable to variable `a` with type `int`
 "#,
 );
 
@@ -104,7 +104,7 @@ testcase!(
     r#"
 from typing import Optional
 x: Optional[int] = 42
-y: Optional[str] = 43  # E: Literal[43] <: str | None
+y: Optional[str] = 43  # E: `Literal[43]` is not assignable to `str | None`
     "#,
 );
 
@@ -116,7 +116,7 @@ from typing import assert_type
 from types import EllipsisType
 from foo import x
 assert_type(x, int)
-y: int = ...  # E: Ellipsis <: int
+y: int = ...  # E: `Ellipsis` is not assignable to `int`
 z: EllipsisType = ...
 "#,
 );
@@ -301,7 +301,7 @@ x: str = ""  # E: Inconsistent type annotations for x
 testcase!(
     test_hoist_ann,
     r#"
-x = 0 # E: Literal[0] <: str
+x = 0 # E: `Literal[0]` is not assignable to variable `x` with type `str`
 x: str = ""
     "#,
 );
@@ -314,8 +314,8 @@ x: int = 0
 lit0: Literal[0] = x
 x = 1
 lit1: Literal[1] = x
-x = "oops"  # E: Literal['oops'] <: int
-lit2: Literal["oops"] = x  # E: int <: Literal['oops']
+x = "oops"  # E: `Literal['oops']` is not assignable to variable `x` with type `int`
+lit2: Literal["oops"] = x  # E: `int` is not assignable to `Literal['oops']`
     "#,
 );
 
@@ -344,7 +344,7 @@ testcase!(
     r#"
 x: list[int] = []
 x += [1]
-x += ["foo"]  # E: EXPECTED list[str] <: Iterable[int]
+x += ["foo"]  # E: Argument `list[str]` is not assignable to parameter with type `Iterable[int]`
 "#,
 );
 
@@ -353,10 +353,10 @@ testcase!(
     r#"
 def foo(y: list[int]) -> None:
     y += [1]
-    y += ["foo"]  # E: EXPECTED list[str] <: Iterable[int]
+    y += ["foo"]  # E: Argument `list[str]` is not assignable to parameter with type `Iterable[int]`
     z: list[int] = []
     z += [1]
-    z += ["foo"]  # E: EXPECTED list[str] <: Iterable[int]
+    z += ["foo"]  # E: Argument `list[str]` is not assignable to parameter with type `Iterable[int]`
 "#,
 );
 
@@ -371,7 +371,7 @@ class C:
 
 c: C = C()
 c.foo += [1]
-c.foo += ["foo"]  # E: EXPECTED list[str] <: Iterable[int]
+c.foo += ["foo"]  # E: Argument `list[str]` is not assignable to parameter with type `Iterable[int]`
 "#,
 );
 
@@ -384,7 +384,7 @@ class C:
     def __init__(self) -> None:
         self.foo = []
         self.foo += [1]
-        self.foo += ["foo"]  # E: EXPECTED list[str] <: Iterable[int]
+        self.foo += ["foo"]  # E: Argument `list[str]` is not assignable to parameter with type `Iterable[int]`
 "#,
 );
 
@@ -394,7 +394,7 @@ testcase!(
 x: list[list[int]] = []
 x += [[1]]
 x[0] += [1]
-x += [1]  # E: EXPECTED list[int] <: Iterable[list[int]]
+x += [1]  # E: Argument `list[int]` is not assignable to parameter with type `Iterable[list[int]]`
 "#,
 );
 
@@ -420,7 +420,7 @@ testcase!(
 from typing import Any
 def expect_str(x: str): ...
 def test(x: Any):
-    x[0] += expect_str(0) # E: EXPECTED Literal[0] <: str
+    x[0] += expect_str(0) # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
 "#,
 );
 
@@ -430,7 +430,7 @@ testcase!(
 from typing import Any
 def expect_str(x: str): ...
 def test(x: Any):
-    x += expect_str(0) # E: EXPECTED Literal[0] <: str
+    x += expect_str(0) # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
 "#,
 );
 
@@ -439,7 +439,7 @@ testcase!(
     r#"
 def expect_str(x: str): ...
 def test(x: None):
-    x += expect_str(0) # E: `None` has no attribute `__iadd__` # E: EXPECTED Literal[0] <: str
+    x += expect_str(0) # E: `None` has no attribute `__iadd__` # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
 "#,
 );
 
@@ -450,7 +450,7 @@ def expect_str(x: str): ...
 class C:
     __iadd__: None = None
 def test(x: C):
-    x += expect_str(0) # E: Expected `__iadd__` to be a callable, got None # E: EXPECTED Literal[0] <: str
+    x += expect_str(0) # E: Expected `__iadd__` to be a callable, got None # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
 "#,
 );
 
@@ -477,7 +477,7 @@ y2: A = (x2 := B())
 
 y3: list[A] = (x3 := [B()])
 
-y4: B = (x4 := A())  # E: EXPECTED A <: B
+y4: B = (x4 := A())  # E: `A` is not assignable to `B`
     "#,
 );
 
@@ -495,7 +495,7 @@ x2: list[A]
 (x2 := [B()])
 
 x3: B
-(x3 := A())  # E: Expected declared type `B`, got `A`
+(x3 := A())  # E: `A` is not assignable to variable `x3` with type `B`
     "#,
 );
 

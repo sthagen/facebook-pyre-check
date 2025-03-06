@@ -22,6 +22,7 @@ use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 
 use crate::alt::class::class_metadata::BaseClass;
+use crate::binding::binding::AnnotationTarget;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingClass;
@@ -30,7 +31,6 @@ use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingClassSynthesizedFields;
 use crate::binding::binding::ClassBinding;
 use crate::binding::binding::ClassFieldInitialValue;
-use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyClass;
 use crate::binding::binding::KeyClassField;
@@ -195,9 +195,6 @@ impl<'a> BindingsBuilder<'a> {
             unreachable!("Expected class body scope, got {:?}", last_scope.kind);
         }
 
-        let self_binding = Binding::SelfType(definition_key);
-        self.table.insert(Key::SelfType(class_name), self_binding);
-
         let legacy_tparams = legacy_tparam_builder.lookup_keys();
 
         self.bind_definition(
@@ -355,9 +352,16 @@ impl<'a> BindingsBuilder<'a> {
                     range,
                 )));
                 let ann_val = if let Some(special) = SpecialForm::new(&member_name, &annotation) {
-                    BindingAnnotation::Type(special.to_type())
+                    BindingAnnotation::Type(
+                        AnnotationTarget::ClassMember(member_name.clone()),
+                        special.to_type(),
+                    )
                 } else {
-                    BindingAnnotation::AnnotateExpr(annotation, None)
+                    BindingAnnotation::AnnotateExpr(
+                        AnnotationTarget::ClassMember(member_name.clone()),
+                        annotation,
+                        None,
+                    )
                 };
                 Some(self.table.insert(ann_key, ann_val))
             } else {
@@ -375,9 +379,6 @@ impl<'a> BindingsBuilder<'a> {
                 },
             );
         }
-        let self_binding = Binding::SelfType(definition_key);
-        self.table
-            .insert(Key::SelfType(short_class_name), self_binding);
         self.bind_definition(
             &class_name,
             Binding::ClassDef(definition_key, Box::new([])),

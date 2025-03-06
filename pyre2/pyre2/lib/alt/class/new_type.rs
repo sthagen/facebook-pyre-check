@@ -16,6 +16,7 @@ use crate::alt::types::class_metadata::ClassSynthesizedFields;
 use crate::dunder;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
+use crate::types::callable::FuncId;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Required;
@@ -24,21 +25,46 @@ use crate::types::class::ClassType;
 use crate::types::types::Type;
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
-    fn get_new_type_field_params(&self, cls: &Class, base_class: ClassType) -> Param {
-        let required = Required::Required;
-        Param::Pos(
-            Name::new(Identifier::new("_x", cls.range())),
-            base_class.to_type(),
-            required,
-        )
-    }
-
     fn get_new_type_init(&self, cls: &Class, base: ClassType) -> ClassSynthesizedField {
-        let mut params = vec![cls.self_param()];
-        params.push(self.get_new_type_field_params(cls, base));
+        let params = vec![
+            cls.self_param(),
+            Param::Pos(
+                Name::new(Identifier::new("_x", cls.range())),
+                base.to_type(),
+                Required::Required,
+            ),
+        ];
         let ty = Type::Callable(
             Box::new(Callable::list(ParamList::new(params), cls.self_type())),
-            CallableKind::Def,
+            CallableKind::Def(Box::new(FuncId {
+                module: self.module_info().name(),
+                cls: Some(cls.name().clone()),
+                func: dunder::INIT,
+            })),
+        );
+        ClassSynthesizedField::new(ty)
+    }
+
+    fn get_new_type_new(&self, cls: &Class, base: ClassType) -> ClassSynthesizedField {
+        let params = vec![
+            Param::Pos(
+                Name::new("cls"),
+                Type::Type(Box::new(cls.self_type())),
+                Required::Required,
+            ),
+            Param::Pos(
+                Name::new(Identifier::new("_x", cls.range())),
+                base.to_type(),
+                Required::Required,
+            ),
+        ];
+        let ty = Type::Callable(
+            Box::new(Callable::list(ParamList::new(params), cls.self_type())),
+            CallableKind::Def(Box::new(FuncId {
+                module: self.module_info().name(),
+                cls: Some(cls.name().clone()),
+                func: dunder::NEW,
+            })),
         );
         ClassSynthesizedField::new(ty)
     }
@@ -52,7 +78,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         if is_new_type && base_type.len() == 1 {
             let (base_class, _) = base_type[0].clone();
             Some(ClassSynthesizedFields::new(smallmap! {
-                dunder::INIT => self.get_new_type_init(cls, base_class),
+                dunder::NEW => self.get_new_type_new(cls, base_class.clone()),
+                dunder::INIT => self.get_new_type_init(cls, base_class.clone()),
             }))
         } else {
             None

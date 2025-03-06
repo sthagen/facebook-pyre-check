@@ -22,6 +22,7 @@ use crate::types::callable::BoolKeywords;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
 use crate::types::callable::DataclassKeywords;
+use crate::types::callable::FuncId;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Required;
@@ -137,7 +138,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
         let ty = Type::Callable(
             Box::new(Callable::list(ParamList::new(params), Type::None)),
-            CallableKind::Def,
+            CallableKind::Def(Box::new(FuncId {
+                module: self.module_info().name(),
+                cls: Some(cls.name().clone()),
+                func: dunder::INIT,
+            })),
         );
         ClassSynthesizedField::new(ty)
     }
@@ -175,13 +180,22 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let self_ = cls.self_param();
         let other = Param::Pos(Name::new("other"), cls.self_type(), Required::Required);
         let ret = Type::ClassType(self.stdlib.bool());
-        let field = ClassSynthesizedField::new(Type::Callable(
-            Box::new(Callable::list(ParamList::new(vec![self_, other]), ret)),
-            CallableKind::Def,
-        ));
+        let callable = Callable::list(ParamList::new(vec![self_, other]), ret);
         dunder::RICH_CMPS
             .iter()
-            .map(|name| (name.clone(), field.clone()))
+            .map(|name| {
+                (
+                    name.clone(),
+                    ClassSynthesizedField::new(Type::Callable(
+                        Box::new(callable.clone()),
+                        CallableKind::Def(Box::new(FuncId {
+                            module: self.module_info().name(),
+                            cls: Some(cls.name().clone()),
+                            func: name.clone(),
+                        })),
+                    )),
+                )
+            })
             .collect()
     }
 
@@ -190,7 +204,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let ret = self.stdlib.int().to_type();
         ClassSynthesizedField::new(Type::Callable(
             Box::new(Callable::list(ParamList::new(params), ret)),
-            CallableKind::Def,
+            CallableKind::Def(Box::new(FuncId {
+                module: self.module_info().name(),
+                cls: Some(cls.name().clone()),
+                func: dunder::HASH,
+            })),
         ))
     }
 }

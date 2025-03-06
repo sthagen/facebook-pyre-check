@@ -8,16 +8,15 @@
 use crate::testcase;
 use crate::testcase_with_bug;
 
-testcase_with_bug!(
-    "Two things are wrong here",
+testcase!(
     test_new_type_simple,
     r#"
 from typing import NewType, assert_type
 
 UserId = NewType("UserId", int)
-UserId("user")  # FIXME: This should be an error
-u1: UserId = 42 # E: EXPECTED Literal[42] <: UserId
-u2: UserId = UserId(42)  # FIXME: Should not be an error # E: EXPECTED int <: UserId
+UserId("user")  # E: Argument `Literal['user']` is not assignable to parameter `_x` with type `int` in function `UserId.__init__`  # E: Argument `Literal['user']` is not assignable to parameter `_x` with type `int` in function `UserId.__new__`
+u1: UserId = 42 # E: `Literal[42]` is not assignable to `UserId`
+u2: UserId = UserId(42)
 
 assert_type(UserId(5) + 1, int)
 

@@ -49,7 +49,7 @@ testcase!(
     r#"
 from foo import x, X
 class Y: ...
-b: Y = x  # E: X <: Y
+b: Y = x  # E: `X` is not assignable to `Y`
 "#,
 );
 
@@ -103,7 +103,7 @@ testcase!(
     r#"
 from foo import X, x
 class X: ...
-y: X = x  # E: foo.X <: main.X
+y: X = x  # E: `foo.X` is not assignable to `main.X`
 "#,
 );
 
@@ -165,7 +165,7 @@ from typing import assert_type
 from foo import *
 class Foo: ...
 def f(x: Foo) -> Foo:
-    return Foo() # E: Function declared to return `main.Foo`, actually returns `foo.Foo | main.Foo`
+    return Foo() # E: Returned type `foo.Foo | main.Foo` is not assignable to declared return type `main.Foo`
 assert_type(f(Foo()), Foo)
 "#,
 );

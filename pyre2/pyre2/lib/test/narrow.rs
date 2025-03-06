@@ -561,7 +561,7 @@ testcase!(
     test_issubclass_error,
     r#"
 def f(x: int):
-    if issubclass(x, int):  # E: EXPECTED int <: type
+    if issubclass(x, int):  # E: Argument `int` is not assignable to parameter with type `type`
         return True
     "#,
 );
@@ -627,7 +627,7 @@ testcase!(
     r#"
 from typing import TypeGuard
 def f(x) -> TypeGuard[str]:
-    return "oops"  # E: Expected type guard function to return `bool`, actually returns `Literal['oops']`
+    return "oops"  # E: Returned type `Literal['oops']` is not assignable to expected return type `bool` of type guard functions
 def g(x) -> TypeGuard[str]:  # E: Function declared to return `TypeGuard[str]` but is missing an explicit `return`
     pass
     "#,

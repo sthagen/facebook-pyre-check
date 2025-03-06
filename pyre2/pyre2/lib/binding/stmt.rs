@@ -19,6 +19,8 @@ use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 
 use crate::ast::Ast;
+use crate::binding::binding::AnnotationStyle;
+use crate::binding::binding::AnnotationTarget;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingExpect;
@@ -302,7 +304,11 @@ impl<'a> BindingsBuilder<'a> {
                 for target in &mut x.targets {
                     let make_binding = |k: Option<Idx<KeyAnnotation>>| {
                         if let Some(name) = &name {
-                            Binding::NameAssign(name.id.clone(), k, Box::new(value.clone()))
+                            Binding::NameAssign(
+                                name.id.clone(),
+                                k.map(|k| (AnnotationStyle::Forwarded, k)),
+                                Box::new(value.clone()),
+                            )
                         } else {
                             Binding::Expr(k, value.clone())
                         }
@@ -323,9 +329,16 @@ impl<'a> BindingsBuilder<'a> {
                     let ann_key = KeyAnnotation::Annotation(ShortIdentifier::new(&name));
                     self.ensure_type(&mut x.annotation, &mut None);
                     let ann_val = if let Some(special) = SpecialForm::new(&name.id, &x.annotation) {
-                        BindingAnnotation::Type(special.to_type())
+                        BindingAnnotation::Type(
+                            AnnotationTarget::Assign(name.id.clone()),
+                            special.to_type(),
+                        )
                     } else {
-                        BindingAnnotation::AnnotateExpr(*x.annotation.clone(), None)
+                        BindingAnnotation::AnnotateExpr(
+                            AnnotationTarget::Assign(name.id.clone()),
+                            *x.annotation.clone(),
+                            None,
+                        )
                     };
                     let ann_key = self.table.insert(ann_key, ann_val);
 
@@ -358,7 +371,11 @@ impl<'a> BindingsBuilder<'a> {
                         } else {
                             self.ensure_expr(&mut value);
                         }
-                        Binding::NameAssign(name.id.clone(), Some(ann_key), value)
+                        Binding::NameAssign(
+                            name.id.clone(),
+                            Some((AnnotationStyle::Direct, ann_key)),
+                            value,
+                        )
                     } else {
                         Binding::AnnotatedType(
                             ann_key,
@@ -379,7 +396,11 @@ impl<'a> BindingsBuilder<'a> {
                     self.ensure_type(&mut x.annotation, &mut None);
                     let ann_key = self.table.insert(
                         KeyAnnotation::AttrAnnotation(x.annotation.range()),
-                        BindingAnnotation::AnnotateExpr(*x.annotation, None),
+                        BindingAnnotation::AnnotateExpr(
+                            AnnotationTarget::Assign(attr.attr.id.clone()),
+                            *x.annotation,
+                            None,
+                        ),
                     );
                     let value_binding = match &x.value {
                         Some(v) => Binding::Expr(None, *v.clone()),

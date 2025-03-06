@@ -13,6 +13,7 @@ use itertools::Either;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Identifier;
+use ruff_python_ast::Operator;
 use ruff_python_ast::TypeParam;
 use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
@@ -33,6 +34,8 @@ use crate::alt::types::legacy_lookup::LegacyTypeParameterLookup;
 use crate::alt::types::yields::YieldFromResult;
 use crate::alt::types::yields::YieldResult;
 use crate::ast::Ast;
+use crate::binding::binding::AnnotationStyle;
+use crate::binding::binding::AnnotationWithTarget;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingClass;
@@ -167,19 +170,27 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         &self,
         binding: &BindingAnnotation,
         errors: &ErrorCollector,
-    ) -> Arc<Annotation> {
+    ) -> Arc<AnnotationWithTarget> {
         match binding {
-            BindingAnnotation::AnnotateExpr(x, self_type) => {
+            BindingAnnotation::AnnotateExpr(target, x, self_type) => {
                 let mut ann = self.expr_annotation(x, errors);
                 if let Some(self_type) = self_type
                     && let Some(ty) = &mut ann.ty
                 {
                     let self_type = &*self.get_idx(*self_type);
-                    ty.subst_self_type_mut(self_type);
+                    if let Some(cls) = &self_type.0 {
+                        ty.subst_self_type_mut(&cls.self_type());
+                    }
                 }
-                Arc::new(ann)
+                Arc::new(AnnotationWithTarget {
+                    target: target.clone(),
+                    annotation: ann,
+                })
             }
-            BindingAnnotation::Type(x) => Arc::new(Annotation::new_type(x.clone())),
+            BindingAnnotation::Type(target, x) => Arc::new(AnnotationWithTarget {
+                target: target.clone(),
+                annotation: Annotation::new_type(x.clone()),
+            }),
         }
     }
 
@@ -666,8 +677,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             BindingExpect::Eq(k1, k2, name) => {
                 let ann1 = self.get_idx(*k1);
                 let ann2 = self.get_idx(*k2);
-                if let Some(t1) = &ann1.ty
-                    && let Some(t2) = &ann2.ty
+                if let Some(t1) = ann1.ty()
+                    && let Some(t2) = ann2.ty()
                     && *t1 != *t2
                 {
                     self.error(
@@ -745,7 +756,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.calculate_class_field(
                     &field.name,
                     value_ty.as_ref(),
-                    annotation.as_deref(),
+                    annotation.as_deref().map(|annot| &annot.annotation),
                     &field.initial_value,
                     class,
                     field.range,
@@ -795,25 +806,37 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn solve_binding_inner(&self, binding: &Binding, errors: &ErrorCollector) -> Type {
         match binding {
             Binding::Expr(ann, e) => {
-                let ty = ann.map(|k| self.get_idx(k));
-                let tcc = TypeCheckContext::of_kind(TypeCheckKind::ExplicitTypeAnnotation);
+                let ty = ann.map(|k| {
+                    let annot = self.get_idx(k);
+                    let tcc = TypeCheckContext::of_kind(TypeCheckKind::from_annotation_target(
+                        &annot.target,
+                    ));
+                    (annot, tcc)
+                });
                 self.expr(
                     e,
-                    ty.as_ref().and_then(|x| x.ty.as_ref().map(|t| (t, &tcc))),
+                    ty.as_ref().and_then(|(x, tcc)| x.ty().map(|t| (t, tcc))),
                     errors,
                 )
             }
             Binding::TypeVar(ann, name, x) => {
                 let ty = Type::type_form(self.typevar_from_call(name.clone(), x, errors).to_type());
                 if let Some(k) = ann
-                    && let Some(want) = &self.get_idx(*k).ty
+                    && let AnnotationWithTarget {
+                        target,
+                        annotation:
+                            Annotation {
+                                ty: Some(want),
+                                qualifiers: _,
+                            },
+                    } = &*self.get_idx(*k)
                 {
                     self.check_type(
                         want,
                         &ty,
                         x.range,
                         errors,
-                        &TypeCheckContext::of_kind(TypeCheckKind::ExplicitTypeAnnotation),
+                        &TypeCheckContext::of_kind(TypeCheckKind::from_annotation_target(target)),
                     )
                 } else {
                     ty
@@ -823,14 +846,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let ty =
                     Type::type_form(self.paramspec_from_call(name.clone(), x, errors).to_type());
                 if let Some(k) = ann
-                    && let Some(want) = &self.get_idx(*k).ty
+                    && let AnnotationWithTarget {
+                        target,
+                        annotation:
+                            Annotation {
+                                ty: Some(want),
+                                qualifiers: _,
+                            },
+                    } = &*self.get_idx(*k)
                 {
                     self.check_type(
                         want,
                         &ty,
                         x.range,
                         errors,
-                        &TypeCheckContext::of_kind(TypeCheckKind::ExplicitTypeAnnotation),
+                        &TypeCheckContext::of_kind(TypeCheckKind::from_annotation_target(target)),
                     )
                 } else {
                     ty
@@ -842,14 +872,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         .to_type(),
                 );
                 if let Some(k) = ann
-                    && let Some(want) = &self.get_idx(*k).ty
+                    && let AnnotationWithTarget {
+                        target,
+                        annotation:
+                            Annotation {
+                                ty: Some(want),
+                                qualifiers: _,
+                            },
+                    } = &*self.get_idx(*k)
                 {
                     self.check_type(
                         want,
                         &ty,
                         x.range,
                         errors,
-                        &TypeCheckContext::of_kind(TypeCheckKind::ExplicitTypeAnnotation),
+                        &TypeCheckContext::of_kind(TypeCheckKind::from_annotation_target(target)),
                     )
                 } else {
                     ty
@@ -862,7 +899,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     // TODO: A return type annotation like `Final` is invalid in this context.
                     // It will result in an implicit Any type, which is reasonable, but we should
                     // at least error here.
-                    let ty = self.get_idx(*annot).get_type().clone();
+                    let ty = self.get_idx(*annot).annotation.get_type().clone();
                     if x.is_async && is_generator {
                         if self.decompose_async_generator(&ty).is_none() {
                             self.error(
@@ -952,7 +989,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Binding::ReturnExplicit(x) => {
                 let annot = x.annot.map(|k| self.get_idx(k));
-                let hint = annot.as_ref().and_then(|ann| ann.ty.as_ref());
+                let hint = annot.as_ref().and_then(|ann| ann.ty());
 
                 if let Some(expr) = &x.expr {
                     if x.is_async && x.is_generator {
@@ -970,7 +1007,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             hint.and_then(|ty| self.decompose_generator(ty).map(|(_, _, r)| r));
                         let tcc = TypeCheckContext::of_kind(TypeCheckKind::ExplicitFunctionReturn);
                         self.expr(expr, hint.as_ref().map(|t| (t, &tcc)), errors)
-                    } else if matches!(hint, Some(Type::TypeGuard(_))) {
+                    } else if matches!(hint, Some(Type::TypeGuard(_) | Type::TypeIs(_))) {
                         let hint = Some(Type::ClassType(self.stdlib.bool()));
                         let tcc = TypeCheckContext::of_kind(TypeCheckKind::TypeGuardReturn);
                         self.expr(expr, hint.as_ref().map(|t| (t, &tcc)), errors)
@@ -1020,7 +1057,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         &exception,
                         range,
                         errors,
-                        &TypeCheckContext::unknown(),
+                        &TypeCheckContext::of_kind(TypeCheckKind::ExceptionClass),
                     );
                     if let Some(base_exception_group_any_type) =
                         base_exception_group_any_type.as_ref()
@@ -1071,6 +1108,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Binding::AugAssign(x) => {
                 let base = self.expr_infer(&x.target, errors);
+                if x.op == Operator::Add
+                    && base.is_literal_string()
+                    && self.expr_infer(&x.value, errors).is_literal_string()
+                {
+                    return Type::LiteralString;
+                }
                 self.call_method_or_error(
                     &base,
                     &inplace_dunder(x.op),
@@ -1083,7 +1126,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::IterableValue(ann, e) => {
                 let ty = ann.map(|k| self.get_idx(k));
                 let hint =
-                    ty.and_then(|x| x.ty.clone().map(|ty| self.stdlib.iterable(ty).to_type()));
+                    ty.and_then(|x| x.ty().map(|ty| self.stdlib.iterable(ty.clone()).to_type()));
                 let tcc = TypeCheckContext::unknown();
                 let iterables = self.iterate(
                     &self.expr(e, hint.as_ref().map(|t| (t, &tcc)), errors),
@@ -1101,15 +1144,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Binding::ContextValue(ann, e, kind) => {
                 let context_manager = self.expr_infer(e, errors);
-                let context_value = self.context_value(context_manager, *kind, e.range(), errors);
+                let context_value =
+                    self.context_value(context_manager.clone(), *kind, e.range(), errors);
                 let ty = ann.map(|k| self.get_idx(k));
-                match ty.as_ref().and_then(|x| x.ty.as_ref()) {
-                    Some(ty) => self.check_type(
+                match ty.as_ref().and_then(|x| x.ty().map(|t| (t, &x.target))) {
+                    Some((ty, target)) => self.check_type(
                         ty,
                         &context_value,
                         e.range(),
                         errors,
-                        &TypeCheckContext::unknown(),
+                        &TypeCheckContext::of_kind(TypeCheckKind::from_annotation_target(target)),
                     ),
                     None => context_value,
                 }
@@ -1305,10 +1349,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     ty
                 }
             },
-            Binding::SelfType(k) => match &self.get_idx(*k).0 {
-                None => Type::any_implicit(),
-                Some(cls) => cls.self_type(),
-            },
             Binding::Forward(k) => self.get_idx(*k).arc_clone(),
             Binding::Phi(ks) => {
                 if ks.len() == 1 {
@@ -1322,8 +1362,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::Narrow(k, op) => self.narrow(&self.get_idx(*k), op, errors),
-            Binding::AnnotatedType(ann, val) => match &self.get_idx(*ann).ty {
-                Some(ty) => ty.clone(),
+            Binding::AnnotatedType(ann, val) => match &self.get_idx(*ann).ty() {
+                Some(ty) => (*ty).clone(),
                 None => self.solve_binding_inner(val, errors),
             },
             Binding::AnyType(x) => Type::Any(*x),
@@ -1371,25 +1411,31 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::NameAssign(name, annot_key, expr) => {
-                let annot = annot_key.map(|k| self.get_idx(k));
-                let tcc = TypeCheckContext::unknown();
+                let annot = annot_key.as_ref().map(|(style, k)| {
+                    let tcc = TypeCheckContext::of_kind(match style {
+                        AnnotationStyle::Direct => TypeCheckKind::AnnAssign,
+                        AnnotationStyle::Forwarded => TypeCheckKind::AnnotatedName(name.clone()),
+                    });
+                    (self.get_idx(*k), tcc)
+                });
                 let ty = self.expr(
                     expr,
-                    annot
-                        .as_ref()
-                        .and_then(|x| x.ty.as_ref().map(|t| (t, &tcc))),
+                    annot.as_ref().and_then(|(x, tcc)| x.ty().map(|t| (t, tcc))),
                     errors,
                 );
                 let expr_range = expr.range();
                 match (annot, &ty) {
-                    (Some(annot), _) if annot.qualifiers.contains(&Qualifier::TypeAlias) => self
-                        .as_type_alias(
+                    (Some((annot, _)), _)
+                        if annot.annotation.qualifiers.contains(&Qualifier::TypeAlias) =>
+                    {
+                        self.as_type_alias(
                             name,
                             TypeAliasStyle::LegacyExplicit,
                             ty,
                             expr_range,
                             errors,
-                        ),
+                        )
+                    }
                     // TODO(stroxler, rechen): Do we want to include Type::ClassDef(_)
                     // when there is no annotation, so that `mylist = list` is treated
                     // like a value assignment rather than a type alias?
@@ -1496,7 +1542,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::LambdaParameter(var) => var.to_type(),
             Binding::FunctionParameter(param) => {
                 match param {
-                    Either::Left(key) => self.get_idx(*key).ty.clone().unwrap_or_else(|| {
+                    Either::Left(key) => self.get_idx(*key).ty().cloned().unwrap_or_else(|| {
                         // This annotation isn't valid. It's something like `: Final` that doesn't
                         // have enough information to create a real type.
                         Type::any_implicit()
@@ -1556,15 +1602,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             ),
                         }
                     }
-                    SuperStyle::ImplicitArgs(self_binding) => match &*self.get_idx(*self_binding) {
-                        Type::ClassType(obj_cls) => {
-                            let lookup_cls = self
-                                .get_super_lookup_class(obj_cls.class_object(), obj_cls)
-                                .unwrap();
-                            Type::SuperInstance(Box::new(lookup_cls), Box::new(obj_cls.clone()))
+                    SuperStyle::ImplicitArgs(self_binding) => {
+                        match &self.get_idx(*self_binding).0 {
+                            Some(obj_cls) => {
+                                let obj_type = ClassType::new(
+                                    obj_cls.dupe(),
+                                    self.create_default_targs(obj_cls, None),
+                                );
+                                let lookup_cls =
+                                    self.get_super_lookup_class(obj_cls, &obj_type).unwrap();
+                                Type::SuperInstance(Box::new(lookup_cls), Box::new(obj_type))
+                            }
+                            None => Type::any_implicit(),
                         }
-                        _ => Type::any_implicit(),
-                    },
+                    }
                     SuperStyle::Any => Type::any_implicit(),
                 }
             }
@@ -1598,11 +1649,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             required
         };
 
+        let defining_cls = x.self_type.and_then(|k| self.get_idx(k).0.dupe());
         let mut self_type = if x.def.name.id == dunder::NEW {
             // __new__ is a staticmethod, and does not take a self parameter.
             None
         } else {
-            x.self_type.map(|idx| self.get_idx(idx).arc_clone())
+            defining_cls.as_ref().map(|cls| cls.self_type())
         };
 
         // Look for a @classmethod or @staticmethod decorator and change the "self" type
@@ -1624,7 +1676,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
         let mut get_param_ty = |name: &Identifier| {
             let ty = match self.bindings().get_function_param(name) {
-                Either::Left(idx) => self.get_idx(idx).get_type().clone(),
+                Either::Left(idx) => self.get_idx(idx).annotation.get_type().clone(),
                 Either::Right(var) => {
                     // If this is the first parameter and there is a self type, solve to `Self`.
                     // We only try to solve the first param for now. Other unannotated params
@@ -1684,8 +1736,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             let ty = match self.bindings().get_function_param(&x.name) {
                 Either::Left(idx) => {
                     let annot = self.get_idx(idx);
-                    let ty = annot.get_type().clone();
-                    if annot.qualifiers.contains(&Qualifier::Unpack) {
+                    let ty = annot.annotation.get_type().clone();
+                    if annot.annotation.qualifiers.contains(&Qualifier::Unpack) {
                         Type::Unpack(Box::new(ty))
                     } else {
                         ty
@@ -1767,12 +1819,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     Type::Quantified(q),
                     ret,
                 )),
-                CallableKind::from_name(self.module_info().name(), &x.def.name.id),
+                CallableKind::from_name(
+                    self.module_info().name(),
+                    defining_cls.as_ref().map(|cls| cls.name()),
+                    &x.def.name.id,
+                ),
             )
         } else {
             Type::Callable(
                 Box::new(Callable::list(ParamList::new(params), ret)),
-                CallableKind::from_name(self.module_info().name(), &x.def.name.id),
+                CallableKind::from_name(
+                    self.module_info().name(),
+                    defining_cls.as_ref().map(|cls| cls.name()),
+                    &x.def.name.id,
+                ),
             )
         };
         let mut ty = callable.forall(self.type_params(x.def.range, tparams, errors));
@@ -1813,7 +1873,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 // TODO: Keep track of whether the function is async in the binding, decompose hint
                 // appropriately instead of just trying both.
                 let annot = annot.map(|k| self.get_idx(k));
-                let hint = annot.as_ref().and_then(|x| x.ty.as_ref()).and_then(|ty| {
+                let hint = annot.as_ref().and_then(|x| x.ty()).and_then(|ty| {
                     if let Some((yield_ty, send_ty, _)) = self.decompose_generator(ty) {
                         Some((yield_ty, send_ty))
                     } else {
@@ -1872,7 +1932,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             BindingYieldFrom::YieldFrom(annot, x) => {
                 // TODO: Error if the function is async
                 let annot = annot.map(|k| self.get_idx(k));
-                let want = annot.as_ref().and_then(|x| x.ty.as_ref());
+                let want = annot.as_ref().and_then(|x| x.ty());
 
                 let mut ty = self.expr_infer(&x.value, errors);
                 let res = if let Some(generator) = self.unwrap_generator(&ty) {

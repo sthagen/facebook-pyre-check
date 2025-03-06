@@ -675,7 +675,12 @@ let run_taint_analysis
         (Scheduler.Policy.from_configuration_or_default
            scheduler_policies
            Configuration.ScheduleIdentifier.DefinesSharedMemory
-           ~default:Interprocedural.CallGraph.SharedMemory.default_scheduler_policy)
+           ~default:
+             (Scheduler.Policy.fixed_chunk_count
+                ~minimum_chunks_per_worker:1
+                ~minimum_chunk_size:1
+                ~preferred_chunks_per_worker:1
+                ()))
       ~pyre_api
       definitions_and_stubs
   in
@@ -813,6 +818,10 @@ let run_taint_analysis
           definitions
       in
       let () = StepLogger.finish step_logger in
+      let () =
+        Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory.cleanup
+          callables_to_decorators_map
+      in
       decorator_resolution
     else
       Interprocedural.CallGraph.DecoratorResolution.Results.empty
@@ -938,6 +947,7 @@ let run_taint_analysis
       in
       let () = StepLogger.finish step_logger in
       let () = Interprocedural.CallGraph.SharedMemory.cleanup original_define_call_graphs in
+      let () = Interprocedural.CallGraphFixpoint.cleanup ~keep_models:true fixpoint in
       dependency_graph, get_define_call_graph, Some fixpoint
     else
       let get_define_call_graph define_call_graphs callable =

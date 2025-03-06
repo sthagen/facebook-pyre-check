@@ -385,7 +385,7 @@ class Parent:
 class Child(Parent):
     pass
 def f1(c: C[Parent, Child]):
-    f2(c)  # E: EXPECTED
+    f2(c)  # E: Argument `C[Parent, Child]` is not assignable to parameter `c` with type `C[Child, Parent]`
 def f2(c: C[Child, Parent]):
     f1(c)
     "#,
@@ -460,6 +460,6 @@ testcase!(
     r#"
 from typing import TypeVar
 T: int = 0
-T = TypeVar('T')  # E: Expected declared type `int`, got `type[TypeVar[T]]`
+T = TypeVar('T')  # E: `type[TypeVar[T]]` is not assignable to variable `T` with type `int`
     "#,
 );

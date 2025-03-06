@@ -28,6 +28,7 @@ use crate::error::context::TypeCheckKind;
 use crate::error::kind::ErrorKind;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
+use crate::types::callable::FuncId;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Required;
@@ -47,6 +48,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         typed_dict: &TypedDict,
         range: TextRange,
         errors: &ErrorCollector,
+        tcc: &TypeCheckContext,
     ) {
         let fields = typed_dict.fields();
         let mut has_expansion = false;
@@ -95,10 +97,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 has_expansion = true;
                 self.expr(
                     &x.value,
-                    Some((
-                        &Type::TypedDict(Box::new(typed_dict.clone())),
-                        &TypeCheckContext::of_kind(TypeCheckKind::ExplicitTypeAnnotation),
-                    )),
+                    Some((&Type::TypedDict(Box::new(typed_dict.clone())), tcc)),
                     errors,
                 );
             }
@@ -196,7 +195,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
         let ty = Type::Callable(
             Box::new(Callable::list(ParamList::new(params), Type::None)),
-            CallableKind::Def,
+            CallableKind::Def(Box::new(FuncId {
+                module: self.module_info().name(),
+                cls: Some(cls.name().clone()),
+                func: dunder::INIT,
+            })),
         );
         ClassSynthesizedField::new(ty)
     }

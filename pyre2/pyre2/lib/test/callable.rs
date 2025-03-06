@@ -5,8 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use crate::test::util::TestEnv;
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_lambda,
@@ -19,9 +19,9 @@ f3: Callable[[int], int] = lambda x: 1
 reveal_type(f3)  # E: revealed type: (x: int) -> Literal[1]
 f4: Callable[[int], None] = lambda x: reveal_type(x)  # E: revealed type: int
 f5: Callable[[int], int] = lambda x: x
-f6: Callable[[int], int] = lambda x: "foo"  # E: EXPECTED (x: int) -> Literal['foo'] <: (int) -> int
-f7: Callable[[int, int], int] = lambda x: 1  # E: EXPECTED (x: int) -> Literal[1] <: (int, int) -> int
-f8: Callable[[int], int] = lambda x: x + "foo" # E: EXPECTED Literal['foo'] <: int
+f6: Callable[[int], int] = lambda x: "foo"  # E: `(x: int) -> Literal['foo']` is not assignable to `(int) -> int`
+f7: Callable[[int, int], int] = lambda x: 1  # E: `(x: int) -> Literal[1]` is not assignable to `(int, int) -> int`
+f8: Callable[[int], int] = lambda x: x + "foo" # E: Argument `Literal['foo']` is not assignable to parameter with type `int`
 "#,
 );
 
@@ -82,10 +82,10 @@ class P7(Protocol):
 
 def test(p1: P1, p2: P2, p3: P3, p4: P4, p5: P5, p6: P6, p7: P7):
     x1: P2 = p1
-    x2: P1 = p2  # E: EXPECTED P2 <: P1
-    x3: P2 = p3  # E: EXPECTED P3 <: P2
+    x2: P1 = p2  # E: `P2` is not assignable to `P1`
+    x3: P2 = p3  # E: `P3` is not assignable to `P2`
     x4: P2 = p4
-    x5: P4 = p2  # E: EXPECTED P2 <: P4
+    x5: P4 = p2  # E: `P2` is not assignable to `P4`
     x6: P5 = p2
     x7: P2 = p5
     x8: P2 = p6
@@ -156,15 +156,15 @@ test(f1) # OK
 
 # Lower bound has too many args
 def f2(x: int, y: int, z: int) -> None: ...
-test(f2) # E: EXPECTED (x: int, y: int, z: int) -> None <: (int, int) -> None
+test(f2) # E: Argument `(x: int, y: int, z: int) -> None` is not assignable to parameter `f` with type `(int, int) -> None`
 
 # Lower bound has too few args
 def f3(x: int) -> None: ...
-test(f3) # E: EXPECTED (x: int) -> None <: (int, int) -> None
+test(f3) # E: Argument `(x: int) -> None` is not assignable to parameter `f` with type `(int, int) -> None`
 
 # Lower bound has wrong arg types
 def f4(x: str, y: int) -> None: ...
-test(f4) # E: EXPECTED (x: str, y: int) -> None <: (int, int) -> None
+test(f4) # E: Argument `(x: str, y: int) -> None` is not assignable to parameter `f` with type `(int, int) -> None`
 
 # Lower bound has variadic args of compatible type
 def f5(*args: int) -> None: ...
@@ -172,7 +172,7 @@ test(f5) # OK
 
 # Lower bound has variadic args of incompatible type
 def f6(*args: str) -> None: ...
-test(f6) # E: EXPECTED (*str) -> None <: (int, int) -> None
+test(f6) # E: Argument `(*str) -> None` is not assignable to parameter `f` with type `(int, int) -> None`
 
 # Lower bound has extra kwargs of arbitrary type
 class Arbitrary: pass
@@ -224,7 +224,7 @@ testcase!(
     test_varargs,
     r#"
 def test(*args: int): ...
-test(1, 2, "foo", 4) # E: EXPECTED Literal['foo'] <: int
+test(1, 2, "foo", 4) # E: Argument `Literal['foo']` is not assignable to parameter with type `int`
 "#,
 );
 
@@ -232,7 +232,7 @@ testcase!(
     test_kwargs,
     r#"
 def test(**kwargs: int): ...
-test(x=1, y="foo", z=2) # E: EXPECTED Literal['foo'] <: int
+test(x=1, y="foo", z=2) # E: Keyword argument `y` with type `Literal['foo']` is not assignable to kwargs type `int` in function `test`
 "#,
 );
 
@@ -261,7 +261,7 @@ test(0, 1, "foo", 2) # E: Expected 3 positional arguments
 testcase!(
     test_bad_default,
     r#"
-def f(x: int = ""):  # E: Parameter `x` declared with type `int`, cannot assign default `Literal['']`
+def f(x: int = ""):  # E: Default `Literal['']` is not assignable to parameter `x` with type `int`
     pass
     "#,
 );
@@ -270,7 +270,7 @@ testcase!(
     test_default_ellipsis,
     r#"
 def stub(x: int = ...): ... # OK
-def err(x: int = ...): pass # E: Parameter `x` declared with type `int`, cannot assign default `Ellipsis`
+def err(x: int = ...): pass # E: Default `Ellipsis` is not assignable to parameter `x` with type `int`
 "#,
 );
 
@@ -303,8 +303,8 @@ from typing import assert_type
 
 def test1(*args: *tuple[int, int, int]): ...
 test1(*(1, 2, 3)) # OK
-test1(*(1, 2)) # E: EXPECTED tuple[Literal[1], Literal[2]] <: tuple[int, int, int]
-test1(*(1, 2, 3, 4)) # E: EXPECTED tuple[Literal[1], Literal[2], Literal[3], Literal[4]] <: tuple[int, int, int]
+test1(*(1, 2)) # E: Unpacked argument `tuple[Literal[1], Literal[2]]` is not assignable to varargs type `tuple[int, int, int]` in function `test1`
+test1(*(1, 2, 3, 4)) # E: Unpacked argument `tuple[Literal[1], Literal[2], Literal[3], Literal[4]]` is not assignable to varargs type `tuple[int, int, int]` in function `test1`
 
 def test2[*T](*args: *tuple[int, *T, int]) -> tuple[*T]: ...
 assert_type(test2(*(1, 2, 3)), tuple[int])
@@ -313,7 +313,7 @@ assert_type(test2(*(1, 2, 3, 4)), tuple[int, int])
 assert_type(test2(1, 2, *(3, 4), 5), tuple[int, int, int])
 assert_type(test2(1, *(2, 3), *("4", 5)), tuple[int, int, str])
 assert_type(test2(1, *[2, 3], 4), tuple[int, ...])
-test2(1, *(2, 3), *(4, "5"))  # E: EXPECTED tuple[Literal[1], Literal[2], Literal[3], Literal[4], Literal['5']] <: tuple[int, *@_, int]
+test2(1, *(2, 3), *(4, "5"))  # E: Unpacked argument `tuple[Literal[1], Literal[2], Literal[3], Literal[4], Literal['5']]` is not assignable to varargs type `tuple[int, *@_, int]` in function `test2`
 "#,
 );
 
@@ -328,7 +328,7 @@ def fixed_same_len_ok(xs: tuple[int, int, int] | tuple[int, int, int]):
     test(*xs) # OK
 
 def fixed_same_len_type_err(xs: tuple[int, int, int] | tuple[int, int, str]):
-    test(*xs) # E: EXPECTED int | str <: int
+    test(*xs) # E: Argument `int | str` is not assignable to parameter `z` with type `int`
 
 def fixed_same_len_too_few(xs: tuple[int, int] | tuple[int, int]):
     test(*xs) # E: Missing argument `z`
@@ -340,7 +340,7 @@ def mixed_same_type(xs: tuple[int, int] | Iterable[int]):
     test(*xs) # OK (treated as Iterable[int])
 
 def mixed_type_err(xs: tuple[int, int] | Iterable[str]):
-    test(*xs) # E: EXPECTED int | str <: int
+    test(*xs) # E: Argument `int | str` is not assignable to parameter `x` with type `int` # E: Argument `int | str` is not assignable to parameter `y` with type `int` # E: Argument `int | str` is not assignable to parameter `z` with type `int`
 "#,
 );
 
@@ -352,7 +352,7 @@ testcase!(
     test_splat_keyword_first,
     r#"
 def test(x: str, y: int, z: int): ...
-test(x="", *(0, 1)) # E: EXPECTED Literal[0] <: str # E: Multiple values for argument `x` # E: Missing argument `z`
+test(x="", *(0, 1)) # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str` # E: Multiple values for argument `x` # E: Missing argument `z`
 "#,
 );
 
@@ -373,7 +373,7 @@ def f(x: str, y: int, z: int): ...
 def test(kwargs: dict[str, int]):
     f("foo", **kwargs) # OK
     f(x="foo", **kwargs) # OK
-    f(**kwargs) # E: EXPECTED int <: str
+    f(**kwargs) # E: Unpacked keyword argument `int` is not assignable to parameter `x` with type `str` in function `f`
 "#,
 );
 
@@ -382,7 +382,7 @@ testcase!(
     r#"
 def f(x: int, y: int, z: int): ...
 def test(kwargs1: dict[str, int], kwargs2: dict[str, str]):
-    f(**kwargs1, **kwargs2) # E: EXPECTED str <: int
+    f(**kwargs1, **kwargs2) # E: Unpacked keyword argument `str` is not assignable to parameter `x` with type `int` in function `f` # E: Unpacked keyword argument `str` is not assignable to parameter `y` with type `int` in function `f` # E: Unpacked keyword argument `str` is not assignable to parameter `z` with type `int` in function `f`
 "#,
 );
 
@@ -422,7 +422,7 @@ def f(**kwargs: int): ...
 def g(**kwargs: str): ...
 def test(kwargs: dict[str, int]):
     f(**kwargs) # OK
-    g(**kwargs) # E: EXPECTED int <: str
+    g(**kwargs) # E: Unpacked keyword argument `int` is not assignable to kwargs type `str` in function `g`
 "#,
 );
 
@@ -437,7 +437,7 @@ def test_corountine() -> Callable[[int], Coroutine[Any, Any, int]]:
 def test_awaitable() -> Callable[[int], Awaitable[int]]:
     return f
 def test_sync() -> Callable[[int], int]:
-    return f  # E: Function declared to return `(int) -> int`, actually returns `(x: int) -> Coroutine[Unknown, Unknown, int]`
+    return f  # E: Returned type `(x: int) -> Coroutine[Unknown, Unknown, int]` is not assignable to declared return type `(int) -> int`
 "#,
 );
 
@@ -455,7 +455,7 @@ class P1(Protocol):
 class P2(Protocol):
     def __call__(self, **kwargs: Unpack[TD2]): ...
 def test(accept_td1: P1, accept_td2: P2):
-    a: P1 = accept_td2  # E: EXPECTED P2 <: P1
+    a: P1 = accept_td2  # E: `P2` is not assignable to `P1`
     b: P2 = accept_td1
 "#,
 );
@@ -475,9 +475,9 @@ class P3(Protocol):
     def __call__(self, string: str, number: int = ...): ...
 def test(accept_td: P1, kwonly_args: P2, regular_args: P3):
     a: P2 = accept_td
-    b: P3 = accept_td  # E: EXPECTED P1 <: P3
-    c: P1 = kwonly_args  # E: EXPECTED P2 <: P1
-    d: P1 = regular_args   # E: EXPECTED P3 <: P1
+    b: P3 = accept_td  # E: `P1` is not assignable to `P3`
+    c: P1 = kwonly_args  # E: `P2` is not assignable to `P1`
+    d: P1 = regular_args   # E: `P3` is not assignable to `P1`
 "#,
 );
 
@@ -499,12 +499,11 @@ class P4(Protocol):
 def test(unannotated: P1, unpacked: P2, annotated: P3, annotated_wrong: P4):
     a: P2 = unannotated
     b: P2 = annotated
-    c: P2 = annotated_wrong  # E: EXPECTED P4 <: P2
+    c: P2 = annotated_wrong  # E: `P4` is not assignable to `P2`
 "#,
 );
 
-testcase_with_bug!(
-    "Expecting 3 errors, but not getting any",
+testcase!(
     test_assignability_typed_dict_wrong_kwarg,
     r#"
 from typing import TypedDict, Protocol, Required, NotRequired, Unpack
@@ -519,9 +518,9 @@ class P2(Protocol):
     def __call__(self, *, v1: int) -> None: ...
 class P3(Protocol):
     def __call__(self, *, v1: int, v2: str, v4: str) -> None: ...
-x: P1 = func1  # FIXME: EXPECTED (**Unpack[TypedDict[TD]]) -> None <: P1
-y: P2 = func1  # FIXME: EXPECTED (**Unpack[TypedDict[TD]]) -> None <: P2
-z: P3 = func1  # FIXME: EXPECTED (**Unpack[TypedDict[TD]]) -> None <: P3
+x: P1 = func1  # E: `(**Unpack[TypedDict[TD]]) -> None` is not assignable to `P1`
+y: P2 = func1  # E: `(**Unpack[TypedDict[TD]]) -> None` is not assignable to `P2`
+z: P3 = func1  # E: `(**Unpack[TypedDict[TD]]) -> None` is not assignable to `P3`
 "#,
 );
 
@@ -534,5 +533,32 @@ def f(x: int) -> int:
 # This assertion (correctly) fails because x is a positional parameter rather than a positional-only one.
 # This test verifies that we produce a sensible error message that shows the mismatch.
 assert_type(f, Callable[[int], int])  # E: assert_type((x: int) -> int, (int) -> int) failed
+    "#,
+);
+
+testcase!(
+    test_function_name_in_error,
+    TestEnv::one("foo", "def f(x: int): ..."),
+    r#"
+import foo
+foo.f("")  # E: in function `foo.f`
+
+def f(x: int): ...
+f("")  # E: in function `f`
+
+class A:
+    def f(self, x: int): ...
+    @classmethod
+    def g(cls, x: int): ...
+    @staticmethod
+    def h(x: int): ...
+A().f("")  # E: in function `A.f`
+A.f(A(), "")  # E: in function `A.f`
+A.g("")  # E: in function `A.g`
+A.h("")  # E: in function `A.h`
+
+class B(A):
+    pass
+B().f("")  # E: in function `A.f`
     "#,
 );

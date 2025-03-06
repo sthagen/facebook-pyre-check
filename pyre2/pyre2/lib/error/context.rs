@@ -7,6 +7,8 @@
 
 use ruff_python_ast::name::Name;
 
+use crate::binding::binding::AnnotationTarget;
+use crate::types::callable::FuncId;
 use crate::types::types::Type;
 
 /// General context for an error. For many errors, the root cause is some steps removed from what
@@ -17,6 +19,7 @@ use crate::types::types::Type;
 /// The root cause is `C.__lt__` being called with the wrong type, but the user sees a `<`
 /// comparison. ErrorContext stores this context that the user sees, to make it easier to connect
 /// it back to the root cause.
+#[derive(Debug)]
 pub enum ErrorContext {
     BadContextManager(Type),
 }
@@ -28,6 +31,7 @@ pub enum ErrorContext {
 ///   C() < 0  # ERROR: expected C, got 0
 /// The TypeCheckContext contains a TypeCheckKind, recording that the mismatch is in the `other` parameter of `C.__lt__`,
 /// and an ErrorContext, recording that the type mismatch occurs in the context of a `<` comparison.
+#[derive(Debug)]
 pub struct TypeCheckContext {
     pub kind: TypeCheckKind,
     pub context: Option<ErrorContext>,
@@ -53,6 +57,7 @@ impl TypeCheckContext {
     }
 }
 
+#[derive(Debug)]
 pub enum TypeCheckKind {
     /// Check on a magic method that is expected to return a particular type; e.g., a context
     /// manager's `__exit__` method must return `bool | None`.
@@ -64,17 +69,38 @@ pub enum TypeCheckKind {
     ExplicitFunctionReturn,
     /// Return in a type guard function.
     TypeGuardReturn,
+    /// Function call argument against parameter type.
+    CallArgument(Option<Name>, Option<FuncId>),
+    /// Unpacked argument against *args type.
+    CallVarArgs(Option<FuncId>),
+    /// Keyword argument against parameter or **kwargs type, as (argument name, parameter name, function name).
+    CallKwArgs(Option<Name>, Option<Name>, Option<FuncId>),
     /// Check of a parameter's default value against its type annotation.
     FunctionParameterDefault(Name),
     /// Check against type of a TypedDict key.
     TypedDictKey(Name),
     /// Check of an attribute assignment against its type.
     Attribute(Name),
-    /// A check against a user-declared type annotation. Use this only when there is no other
-    /// useful information to include about the check.
-    ExplicitTypeAnnotation,
+    /// A check against a user-declared type annotation on a variable name.
+    AnnotatedName(Name),
+    /// var: SomeType = some_value check. This is separate from AnnotatedName because we can
+    /// emit a more compact error message for this case.
+    AnnAssign,
+    /// Class used in an `except C` clause.
+    ExceptionClass,
     // TODO: categorize all type checks and remove Unknown and Test designations
     Unknown,
     #[allow(dead_code)]
     Test,
+}
+
+impl TypeCheckKind {
+    pub fn from_annotation_target(target: &AnnotationTarget) -> Self {
+        match target {
+            AnnotationTarget::Param(_) => Self::Unknown,
+            AnnotationTarget::Return(_func) => Self::ExplicitFunctionReturn,
+            AnnotationTarget::Assign(name) => Self::AnnotatedName(name.clone()),
+            AnnotationTarget::ClassMember(member) => Self::Attribute(member.clone()),
+        }
+    }
 }

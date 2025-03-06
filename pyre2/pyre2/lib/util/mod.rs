@@ -15,6 +15,7 @@ pub mod exclusive_lock;
 pub mod forgetter;
 pub mod fs_anyhow;
 pub mod globs;
+pub mod listing;
 pub mod lock;
 pub mod locked_map;
 pub mod memory;
@@ -23,7 +24,6 @@ pub mod notify_watcher;
 pub mod prelude;
 pub mod rayon;
 pub mod recurser;
-#[cfg(target_arch = "wasm32")]
 pub mod reduced_stdlib;
 pub mod trace;
 pub mod uniques;

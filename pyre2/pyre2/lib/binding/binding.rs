@@ -75,7 +75,7 @@ mod check_size {
 
     assert_eq_size!(Binding, [usize; 9]);
     assert_eq_size!(BindingExpect, [usize; 8]);
-    assert_eq_size!(BindingAnnotation, [usize; 9]);
+    assert_eq_size!(BindingAnnotation, [usize; 13]);
     assert_eq_size!(BindingClass, [usize; 22]);
     assert_eq_size!(BindingClassMetadata, [usize; 8]);
     assert_eq_size!(BindingClassField, [usize; 22]);
@@ -124,7 +124,7 @@ impl Keyed for KeyFunction {
 }
 impl Keyed for KeyAnnotation {
     type Value = BindingAnnotation;
-    type Answer = Annotation;
+    type Answer = AnnotationWithTarget;
 }
 impl Keyed for KeyClassMetadata {
     const EXPORTED: bool = true;
@@ -153,8 +153,6 @@ pub enum Key {
     Import(Name, TextRange),
     /// I am defined in this module at this location.
     Definition(ShortIdentifier),
-    /// I am the self type for a particular class.
-    SelfType(ShortIdentifier),
     /// The type at a specific return point.
     ReturnExplicit(TextRange),
     /// The implicit return type of a function, either Type::None or Type::Never.
@@ -191,7 +189,6 @@ impl Ranged for Key {
         match self {
             Self::Import(_, r) => *r,
             Self::Definition(x) => x.range(),
-            Self::SelfType(x) => x.range(),
             Self::ReturnExplicit(r) => *r,
             Self::ReturnImplicit(x) => x.range(),
             Self::ReturnType(x) => x.range(),
@@ -211,7 +208,6 @@ impl DisplayWith<ModuleInfo> for Key {
         match self {
             Self::Import(n, r) => write!(f, "import {n} {r:?}"),
             Self::Definition(x) => write!(f, "{} {:?}", ctx.display(x), x.range()),
-            Self::SelfType(x) => write!(f, "self {} {:?}", ctx.display(x), x.range()),
             Self::Usage(x) => write!(f, "use {} {:?}", ctx.display(x), x.range()),
             Self::Anon(r) => write!(f, "anon {r:?}"),
             Self::StmtExpr(r) => write!(f, "stmt expr {r:?}"),
@@ -573,7 +569,7 @@ pub struct FunctionBinding {
     /// A function definition, but with the return/body stripped out.
     pub def: StmtFunctionDef,
     pub kind: FunctionKind,
-    pub self_type: Option<Idx<Key>>,
+    pub self_type: Option<Idx<KeyClass>>,
     pub decorators: Box<[Idx<Key>]>,
     pub legacy_tparams: Box<[Idx<KeyLegacyTypeParam>]>,
     pub successor: Option<Idx<KeyFunction>>,
@@ -633,9 +629,17 @@ pub enum SuperStyle {
     /// A `super(cls, obj)` call. The keys are the arguments.
     ExplicitArgs(Idx<Key>, Idx<Key>),
     /// A no-argument `super()` call. The key is the `Self` type of the class we are in.
-    ImplicitArgs(Idx<Key>),
+    ImplicitArgs(Idx<KeyClass>),
     /// `super(Any, Any)`. Useful when we encounter an error.
     Any,
+}
+
+#[derive(Clone, Debug, Copy, Dupe)]
+pub enum AnnotationStyle {
+    /// Annotated assignment, x: MyType = my_value
+    Direct,
+    /// Forwarded annotation, x: MyType; x = my_value
+    Forwarded,
 }
 
 #[derive(Clone, Debug)]
@@ -688,8 +692,6 @@ pub enum Binding {
     Import(ModuleName, Name),
     /// A class definition, points to a BindingClass and any decorators.
     ClassDef(Idx<KeyClass>, Box<[Idx<Key>]>),
-    /// The Self type for a class, must point at a class.
-    SelfType(Idx<KeyClass>),
     /// A forward reference to another binding.
     Forward(Idx<Key>),
     /// A phi node, representing the union of several alternative keys.
@@ -709,7 +711,11 @@ pub enum Binding {
     /// function / class, and therefore the use of legacy type parameters is invalid.
     CheckLegacyTypeParam(Idx<KeyLegacyTypeParam>, Option<TextRange>),
     /// An assignment to a name.
-    NameAssign(Name, Option<Idx<KeyAnnotation>>, Box<Expr>),
+    NameAssign(
+        Name,
+        Option<(AnnotationStyle, Idx<KeyAnnotation>)>,
+        Box<Expr>,
+    ),
     /// A type alias declared with the `type` soft keyword
     ScopedTypeAlias(Name, Option<TypeParams>, Box<Expr>),
     /// An entry in a MatchMapping. The Key looks up the value being matched, the Expr is the key we're extracting.
@@ -811,7 +817,6 @@ impl DisplayWith<Bindings> for Binding {
             Self::Function(x, _pred, _class) => write!(f, "{}", ctx.display(*x)),
             Self::Import(m, n) => write!(f, "import {m}.{n}"),
             Self::ClassDef(x, _) => write!(f, "{}", ctx.display(*x)),
-            Self::SelfType(k) => write!(f, "self {}", ctx.display(*k)),
             Self::Forward(k) => write!(f, "{}", ctx.display(*k)),
             Self::AugAssign(s) => write!(f, "augmented_assign {:?}", s),
             Self::AnyType(s) => write!(f, "anytype {s}"),
@@ -851,7 +856,7 @@ impl DisplayWith<Bindings> for Binding {
             Self::NameAssign(name, None, expr) => {
                 write!(f, "{} = {}", name, expr.display_with(ctx.module_info()))
             }
-            Self::NameAssign(name, Some(annot), expr) => {
+            Self::NameAssign(name, Some((_, annot)), expr) => {
                 write!(
                     f,
                     "{}: {} = {}",
@@ -916,20 +921,61 @@ impl DisplayWith<Bindings> for Binding {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationWithTarget {
+    pub target: AnnotationTarget,
+    pub annotation: Annotation,
+}
+
+impl AnnotationWithTarget {
+    pub fn ty(&self) -> Option<&Type> {
+        self.annotation.ty.as_ref()
+    }
+}
+
+impl Display for AnnotationWithTarget {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}: {}", self.target, self.annotation)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnnotationTarget {
+    /// A function parameter with a type annotation
+    Param(Name),
+    /// A return type annotation on a function. The name is that of the function
+    Return(Name),
+    /// An annotated assignment. For attribute assignments, the name is the attribute name ("attr" in "x.attr")
+    Assign(Name),
+    /// A member of a class
+    ClassMember(Name),
+}
+
+impl Display for AnnotationTarget {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Param(name) => write!(f, "param {name}"),
+            Self::Return(name) => write!(f, "{name} return"),
+            Self::Assign(name) => write!(f, "var {name}"),
+            Self::ClassMember(name) => write!(f, "attr {name}"),
+        }
+    }
+}
+
 /// Values that return an annotation.
 #[derive(Clone, Debug)]
 pub enum BindingAnnotation {
     /// The type is annotated to be this key, will have the outer type removed.
     /// Optionally occuring within a class, in which case Self refers to this class.
-    AnnotateExpr(Expr, Option<Idx<Key>>),
+    AnnotateExpr(AnnotationTarget, Expr, Option<Idx<KeyClass>>),
     /// A literal type we know statically.
-    Type(Type),
+    Type(AnnotationTarget, Type),
 }
 
 impl DisplayWith<Bindings> for BindingAnnotation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
         match self {
-            Self::AnnotateExpr(x, self_type) => write!(
+            Self::AnnotateExpr(_, x, self_type) => write!(
                 f,
                 "_: {}{}",
                 ctx.module_info().display(x),
@@ -938,7 +984,7 @@ impl DisplayWith<Bindings> for BindingAnnotation {
                     Some(t) => format!(" (self {})", ctx.display(*t)),
                 }
             ),
-            Self::Type(t) => write!(f, "type {t}"),
+            Self::Type(_, t) => write!(f, "type {t}"),
         }
     }
 }

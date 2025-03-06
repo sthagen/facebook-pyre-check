@@ -17,6 +17,7 @@ use ruff_python_ast::StmtFunctionDef;
 use ruff_text_size::Ranged;
 
 use crate::ast::Ast;
+use crate::binding::binding::AnnotationTarget;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingYield;
@@ -26,6 +27,7 @@ use crate::binding::binding::FunctionKind;
 use crate::binding::binding::ImplicitReturn;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
+use crate::binding::binding::KeyClass;
 use crate::binding::binding::KeyFunction;
 use crate::binding::binding::KeyYield;
 use crate::binding::binding::KeyYieldFrom;
@@ -49,7 +51,7 @@ impl<'a> BindingsBuilder<'a> {
         &mut self,
         x: &mut Parameters,
         function_idx: Idx<KeyFunction>,
-        self_type: Option<Idx<Key>>,
+        self_type: Option<Idx<KeyClass>>,
     ) {
         let mut self_name = None;
         for x in x.iter() {
@@ -91,7 +93,7 @@ impl<'a> BindingsBuilder<'a> {
         let func_name = x.name.clone();
         let (self_type, class_meta) = match &self.scopes.current().kind {
             ScopeKind::ClassBody(body) => (
-                Some(self.table.types.0.insert(body.as_self_type_key())),
+                Some(self.table.classes.0.insert(body.as_self_type_key())),
                 Some(
                     self.table
                         .class_metadata
@@ -126,7 +128,11 @@ impl<'a> BindingsBuilder<'a> {
                 x.range(),
                 self.table.insert(
                     KeyAnnotation::ReturnAnnotation(ShortIdentifier::new(&func_name)),
-                    BindingAnnotation::AnnotateExpr(*x, self_type),
+                    BindingAnnotation::AnnotateExpr(
+                        AnnotationTarget::Return(func_name.id.clone()),
+                        *x,
+                        self_type,
+                    ),
                 ),
             )
         });

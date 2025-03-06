@@ -14,6 +14,29 @@
  */
 
 /* You can override the default Infima variables here. */
+
+@font-face {
+  font-family: 'Source Serif Pro';
+  src: url('/fonts/SourceSerifPro-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Source Serif Pro';
+  src: url('/fonts/SourceSerifPro-Bold.ttf') format('truetype');
+  font-weight: bold;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Montserrat';
+  src: url('/fonts/Montserrat-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+
 :root {
   --ifm-color-primary: #dc2319;
   --ifm-color-primary-dark: #dc2319;
@@ -30,6 +53,8 @@
   --flow-gray-darkest: #2d343a;
   --flow-green: #9cd732;
   --flow-red: #dc2319;
+  --off-white: #edecdf;
+  --ifm-footer-background-color:#2d343a;
 }
 
 .docusaurus-highlight-code-line {
@@ -92,13 +117,8 @@
   opacity: 1;
 }
 
-/* PyreFly Navbar Styling */
 .navbar__title {
-  font-family: "Orbitron", sans-serif; /* Sci-fi & glowing effect */
-  font-size: 1.5rem; /* Adjust size */
-  font-weight: bold;
-  color: #ffcc00; /* Bright yellow-orange */
-  text-shadow: 0px 0px 8px rgba(255, 204, 0, 0.8), 0px 0px 16px rgba(255, 140, 0, 0.5);
+  color: white;
 }
 
 .rounded {
@@ -133,4 +153,8 @@
     margin-right: calc(-50vw + var(--ifm-container-width-xl) /  2);
     max-width: initial !important;
   }
+}
+
+.footer--dark {
+  background-color: #2d343a;
 }

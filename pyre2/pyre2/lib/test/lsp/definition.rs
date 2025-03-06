@@ -69,7 +69,9 @@ class B(A): pass
 # main.py
 4 | def f(x: list[int], y: str, z: Literal[42]):
         ^
-Definition Result: None
+Definition Result:
+4 | def f(x: list[int], y: str, z: Literal[42]):
+        ^
 
 4 | def f(x: list[int], y: str, z: Literal[42]):
                                     ^
@@ -125,7 +127,9 @@ bar = f([1], "", 42) # todo: ideally should jump through the import
 # main.py
 3 | from .import_provider import f
                                  ^
-Definition Result: None
+Definition Result:
+3 | from .import_provider import f
+                                 ^
 
 6 | foo: Literal[1] = 1 # todo: ideally should jump through the import
              ^
@@ -225,6 +229,27 @@ bar = f()
           ^
 Definition Result: None
 
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn goto_def_dead_code() {
+    let code: &str = r#"
+if False:
+    x
+#   ^
+"#;
+
+    let report = get_batched_lsp_operations_report_allow_error(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+3 |     x
+        ^
+Definition Result: None
 "#
         .trim(),
         report.trim()
@@ -338,7 +363,9 @@ def f[T](input: T):
 # main.py
 2 | def f[T](input: T):
           ^
-Definition Result: None
+Definition Result:
+2 | def f[T](input: T):
+          ^
 
 2 | def f[T](input: T):
                     ^

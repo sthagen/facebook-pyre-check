@@ -16,19 +16,18 @@ class A:
     x: int
 def f(a: A):
     a.x = 1  # OK
-    a.x = "oops"  # E: Attribute `x` has type `int`, cannot assign `Literal['oops']`
+    a.x = "oops"  # E: `Literal['oops']` is not assignable to attribute `x` with type `int`
     "#,
 );
 
-testcase_with_bug!(
-    "We never validate that assignments to unpacked targets are valid",
+testcase!(
     test_set_attribute_in_unpacked_assign,
     r#"
 class A:
     x: int
     y: str
 def f(a: A):
-    a.x, a.y = "x", "y"  # E: Could not assign type `Literal['x']` to attribute `x` with type `int`
+    a.x, a.y = "x", "y"  # E: `Literal['x']` is not assignable to attribute `x` with type `int`
     "#,
 );
 
@@ -51,7 +50,7 @@ class A:
     def __init__(self):
         self.x = 0
     def f(self):
-        self.x = "oops"  # E: Attribute `x` has type `int`, cannot assign `Literal['oops']`
+        self.x = "oops"  # E: `Literal['oops']` is not assignable to attribute `x` with type `int`
     "#,
 );
 
@@ -61,7 +60,7 @@ testcase!(
 from typing import assert_type
 class A:
     def f(self, x: str):
-        self.x = x  # E: Attribute `x` has type `int`, cannot assign `str`
+        self.x = x  # E: `str` is not assignable to attribute `x` with type `int`
     def __init__(self, x: int):
         self.x = x
     "#,
@@ -103,7 +102,7 @@ class C3:
     def f(x: int, /) -> str:
         return ""
 def foo(x: Callable[[int], str], c: C, c2: C2, c3: C3):
-    C.f = x  # E: Attribute `f` has type `(C, int) -> str`, cannot assign `(int) -> str`
+    C.f = x  # E: `(int) -> str` is not assignable to attribute `f` with type `(C, int) -> str`
     c.f = x
     C2.f = x
     c2.f = x
@@ -143,7 +142,7 @@ from typing import assert_type
 class A:
     x: str
     def __init__(self, x: int):
-        self.x = x  # E: Attribute `x` has type `str`, cannot assign `int`
+        self.x = x  # E: `int` is not assignable to attribute `x` with type `str`
     "#,
 );
 
@@ -154,7 +153,7 @@ from typing import assert_type
 
 class A:
     def __init__(self, x: str):
-        self.x: int = x  # E: Attribute `x` has type `int`, cannot assign `str`
+        self.x: int = x  # E: `str` is not assignable to attribute `x` with type `int`
 def f(a: A):
     assert_type(a.x, int)
     "#,
@@ -220,7 +219,7 @@ from typing import assert_type
 class A:
     def __init__(self, x: str):
         self.x: int
-        self.x = x  # E: Attribute `x` has type `int`, cannot assign `str`
+        self.x = x  # E: `str` is not assignable to attribute `x` with type `int`
 def f(a: A):
     assert_type(a.x, int)
     "#,
@@ -281,7 +280,7 @@ class C:
     def f[T](self: T, x: T):
         pass
 C().f(C())  # OK
-C().f(0)    # E: EXPECTED Literal[0] <: C
+C().f(0)    # E: Argument `Literal[0]` is not assignable to parameter `x` with type `C`
     "#,
 );
 
@@ -328,10 +327,10 @@ def f1(c: Callable[[int], None]):
     pass
 def f2(c: Callable[[C, int], None]):
     pass
-f1(C.f)  # E: EXPECTED (self: C, x: int) -> None <: (int) -> None
+f1(C.f)  # E: Argument `(self: C, x: int) -> None` is not assignable to parameter `c` with type `(int) -> None`
 f1(C().f)
 f2(C.f)
-f2(C().f)  # E: EXPECTED BoundMethod[C, (self: C, x: int) -> None] <: (C, int) -> None
+f2(C().f)  # E: Argument `BoundMethod[C, (self: C, x: int) -> None]` is not assignable to parameter `c` with type `(C, int) -> None`
     "#,
 );
 

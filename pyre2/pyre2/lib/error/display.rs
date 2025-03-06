@@ -7,6 +7,8 @@
 
 use crate::error::context::ErrorContext;
 use crate::error::context::TypeCheckKind;
+use crate::module::module_name::ModuleName;
+use crate::types::callable::FuncId;
 use crate::types::display::TypeDisplayContext;
 use crate::types::types::Type;
 
@@ -21,7 +23,7 @@ impl ErrorContext {
 }
 
 impl TypeCheckKind {
-    pub fn format_error(&self, got: &Type, want: &Type) -> String {
+    pub fn format_error(&self, got: &Type, want: &Type, current_module: ModuleName) -> String {
         let mut ctx = TypeDisplayContext::new();
         ctx.add(got);
         ctx.add(want);
@@ -29,11 +31,11 @@ impl TypeCheckKind {
             Self::MagicMethodReturn(cls, func) => {
                 ctx.add(cls);
                 format!(
-                    "Expected `{}.{}` to return `{}`, got `{}`",
+                    "Return type `{}` of function `{}.{}` is not assignable to expected return type `{}`",
+                    ctx.display(got),
                     ctx.display(cls),
                     func,
                     ctx.display(want),
-                    ctx.display(got)
                 )
             }
             Self::ImplicitFunctionReturn(has_explicit_return) => {
@@ -50,36 +52,87 @@ impl TypeCheckKind {
                 }
             }
             Self::ExplicitFunctionReturn => format!(
-                "Function declared to return `{}`, actually returns `{}`",
+                "Returned type `{}` is not assignable to declared return type `{}`",
+                ctx.display(got),
                 ctx.display(want),
-                ctx.display(got)
             ),
             Self::TypeGuardReturn => format!(
-                "Expected type guard function to return `bool`, actually returns `{}`",
+                "Returned type `{}` is not assignable to expected return type `bool` of type guard functions",
                 ctx.display(got)
             ),
+            Self::CallArgument(param, func_id) => {
+                let param_desc = match param {
+                    Some(name) => format!("parameter `{name}`"),
+                    None => "parameter".to_owned(),
+                };
+                format!(
+                    "Argument `{}` is not assignable to {} with type `{}`{}",
+                    ctx.display(got),
+                    param_desc,
+                    ctx.display(want),
+                    function_suffix(func_id.as_ref(), current_module),
+                )
+            }
+            Self::CallVarArgs(func_id) => format!(
+                "Unpacked argument `{}` is not assignable to varargs type `{}`{}",
+                ctx.display(got),
+                ctx.display(want),
+                function_suffix(func_id.as_ref(), current_module)
+            ),
+            Self::CallKwArgs(arg, param, func_id) => {
+                let arg_desc = match arg {
+                    Some(arg) => format!("Keyword argument `{arg}` with type"),
+                    None => "Unpacked keyword argument".to_owned(),
+                };
+                let param_desc = match param {
+                    Some(param) => format!("parameter `{param}` with type"),
+                    None => "kwargs type".to_owned(),
+                };
+                format!(
+                    "{} `{}` is not assignable to {} `{}`{}",
+                    arg_desc,
+                    ctx.display(got),
+                    param_desc,
+                    ctx.display(want),
+                    function_suffix(func_id.as_ref(), current_module),
+                )
+            }
             Self::FunctionParameterDefault(param) => format!(
-                "Parameter `{}` declared with type `{}`, cannot assign default `{}`",
+                "Default `{}` is not assignable to parameter `{}` with type `{}`",
+                ctx.display(got),
                 param,
                 ctx.display(want),
-                ctx.display(got)
             ),
             Self::TypedDictKey(key) => format!(
-                "TypedDict key `{}` declared with type `{}`, cannot assign `{}`",
+                "`{}` is not assignable to TypedDict key `{}` with type `{}`",
+                ctx.display(got),
                 key,
                 ctx.display(want),
-                ctx.display(got),
             ),
             Self::Attribute(attr) => format!(
-                "Attribute `{}` has type `{}`, cannot assign `{}`",
+                "`{}` is not assignable to attribute `{}` with type `{}`",
+                ctx.display(got),
                 attr,
                 ctx.display(want),
-                ctx.display(got)
             ),
-            Self::ExplicitTypeAnnotation => format!(
-                "Expected declared type `{}`, got `{}`",
+            Self::AnnotatedName(var) => format!(
+                "`{}` is not assignable to variable `{}` with type `{}`",
+                ctx.display(got),
+                var,
                 ctx.display(want),
-                ctx.display(got)
+            ),
+            // In an annotated assignment, the variable, type, and assigned value are all in the
+            // same statement, so we can make the error message more concise and assume the context
+            // is clear from the surrounding code.
+            Self::AnnAssign => format!(
+                "`{}` is not assignable to `{}`",
+                ctx.display(got),
+                ctx.display(want)
+            ),
+            Self::ExceptionClass => format!(
+                "Invalid exception class: `{}` does not inherit from `{}`",
+                ctx.display(got),
+                ctx.display(want),
             ),
             Self::Unknown => {
                 format!("EXPECTED {} <: {}", ctx.display(got), ctx.display(want))
@@ -92,5 +145,12 @@ impl TypeCheckKind {
                 )
             }
         }
+    }
+}
+
+pub fn function_suffix(func_id: Option<&FuncId>, current_module: ModuleName) -> String {
+    match func_id {
+        Some(func) => format!(" in function `{}`", func.format(current_module)),
+        None => "".to_owned(),
     }
 }

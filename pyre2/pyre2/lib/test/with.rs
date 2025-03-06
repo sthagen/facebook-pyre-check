@@ -28,7 +28,7 @@ with Foo() as foo:
     assert_type(foo, int)
 
 bar: str = "abc"
-with Foo() as bar: # E: EXPECTED int <: str
+with Foo() as bar: # E: `int` is not assignable to variable `bar` with type `str`
     assert_type(bar, str)
     "#,
 );
@@ -127,7 +127,7 @@ class Foo:
     def __exit__(self, exc_type: int, exc_value: int, traceback: int) -> None:
         ...
 
-with Foo() as foo: # E: type[BaseException] | None <: int # E: BaseException | None <: int # E: TracebackType | None <: int
+with Foo() as foo: # E: Argument `BaseException | None` is not assignable to parameter `exc_value` with type `int` # E: Argument `TracebackType | None` is not assignable to parameter `traceback` with type `int` # E: Argument `type[BaseException] | None` is not assignable to parameter `exc_type` with type `int`
     pass
     "#,
 );
@@ -149,7 +149,7 @@ class Foo:
     ) -> str:
         ...
 
-with Foo() as foo:  # E: Cannot use `Foo` as a context manager\n  Expected `Foo.__exit__` to return `bool | None`, got `str`
+with Foo() as foo:  # E: Cannot use `Foo` as a context manager\n  Return type `str` of function `Foo.__exit__` is not assignable to expected return type `bool | None`
     pass
     "#,
 );

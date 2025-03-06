@@ -221,7 +221,7 @@ testcase!(
 def f(x: int): pass
 
 def g():
-   return f("test") # E: EXPECTED Literal['test'] <: int
+   return f("test") # E: Argument `Literal['test']` is not assignable to parameter `x` with type `int`
 "#,
 );
 
@@ -243,7 +243,7 @@ def fail() -> NoReturn:
 
 def f(b: bool) -> int:
     if b:
-        return None # E: Function declared to return `int`, actually returns `None`
+        return None # E: Returned type `None` is not assignable to declared return type `int`
     else:
         fail()
 "#,

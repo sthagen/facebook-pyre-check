@@ -405,6 +405,14 @@ impl Type {
         matches!(self, Type::Literal(_))
     }
 
+    pub fn is_literal_string(&self) -> bool {
+        match self {
+            Type::LiteralString => true,
+            Type::Literal(l) if l.is_string() => true,
+            _ => false,
+        }
+    }
+
     pub fn is_unpack(&self) -> bool {
         matches!(self, Type::Unpack(_))
     }
@@ -578,7 +586,6 @@ impl Type {
     pub fn promote_literals(self, stdlib: &Stdlib) -> Type {
         self.transform(|ty| match &ty {
             Type::Literal(lit) => *ty = lit.general_class_type(stdlib).to_type(),
-            Type::LiteralString => *ty = stdlib.str().to_type(),
             _ => {}
         })
     }

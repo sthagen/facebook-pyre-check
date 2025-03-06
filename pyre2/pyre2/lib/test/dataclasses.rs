@@ -48,7 +48,7 @@ def f(d: Data[int]):
     assert_type(d.x, int)
 assert_type(Data(x=0), Data[int])
 Data[int](x=0)  # OK
-Data[int](x="")  # E: EXPECTED Literal[''] <: int
+Data[int](x="")  # E: Argument `Literal['']` is not assignable to parameter `x` with type `int` in function `Data.__init__`
     "#,
 );
 
@@ -61,7 +61,7 @@ class Data:
     x: int
     y: str
 Data(0, "1")  # OK
-Data(0, 1)  # E: EXPECTED Literal[1] <: str
+Data(0, 1)  # E: Argument `Literal[1]` is not assignable to parameter `y` with type `str`
     "#,
 );
 
@@ -106,7 +106,7 @@ class B(A):
     x: str # E:  Class member `x` overrides parent class `A` in an inconsistent manner
 # Overwriting x doesn't change the param order but does change its type
 B('0', 1.0)  # OK
-B(0, 1.0)  # E: EXPECTED Literal[0] <: str
+B(0, 1.0)  # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
     "#,
 );
 
@@ -143,7 +143,7 @@ class A[T]:
 class B(A[int]):
     y: str
 B(x=0, y="1")  # OK
-B(x="0", y="1")  # E: EXPECTED Literal['0'] <: int
+B(x="0", y="1")  # E: Argument `Literal['0']` is not assignable to parameter `x` with type `int` in function `B.__init__`
     "#,
 );
 
@@ -155,7 +155,7 @@ from dataclasses import dataclass
 class C:
     x: int
 C(x=0)  # OK
-C(x='0')  # E: EXPECTED Literal['0'] <: int
+C(x='0')  # E: Argument `Literal['0']` is not assignable to parameter `x` with type `int` in function `C.__init__`
     "#,
 );
 
@@ -318,7 +318,7 @@ class D3:
     x: int
 def f(d: D2, e: D2, f: D3):
     if d < e: ...  # OK
-    if e < f: ...  # E: EXPECTED D3 <: D2
+    if e < f: ...  # E: Argument `D3` is not assignable to parameter `other` with type `D2`
     if e != f: ...  # OK: `==` and `!=` never error regardless
     "#,
 );
@@ -403,8 +403,8 @@ C2(x=1)  # OK
 
 @dataclass
 class C3:
-    x: int = field(default="oops")  # E: EXPECTED str <: int
-    y: str = field(default_factory=factory)  # E: EXPECTED int <: str
+    x: int = field(default="oops")  # E: `str` is not assignable to `int`
+    y: str = field(default_factory=factory)  # E: `int` is not assignable to `str`
     "#,
 );
 
@@ -443,7 +443,7 @@ f(D1())  # OK
 @dataclass(eq=True, frozen=False)
 class D2:
     pass
-f(D2())  # E: EXPECTED D2 <: Hashable
+f(D2())  # E: Argument `D2` is not assignable to parameter `x` with type `Hashable`
 
 # When eq=False, __hash__ is untouched
 @dataclass(eq=False)
@@ -453,7 +453,7 @@ class D3:
 class D4(Unhashable):
     pass
 f(D3())  # OK
-f(D4())  # E: EXPECTED D4 <: Hashable
+f(D4())  # E: Argument `D4` is not assignable to parameter `x` with type `Hashable`
 
 # unsafe_hash=True forces __hash__ to be created
 @dataclass(eq=False, unsafe_hash=True)
