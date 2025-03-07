@@ -19,25 +19,27 @@ import {
   setAutoCompleteFunction,
   setGetDefFunction,
   setHoverFunctionForMonaco,
+  setInlayHintFunctionForMonaco,
 } from './configured-monaco';
 import BrowserOnly from '@docusaurus/BrowserOnly';
+import type {PyreflyErrorMessage} from './TryPyre2Results';
 
 const DEFAULT_PYTHON_PROGRAM = `
 from typing import *
 
 # reveal_type will produce a type error that tells you the type Pyre has
 # computed for the argument (in this case, int)
-def test(x: int) -> str:
+def test(x: int):
   return f"{x}"
 
 reveal_type(test(42))
-
-`;
+`.trimStart();
 
 const pyre2WasmUninitializedPromise =
   // $FlowIgnore[cannot-resolve-name]
   typeof window !== 'undefined'
-    ? import('./pyre2_wasm')
+    ? // $FlowIgnore[cannot-resolve-module]
+      import('./pyre2_wasm')
     : new Promise(_resolve => {});
 
 const pyre2WasmInitializedPromise = pyre2WasmUninitializedPromise
@@ -51,9 +53,13 @@ const pyre2WasmInitializedPromise = pyre2WasmUninitializedPromise
 export default component TryPyre2(
   editorHeight: number = 600,
   codeSample: string = DEFAULT_PYTHON_PROGRAM,
+  showErrorPanel: boolean = true,
 ) {
   const {withBaseUrl} = useBaseUrlUtils();
   const editorRef = useRef(null);
+  const [errors, setErrors] = useState<?$ReadOnlyArray<PyreflyErrorMessage>>(
+    [],
+  );
   const [internalError, setInternalError] = useState('');
   const [loading, setLoading] = useState(true);
   const [pyreService, setPyreService] = useState<any>(null);
@@ -87,15 +93,20 @@ export default component TryPyre2(
     setAutoCompleteFunction((l, c) => pyreService.autoComplete(l, c));
     setGetDefFunction((l, c) => pyreService.gotoDefinition(l, c));
     setHoverFunctionForMonaco((l, c) => pyreService.queryType(l, c));
+    setInlayHintFunctionForMonaco(() => pyreService.inlayHint());
 
     // typecheck on edit
     try {
       pyreService.updateSource(model.getValue());
+      const errors =
+        pyreService.getErrors() as ?$ReadOnlyArray<PyreflyErrorMessage>;
       monaco.editor.setModelMarkers(model, 'default', pyreService.getErrors());
       setInternalError('');
+      setErrors(errors);
     } catch (e) {
       console.error(e);
       setInternalError(JSON.stringify(e));
+      setErrors([]);
     }
   }
 
@@ -127,6 +138,13 @@ export default component TryPyre2(
           />
         </div>
       </div>
+      {showErrorPanel && (
+        <TryPyre2Results
+          loading={loading}
+          errors={errors}
+          internalError={internalError}
+        />
+      )}
     </div>
   );
 }

@@ -26,7 +26,6 @@ use crate::types::callable::BoolKeywords;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
 use crate::types::callable::FuncId;
-use crate::types::callable::Params;
 use crate::types::class::ClassType;
 use crate::types::typed_dict::TypedDict;
 use crate::types::types::AnyStyle;
@@ -56,18 +55,7 @@ pub enum CallTarget {
     TypedDict(TypedDict),
     /// An overload.
     Overload(Vec1<Option<(Vec<Var>, CallTarget)>>),
-}
-
-impl CallTarget {
-    pub fn any(style: AnyStyle) -> Self {
-        Self::Callable(
-            Callable {
-                params: Params::Ellipsis,
-                ret: style.propagate(),
-            },
-            CallableKind::Anon,
-        )
-    }
+    Any(AnyStyle),
 }
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
@@ -79,7 +67,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         error_kind: ErrorKind,
     ) -> (Vec<Var>, CallTarget) {
         errors.add(range, msg, error_kind, None);
-        (Vec::new(), CallTarget::any(AnyStyle::Error))
+        (Vec::new(), CallTarget::Any(AnyStyle::Error))
     }
 
     /// Return a pair of the quantified variables I had to instantiate, and the resulting call target.
@@ -135,7 +123,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None
                 }
             }
-            Type::Any(style) => Some((Vec::new(), CallTarget::any(style))),
+            Type::Any(style) => Some((Vec::new(), CallTarget::Any(style))),
             Type::TypeAlias(ta) => self.as_call_target(ta.as_value(self.stdlib)),
             Type::ClassType(cls) => self
                 .get_instance_attribute(&cls, &dunder::CALL)
@@ -281,34 +269,41 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             // Got something other than an instance of the class under construction.
             return ret;
         }
-        let overrides_new = if let Some(new_method) = self.get_dunder_new(&cls) {
-            let cls_ty = Type::type_form(instance_ty.clone());
-            let mut full_args = vec![CallArg::Type(&cls_ty, range)];
-            full_args.extend_from_slice(args);
-            let ret = self.call_infer(
-                self.as_call_target_or_error(
-                    new_method,
-                    CallStyle::Method(&dunder::NEW),
+        let (overrides_new, dunder_new_has_errors) =
+            if let Some(new_method) = self.get_dunder_new(&cls) {
+                let cls_ty = Type::type_form(instance_ty.clone());
+                let mut full_args = vec![CallArg::Type(&cls_ty, range)];
+                full_args.extend_from_slice(args);
+                let dunder_new_errors =
+                    ErrorCollector::new(self.module_info().dupe(), ErrorStyle::Delayed);
+                let ret = self.call_infer(
+                    self.as_call_target_or_error(
+                        new_method,
+                        CallStyle::Method(&dunder::NEW),
+                        range,
+                        errors,
+                    ),
+                    &full_args,
+                    keywords,
                     range,
-                    errors,
-                ),
-                &full_args,
-                keywords,
-                range,
-                errors,
-            );
-            if !self
-                .solver()
-                .is_subset_eq(&ret, &instance_ty, self.type_order())
-            {
-                // Got something other than an instance of the class under construction.
-                return ret;
-            }
-            true
-        } else {
-            false
-        };
+                    &dunder_new_errors,
+                );
+                let has_errors = !dunder_new_errors.is_empty();
+                errors.extend(dunder_new_errors);
+                if !self
+                    .solver()
+                    .is_subset_eq(&ret, &instance_ty, self.type_order())
+                {
+                    // Got something other than an instance of the class under construction.
+                    return ret;
+                }
+                (true, has_errors)
+            } else {
+                (false, false)
+            };
         if let Some(init_method) = self.get_dunder_init(&cls, overrides_new) {
+            let dunder_init_errors =
+                ErrorCollector::new(self.module_info().dupe(), ErrorStyle::Delayed);
             self.call_infer(
                 self.as_call_target_or_error(
                     init_method,
@@ -319,8 +314,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 args,
                 keywords,
                 range,
-                errors,
+                &dunder_init_errors,
             );
+            // Report `__init__` errors only when there are no `__new__` errors, to avoid redundant errors.
+            if !dunder_new_has_errors {
+                errors.extend(dunder_init_errors);
+            }
         }
         cls.self_type()
     }
@@ -464,6 +463,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None,
                     "No matching overload found".to_owned(),
                 );
+            }
+            CallTarget::Any(style) => {
+                // Make sure we still catch errors in the arguments.
+                for arg in args {
+                    match arg {
+                        CallArg::Expr(e) | CallArg::Star(e, _) => {
+                            self.expr_infer(e, arg_errors);
+                        }
+                        CallArg::Type(..) => {}
+                    }
+                }
+                for kw in keywords {
+                    self.expr_infer(&kw.value, arg_errors);
+                }
+                style.propagate()
             }
         };
         self.solver().finish_quantified(&call_target.0);
