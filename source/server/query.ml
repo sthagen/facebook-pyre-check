@@ -334,6 +334,23 @@ module Response = struct
   let create_type_at_location (location, annotation) = { Base.location; annotation }
 end
 
+(* An cache for expensive queries. We don't generally cache queries, but we have added caching on an
+   ad-hoc basis to support specific static analysis use cases *)
+module Cache = struct
+  type t = LocationBasedLookupProcessor.types_by_location Reference.Table.t
+
+  let create () = Reference.Table.create ()
+
+  let invalidate cache update_result =
+    Analysis.ErrorsEnvironment.UpdateResult.modules_with_invalidated_type_check update_result
+    |> Set.iter ~f:(fun module_name -> Hashtbl.remove cache module_name)
+
+
+  let find cache qualifier = Hashtbl.find cache qualifier
+
+  let save cache qualifier types = Hashtbl.set ~key:qualifier ~data:types cache
+end
+
 let rec parse_request_exn query =
   let open Expression in
   match PyreMenhirParser.Parser.parse [query] with
@@ -517,6 +534,7 @@ let rec process_request_exn
     ~global_module_paths_api
     ~scheduler
     ~build_system
+    ~query_cache
     request
   =
   let process_request_exn () =
@@ -753,7 +771,8 @@ let rec process_request_exn
                   ~type_environment
                   ~global_module_paths_api
                   ~scheduler
-                  ~build_system)
+                  ~build_system
+                  ~query_cache)
              requests)
     | Callees caller ->
         let callees =
@@ -1190,11 +1209,22 @@ let rec process_request_exn
         Single (Base.IsTypechecked (List.map paths ~f:get_is_typechecked))
     | TypesInFiles paths ->
         let find_resolved_types path =
+          let module_path_to_resolved_types module_path =
+            let qualifier = ModulePath.qualifier module_path in
+            match Cache.find query_cache qualifier with
+            | Some types -> types
+            | None ->
+                let types =
+                  LocationBasedLookupProcessor.find_all_resolved_types_for_qualifier
+                    ~type_environment
+                    qualifier
+                in
+                Cache.save query_cache qualifier types;
+                types
+          in
           match
-            LocationBasedLookupProcessor.find_all_resolved_types_for_path
-              ~type_environment
-              ~build_system
-              path
+            LocationBasedLookupProcessor.get_module_path ~type_environment ~build_system path
+            |> Result.bind ~f:module_path_to_resolved_types
           with
           | Result.Ok types ->
               Either.First { Base.path; types = List.map ~f:create_type_at_location types }
@@ -1293,9 +1323,22 @@ let rec process_request_exn
       |> fun message -> Response.Error message
 
 
-let process_request ~type_environment ~global_module_paths_api ~scheduler ~build_system request =
+let process_request
+    ~type_environment
+    ~global_module_paths_api
+    ~scheduler
+    ~build_system
+    ~query_cache
+    request
+  =
   match
-    process_request_exn ~type_environment ~global_module_paths_api ~scheduler ~build_system request
+    process_request_exn
+      ~type_environment
+      ~global_module_paths_api
+      ~scheduler
+      ~build_system
+      ~query_cache
+      request
   with
   | exception e ->
       Log.error "Fatal exception in no-daemon query: %s" (Exn.to_string e);
@@ -1303,7 +1346,14 @@ let process_request ~type_environment ~global_module_paths_api ~scheduler ~build
   | result -> result
 
 
-let parse_and_process_request ~overlaid_environment ~scheduler ~build_system request overlay_id =
+let parse_and_process_request
+    ~overlaid_environment
+    ~scheduler
+    ~build_system
+    ~query_cache
+    request
+    overlay_id
+  =
   let global_module_paths_api =
     OverlaidEnvironment.AssumeGlobalModuleListing.global_module_paths_api overlaid_environment
   in
@@ -1326,4 +1376,10 @@ let parse_and_process_request ~overlaid_environment ~scheduler ~build_system req
   match parse_request request with
   | Result.Error reason -> Response.Error reason
   | Result.Ok request ->
-      process_request ~type_environment ~global_module_paths_api ~scheduler ~build_system request
+      process_request
+        ~type_environment
+        ~global_module_paths_api
+        ~scheduler
+        ~build_system
+        ~query_cache
+        request

@@ -648,7 +648,7 @@ def f(x: list[int], y: dict[str, bool]) -> None:
     assert_type(y["test"], bool)
     x["foo"]  # E: No matching overload
     c = C()
-    c[0]  # E: `C` has no attribute `__getitem__`
+    c[0]  # E: Cannot index into `C`\n  Object of class `C` has no attribute `__getitem__`
     d = D()
     d[0]  # E: Expected `__getitem__` to be a callable, got int
 "#,
@@ -829,7 +829,7 @@ class A:
     def __getitem__(self, s: str) -> str:
         return s
 def f(x: A):
-    for _ in x:  # E: Argument `int` is not assignable to parameter `s` with type `str`
+    for _ in x:  # E: Type `A` is not iterable\n  Argument `int` is not assignable to parameter `s` with type `str` in function `A.__getitem__`
         pass
     "#,
 );

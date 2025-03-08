@@ -21,9 +21,16 @@ use crate::types::types::Type;
 /// it back to the root cause.
 #[derive(Clone, Debug)]
 pub enum ErrorContext {
+    /// with x: ...
     BadContextManager(Type),
+    /// Unary operation like `+x`
     UnaryOp(String, Type),
+    /// Binary operation like `x + y`
     BinaryOp(String, Type, Type),
+    /// for x in y: ...
+    Iteration(Type),
+    /// x[y]
+    Index(Type),
 }
 
 /// The context in which a got <: want type check occurs. This differs from ErrorContext in that

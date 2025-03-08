@@ -181,6 +181,7 @@ let process_successful_rebuild
     ~subscriptions
     ~build_system
     ~overlaid_environment
+    ~query_cache
     changed_paths_from_filesystem
     changed_paths_from_rebuild
   =
@@ -194,7 +195,11 @@ let process_successful_rebuild
     |> List.append changed_paths_from_rebuild
     |> List.dedup_and_sort ~compare:ArtifactPath.Event.compare
   in
-  OverlaidEnvironment.run_update_root overlaid_environment ~scheduler changed_paths;
+  (* TODO(stroxler): once we add a cache for `types` queries, invalidate it here. *)
+  let update_result =
+    OverlaidEnvironment.run_update_root overlaid_environment ~scheduler changed_paths
+  in
+  Query.Cache.invalidate query_cache update_result;
   let type_error_subscriptions, status_change_subscriptions =
     List.partition_tf subscriptions ~f:Subscription.wants_type_errors
   in
@@ -223,8 +228,15 @@ let get_buck_error_message ~description ~additional_logs () =
 let process_incremental_update_request
     ~properties:{ ServerProperties.configuration; critical_files; _ }
     ~state:
-      ({ ServerState.overlaid_environment; subscriptions; scheduler; build_system; build_failure }
-      as state)
+      ({
+         ServerState.overlaid_environment;
+         subscriptions;
+         scheduler;
+         build_system;
+         build_failure;
+         query_cache;
+         _;
+       } as state)
     paths
   =
   let open Lwt.Infix in
@@ -264,6 +276,7 @@ let process_incremental_update_request
                   ~subscriptions
                   ~build_system
                   ~overlaid_environment
+                  ~query_cache
                   current_and_deferred_source_path_events
                   changed_paths_from_rebuild
             | Result.Error (Buck.Raw.BuckError { description; additional_logs; _ }) ->
@@ -321,7 +334,8 @@ let process_overlay_update
 let process_request
     ~properties
     ~state:
-      ({ ServerState.overlaid_environment; scheduler; build_system; build_failure; _ } as state)
+      ({ ServerState.overlaid_environment; scheduler; build_system; build_failure; query_cache; _ }
+      as state)
     request
   =
   match request with
@@ -342,6 +356,7 @@ let process_request
              ~scheduler
              ~build_system
              ~overlaid_environment
+             ~query_cache
              query_text
              None)
       in
@@ -353,6 +368,7 @@ let process_request
              ~scheduler
              ~build_system
              ~overlaid_environment
+             ~query_cache
              query_text
              overlay_id)
       in

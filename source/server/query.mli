@@ -195,6 +195,14 @@ module Response : sig
   val create_type_at_location : Location.t * Type.t -> Base.type_at_location
 end
 
+module Cache : sig
+  type t
+
+  val create : unit -> t
+
+  val invalidate : t -> Analysis.ErrorsEnvironment.UpdateResult.t -> unit
+end
+
 val parse_request : string -> (Request.t, string) Core.Result.t
 
 val process_request
@@ -202,6 +210,7 @@ val process_request
   global_module_paths_api:Analysis.GlobalModulePathsApi.t ->
   scheduler:Scheduler.t ->
   build_system:BuildSystem.t ->
+  query_cache:Cache.t ->
   Request.t ->
   Response.t
 
@@ -210,6 +219,7 @@ val parse_and_process_request
   :  overlaid_environment:Analysis.OverlaidEnvironment.t ->
   scheduler:Scheduler.t ->
   build_system:BuildSystem.t ->
+  query_cache:Cache.t ->
   string ->
   string option ->
   Response.t
