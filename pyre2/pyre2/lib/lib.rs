@@ -11,6 +11,7 @@
 #![allow(clippy::match_like_matches_macro)]
 #![allow(clippy::module_inception)]
 #![allow(clippy::needless_lifetimes)]
+#![allow(clippy::new_without_default)]
 #![allow(clippy::single_match)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
@@ -52,11 +53,13 @@ mod visitors;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::commands::run;
 pub use crate::config::ConfigFile;
+pub use crate::config::ConfigFileInner;
+pub use crate::metadata::PythonVersion;
 pub use crate::util::args::clap_env;
 pub use crate::util::args::get_args_expanded;
 pub use crate::util::globs::Globs;
 pub use crate::util::listing::FileList;
 pub use crate::util::notify_watcher::NotifyWatcher;
-pub use crate::util::rayon::init_rayon;
+pub use crate::util::thread_pool::init_thread_pool;
 pub use crate::util::trace::init_tracing;
 pub use crate::util::watcher::Watcher;

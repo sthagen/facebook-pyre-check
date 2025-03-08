@@ -16,6 +16,7 @@ use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::solve::Iterable;
 use crate::error::collector::ErrorCollector;
+use crate::error::context::ErrorContext;
 use crate::error::context::TypeCheckContext;
 use crate::error::context::TypeCheckKind;
 use crate::error::display::function_suffix;
@@ -137,11 +138,12 @@ impl CallArgPreEval<'_> {
         range: TextRange,
         arg_errors: &ErrorCollector,
         call_errors: &ErrorCollector,
+        context: Option<&ErrorContext>,
     ) {
-        let tcc = TypeCheckContext::of_kind(TypeCheckKind::CallArgument(
-            param_name.cloned(),
-            callable_name.cloned(),
-        ));
+        let tcc = TypeCheckContext {
+            kind: TypeCheckKind::CallArgument(param_name.cloned(), callable_name.cloned()),
+            context: context.cloned(),
+        };
         match self {
             Self::Type(ty, done) => {
                 *done = true;
@@ -216,6 +218,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         arg_errors: &ErrorCollector,
         call_errors: &ErrorCollector,
+        context: Option<&ErrorContext>,
     ) {
         let error = |errors, range, kind, context, msg: String| {
             self.error(
@@ -280,6 +283,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         arg.range(),
                         arg_errors,
                         call_errors,
+                        context,
                     ),
                     None if matched_unpacked_vararg => arg_pre.post_skip(),
                     None => {
@@ -349,7 +353,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 &unpacked_args_ty,
                 range,
                 arg_errors,
-                &TypeCheckContext::of_kind(TypeCheckKind::CallVarArgs(callable_name.clone())),
+                &TypeCheckContext {
+                    kind: TypeCheckKind::CallVarArgs(callable_name.clone()),
+                    context: context.cloned(),
+                },
             );
         }
         if let Some(arg_range) = extra_arg_pos {
@@ -373,7 +380,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 call_errors,
                 arg_range,
                 ErrorKind::BadArgumentType,
-                None,
+                context,
                 format!("Expected {expected}, got {actual}"),
             );
         }
@@ -409,7 +416,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 call_errors,
                 range,
                 ErrorKind::BadArgumentCount,
-                None,
+                context,
                 format!(
                     "Expected {}",
                     count(need_positional, "more positional argument")
@@ -429,7 +436,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     call_errors,
                                     kw.range,
                                     ErrorKind::BadKeywordArgument,
-                                    None,
+                                    context,
                                     format!("Multiple values for argument `{}`", name),
                                 );
                                 params.items()[p_idx].visit(|ty| hint = Some(ty));
@@ -440,7 +447,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                         call_errors,
                                         kw.range,
                                         ErrorKind::MissingArgument,
-                                        None,
+                                        context,
                                         format!("Expected key `{}` to be required", name),
                                     );
                                 }
@@ -450,7 +457,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     call_errors,
                                     kw.range,
                                     ErrorKind::UnexpectedKeyword,
-                                    None,
+                                    context,
                                     format!("Unexpected keyword argument `{}`", name),
                                 );
                             }
@@ -460,10 +467,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     &field.ty,
                                     kw.range,
                                     call_errors,
-                                    &TypeCheckContext::of_kind(TypeCheckKind::CallArgument(
-                                        Some(name.clone()),
-                                        callable_name.clone(),
-                                    )),
+                                    &TypeCheckContext {
+                                        kind: TypeCheckKind::CallArgument(
+                                            Some(name.clone()),
+                                            callable_name.clone(),
+                                        ),
+                                        context: context.cloned(),
+                                    },
                                 );
                             });
                         })
@@ -481,11 +491,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                             &value,
                                             kw.range,
                                             call_errors,
-                                            &TypeCheckContext::of_kind(TypeCheckKind::CallKwArgs(
-                                                None,
-                                                None,
-                                                callable_name.clone(),
-                                            )),
+                                            &TypeCheckContext {
+                                                kind: TypeCheckKind::CallKwArgs(
+                                                    None,
+                                                    None,
+                                                    callable_name.clone(),
+                                                ),
+                                                context: context.cloned(),
+                                            },
                                         );
                                     });
                                     splat_kwargs.push((value, kw.range));
@@ -494,7 +507,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                         call_errors,
                                         kw.value.range(),
                                         ErrorKind::BadUnpacking,
-                                        None,
+                                        context,
                                         format!(
                                             "Expected argument after ** to have `str` keys, got: {}",
                                             key.deterministic_printing()
@@ -507,7 +520,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     call_errors,
                                     kw.value.range(),
                                     ErrorKind::BadUnpacking,
-                                    None,
+                                    context,
                                     format!(
                                         "Expected argument after ** to be a mapping, got: {}",
                                         ty.deterministic_printing()
@@ -525,7 +538,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             call_errors,
                             kw.range,
                             ErrorKind::BadKeywordArgument,
-                            None,
+                            context,
                             format!("Multiple values for argument `{}`", id.id),
                         );
                         params.items()[p_idx].visit(|ty| {
@@ -541,15 +554,22 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             call_errors,
                             kw.range,
                             ErrorKind::UnexpectedKeyword,
-                            None,
+                            context,
                             format!("Unexpected keyword argument `{}`", id.id),
                         );
                     }
-                    let tcc = TypeCheckContext::of_kind(if has_matching_param {
-                        TypeCheckKind::CallArgument(Some(id.id.clone()), callable_name.clone())
-                    } else {
-                        TypeCheckKind::CallKwArgs(Some(id.id.clone()), None, callable_name.clone())
-                    });
+                    let tcc = TypeCheckContext {
+                        kind: if has_matching_param {
+                            TypeCheckKind::CallArgument(Some(id.id.clone()), callable_name.clone())
+                        } else {
+                            TypeCheckKind::CallKwArgs(
+                                Some(id.id.clone()),
+                                None,
+                                callable_name.clone(),
+                            )
+                        },
+                        context: context.cloned(),
+                    };
                     self.expr_with_separate_check_errors(
                         &kw.value,
                         hint.map(|ty| (ty, &tcc, call_errors)),
@@ -565,7 +585,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         call_errors,
                         range,
                         ErrorKind::MissingArgument,
-                        None,
+                        context,
                         format!("Missing argument `{}`", name),
                     );
                 }
@@ -575,11 +595,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         ty,
                         *range,
                         call_errors,
-                        &TypeCheckContext::of_kind(TypeCheckKind::CallKwArgs(
-                            None,
-                            Some(name.clone()),
-                            callable_name.clone(),
-                        )),
+                        &TypeCheckContext {
+                            kind: TypeCheckKind::CallKwArgs(
+                                None,
+                                Some(name.clone()),
+                                callable_name.clone(),
+                            ),
+                            context: context.cloned(),
+                        },
                     );
                 }
             }
@@ -603,6 +626,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         arg_errors: &ErrorCollector,
         call_errors: &ErrorCollector,
+        context: Option<&ErrorContext>,
     ) -> Type {
         match callable.params {
             Params::List(params) => {
@@ -615,6 +639,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     range,
                     arg_errors,
                     call_errors,
+                    context,
                 );
             }
             Params::Ellipsis => {
@@ -639,6 +664,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         range,
                         arg_errors,
                         call_errors,
+                        context,
                     ),
                     Type::Quantified(q) => {
                         if !args
@@ -652,7 +678,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 call_errors,
                                 range,
                                 ErrorKind::InvalidParamSpec,
-                                None,
+                                context,
                                 "Expected a `*args` and `**kwargs` for `ParamSpec` (TODO: improve error message)".to_owned(),
                             );
                         } else {
@@ -665,6 +691,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 range,
                                 arg_errors,
                                 call_errors,
+                                context,
                             );
                         }
                     }
@@ -674,7 +701,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             call_errors,
                             range,
                             ErrorKind::InvalidParamSpec,
-                            None,
+                            context,
                             format!("Unexpected ParamSpec type: `{p}`"),
                         );
                     }

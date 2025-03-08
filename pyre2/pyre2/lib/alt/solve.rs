@@ -79,11 +79,13 @@ use crate::types::class::ClassKind;
 use crate::types::class::ClassType;
 use crate::types::literal::Lit;
 use crate::types::module::Module;
+use crate::types::param_spec::ParamSpec;
 use crate::types::quantified::Quantified;
 use crate::types::tuple::Tuple;
 use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
 use crate::types::type_var::Variance;
+use crate::types::type_var_tuple::TypeVarTuple;
 use crate::types::types::AnyStyle;
 use crate::types::types::CalleeKind;
 use crate::types::types::TParamInfo;
@@ -289,7 +291,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     .or_else(|| {
                         let int_ty = self.stdlib.int().to_type();
                         let arg = CallArg::Type(&int_ty, range);
-                        self.call_method(iterable, &dunder::GETITEM, range, &[arg], &[], errors)
+                        self.call_method(
+                            iterable,
+                            &dunder::GETITEM,
+                            range,
+                            &[arg],
+                            &[],
+                            errors,
+                            None,
+                        )
                     })
                     .unwrap_or_else(|| {
                         self.error(
@@ -343,26 +353,78 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn tvars_to_tparams_for_type_alias(
         &self,
         ty: &mut Type,
-        seen: &mut SmallMap<TypeVar, Quantified>,
+        seen_type_vars: &mut SmallMap<TypeVar, Quantified>,
+        seen_type_var_tuples: &mut SmallMap<TypeVarTuple, Quantified>,
+        seen_param_specs: &mut SmallMap<ParamSpec, Quantified>,
         tparams: &mut Vec<TParamInfo>,
     ) {
         match ty {
             Type::Union(ts) => {
                 for t in ts.iter_mut() {
-                    self.tvars_to_tparams_for_type_alias(t, seen, tparams);
+                    self.tvars_to_tparams_for_type_alias(
+                        t,
+                        seen_type_vars,
+                        seen_type_var_tuples,
+                        seen_param_specs,
+                        tparams,
+                    );
                 }
             }
             Type::ClassType(cls) => {
                 for t in cls.targs_mut().as_mut() {
-                    self.tvars_to_tparams_for_type_alias(t, seen, tparams);
+                    self.tvars_to_tparams_for_type_alias(
+                        t,
+                        seen_type_vars,
+                        seen_type_var_tuples,
+                        seen_param_specs,
+                        tparams,
+                    );
                 }
             }
             Type::Callable(callable, _) => {
-                let visit = |t: &mut Type| self.tvars_to_tparams_for_type_alias(t, seen, tparams);
+                let visit = |t: &mut Type| {
+                    self.tvars_to_tparams_for_type_alias(
+                        t,
+                        seen_type_vars,
+                        seen_type_var_tuples,
+                        seen_param_specs,
+                        tparams,
+                    )
+                };
                 callable.visit_mut(visit);
             }
+            Type::Concatenate(box prefix, box pspec) => {
+                for t in prefix {
+                    self.tvars_to_tparams_for_type_alias(
+                        t,
+                        seen_type_vars,
+                        seen_type_var_tuples,
+                        seen_param_specs,
+                        tparams,
+                    )
+                }
+                self.tvars_to_tparams_for_type_alias(
+                    pspec,
+                    seen_type_vars,
+                    seen_type_var_tuples,
+                    seen_param_specs,
+                    tparams,
+                )
+            }
+            Type::Tuple(tuple) => {
+                let visit = |t: &mut Type| {
+                    self.tvars_to_tparams_for_type_alias(
+                        t,
+                        seen_type_vars,
+                        seen_type_var_tuples,
+                        seen_param_specs,
+                        tparams,
+                    )
+                };
+                tuple.visit_mut(visit);
+            }
             Type::TypeVar(ty_var) => {
-                let q = match seen.entry(ty_var.dupe()) {
+                let q = match seen_type_vars.entry(ty_var.dupe()) {
                     Entry::Occupied(e) => *e.get(),
                     Entry::Vacant(e) => {
                         let q = Quantified::type_var(self.uniques);
@@ -379,6 +441,49 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 };
                 *ty = Type::Quantified(q);
             }
+            Type::TypeVarTuple(ty_var_tuple) => {
+                let q = match seen_type_var_tuples.entry(ty_var_tuple.dupe()) {
+                    Entry::Occupied(e) => *e.get(),
+                    Entry::Vacant(e) => {
+                        let q = Quantified::type_var_tuple(self.uniques);
+                        e.insert(q);
+                        tparams.push(TParamInfo {
+                            name: ty_var_tuple.qname().id().clone(),
+                            quantified: q,
+                            restriction: Restriction::Unrestricted,
+                            default: None,
+                            variance: Some(Variance::Invariant),
+                        });
+                        q
+                    }
+                };
+                *ty = Type::Quantified(q);
+            }
+            Type::ParamSpec(param_spec) => {
+                let q = match seen_param_specs.entry(param_spec.dupe()) {
+                    Entry::Occupied(e) => *e.get(),
+                    Entry::Vacant(e) => {
+                        let q = Quantified::param_spec(self.uniques);
+                        e.insert(q);
+                        tparams.push(TParamInfo {
+                            name: param_spec.qname().id().clone(),
+                            quantified: q,
+                            restriction: Restriction::Unrestricted,
+                            default: None,
+                            variance: Some(Variance::Invariant),
+                        });
+                        q
+                    }
+                };
+                *ty = Type::Quantified(q);
+            }
+            Type::Unpack(box t) => self.tvars_to_tparams_for_type_alias(
+                t,
+                seen_type_vars,
+                seen_type_var_tuples,
+                seen_param_specs,
+                tparams,
+            ),
             _ => {}
         }
     }
@@ -409,16 +514,22 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::ClassDef(cls) => Type::type_form(self.promote(cls, range)),
             t => t.clone(),
         };
-        let mut seen = SmallMap::new();
+        let mut seen_type_vars = SmallMap::new();
+        let mut seen_type_var_tuples = SmallMap::new();
+        let mut seen_param_specs = SmallMap::new();
         let mut tparams = Vec::new();
         match ty {
-            Type::Type(ref mut t) => {
-                self.tvars_to_tparams_for_type_alias(t, &mut seen, &mut tparams)
-            }
+            Type::Type(ref mut t) => self.tvars_to_tparams_for_type_alias(
+                t,
+                &mut seen_type_vars,
+                &mut seen_type_var_tuples,
+                &mut seen_param_specs,
+                &mut tparams,
+            ),
             _ => {}
         }
         let ta = Type::TypeAlias(TypeAlias::new(name.clone(), ty, style));
-        ta.forall(self.type_params(range, tparams, errors))
+        ta.forall(name.clone(), self.type_params(range, tparams, errors))
     }
 
     fn context_value_enter(
@@ -427,6 +538,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         kind: ContextManagerKind,
         range: TextRange,
         errors: &ErrorCollector,
+        context: Option<&ErrorContext>,
     ) -> Type {
         match kind {
             ContextManagerKind::Sync => self.call_method_or_error(
@@ -436,6 +548,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 &[],
                 &[],
                 errors,
+                context,
             ),
             ContextManagerKind::Async => match self.unwrap_awaitable(&self.call_method_or_error(
                 context_manager_type,
@@ -444,13 +557,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 &[],
                 &[],
                 errors,
+                context,
             )) {
                 Some(ty) => ty,
                 None => self.error(
                     errors,
                     range,
                     ErrorKind::AsyncError,
-                    None,
+                    context,
                     format!("Expected `{}` to be async", dunder::AENTER),
                 ),
             },
@@ -463,6 +577,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         kind: ContextManagerKind,
         range: TextRange,
         errors: &ErrorCollector,
+        context: Option<&ErrorContext>,
     ) -> Type {
         let base_exception_class_type = Type::type_form(self.stdlib.base_exception().to_type());
         let arg1 = Type::Union(vec![base_exception_class_type, Type::None]);
@@ -481,6 +596,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 &exit_arg_types,
                 &[],
                 errors,
+                context,
             ),
             ContextManagerKind::Async => match self.unwrap_awaitable(&self.call_method_or_error(
                 context_manager_type,
@@ -489,13 +605,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 &exit_arg_types,
                 &[],
                 errors,
+                context,
             )) {
                 Some(ty) => ty,
                 None => self.error(
                     errors,
                     range,
                     ErrorKind::AsyncError,
-                    None,
+                    context,
                     format!("Expected `{}` to be async", dunder::AEXIT),
                 ),
             },
@@ -509,19 +626,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         errors: &ErrorCollector,
     ) -> Type {
-        let enter_type = self.context_value_enter(&context_manager_type, kind, range, errors);
-        let exit_type = self.context_value_exit(&context_manager_type, kind, range, errors);
+        let context = ErrorContext::BadContextManager(context_manager_type.clone());
+        let enter_type =
+            self.context_value_enter(&context_manager_type, kind, range, errors, Some(&context));
+        let exit_type =
+            self.context_value_exit(&context_manager_type, kind, range, errors, Some(&context));
         self.check_type(
             &Type::Union(vec![self.stdlib.bool().to_type(), Type::None]),
             &exit_type,
             range,
             errors,
             &TypeCheckContext {
-                kind: TypeCheckKind::MagicMethodReturn(
-                    context_manager_type.clone(),
-                    kind.as_exit_dunder(),
-                ),
-                context: Some(ErrorContext::BadContextManager(context_manager_type)),
+                kind: TypeCheckKind::MagicMethodReturn(context_manager_type, kind.as_exit_dunder()),
+                context: Some(context),
             },
         );
         // TODO: `exit_type` may also affect exceptional control flow, which is yet to be supported:
@@ -704,6 +821,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     &got,
                     attr.range,
                     errors,
+                    None,
                     "Answers::solve_binding_inner::CheckAssignTypeToAttribute",
                 );
             }
@@ -715,6 +833,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     value,
                     attr.range,
                     errors,
+                    None,
                     "Answers::solve_binding_inner::CheckAssignExprToAttribute",
                 );
             }
@@ -1121,6 +1240,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     &[CallArg::Expr(&x.value)],
                     &[],
                     errors,
+                    None,
                 )
             }
             Binding::IterableValue(ann, e) => {
@@ -1218,6 +1338,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         ],
                         &[],
                         errors,
+                        None,
                     ),
                 }
             }
@@ -1463,11 +1584,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     ),
                     Type::TypeAlias(_) => {
                         let params_range = params.as_ref().map_or(expr_range, |x| x.range);
-                        ta.forall(self.type_params(
-                            params_range,
-                            self.scoped_type_params(params.as_ref(), errors),
-                            errors,
-                        ))
+                        ta.forall(
+                            name.clone(),
+                            self.type_params(
+                                params_range,
+                                self.scoped_type_params(params.as_ref(), errors),
+                                errors,
+                            ),
+                        )
                     }
                     _ => ta,
                 }
@@ -1485,18 +1609,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     &[arg],
                     &[],
                     errors,
+                    None,
                 )
             }
             Binding::PatternMatchClassPositional(_, idx, key, range) => {
                 // TODO: check that value matches class
                 // TODO: check against duplicate keys (optional)
                 let binding_ty = self.get_idx(*key).arc_clone();
-                let match_args = self.attr_infer(&binding_ty, &dunder::MATCH_ARGS, *range, errors);
+                let match_args =
+                    self.attr_infer(&binding_ty, &dunder::MATCH_ARGS, *range, errors, None);
                 match match_args {
                     Type::Tuple(Tuple::Concrete(ts)) => {
                         if *idx < ts.len() {
                             if let Some(Type::Literal(Lit::String(box attr_name))) = ts.get(*idx) {
-                                self.attr_infer(&binding_ty, &Name::new(attr_name), *range, errors)
+                                self.attr_infer(
+                                    &binding_ty,
+                                    &Name::new(attr_name),
+                                    *range,
+                                    errors,
+                                    None,
+                                )
                             } else {
                                 self.error(
                                     errors,
@@ -1536,7 +1668,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 // TODO: check that value matches class
                 // TODO: check against duplicate keys (optional)
                 let binding_ty = self.get_idx(*key).arc_clone();
-                self.attr_infer(&binding_ty, &attr.id, attr.range, errors)
+                self.attr_infer(&binding_ty, &attr.id, attr.range, errors, None)
             }
             Binding::Decorator(expr) => self.expr_infer(expr, errors),
             Binding::LambdaParameter(var) => var.to_type(),
@@ -1835,7 +1967,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 ),
             )
         };
-        let mut ty = callable.forall(self.type_params(x.def.range, tparams, errors));
+        let mut ty = callable.forall(
+            x.def.name.id.clone(),
+            self.type_params(x.def.range, tparams, errors),
+        );
         let mut is_overload = false;
         for x in x.decorators.iter().rev() {
             ty = self.apply_decorator(*x, ty, &mut is_overload, errors)
@@ -1981,6 +2116,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// For example, in `def f(x: int): ...`, we evaluate `int` as a value, gettings its type as
     /// `type[int]`, then call `untype(type[int])` to get the `int` annotation.
     fn untype(&self, ty: Type, range: TextRange, errors: &ErrorCollector) -> Type {
+        let mut ty = ty;
+        if let Type::Forall(box (name, tparams, t)) = ty {
+            // A generic type alias with no type arguments is OK if all the type params have defaults
+            let targs = self.check_and_create_targs(&name, &tparams, Vec::new(), range, errors);
+            let param_map = tparams
+                .quantified()
+                .zip(targs.as_slice().iter().cloned())
+                .collect::<SmallMap<_, _>>();
+            ty = t.subst(&param_map)
+        };
         if let Some(t) = self.untype_opt(ty.clone(), range) {
             t
         } else {

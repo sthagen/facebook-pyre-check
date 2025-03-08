@@ -5,9 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::sync::Arc;
-
 use dupe::Dupe;
+use itertools::Itertools;
+use lsp_types::CompletionItem;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
@@ -29,13 +29,15 @@ use crate::util::prelude::VecExt;
 use crate::visitors::Visitors;
 
 impl State {
-    pub fn get_type(&self, handle: &Handle, key: &Key) -> Option<Arc<Type>> {
+    fn get_type(&self, handle: &Handle, key: &Key) -> Option<Type> {
         let idx = self.get_bindings(handle)?.key_to_idx(key);
-        self.get_answers(handle)?.get_idx(idx)
+        let ans = self.get_answers(handle)?;
+        Some(ans.for_display(ans.get_idx(idx)?.arc_clone()))
     }
 
-    fn get_type_from_trace(&self, handle: &Handle, range: TextRange) -> Option<Arc<Type>> {
-        self.get_answers(handle)?.get_type_trace(range)
+    fn get_type_trace(&self, handle: &Handle, range: TextRange) -> Option<Type> {
+        let ans = self.get_answers(handle)?;
+        Some(ans.for_display(ans.get_type_trace(range)?.arc_clone()))
     }
 
     fn identifier_at(&self, handle: &Handle, position: TextSize) -> Option<Identifier> {
@@ -76,7 +78,7 @@ impl State {
         res
     }
 
-    pub fn hover(&self, handle: &Handle, position: TextSize) -> Option<Arc<Type>> {
+    pub fn hover(&self, handle: &Handle, position: TextSize) -> Option<Type> {
         if let Some(key) = self.definition_at(handle, position) {
             return self.get_type(handle, &key);
         }
@@ -88,7 +90,7 @@ impl State {
             }
         }
         let attribute = self.attribute_at(handle, position)?;
-        self.get_type_from_trace(handle, attribute.range)
+        self.get_type_trace(handle, attribute.range)
     }
 
     fn key_to_definition(
@@ -174,7 +176,7 @@ impl State {
             .get_answers(handle)?
             .get_type_trace(attribute.value.range())?;
         self.ad_hoc_solve(handle, |solver| {
-            let items = solver.completions(base_type.arc_clone());
+            let items = solver.completions(base_type.arc_clone(), false);
             items.into_iter().find_map(|x| {
                 if x.name == attribute.attr.id {
                     Some(TextRangeWithModuleInfo::new(x.module?, x.range?))
@@ -186,11 +188,31 @@ impl State {
         .flatten()
     }
 
-    pub fn completion(&self, handle: &Handle, position: TextSize) -> Vec<(Name, Option<String>)> {
-        self.completion_opt(handle, position).unwrap_or_default()
+    pub fn completion(&self, handle: &Handle, position: TextSize) -> Vec<CompletionItem> {
+        self.completion_unsorted_opt(handle, position)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(n, t)| {
+                let sort_text = if n.as_str().starts_with("__") {
+                    "2"
+                } else if n.as_str().starts_with("_") {
+                    "1"
+                } else {
+                    "0"
+                }
+                .to_owned();
+                CompletionItem {
+                    label: n.as_str().to_owned(),
+                    detail: t,
+                    sort_text: Some(sort_text),
+                    ..Default::default()
+                }
+            })
+            .sorted_by(|item1, item2| item1.sort_text.cmp(&item2.sort_text))
+            .collect()
     }
 
-    fn completion_opt(
+    fn completion_unsorted_opt(
         &self,
         handle: &Handle,
         position: TextSize,
@@ -219,8 +241,8 @@ impl State {
             .get_type_trace(attribute.value.range())?;
         self.ad_hoc_solve(handle, |solver| {
             solver
-                .completions(base_type.arc_clone())
-                .into_map(|x| (x.name, None))
+                .completions(base_type.arc_clone(), true)
+                .into_map(|x| (x.name, x.ty.map(|t| t.to_string())))
         })
     }
 
@@ -234,10 +256,9 @@ impl State {
             match bindings.idx_to_key(idx) {
                 key @ Key::ReturnType(id) => {
                     match bindings.get(bindings.key_to_idx(&Key::Definition(id.clone()))) {
-                        Binding::Function(x, _pred, _class_meta)
-                            if !matches!(bindings.get(idx), &Binding::AnnotatedType(..)) =>
-                        {
-                            if let Some(ty) = self.get_type(handle, key)
+                        Binding::Function(x, _pred, _class_meta) => {
+                            if matches!(&bindings.get(idx), Binding::ReturnType(ret) if ret.annot.is_none())
+                                && let Some(ty) = self.get_type(handle, key)
                                 && is_interesting_type(&ty)
                             {
                                 let fun = bindings.get(*x);

@@ -10,6 +10,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use dupe::Dupe;
+use dupe::OptionDupedExt;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
@@ -324,10 +325,13 @@ impl Answers {
         self.id_cache.history()
     }
 
+    pub fn for_display(&self, t: Type) -> Type {
+        self.solver.for_display(t)
+    }
+
     pub fn get_type_trace(&self, range: TextRange) -> Option<Arc<Type>> {
         let lock = self.trace.as_ref()?.lock();
-        let ty = lock.types.get(&range)?.dupe();
-        Some(ty)
+        lock.types.get(&range).duped()
     }
 }
 

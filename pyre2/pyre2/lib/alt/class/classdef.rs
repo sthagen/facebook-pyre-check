@@ -89,14 +89,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         self.get_enum_from_class(class_type.class_object())
     }
 
-    fn check_and_create_targs(
+    pub fn check_and_create_targs(
         &self,
-        cls: &Class,
+        name: &Name,
+        tparams: &TParams,
         targs: Vec<Type>,
         range: TextRange,
         errors: &ErrorCollector,
     ) -> TArgs {
-        let tparams = cls.tparams();
         let nparams = tparams.len();
         let nargs = targs.len();
         let mut checked_targs = Vec::new();
@@ -255,9 +255,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         ErrorKind::BadSpecialization,
                         None,
                         format!(
-                            "Expected {} for class `{}`, got {}.",
+                            "Expected {} for `{}`, got {}.",
                             count(tparams.len(), "type argument"),
-                            cls.name(),
+                            name,
                             nargs
                         ),
                     );
@@ -281,9 +281,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 ErrorKind::BadSpecialization,
                 None,
                 format!(
-                    "Expected {} for class `{}`, got {}.",
+                    "Expected {} for `{}`, got {}.",
                     count(tparams.len(), "type argument"),
-                    cls.name(),
+                    name,
                     nargs
                 ),
             );
@@ -345,7 +345,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         errors: &ErrorCollector,
     ) -> Type {
-        let targs = self.check_and_create_targs(cls, targs, range, errors);
+        let targs = self.check_and_create_targs(cls.name(), cls.tparams(), targs, range, errors);
         self.type_of_instance(cls, targs)
     }
 
@@ -383,7 +383,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let targs = TArgs::new(qs.map(|q| Type::Quantified(*q)));
         let promoted_cls = Type::type_form(self.type_of_instance(cls, targs));
         self.solver()
-            .fresh_quantified(qs.as_slice(), promoted_cls, self.uniques)
+            .fresh_quantified(cls.tparams(), promoted_cls, self.uniques)
             .1
     }
 

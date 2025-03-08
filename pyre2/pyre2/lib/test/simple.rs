@@ -84,11 +84,11 @@ testcase!(
     r#"
 from typing import Any, assert_type
 class C[T1, *Ts, T2]: pass
-C_Alias = C[int]  # E: Expected 3 type arguments for class `C`, got 1.
-assert_type(C[int], type[C[int, *tuple[Any, ...], Any]])  # E: Expected 3 type arguments for class `C`, got 1.
+C_Alias = C[int]  # E: Expected 3 type arguments for `C`, got 1.
+assert_type(C[int], type[C[int, *tuple[Any, ...], Any]])  # E: Expected 3 type arguments for `C`, got 1.
 
-AnyClassMethod = classmethod[Any]  # E: Expected 3 type arguments for class `classmethod`, got 1.
-assert_type(classmethod[Any], type[classmethod[Any, ..., Any]])  # E: Expected 3 type arguments for class `classmethod`, got 1.
+AnyClassMethod = classmethod[Any]  # E: Expected 3 type arguments for `classmethod`, got 1.
+assert_type(classmethod[Any], type[classmethod[Any, ..., Any]])  # E: Expected 3 type arguments for `classmethod`, got 1.
 
 # No error if it's a TypeVarTuple w/ nothing after, because a TypeVarTuple can be empty
 class C2[T, *Ts]: pass
@@ -917,7 +917,7 @@ testcase!(
     test_invalid_type_arguments,
     r#"
 from typing import assert_type
-x: list[int, int] = []  # E: Expected 1 type argument for class `list`, got 2
+x: list[int, int] = []  # E: Expected 1 type argument for `list`, got 2
 assert_type(x, list[int])
     "#,
 );
@@ -930,7 +930,7 @@ class C:
     pass
 c1: type[C] = C
 # TODO(stroxler): Handle `type[Any]` correctly here.
-c2: type[C, C] = C  # E: Expected 1 type argument for class `type`, got 2
+c2: type[C, C] = C  # E: Expected 1 type argument for `type`, got 2
     "#,
 );
 
@@ -1012,6 +1012,16 @@ class C:
     def p(self) -> str: ...
 
 assert_type(C().p(), str)
+"#,
+);
+
+testcase!(
+    test_force_default_in_constructor,
+    r#"
+from typing import assert_type, Generic, TypeVar
+T = TypeVar("T", default=str)
+class C(Generic[T]): ...
+assert_type(C(), C[str])
 "#,
 );
 
@@ -1294,12 +1304,11 @@ cast([x for x in []], 1)  # E: First argument to `typing.cast` must be a type  #
     "#,
 );
 
-testcase_with_bug!(
-    "Dict should be recognised as the dict type and error",
+testcase!(
     test_typing_alias,
     r#"
 from typing import Dict, assert_type
-y: Dict[str, int] = {"test": "test"}
-assert_type(y, dict[str, int]) # E: assert_type(dict[str, str], dict[str, int]) failed
+y: Dict[str, int] = {"test": "test"} # E: `dict[str, str]` is not assignable to `dict[str, int]`
+assert_type(y, dict[str, int])
 "#,
 );

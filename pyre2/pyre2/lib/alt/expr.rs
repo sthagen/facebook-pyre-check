@@ -34,6 +34,7 @@ use crate::binding::binding::KeyYield;
 use crate::binding::binding::KeyYieldFrom;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
+use crate::error::context::ErrorContext;
 use crate::error::context::TypeCheckContext;
 use crate::error::kind::ErrorKind;
 use crate::graph::index::Idx;
@@ -137,19 +138,34 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         attr_name: &Name,
         range: TextRange,
         errors: &ErrorCollector,
+        context: Option<&ErrorContext>,
     ) -> Type {
         self.distribute_over_union(obj, |obj| {
-            self.type_of_attr_get(obj.clone(), attr_name, range, errors, "Expr::attr_infer")
+            self.type_of_attr_get(obj, attr_name, range, errors, context, "Expr::attr_infer")
         })
     }
 
     fn binop_infer(&self, x: &ExprBinOp, errors: &ErrorCollector) -> Type {
         let binop_call = |op: Operator, lhs: &Type, rhs: Type, range: TextRange| -> Type {
+            let context = ErrorContext::BinaryOp(op.as_str().to_owned(), lhs.clone(), rhs.clone());
             // TODO(yangdanny): handle reflected dunder methods
-            let method_type = self.attr_infer(lhs, &Name::new(op.dunder()), range, errors);
-            let callable =
-                self.as_call_target_or_error(method_type, CallStyle::BinaryOp(op), range, errors);
-            self.call_infer(callable, &[CallArg::Type(&rhs, range)], &[], range, errors)
+            let method_type =
+                self.attr_infer(lhs, &Name::new(op.dunder()), range, errors, Some(&context));
+            let callable = self.as_call_target_or_error(
+                method_type,
+                CallStyle::BinaryOp(op),
+                range,
+                errors,
+                Some(&context),
+            );
+            self.call_infer(
+                callable,
+                &[CallArg::Type(&rhs, range)],
+                &[],
+                range,
+                errors,
+                Some(&context),
+            )
         };
         let lhs = self.expr_infer(&x.left, errors);
         let rhs = self.expr_infer(&x.right, errors);
@@ -617,9 +633,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             CallStyle::FreeForm,
             range,
             errors,
+            None,
         );
         let arg = CallArg::Type(&decoratee, range);
-        self.call_infer(call_target, &[arg], &[], range, errors)
+        self.call_infer(call_target, &[arg], &[], range, errors, None)
     }
 
     fn expr_infer_with_hint(
@@ -634,26 +651,44 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::BinOp(x) => self.binop_infer(x, errors),
             Expr::UnaryOp(x) => {
                 let t = self.expr_infer(&x.operand, errors);
-                let unop = |t: &Type, f: &dyn Fn(&Lit) -> Type, method: &Name| match t {
-                    Type::Literal(lit) => f(lit),
-                    Type::ClassType(_) => {
-                        self.call_method_or_error(t, method, x.range, &[], &[], errors)
+                let unop = |t: &Type, f: &dyn Fn(&Lit) -> Option<Type>, method: &Name| {
+                    let context = ErrorContext::UnaryOp(x.op.as_str().to_owned(), t.clone());
+                    match t {
+                        Type::Literal(lit) if let Some(ret) = f(lit) => ret,
+                        Type::ClassType(_) => self.call_method_or_error(
+                            t,
+                            method,
+                            x.range,
+                            &[],
+                            &[],
+                            errors,
+                            Some(&context),
+                        ),
+                        Type::Literal(Lit::Enum(box (cls, ..))) => self.call_method_or_error(
+                            &cls.clone().to_type(),
+                            method,
+                            x.range,
+                            &[],
+                            &[],
+                            errors,
+                            Some(&context),
+                        ),
+                        _ => self.error(
+                            errors,
+                            x.range,
+                            ErrorKind::UnsupportedOperand,
+                            None,
+                            context.format(),
+                        ),
                     }
-                    _ => self.error(
-                        errors,
-                        x.range,
-                        ErrorKind::UnsupportedOperand,
-                        None,
-                        format!("Unary {} is not supported on {}", x.op.as_str(), t),
-                    ),
                 };
                 self.distribute_over_union(&t, |t| match x.op {
                     UnaryOp::USub => {
-                        let f = |lit: &Lit| lit.negate(self.stdlib, x.range, errors);
+                        let f = |lit: &Lit| lit.negate(self.stdlib);
                         unop(t, &f, &dunder::NEG)
                     }
                     UnaryOp::UAdd => {
-                        let f = |lit: &Lit| lit.clone().to_type();
+                        let f = |lit: &Lit| lit.positive();
                         unop(t, &f, &dunder::POS)
                     }
                     UnaryOp::Not => match t.as_bool() {
@@ -661,7 +696,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         Some(b) => Type::Literal(Lit::Bool(!b)),
                     },
                     UnaryOp::Invert => {
-                        let f = |lit: &Lit| lit.invert(x.range, errors);
+                        let f = |lit: &Lit| lit.invert();
                         unop(t, &f, &dunder::INVERT)
                     }
                 })
@@ -993,8 +1028,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 for (op, comparator) in comparisons {
                     let right = self.expr_infer(comparator, errors);
                     let right_range = comparator.range();
+                    let context =
+                        ErrorContext::BinaryOp(op.as_str().to_owned(), left.clone(), right.clone());
                     let compare_by_method = |ty, method, arg| {
-                        self.call_method(ty, &method, x.range, &[arg], &[], errors)
+                        self.call_method(ty, &method, x.range, &[arg], &[], errors, Some(&context))
                     };
                     let comparison_error = || {
                         self.error(
@@ -1002,12 +1039,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             x.range,
                             ErrorKind::UnsupportedOperand,
                             None,
-                            format!(
-                                "`{}` not supported between `{}` and `{}`",
-                                op.as_str(),
-                                left,
-                                right
-                            ),
+                            context.format(),
                         );
                     };
                     match op {
@@ -1116,8 +1148,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             CallStyle::FreeForm,
                             func_range,
                             errors,
+                            None,
                         );
-                        self.call_infer(callable, &args, &x.arguments.keywords, func_range, errors)
+                        self.call_infer(
+                            callable,
+                            &args,
+                            &x.arguments.keywords,
+                            func_range,
+                            errors,
+                            None,
+                        )
                     }
                 })
             }
@@ -1158,7 +1198,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     (Type::Literal(Lit::Enum(box (_, _, raw_type))), "_value_" | "value") => {
                         raw_type.clone()
                     }
-                    _ => self.attr_infer(&obj, &x.attr.id, x.range, errors),
+                    _ => self.attr_infer(&obj, &x.attr.id, x.range, errors, None),
                 }
             }
             Expr::Subscript(x) => {
@@ -1174,10 +1214,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         fun = Type::type_form(Type::SpecialForm(SpecialForm::Tuple));
                     }
                     match fun {
-                        Type::Forall(params, ty) => {
+                        Type::Forall(box (name, params, ty)) => {
+                            let tys = xs.map(|x| self.expr_untype(x, errors));
+                            let targs =
+                                self.check_and_create_targs(&name, &params, tys, x.range, errors);
                             let param_map = params
                                 .quantified()
-                                .zip(xs.map(|x| self.expr_untype(x, errors)))
+                                .zip(targs.as_slice().iter().cloned())
                                 .collect::<SmallMap<_, _>>();
                             ty.subst(&param_map)
                         }
@@ -1194,7 +1237,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     ErrorKind::BadSpecialization,
                                     None,
                                     format!(
-                                        "Expected 1 type argument for class `type`, got {}",
+                                        "Expected 1 type argument for `type`, got {}",
                                         xs.len()
                                     ),
                                 ),
@@ -1217,7 +1260,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     ErrorKind::BadSpecialization,
                                     None,
                                     format!(
-                                        "Expected 1 type argument for class `PyreReadOnly`, got {}",
+                                        "Expected 1 type argument for `PyreReadOnly`, got {}",
                                         xs.len()
                                     ),
                                 ),
@@ -1242,6 +1285,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             &[CallArg::Expr(&x.slice)],
                             &[],
                             errors,
+                            None,
                         ),
                         Type::Any(style) => style.propagate(),
                         Type::ClassType(cls)
@@ -1256,6 +1300,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             &[CallArg::Expr(&x.slice)],
                             &[],
                             errors,
+                            None,
                         ),
                         Type::TypedDict(typed_dict) => {
                             let key_ty = self.expr_infer(&x.slice, errors);
@@ -1431,6 +1476,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         &[CallArg::Expr(slice)],
                         &[],
                         errors,
+                        None,
                     ),
                 }
             }

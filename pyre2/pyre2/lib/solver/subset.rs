@@ -305,7 +305,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
     fn get_call_attr(&mut self, protocol: &ClassType) -> Option<Type> {
         let attr = self
             .type_order
-            .try_lookup_attr(protocol.clone().to_type(), &dunder::CALL);
+            .try_lookup_attr(&protocol.clone().to_type(), &dunder::CALL);
         attr.and_then(|attr| self.type_order.resolve_as_instance_method(attr))
     }
 
@@ -337,8 +337,8 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                 } else if !self.is_subset_eq(&got, &want) {
                     return false;
                 }
-            } else if let Some(got) = to.try_lookup_attr(got.clone(), &name)
-                && let Some(want) = to.try_lookup_attr(protocol.clone().to_type(), &name)
+            } else if let Some(got) = to.try_lookup_attr(&got, &name)
+                && let Some(want) = to.try_lookup_attr(&protocol.clone().to_type(), &name)
                 && to.is_attr_subset(&got, &want, &mut |got, want| self.is_subset_eq(got, want))
             {
                 continue;
@@ -768,7 +768,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             (Type::None, _) => {
                 self.is_subset_eq(&self.type_order.stdlib().none_type().to_type(), want)
             }
-            (Type::Forall(_, _), _) => {
+            (Type::Forall(box (_, _, _)), _) => {
                 // FIXME: Probably need to do some kind of substitution here
                 false
             }

@@ -241,7 +241,28 @@ assert_type(~c, Literal[100])
 testcase!(
     test_unary_error,
     r#"
-+None  # E: Unary + is not supported on None
++None  # E: Unary `+` is not supported on `None`
++"oh no"  # E: Unary `+` is not supported on `Literal['oh no']`
+-"oops"  # E: Unary `-` is not supported on `Literal['oops']`
+class A:
+    def __invert__(self, extra_arg):
+        pass
+~A()  # E: Unary `~` is not supported on `A`\n  Missing argument `extra_arg` in function `A.__invert__`
+    "#,
+);
+
+testcase!(
+    test_unary_enum,
+    r#"
+from enum import Enum
+class A(Enum):
+    X = 1
+class B(Enum):
+    X = 1
+    def __pos__(self):
+        return 0
++A.X  # E: Unary `+` is not supported on `Literal[A.X]`
++B.X  # OK
     "#,
 );
 
@@ -250,6 +271,6 @@ testcase!(
     r#"
 class C: pass
 
-x = C() + 1  # E: Object of class `C` has no attribute `__add__`
+x = C() + 1  # E: `+` is not supported between `C` and `Literal[1]`\n  Object of class `C` has no attribute `__add__`
 "#,
 );

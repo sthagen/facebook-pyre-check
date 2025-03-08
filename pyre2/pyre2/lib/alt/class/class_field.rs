@@ -323,7 +323,7 @@ impl ClassField {
 
 pub fn is_unbound_function(ty: &Type) -> bool {
     match ty {
-        Type::Forall(_, t) => is_unbound_function(t),
+        Type::Forall(box (_, _, t)) => is_unbound_function(t),
         Type::Callable(_, _) => true,
         Type::Overload(_) => true,
         _ => false,
@@ -489,10 +489,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             //   the raw class field is a union of a descriptor and a non-descriptor? Do we want to allow this?
             Type::ClassType(c) => {
                 if c.class_object().contains(&dunder::GET) {
-                    descriptor_getter = Some(self.attr_infer(ty, &dunder::GET, range, errors));
+                    descriptor_getter =
+                        Some(self.attr_infer(ty, &dunder::GET, range, errors, None));
                 }
                 if c.class_object().contains(&dunder::SET) {
-                    descriptor_setter = Some(self.attr_infer(ty, &dunder::SET, range, errors));
+                    descriptor_setter =
+                        Some(self.attr_infer(ty, &dunder::SET, range, errors, None));
                 }
             }
             _ => {}
@@ -653,7 +655,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     continue;
                 }
 
-                if let Some(want) = self.type_order().try_lookup_attr(parent.self_type(), name) {
+                if let Some(want) = self.type_order().try_lookup_attr(&parent.self_type(), name) {
                     parent_attr_found = true;
                     let attr_check = self.is_attr_subset(&got, &want, &mut |got, want| {
                         self.solver().is_subset_eq(got, want, self.type_order())
