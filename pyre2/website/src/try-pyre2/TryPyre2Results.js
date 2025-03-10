@@ -43,7 +43,12 @@ component ErrorMessage(error: PyreflyErrorMessage) {
   }
 
   const message = `${rangeStr}: ${error.message}`;
-  return <span className={styles.msgType}>{message}</span>;
+  return (
+    <span className={styles.msgType}>
+      <span className={styles.errorMessageError}>ERROR </span>
+      {message}
+    </span>
+  );
 }
 
 export default component TryPyre2Results(
@@ -54,60 +59,50 @@ export default component TryPyre2Results(
   const [activeToolbarTab, setActiveToolbarTab] = useState('errors');
 
   return (
-    <div className={styles.results}>
-      <div className={styles.toolbar}>
+    <div>
+      <div className={styles.resultsToolbar}>
         <ul className={styles.tabs}>
           <li
             className={clsx(
               styles.tab,
               activeToolbarTab === 'errors' && styles.selectedTab,
-            )}
-            onClick={() => setActiveToolbarTab('errors')}>
+            )}>
             Errors
           </li>
-          <li
-            className={clsx(
-              styles.tab,
-              activeToolbarTab === 'json' && styles.selectedTab,
-            )}
-            onClick={() => setActiveToolbarTab('json')}>
-            JSON
-          </li>
         </ul>
+        {/* TODO (T217536145): Add JSON tab to sandbox */}
       </div>
-      {loading && (
-        <div>
-          <div className={styles.loader}>
-            <div className={styles.bounce1}></div>
-            <div className={styles.bounce2}></div>
-            <div></div>
+      <div className={styles.results}>
+        {loading && (
+          <div>
+            <div className={styles.loader}>
+              <div className={styles.bounce1}></div>
+              <div className={styles.bounce2}></div>
+              <div></div>
+            </div>
           </div>
-        </div>
-      )}
-      {!loading && activeToolbarTab === 'errors' && (
-        <pre className={clsx(styles.resultBody, styles.errors)}>
-          <ul>
-            {internalError ? (
-              <li>Pyrefly encountered an internal error: {internalError}.</li>
-            ) : errors === undefined || errors === null ? (
-              <li>Pyrefly failed to fetch errors.</li>
-            ) : errors?.length === 0 ? (
-              <li>No errors!</li>
-            ) : (
-              errors.map((error, i) => (
-                <li key={i}>
-                  <ErrorMessage key={i} error={error} />
-                </li>
-              ))
-            )}
-          </ul>
-        </pre>
-      )}
-      {!loading && activeToolbarTab === 'json' && (
-        <pre className={styles.resultBody}>
-          {JSON.stringify(errors, null, 2)}
-        </pre>
-      )}
+        )}
+        {!loading && activeToolbarTab === 'errors' && (
+          <pre className={clsx(styles.resultBody, styles.errors)}>
+            <ul>
+              {internalError ? (
+                <li>Pyrefly encountered an internal error: {internalError}.</li>
+              ) : errors === undefined || errors === null ? (
+                <li>Pyrefly failed to fetch errors.</li>
+              ) : errors?.length === 0 ? (
+                <li>No errors!</li>
+              ) : (
+                errors.map((error, i) => (
+                  <li key={i}>
+                    <ErrorMessage key={i} error={error} />
+                  </li>
+                ))
+              )}
+            </ul>
+          </pre>
+        )}
+        {/* TODO (T217536145): Add JSON tab to sandbox */}
+      </div>
     </div>
   );
 }

@@ -106,7 +106,7 @@ impl<'a> TypeDisplayContext<'a> {
             }
             let tparams = match t {
                 Type::ClassDef(cls) => Some(cls.tparams()),
-                Type::Forall(box (_, tparams, _)) => Some(tparams),
+                Type::Forall(forall) => Some(&forall.tparams),
                 _ => None,
             };
             if let Some(tparams) = tparams {
@@ -220,7 +220,7 @@ impl<'a> TypeDisplayContext<'a> {
                 write!(
                     f,
                     "Overload[{}]",
-                    commas_iter(|| ts.iter().map(|t| self.display(t)))
+                    commas_iter(|| ts.0.iter().map(|t| self.display(t)))
                 )
             }
             Type::ParamSpecValue(x) => {
@@ -233,7 +233,7 @@ impl<'a> TypeDisplayContext<'a> {
                     f,
                     "BoundMethod[{}, {}]",
                     self.display(obj),
-                    self.display(func)
+                    self.display(&func.as_type())
                 )
             }
             Type::Never(NeverStyle::NoReturn) => write!(f, "NoReturn"),
@@ -269,11 +269,12 @@ impl<'a> TypeDisplayContext<'a> {
                 )
             }
             Type::Tuple(t) => t.fmt_with_type(f, |t| self.display(t)),
-            Type::Forall(box (_, uniques, ty)) => {
+            Type::Forall(forall) => {
                 write!(
                     f,
-                    "Forall[{}]",
-                    commas_iter(|| append(uniques.iter(), [self.display(ty)]))
+                    "Forall[{}, {}]",
+                    commas_iter(|| forall.tparams.iter()),
+                    self.display(&forall.as_inner_type()),
                 )
             }
             Type::Type(ty) => write!(f, "type[{}]", self.display(ty)),

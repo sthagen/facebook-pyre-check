@@ -11,7 +11,6 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -24,8 +23,8 @@ use tracing::info;
 
 use crate::clap_env;
 use crate::commands::util::module_from_path;
+use crate::config::set_if_some;
 use crate::config::ConfigFile;
-use crate::config::ConfigFileInner;
 use crate::error::error::Error;
 use crate::error::legacy::LegacyErrors;
 use crate::error::style::ErrorStyle;
@@ -70,7 +69,7 @@ pub struct Args {
     #[clap(long, short = 'a', env = clap_env("CHECK_ALL"))]
     check_all: bool,
     #[clap(long, env = clap_env("PYTHON_VERSION"))]
-    python_version: Option<String>,
+    python_version: Option<PythonVersion>,
     #[clap(long, env = clap_env("PLATFORM"))]
     python_platform: Option<String>,
     #[clap(long, env = clap_env("SITE_PACKAGE_PATH"))]
@@ -95,10 +94,16 @@ pub struct Args {
     expectations: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LoaderInputs {
+    search_roots: Vec<PathBuf>,
+    site_package_path: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone)]
 struct CheckLoader {
     sources: SmallMap<ModuleName, PathBuf>,
-    search_roots: Vec<PathBuf>,
+    loader_inputs: LoaderInputs,
     error_style_for_sources: ErrorStyle,
     error_style_for_dependencies: ErrorStyle,
 }
@@ -112,12 +117,17 @@ impl Loader for CheckLoader {
                 ModulePath::filesystem(path.clone()),
                 self.error_style_for_sources,
             ))
-        } else if let Some(path) = find_module(module, &self.search_roots) {
+        } else if let Some(path) = find_module(module, &self.loader_inputs.search_roots) {
             Ok((path, self.error_style_for_dependencies))
         } else if let Some(path) = typeshed().map_err(FindError::new)?.find(module) {
             Ok((path, self.error_style_for_dependencies))
+        } else if let Some(path) = find_module(module, &self.loader_inputs.site_package_path) {
+            Ok((path, self.error_style_for_dependencies))
         } else {
-            Err(FindError::search_path(&self.search_roots))
+            Err(FindError::search_path(
+                &self.loader_inputs.search_roots,
+                &self.loader_inputs.site_package_path,
+            ))
         }
     }
 }
@@ -152,7 +162,7 @@ impl OutputFormat {
 }
 
 fn create_loader(
-    search_roots: Vec<PathBuf>,
+    loader_inputs: LoaderInputs,
     files_with_module_name_and_metadata: &[(PathBuf, ModuleName, RuntimeMetadata)],
     check_all: bool,
 ) -> LoaderId {
@@ -165,7 +175,7 @@ fn create_loader(
     let error_style_for_sources = ErrorStyle::Delayed;
     LoaderId::new(CheckLoader {
         sources: to_check,
-        search_roots,
+        loader_inputs,
         error_style_for_sources,
         error_style_for_dependencies: if check_all {
             error_style_for_sources
@@ -216,39 +226,14 @@ impl Args {
         }
     }
 
-    fn get_overridden_config(&self, base_config: ConfigFile) -> ConfigFile {
-        let python_platform = self
-            .python_platform
-            .as_ref()
-            .unwrap_or(&base_config.python_platform)
-            .to_owned();
-        let default_python_version = base_config.python_version;
-        let python_version = if let Some(version) = &self.python_version {
-            match PythonVersion::from_str(&version[..]) {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    eprintln!(
-                        "Failed to parse `{version}` into Python version: {error} does not conform to Python version spec. Falling back to
-                        default: {default_python_version}."
-                    );
-                    default_python_version
-                }
-            }
-        } else {
-            default_python_version
-        };
-        let site_package_path = self
-            .site_package_path
-            .as_ref()
-            .or(base_config.site_package_path.as_ref())
-            .cloned();
-        ConfigFileInner {
-            python_platform,
-            python_version,
-            site_package_path,
-            ..(*base_config).clone()
-        }
-        .into()
+    fn override_config(&self, config: &mut ConfigFile) {
+        set_if_some(&mut config.python_platform, self.python_platform.as_ref());
+        set_if_some(&mut config.python_version, self.python_version.as_ref());
+        set_if_some(&mut config.search_roots, self.include.as_ref());
+        set_if_some(
+            &mut config.site_package_path,
+            self.site_package_path.as_ref(),
+        );
     }
 
     fn run_inner(
@@ -258,7 +243,6 @@ impl Args {
         allow_forget: bool,
     ) -> anyhow::Result<CommandExitStatus> {
         let args = self;
-        let include = args.include.clone();
 
         let expanded_file_list = files_to_check.files()?;
         if expanded_file_list.is_empty() {
@@ -266,37 +250,32 @@ impl Args {
         }
 
         let files_and_configs = expanded_file_list.into_map(|path| {
-            let base_config = config_finder(&path);
-            let config = args.get_overridden_config(base_config);
+            let mut config = config_finder(&path);
+            args.override_config(&mut config);
             (path, config)
         });
-
         // We want to partition the files to check by their associated search roots, so we can
         // create a separate loader for each partition.
-        let mut partition_by_search_roots: SmallMap<Vec<PathBuf>, Vec<(PathBuf, ConfigFile)>> =
+        let mut partition_by_loader_inputs: SmallMap<LoaderInputs, Vec<(PathBuf, ConfigFile)>> =
             SmallMap::new();
-        for x in files_and_configs {
-            let search_roots = match include.as_ref() {
-                None => x.1.search_roots.clone(),
-                Some(include) => include.clone(),
+        for (path, config) in files_and_configs {
+            let key = LoaderInputs {
+                search_roots: config.search_roots.clone(),
+                site_package_path: config.site_package_path.clone(),
             };
-            partition_by_search_roots
-                .entry(search_roots)
+            partition_by_loader_inputs
+                .entry(key)
                 .or_default()
-                .push(x);
+                .push((path, config));
         }
 
-        let cli_python_version_override = match &args.python_version {
-            None => None,
-            Some(version) => Some(PythonVersion::from_str(version)?),
-        };
-        let handles: Vec<Handle> = partition_by_search_roots
+        let handles: Vec<Handle> = partition_by_loader_inputs
             .into_iter()
-            .flat_map(|(search_roots, files_and_configs)| {
+            .flat_map(|(loader_inputs, files_and_configs)| {
                 let files_with_module_name_and_metadata =
                     files_and_configs.into_map(|(path, config)| {
-                        let module_name = module_from_path(&path, &search_roots);
-                        let version = match cli_python_version_override {
+                        let module_name = module_from_path(&path, &loader_inputs.search_roots);
+                        let version = match args.python_version {
                             Some(version) => version,
                             None => config.python_version,
                         };
@@ -304,7 +283,7 @@ impl Args {
                         (path, module_name, RuntimeMetadata::new(version, platform))
                     });
                 let loader = create_loader(
-                    search_roots,
+                    loader_inputs,
                     &files_with_module_name_and_metadata,
                     args.check_all,
                 );

@@ -1214,15 +1214,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         fun = Type::type_form(Type::SpecialForm(SpecialForm::Tuple));
                     }
                     match fun {
-                        Type::Forall(box (name, params, ty)) => {
+                        Type::Forall(forall) => {
                             let tys = xs.map(|x| self.expr_untype(x, errors));
-                            let targs =
-                                self.check_and_create_targs(&name, &params, tys, x.range, errors);
-                            let param_map = params
+                            let targs = self.check_and_create_targs(
+                                &forall.name,
+                                &forall.tparams,
+                                tys,
+                                x.range,
+                                errors,
+                            );
+                            let param_map = forall
+                                .tparams
                                 .quantified()
                                 .zip(targs.as_slice().iter().cloned())
                                 .collect::<SmallMap<_, _>>();
-                            ty.subst(&param_map)
+                            forall.as_inner_type().subst(&param_map)
                         }
                         // Note that we have to check for `builtins.type` by name here because this code runs
                         // when we're bootstrapping the stdlib and don't have access to class objects yet.

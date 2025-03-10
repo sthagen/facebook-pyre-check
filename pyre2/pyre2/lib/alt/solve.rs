@@ -88,6 +88,9 @@ use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
 use crate::types::types::AnyStyle;
 use crate::types::types::CalleeKind;
+use crate::types::types::Forall;
+use crate::types::types::ForallType;
+use crate::types::types::Overload;
 use crate::types::types::TParamInfo;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -526,8 +529,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             ),
             _ => {}
         }
-        let ta = Type::TypeAlias(TypeAlias::new(name.clone(), ty, style));
-        ta.forall(name.clone(), self.type_params(range, tparams, errors))
+        let ta = TypeAlias::new(name.clone(), ty, style);
+        Forall::new_type(
+            name.clone(),
+            self.type_params(range, tparams, errors),
+            ForallType::TypeAlias(ta),
+        )
     }
 
     fn context_value_enter(
@@ -1424,7 +1431,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             acc.split_off_first().0
                         } else {
                             acc.reverse();
-                            Type::Overload(acc)
+                            Type::Overload(Overload(acc))
                         }
                     } else {
                         ty
@@ -1448,7 +1455,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             );
                             defs.split_off_first().0
                         } else {
-                            Type::Overload(defs)
+                            Type::Overload(Overload(defs))
                         }
                     } else {
                         first.ty.clone()
@@ -1486,7 +1493,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                 }
             }
-            Binding::Narrow(k, op) => self.narrow(&self.get_idx(*k), op, errors),
+            Binding::Narrow(k, op, range) => self.narrow(&self.get_idx(*k), op, *range, errors),
             Binding::AnnotatedType(ann, val) => match &self.get_idx(*ann).ty() {
                 Some(ty) => (*ty).clone(),
                 None => self.solve_binding_inner(val, errors),
@@ -1586,15 +1593,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         None,
                         format!("Type parameters used in `{name}` but not declared"),
                     ),
-                    Type::TypeAlias(_) => {
+                    Type::TypeAlias(ta) => {
                         let params_range = params.as_ref().map_or(expr_range, |x| x.range);
-                        ta.forall(
+                        Forall::new_type(
                             name.clone(),
                             self.type_params(
                                 params_range,
                                 self.scoped_type_params(params.as_ref(), errors),
                                 errors,
                             ),
+                            ForallType::TypeAlias(ta),
                         )
                     }
                     _ => ta,
@@ -1948,38 +1956,30 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let callable = if let Some(q) = paramspec_args
             && paramspec_args == paramspec_kwargs
         {
-            Type::Callable(
-                Box::new(Callable::concatenate(
-                    params
-                        .into_iter()
-                        .filter_map(|p| match p {
-                            Param::PosOnly(ty, _) => Some(ty),
-                            Param::Pos(_, ty, _) => Some(ty),
-                            _ => None,
-                        })
-                        .collect(),
-                    Type::Quantified(q),
-                    ret,
-                )),
-                CallableKind::from_name(
-                    self.module_info().name(),
-                    defining_cls.as_ref().map(|cls| cls.name()),
-                    &x.def.name.id,
-                ),
+            Callable::concatenate(
+                params
+                    .into_iter()
+                    .filter_map(|p| match p {
+                        Param::PosOnly(ty, _) => Some(ty),
+                        Param::Pos(_, ty, _) => Some(ty),
+                        _ => None,
+                    })
+                    .collect(),
+                Type::Quantified(q),
+                ret,
             )
         } else {
-            Type::Callable(
-                Box::new(Callable::list(ParamList::new(params), ret)),
-                CallableKind::from_name(
-                    self.module_info().name(),
-                    defining_cls.as_ref().map(|cls| cls.name()),
-                    &x.def.name.id,
-                ),
-            )
+            Callable::list(ParamList::new(params), ret)
         };
-        let mut ty = callable.forall(
+        let kind = CallableKind::from_name(
+            self.module_info().name(),
+            defining_cls.as_ref().map(|cls| cls.name()),
+            &x.def.name.id,
+        );
+        let mut ty = Forall::new_type(
             x.def.name.id.clone(),
             self.type_params(x.def.range, tparams, errors),
+            ForallType::Callable(callable, kind),
         );
         let mut is_overload = false;
         for x in x.decorators.iter().rev() {
@@ -2127,14 +2127,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// `type[int]`, then call `untype(type[int])` to get the `int` annotation.
     fn untype(&self, ty: Type, range: TextRange, errors: &ErrorCollector) -> Type {
         let mut ty = ty;
-        if let Type::Forall(box (name, tparams, t)) = ty {
+        if let Type::Forall(forall) = ty {
             // A generic type alias with no type arguments is OK if all the type params have defaults
-            let targs = self.check_and_create_targs(&name, &tparams, Vec::new(), range, errors);
-            let param_map = tparams
+            let targs = self.check_and_create_targs(
+                &forall.name,
+                &forall.tparams,
+                Vec::new(),
+                range,
+                errors,
+            );
+            let param_map = forall
+                .tparams
                 .quantified()
                 .zip(targs.as_slice().iter().cloned())
                 .collect::<SmallMap<_, _>>();
-            ty = t.subst(&param_map)
+            ty = forall.as_inner_type().subst(&param_map)
         };
         if let Some(t) = self.untype_opt(ty.clone(), range) {
             t

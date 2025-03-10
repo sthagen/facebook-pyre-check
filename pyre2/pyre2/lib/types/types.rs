@@ -16,6 +16,7 @@ use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use vec1::Vec1;
 
+use crate::assert_words;
 use crate::types::callable::Callable;
 use crate::types::callable::CallableKind;
 use crate::types::callable::Param;
@@ -224,9 +225,7 @@ impl TypeAlias {
     }
 }
 
-// We have a lot of types, want to make sure they stay a reasonable size
-#[cfg(target_pointer_width = "64")]
-static_assertions::assert_eq_size!(Type, [usize; 4]);
+assert_words!(Type, 4);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Decoration {
@@ -281,12 +280,146 @@ pub enum CalleeKind {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BoundMethod {
     pub obj: Type,
-    pub func: Type,
+    pub func: BoundMethodType,
 }
 
 impl BoundMethod {
     pub fn to_callable(&self) -> Option<Type> {
-        self.func.to_unbound_callable()
+        self.as_bound_function().to_unbound_callable()
+    }
+
+    pub fn as_bound_function(&self) -> Type {
+        self.func.as_type()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BoundMethodType {
+    Callable(Callable, CallableKind),
+    Forall(Forall),
+    Overload(Overload),
+}
+
+impl BoundMethodType {
+    pub fn as_type(&self) -> Type {
+        match self {
+            Self::Callable(callable, kind) => {
+                Type::Callable(Box::new(callable.clone()), kind.clone())
+            }
+            Self::Forall(forall) => Type::Forall(Box::new(forall.clone())),
+            Self::Overload(overload) => Type::Overload(overload.clone()),
+        }
+    }
+
+    pub fn as_typeguard(&self) -> Option<Type> {
+        match self {
+            Self::Callable(callable, kind) => callable
+                .drop_first_param()
+                .and_then(|ty| ty.as_typeguard(kind.clone())),
+            Self::Forall(forall) => forall.as_typeguard(),
+            // TODO: handle overloaded type guards
+            Self::Overload(_) => None,
+        }
+    }
+
+    pub fn as_typeis(&self) -> Option<Type> {
+        match self {
+            Self::Callable(callable, kind) => callable
+                .drop_first_param()
+                .and_then(|ty| ty.as_typeis(kind.clone())),
+            Self::Forall(forall) => forall.as_typeis(),
+            // TODO: handle overloaded type guards
+            Self::Overload(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Overload(pub Vec1<Type>);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ForallType {
+    Callable(Callable, CallableKind),
+    TypeAlias(TypeAlias),
+}
+
+impl ForallType {
+    fn as_type(self) -> Type {
+        match self {
+            Self::Callable(callable, kind) => Type::Callable(Box::new(callable), kind),
+            Self::TypeAlias(ta) => Type::TypeAlias(ta),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Forall {
+    pub name: Name,
+    pub tparams: TParams,
+    pub ty: ForallType,
+}
+
+impl Forall {
+    pub fn new_type(name: Name, tparams: TParams, ty: ForallType) -> Type {
+        if tparams.is_empty() {
+            ty.as_type()
+        } else {
+            Type::Forall(Box::new(Forall { name, tparams, ty }))
+        }
+    }
+
+    pub fn as_inner_type(&self) -> Type {
+        self.ty.clone().as_type()
+    }
+
+    fn as_typeguard(&self) -> Option<Type> {
+        match &self.ty {
+            ForallType::Callable(callable, kind) => {
+                if let Some(Type::Callable(box callable, kind)) =
+                    callable.as_typeguard(kind.clone())
+                {
+                    Some(Self::new_type(
+                        self.name.clone(),
+                        self.tparams.clone(),
+                        ForallType::Callable(callable, kind),
+                    ))
+                } else {
+                    None
+                }
+            }
+            ForallType::TypeAlias(_) => None,
+        }
+    }
+
+    fn as_typeis(&self) -> Option<Type> {
+        match &self.ty {
+            ForallType::Callable(callable, kind) => {
+                if let Some(Type::Callable(box callable, kind)) = callable.as_typeis(kind.clone()) {
+                    Some(Self::new_type(
+                        self.name.clone(),
+                        self.tparams.clone(),
+                        ForallType::Callable(callable, kind),
+                    ))
+                } else {
+                    None
+                }
+            }
+            ForallType::TypeAlias(_) => None,
+        }
+    }
+
+    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
+        match &self.ty {
+            ForallType::Callable(c, _) => c.visit(f),
+            ForallType::TypeAlias(ta) => f(&ta.ty),
+        }
+    }
+
+    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
+        match &mut self.ty {
+            ForallType::Callable(c, _) => c.visit_mut(f),
+            ForallType::TypeAlias(ta) => f(&mut ta.ty),
+        }
     }
 }
 
@@ -300,7 +433,7 @@ pub enum Type {
     /// and the second is the function.
     BoundMethod(Box<BoundMethod>),
     /// An overloaded function.
-    Overload(Vec1<Type>),
+    Overload(Overload),
     Union(Vec<Type>),
     #[expect(dead_code)] // Not currently used, but may be in the future
     Intersect(Vec<Type>),
@@ -324,7 +457,7 @@ pub enum Type {
     TypedDict(Box<TypedDict>),
     Tuple(Tuple),
     Module(Module),
-    Forall(Box<(Name, TParams, Type)>),
+    Forall(Box<Forall>),
     Var(Var),
     Quantified(Quantified),
     TypeGuard(Box<Type>),
@@ -423,14 +556,6 @@ impl Type {
         )
     }
 
-    pub fn forall(self, name: Name, tparams: TParams) -> Self {
-        if tparams.is_empty() {
-            self
-        } else {
-            Type::Forall(Box::new((name, tparams, self)))
-        }
-    }
-
     pub fn type_form(inner: Type) -> Self {
         Type::Type(Box::new(inner))
     }
@@ -466,18 +591,20 @@ impl Type {
         }
     }
 
-    pub fn as_typeguard(&self) -> Option<&Type> {
+    pub fn as_typeguard(&self) -> Option<Type> {
         match self {
-            Type::Callable(
-                box Callable {
-                    params: _,
-                    ret: Type::TypeGuard(t),
-                },
-                _,
-            ) => Some(t),
-            Type::Forall(box (_, _, t)) | Type::BoundMethod(box BoundMethod { func: t, .. }) => {
-                t.as_typeguard()
-            }
+            Type::Callable(box callable, kind) => callable.as_typeguard(kind.clone()),
+            Type::Forall(box forall) => forall.as_typeguard(),
+            Type::BoundMethod(method) => method.func.as_typeguard(),
+            _ => None,
+        }
+    }
+
+    pub fn as_typeis(&self) -> Option<Type> {
+        match self {
+            Type::Callable(box callable, kind) => callable.as_typeis(kind.clone()),
+            Type::Forall(box forall) => forall.as_typeis(),
+            Type::BoundMethod(method) => method.func.as_typeis(),
             _ => None,
         }
     }
@@ -490,9 +617,10 @@ impl Type {
                 .drop_first_param()
                 .map(|callable| Type::Callable(Box::new(callable), CallableKind::Anon)),
             Type::Overload(overloads) => overloads
+                .0
                 .try_mapped_ref(|x| x.to_unbound_callable().ok_or(()))
                 .ok()
-                .map(Type::Overload),
+                .map(|overload| Type::Overload(Overload(overload))),
             _ => None,
         }
     }
@@ -505,9 +633,9 @@ impl Type {
         match self {
             Type::Callable(_, kind) => Some(CalleeKind::Callable(kind.clone())),
             Type::ClassDef(c) => Some(CalleeKind::Class(c.kind())),
-            Type::Forall(box (_, _, t)) => t.callee_kind(),
+            Type::Forall(forall) => forall.as_inner_type().callee_kind(),
             // TODO(rechen): We should have one callee kind per overloaded function rather than one per overload signature.
-            Type::Overload(vs) => vs.first().callee_kind(),
+            Type::Overload(vs) => vs.0.first().callee_kind(),
             _ => None,
         }
     }
@@ -628,14 +756,18 @@ impl Type {
             Type::Callable(c, _) => c.visit(f),
             Type::BoundMethod(box BoundMethod { obj, func }) => {
                 f(obj);
-                f(func);
+                match func {
+                    BoundMethodType::Callable(c, _) => c.visit(f),
+                    BoundMethodType::Forall(forall) => forall.visit(f),
+                    BoundMethodType::Overload(overload) => overload.0.iter().for_each(f),
+                }
             }
             Type::Union(xs) | Type::Intersect(xs) => xs.iter().for_each(f),
-            Type::Overload(xs) => xs.iter().for_each(f),
+            Type::Overload(xs) => xs.0.iter().for_each(f),
             Type::ClassType(x) => x.visit(f),
             Type::TypedDict(x) => x.visit(f),
             Type::Tuple(t) => t.visit(f),
-            Type::Forall(box (_, _, x)) => f(x),
+            Type::Forall(forall) => forall.visit(f),
             Type::Concatenate(args, pspec) => {
                 for a in args {
                     f(a)
@@ -677,14 +809,18 @@ impl Type {
             Type::Callable(c, _) => c.visit_mut(f),
             Type::BoundMethod(box BoundMethod { obj, func }) => {
                 f(obj);
-                f(func);
+                match func {
+                    BoundMethodType::Callable(c, _) => c.visit_mut(f),
+                    BoundMethodType::Forall(forall) => forall.visit_mut(f),
+                    BoundMethodType::Overload(overload) => overload.0.iter_mut().for_each(f),
+                }
             }
             Type::Union(xs) | Type::Intersect(xs) => xs.iter_mut().for_each(f),
-            Type::Overload(xs) => xs.iter_mut().for_each(f),
+            Type::Overload(xs) => xs.0.iter_mut().for_each(f),
             Type::ClassType(x) => x.visit_mut(f),
             Type::TypedDict(x) => x.visit_mut(f),
             Type::Tuple(t) => t.visit_mut(f),
-            Type::Forall(box (_, _, x)) => f(x),
+            Type::Forall(forall) => forall.visit_mut(f),
             Type::Concatenate(args, pspec) => {
                 for a in args {
                     f(a)

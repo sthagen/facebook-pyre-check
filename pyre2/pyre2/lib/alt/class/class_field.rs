@@ -42,8 +42,10 @@ use crate::types::class::ClassType;
 use crate::types::literal::Lit;
 use crate::types::typed_dict::TypedDictField;
 use crate::types::types::BoundMethod;
+use crate::types::types::BoundMethodType;
 use crate::types::types::CalleeKind;
 use crate::types::types::Decoration;
+use crate::types::types::ForallType;
 use crate::types::types::Type;
 
 /// Correctly analyzing which attributes are visible on class objects, as well
@@ -219,13 +221,8 @@ impl ClassField {
     }
 
     fn as_special_method_type(self, cls: &ClassType) -> Option<Type> {
-        self.as_raw_special_method_type(cls).and_then(|ty| {
-            if is_unbound_function(&ty) {
-                Some(make_bound_method(cls.self_type(), ty))
-            } else {
-                None
-            }
-        })
+        self.as_raw_special_method_type(cls)
+            .and_then(|ty| make_bound_method(cls.self_type(), &ty))
     }
 
     pub fn as_named_tuple_type(&self) -> Type {
@@ -321,21 +318,12 @@ impl ClassField {
     }
 }
 
-pub fn is_unbound_function(ty: &Type) -> bool {
-    match ty {
-        Type::Forall(box (_, _, t)) => is_unbound_function(t),
-        Type::Callable(_, _) => true,
-        Type::Overload(_) => true,
-        _ => false,
-    }
-}
-
 pub fn bind_class_attribute(cls: &Class, attr: Type) -> Attribute {
     match attr {
         Type::Decoration(Decoration::StaticMethod(box attr)) => Attribute::read_write(attr),
-        Type::Decoration(Decoration::ClassMethod(box attr)) => {
-            Attribute::read_write(make_bound_method(Type::ClassDef(cls.dupe()), attr))
-        }
+        Type::Decoration(Decoration::ClassMethod(box attr)) => Attribute::read_write(
+            make_bound_method(Type::ClassDef(cls.dupe()), &attr).unwrap_or(attr),
+        ),
         // Accessing a property descriptor on the class gives the property itself,
         // with no magic access rules at runtime.
         p @ Type::Decoration(Decoration::Property(_)) => Attribute::read_write(p),
@@ -343,29 +331,35 @@ pub fn bind_class_attribute(cls: &Class, attr: Type) -> Attribute {
     }
 }
 
-pub fn make_bound_method(obj: Type, attr: Type) -> Type {
-    // TODO(stroxler): Think about what happens if `attr` is not callable. This
-    // can happen with the current logic if a decorator spits out a non-callable
-    // type that gets wrapped in `@classmethod`.
-    Type::BoundMethod(Box::new(BoundMethod { obj, func: attr }))
+fn make_bound_method(obj: Type, attr: &Type) -> Option<Type> {
+    let func = match attr {
+        Type::Forall(forall) if matches!(forall.ty, ForallType::Callable(..)) => {
+            Some(BoundMethodType::Forall((**forall).clone()))
+        }
+        Type::Callable(callable, kind) => Some(BoundMethodType::Callable(
+            (**callable).clone(),
+            kind.clone(),
+        )),
+        Type::Overload(overload) => Some(BoundMethodType::Overload(overload.clone())),
+        _ => None,
+    };
+    func.map(|func| Type::BoundMethod(Box::new(BoundMethod { obj, func })))
 }
 
 fn bind_instance_attribute(cls: &ClassType, attr: Type) -> Attribute {
     match attr {
         Type::Decoration(Decoration::StaticMethod(box attr)) => Attribute::read_write(attr),
         Type::Decoration(Decoration::ClassMethod(box attr)) => Attribute::read_write(
-            make_bound_method(Type::ClassDef(cls.class_object().dupe()), attr),
+            make_bound_method(Type::ClassDef(cls.class_object().dupe()), &attr).unwrap_or(attr),
         ),
         Type::Decoration(Decoration::Property(box (getter, setter))) => Attribute::property(
-            make_bound_method(Type::ClassType(cls.clone()), getter),
-            setter.map(|setter| make_bound_method(Type::ClassType(cls.clone()), setter)),
+            make_bound_method(Type::ClassType(cls.clone()), &getter).unwrap_or(getter),
+            setter.map(|setter| {
+                make_bound_method(Type::ClassType(cls.clone()), &setter).unwrap_or(setter)
+            }),
             cls.class_object().dupe(),
         ),
-        attr => Attribute::read_write(if is_unbound_function(&attr) {
-            make_bound_method(cls.self_type(), attr)
-        } else {
-            attr
-        }),
+        attr => Attribute::read_write(make_bound_method(cls.self_type(), &attr).unwrap_or(attr)),
     }
 }
 
