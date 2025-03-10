@@ -1336,7 +1336,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         ],
                         &[],
                         errors,
-                        None,
+                        Some(&ErrorContext::SetItem(base.clone())),
                     ),
                 }
             }
@@ -1473,11 +1473,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 if ks.len() == 1 {
                     self.get_idx(*ks.first().unwrap()).arc_clone()
                 } else {
-                    self.unions(
-                        ks.iter()
-                            .map(|k| self.get_idx(*k).arc_clone())
-                            .collect::<Vec<_>>(),
-                    )
+                    let ts = ks
+                        .iter()
+                        .map(|k| self.get_idx(*k).arc_clone())
+                        .collect::<Vec<_>>();
+                    if matches!(ts.last(), Some(Type::Overload(_))) {
+                        // TODO: we should drop only the preceding `@overload`-decorated functions,
+                        // not everything else.
+                        ts.into_iter().last().unwrap()
+                    } else {
+                        self.unions(ts)
+                    }
                 }
             }
             Binding::Narrow(k, op) => self.narrow(&self.get_idx(*k), op, errors),
@@ -1614,8 +1620,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 // TODO: check that value matches class
                 // TODO: check against duplicate keys (optional)
                 let binding_ty = self.get_idx(*key).arc_clone();
-                let match_args =
-                    self.attr_infer(&binding_ty, &dunder::MATCH_ARGS, *range, errors, None);
+                let context = ErrorContext::MatchPositional(binding_ty.clone());
+                let match_args = self.attr_infer(
+                    &binding_ty,
+                    &dunder::MATCH_ARGS,
+                    *range,
+                    errors,
+                    Some(&context),
+                );
                 match match_args {
                     Type::Tuple(Tuple::Concrete(ts)) => {
                         if *idx < ts.len() {
@@ -1625,14 +1637,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     &Name::new(attr_name),
                                     *range,
                                     errors,
-                                    None,
+                                    Some(&context),
                                 )
                             } else {
                                 self.error(
                                     errors,
                                     *range,
                                     ErrorKind::MatchError,
-                                    None,
+                                    Some(&context),
                                     format!(
                                         "Expected literal string in `__match_args__`, got {}",
                                         ts[*idx]
@@ -1644,7 +1656,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 errors,
                                 *range,
                                 ErrorKind::MatchError,
-                                None,
+                                Some(&context),
                                 format!("Index {idx} out of range for `__match_args__`"),
                             )
                         }
@@ -1654,9 +1666,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         errors,
                         *range,
                         ErrorKind::MatchError,
-                        None,
+                        Some(&context),
                         format!(
-                            "Expected concrete tuple for __match_args__, got {}",
+                            "Expected concrete tuple for `__match_args__`, got {}",
                             match_args
                         ),
                     ),
