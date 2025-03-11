@@ -68,6 +68,7 @@ assert_bytes!(KeyClassMetadata, 4);
 assert_words!(KeyLegacyTypeParam, 1);
 assert_words!(KeyYield, 1);
 assert_words!(KeyYieldFrom, 1);
+assert_words!(KeyFunction, 1);
 
 assert_words!(Binding, 9);
 assert_words!(BindingExpect, 8);
@@ -79,6 +80,7 @@ assert_bytes!(BindingClassSynthesizedFields, 4);
 assert_bytes!(BindingLegacyTypeParam, 4);
 assert_words!(BindingYield, 3);
 assert_words!(BindingYieldFrom, 3);
+assert_words!(BindingFunction, 21);
 
 pub trait Keyed: Hash + Eq + Clone + DisplayWith<ModuleInfo> + Debug + Ranged + 'static {
     const EXPORTED: bool = false;
@@ -114,7 +116,7 @@ impl Keyed for KeyExport {
     type Answer = Type;
 }
 impl Keyed for KeyFunction {
-    type Value = FunctionBinding;
+    type Value = BindingFunction;
     type Answer = DecoratedFunction;
 }
 impl Keyed for KeyAnnotation {
@@ -560,7 +562,7 @@ pub enum FunctionKind {
 }
 
 #[derive(Clone, Debug)]
-pub struct FunctionBinding {
+pub struct BindingFunction {
     /// A function definition, but with the return/body stripped out.
     pub def: StmtFunctionDef,
     pub kind: FunctionKind,
@@ -570,7 +572,7 @@ pub struct FunctionBinding {
     pub successor: Option<Idx<KeyFunction>>,
 }
 
-impl DisplayWith<Bindings> for FunctionBinding {
+impl DisplayWith<Bindings> for BindingFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, _ctx: &Bindings) -> fmt::Result {
         write!(f, "def {}", self.def.name.id)
     }
@@ -1063,7 +1065,7 @@ pub struct BindingClassMetadata {
 
 impl DisplayWith<Bindings> for BindingClassMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
-        write!(f, "mro {}", ctx.display(self.def))
+        write!(f, "metadata {}", ctx.display(self.def))
     }
 }
 

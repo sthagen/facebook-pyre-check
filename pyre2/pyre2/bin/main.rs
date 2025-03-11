@@ -11,6 +11,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use anyhow::anyhow;
 use clap::Parser;
 use clap::Subcommand;
 use pyre2::clap_env;
@@ -64,8 +65,8 @@ enum Command {
         /// When not set, Pyre will perform an upward-filesystem-walk approach to find the nearest
         /// pyre.toml or 'pyproject.toml with `tool.pyre` section'. If no config is found, Pyre exits with error.
         /// If both a pyre.toml and valid pyproject.toml are found, pyre.toml takes precedence.
-        #[clap(long = "config-file", env = clap_env("CONFIG_FILE"))]
-        config_file: Option<std::path::PathBuf>,
+        #[clap(long, short, env = clap_env("CONFIG"))]
+        config: Option<std::path::PathBuf>,
 
         #[clap(flatten)]
         args: CheckArgs,
@@ -86,9 +87,12 @@ fn exit_on_panic() {
     }));
 }
 
-fn get_open_source_config(_: &Path) -> ConfigFile {
+fn get_open_source_config(file: &Path) -> anyhow::Result<ConfigFile> {
     // TODO: Implement upward-searching for open source config.
-    ConfigFile::default()
+    ConfigFile::from_file(file).map_err(|err| {
+        let file_str = file.display();
+        anyhow!("Failed to parse configuration at {file_str}: {err}")
+    })
 }
 
 fn to_exit_code(status: CommandExitStatus) -> ExitCode {
@@ -101,12 +105,21 @@ fn to_exit_code(status: CommandExitStatus) -> ExitCode {
 }
 
 fn run_check_on_project(
-    _watcher: Option<Box<dyn Watcher>>,
-    _config_file: Option<PathBuf>,
-    _args: pyre2::run::CheckArgs,
-    _allow_forget: bool,
+    watcher: Option<Box<dyn Watcher>>,
+    config: Option<PathBuf>,
+    args: pyre2::run::CheckArgs,
+    allow_forget: bool,
 ) -> anyhow::Result<CommandExitStatus> {
-    panic!("Project-checking mode has not been implemented yet")
+    let config = config
+        .map(|c| get_open_source_config(c.as_path()))
+        .transpose()?
+        .unwrap_or_default();
+    args.run(
+        watcher,
+        config.project_include.clone(),
+        &|_| config.clone(),
+        allow_forget,
+    )
 }
 
 fn run_check_on_files(
@@ -118,7 +131,8 @@ fn run_check_on_files(
     args.run(
         watcher,
         files_to_check,
-        &get_open_source_config,
+        // TODO(connernilsen): replace this when we have search paths working
+        &|_| ConfigFile::default(),
         allow_forget,
     )
 }
@@ -128,7 +142,7 @@ fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<CommandEx
         Command::Check {
             files,
             watch,
-            config_file,
+            config,
             args,
         } => {
             let watcher: Option<Box<dyn Watcher>> = if watch {
@@ -136,11 +150,11 @@ fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<CommandEx
             } else {
                 None
             };
-            if !files.is_empty() && config_file.is_some() {
-                panic!("Can either supply `FILES...` OR `--config-file`, not both.")
+            if !files.is_empty() && config.is_some() {
+                anyhow::bail!("Can either supply `FILES...` OR `--config/-c`, not both.")
             }
             if files.is_empty() {
-                run_check_on_project(watcher, config_file, args, allow_forget)
+                run_check_on_project(watcher, config, args, allow_forget)
             } else {
                 run_check_on_files(Globs::new(files), watcher, args, allow_forget)
             }

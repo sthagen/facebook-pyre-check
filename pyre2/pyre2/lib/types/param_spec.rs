@@ -16,6 +16,7 @@ use crate::module::module_info::ModuleInfo;
 use crate::types::qname::QName;
 use crate::types::types::Type;
 use crate::util::arc_id::ArcId;
+use crate::util::mutable::Mutable;
 
 /// Used to represent ParamSpec calls. Each ParamSpec is unique, so use the ArcId to separate them.
 #[derive(Clone, Dupe, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -46,16 +47,26 @@ impl ParamSpec {
     pub fn to_type(&self) -> Type {
         Type::ParamSpec(self.dupe())
     }
+}
 
-    pub fn immutable_eq(&self, other: &ParamSpec) -> bool {
+impl Mutable for ParamSpec {
+    fn immutable_eq(&self, other: &ParamSpec) -> bool {
         self.0.qname.immutable_eq(&other.0.qname)
     }
 
-    pub fn immutable_hash<H: Hasher>(&self, state: &mut H) {
+    fn immutable_hash<H: Hasher>(&self, state: &mut H) {
         self.0.qname.immutable_hash(state);
     }
 
-    pub fn mutate(&self, x: &ParamSpec) {
+    fn mutable_eq(&self, other: &Self) -> bool {
+        self.0.qname.mutable_eq(&other.0.qname)
+    }
+
+    fn mutable_hash<H: Hasher>(&self, state: &mut H) {
+        self.0.qname.mutable_hash(state);
+    }
+
+    fn mutate(&self, x: &ParamSpec) {
         self.0.qname.mutate(&x.0.qname);
     }
 }

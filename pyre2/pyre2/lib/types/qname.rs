@@ -24,6 +24,7 @@ use crate::ast::AtomicTextRange;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::util::lock::RwLock;
+use crate::util::mutable::Mutable;
 
 /// A name, plus where it is defined.
 pub struct QName {
@@ -121,17 +122,28 @@ impl QName {
             self.module_info.read().source_range(self.range.get())
         )
     }
+}
 
-    pub fn immutable_eq(&self, other: &QName) -> bool {
+impl Mutable for QName {
+    fn immutable_eq(&self, other: &QName) -> bool {
         self.name == other.name && self.module_name == other.module_name
     }
 
-    pub fn immutable_hash<H: Hasher>(&self, state: &mut H) {
+    fn immutable_hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
         self.module_name.hash(state);
     }
 
-    pub fn mutate(&self, x: &QName) {
+    fn mutable_eq(&self, other: &Self) -> bool {
+        // We don't check the `module_info` here, because it's always derived from the `module_name`.
+        self.range.get() == other.range.get()
+    }
+
+    fn mutable_hash<H: Hasher>(&self, state: &mut H) {
+        self.range.get().hash(state);
+    }
+
+    fn mutate(&self, x: &QName) {
         *self.module_info.write() = x.module_info().dupe();
         self.range.set(x.range.get());
     }
