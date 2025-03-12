@@ -70,8 +70,7 @@ impl<'a> BindingsBuilder<'a> {
         self.scopes.push(Scope::annotation(x.range));
 
         let class_index = self.class_index();
-        let class_name = ShortIdentifier::new(&x.name);
-        let class_key = KeyClass(class_name.clone());
+        let class_key = KeyClass(ShortIdentifier::new(&x.name));
         let definition_key = self.table.classes.0.insert(class_key);
 
         x.type_params.iter_mut().for_each(|x| {
@@ -167,7 +166,7 @@ impl<'a> BindingsBuilder<'a> {
         }
         if let ScopeKind::ClassBody(body) = last_scope.kind {
             for (method_name, instance_attributes) in body.instance_attributes_by_method {
-                if method_name == dunder::INIT {
+                if is_attribute_defining_method(&method_name, &x.name.id) {
                     for (name, InstanceAttribute(value, annotation, range)) in instance_attributes {
                         if !fields.contains_key(&name) {
                             fields.insert(
@@ -287,8 +286,7 @@ impl<'a> BindingsBuilder<'a> {
         special_base: Option<Box<BaseClass>>,
     ) {
         let class_index = self.class_index();
-        let short_class_name = ShortIdentifier::new(&class_name);
-        let class_key = KeyClass(short_class_name.clone());
+        let class_key = KeyClass(ShortIdentifier::new(&class_name));
         let definition_key = self.table.classes.0.insert(class_key.clone());
         self.table.insert(
             KeyClassMetadata(class_index),
@@ -774,4 +772,21 @@ pub fn is_valid_identifier(name: &str) -> bool {
     static IDENTIFIER_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new("^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap());
     !is_keyword(name) && IDENTIFIER_REGEX.is_match(name)
+}
+
+fn is_attribute_defining_method(method_name: &Name, class_name: &Name) -> bool {
+    if method_name == &dunder::INIT {
+        true
+    } else {
+        (class_name.contains("Test") || class_name.contains("test"))
+            && is_test_setup_method(method_name)
+    }
+}
+
+fn is_test_setup_method(method_name: &Name) -> bool {
+    match method_name.as_str() {
+        "asyncSetUp" | "async_setUp" | "setUp" | "_setup" | "_async_setup"
+        | "async_with_context" | "with_context" | "setUpClass" => true,
+        _ => false,
+    }
 }

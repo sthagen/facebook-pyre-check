@@ -31,6 +31,7 @@ use starlark_map::small_set::SmallSet;
 
 use crate::alt::class::class_field::ClassField;
 use crate::alt::class::class_metadata::BaseClass;
+use crate::alt::solve::TypeFormContext;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::ClassSynthesizedFields;
 use crate::alt::types::decorated_function::DecoratedFunction;
@@ -56,6 +57,7 @@ use crate::types::types::Type;
 use crate::types::types::Var;
 use crate::util::display::commas_iter;
 use crate::util::display::DisplayWith;
+use crate::util::display::DisplayWithCtx;
 
 assert_words!(Key, 5);
 assert_words!(KeyExpect, 1);
@@ -156,7 +158,6 @@ pub enum Key {
     ReturnImplicit(ShortIdentifier),
     /// The actual type of the return for a function.
     ReturnType(ShortIdentifier),
-    /// The type of the return for a function after taking generators into account.
     /// I am a use in this module at this location.
     Usage(ShortIdentifier),
     /// I am an expression that does not have a simple name but needs its type inferred.
@@ -940,6 +941,8 @@ impl Display for AnnotationWithTarget {
 pub enum AnnotationTarget {
     /// A function parameter with a type annotation
     Param(Name),
+    ArgsParam(Name),
+    KwargsParam(Name),
     /// A return type annotation on a function. The name is that of the function
     Return(Name),
     /// An annotated assignment. For attribute assignments, the name is the attribute name ("attr" in "x.attr")
@@ -952,9 +955,24 @@ impl Display for AnnotationTarget {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Param(name) => write!(f, "param {name}"),
+            Self::ArgsParam(name) => write!(f, "args {name}"),
+            Self::KwargsParam(name) => write!(f, "kwargs {name}"),
             Self::Return(name) => write!(f, "{name} return"),
             Self::Assign(name) => write!(f, "var {name}"),
             Self::ClassMember(name) => write!(f, "attr {name}"),
+        }
+    }
+}
+
+impl AnnotationTarget {
+    pub fn type_form_context(&self) -> TypeFormContext {
+        match self {
+            Self::Param(_) => TypeFormContext::ParameterAnnotation,
+            Self::ArgsParam(_) => TypeFormContext::ParameterArgsAnnotation,
+            Self::KwargsParam(_) => TypeFormContext::ParameterKwargsAnnotation,
+            Self::Return(_) => TypeFormContext::ReturnAnnotation,
+            Self::Assign(_) => TypeFormContext::VarAnnotation,
+            Self::ClassMember(_) => TypeFormContext::ClassVarAnnotation,
         }
     }
 }

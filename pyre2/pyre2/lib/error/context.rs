@@ -29,6 +29,8 @@ pub enum ErrorContext {
     BinaryOp(String, Type, Type),
     /// for x in y: ...
     Iteration(Type),
+    /// await x
+    Await(Type),
     /// x[y]
     Index(Type),
     /// x[y] = ...
@@ -110,7 +112,9 @@ pub enum TypeCheckKind {
 impl TypeCheckKind {
     pub fn from_annotation_target(target: &AnnotationTarget) -> Self {
         match target {
-            AnnotationTarget::Param(_) => Self::Unknown,
+            AnnotationTarget::Param(_)
+            | AnnotationTarget::ArgsParam(_)
+            | AnnotationTarget::KwargsParam(_) => Self::Unknown,
             AnnotationTarget::Return(_func) => Self::ExplicitFunctionReturn,
             AnnotationTarget::Assign(name) => Self::AnnotatedName(name.clone()),
             AnnotationTarget::ClassMember(member) => Self::Attribute(member.clone()),

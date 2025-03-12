@@ -8,6 +8,7 @@
 use std::mem;
 
 use itertools::Either;
+use ruff_python_ast::AnyParameterRef;
 use ruff_python_ast::ExceptHandler;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Parameters;
@@ -54,11 +55,32 @@ impl<'a> BindingsBuilder<'a> {
         self_type: Option<Idx<KeyClass>>,
     ) {
         let mut self_name = None;
-        for x in x.iter() {
+        for x in x.iter_non_variadic_params() {
             if self_type.is_some() && self_name.is_none() {
-                self_name = Some(x.name().clone());
+                self_name = Some(x.parameter.name.clone());
             }
-            self.bind_function_param(x, function_idx, self_type);
+            self.bind_function_param(
+                AnnotationTarget::Param(x.parameter.name.id.clone()),
+                AnyParameterRef::NonVariadic(x),
+                function_idx,
+                self_type,
+            );
+        }
+        if let Some(box args) = &x.vararg {
+            self.bind_function_param(
+                AnnotationTarget::ArgsParam(args.name.id.clone()),
+                AnyParameterRef::Variadic(args),
+                function_idx,
+                self_type,
+            );
+        }
+        if let Some(box kwargs) = &x.kwarg {
+            self.bind_function_param(
+                AnnotationTarget::KwargsParam(kwargs.name.id.clone()),
+                AnyParameterRef::Variadic(kwargs),
+                function_idx,
+                self_type,
+            );
         }
         if let Scope {
             kind: ScopeKind::Method(method),

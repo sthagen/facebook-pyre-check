@@ -88,6 +88,34 @@ use crate::types::types::TypeAlias;
 use crate::types::types::TypeAliasStyle;
 use crate::util::prelude::SliceExt;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
+pub enum TypeFormContext {
+    /// Expression in a base class list
+    BaseClassList,
+    /// Variable annotation in a class
+    ClassVarAnnotation,
+    /// Argument to a function such as cast, assert_type, or TypeVar
+    FunctionArgument,
+    /// Arguments to Generic[] or Protocol[]
+    GenericBase,
+    /// Parameter annotation for a function
+    ParameterAnnotation,
+    ParameterArgsAnnotation,
+    ParameterKwargsAnnotation,
+    ReturnAnnotation,
+    /// Type argument for a generic
+    TypeArgument,
+    /// Type argument for the return position of a Callable type
+    TypeArgumentCallableReturn,
+    /// Type argument for the parameters list of a Callable type or a tuple
+    TupleOrCallableParam,
+    /// Scoped type params for functions and classes
+    TypeVarConstraint,
+    /// Variable annotation outside of a class definition
+    VarAnnotation,
+}
+
 pub enum Iterable {
     OfType(Type),
     FixedLen(Vec<Type>),
@@ -168,7 +196,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Arc<AnnotationWithTarget> {
         match binding {
             BindingAnnotation::AnnotateExpr(target, x, self_type) => {
-                let mut ann = self.expr_annotation(x, errors);
+                let type_form_context = target.type_form_context();
+                let mut ann = self.expr_annotation(x, type_form_context, errors);
                 if let Some(self_type) = self_type
                     && let Some(ty) = &mut ann.ty
                 {
@@ -189,13 +218,84 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn expr_qualifier(&self, x: &Expr, errors: &ErrorCollector) -> Option<Qualifier> {
+    fn expr_qualifier(
+        &self,
+        x: &Expr,
+        type_form_context: TypeFormContext,
+        errors: &ErrorCollector,
+    ) -> Option<Qualifier> {
         let ty = match x {
             Expr::Name(_) | Expr::Attribute(_) => Some(self.expr_infer(x, errors)),
             _ => None,
         };
         if let Some(Type::Type(box Type::SpecialForm(special))) = ty {
-            special.to_qualifier()
+            let qualifier = special.to_qualifier();
+            match qualifier {
+                Some(
+                    Qualifier::ClassVar
+                    | Qualifier::ReadOnly
+                    | Qualifier::NotRequired
+                    | Qualifier::Required,
+                ) if type_form_context != TypeFormContext::ClassVarAnnotation => {
+                    self.error(
+                        errors,
+                        x.range(),
+                        ErrorKind::InvalidAnnotation,
+                        None,
+                        format!("{} is only allowed inside a class body.", special),
+                    );
+                    None
+                }
+                Some(Qualifier::Final)
+                    if !matches!(
+                        type_form_context,
+                        TypeFormContext::ClassVarAnnotation | TypeFormContext::VarAnnotation,
+                    ) =>
+                {
+                    self.error(
+                        errors,
+                        x.range(),
+                        ErrorKind::InvalidAnnotation,
+                        None,
+                        format!(
+                            "{} is only allowed on a class or local variable annotation.",
+                            special
+                        ),
+                    );
+                    None
+                }
+                Some(Qualifier::Unpack)
+                    if !matches!(
+                        type_form_context,
+                        TypeFormContext::ParameterArgsAnnotation
+                            | TypeFormContext::ParameterKwargsAnnotation,
+                    ) =>
+                {
+                    self.error(
+                        errors,
+                        x.range(),
+                        ErrorKind::InvalidAnnotation,
+                        None,
+                        "Unpack is not allowed in this context.".to_owned(),
+                    );
+                    // We return the qualifier so that it's consumed and we don't emit a
+                    // duplicate error in the fallback logic
+                    qualifier
+                }
+                Some(Qualifier::TypeAlias)
+                    if type_form_context != TypeFormContext::VarAnnotation =>
+                {
+                    self.error(
+                        errors,
+                        x.range(),
+                        ErrorKind::InvalidAnnotation,
+                        None,
+                        "TypeAlias is only allowed on variable annotations.".to_owned(),
+                    );
+                    None
+                }
+                _ => qualifier,
+            }
         } else {
             None
         }
@@ -235,24 +335,60 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         false
     }
 
-    fn expr_annotation(&self, x: &Expr, errors: &ErrorCollector) -> Annotation {
+    fn expr_annotation(
+        &self,
+        x: &Expr,
+        type_form_context: TypeFormContext,
+        errors: &ErrorCollector,
+    ) -> Annotation {
         if !Self::is_valid_annotation(x, errors) {
             return Annotation::new_type(Type::any_error());
         }
         match x {
-            _ if let Some(qualifier) = self.expr_qualifier(x, errors) => Annotation {
-                qualifiers: vec![qualifier],
-                ty: None,
-            },
+            _ if let Some(qualifier) = self.expr_qualifier(x, type_form_context, errors) => {
+                Annotation {
+                    qualifiers: vec![qualifier],
+                    ty: None,
+                }
+            }
             Expr::Subscript(x)
-                if Ast::unpack_slice(&x.slice).len() == 1
-                    && let Some(qualifier) = self.expr_qualifier(&x.value, errors) =>
+                if !Ast::unpack_slice(&x.slice).is_empty()
+                    && let Some(qualifier) =
+                        self.expr_qualifier(&x.value, type_form_context, errors) =>
             {
-                let mut ann = self.expr_annotation(&x.slice, errors);
+                let unpacked_slice = Ast::unpack_slice(&x.slice);
+                let mut ann = if qualifier == Qualifier::Annotated {
+                    // TODO: we may want to preserve the extra annotation info for `Annotated` in the future
+                    if unpacked_slice.len() < 2 {
+                        self.error(
+                            errors,
+                            x.range(),
+                            ErrorKind::InvalidAnnotation,
+                            None,
+                            "`Annotated` needs at least one piece of metadata in addition to the type".to_owned(),
+                        );
+                    }
+                    self.expr_annotation(&unpacked_slice[0], type_form_context, errors)
+                } else {
+                    if unpacked_slice.len() != 1 {
+                        self.error(
+                            errors,
+                            x.range(),
+                            ErrorKind::InvalidAnnotation,
+                            None,
+                            format!(
+                                "Expected 1 type argument for {}, got {}",
+                                qualifier,
+                                unpacked_slice.len()
+                            ),
+                        );
+                    }
+                    self.expr_annotation(&unpacked_slice[0], type_form_context, errors)
+                };
                 ann.qualifiers.insert(0, qualifier);
                 ann
             }
-            _ => Annotation::new_type(self.expr_untype(x, errors)),
+            _ => Annotation::new_type(self.expr_untype(x, type_form_context, errors)),
         }
     }
 
@@ -484,9 +620,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         name: &Name,
         style: TypeAliasStyle,
         ty: Type,
-        range: TextRange,
+        expr: &Expr,
         errors: &ErrorCollector,
     ) -> Type {
+        let range = expr.range();
+        if !Self::is_valid_annotation(expr, errors) {
+            return Type::any_error();
+        }
         if matches!(
             style,
             TypeAliasStyle::Scoped | TypeAliasStyle::LegacyExplicit
@@ -654,20 +794,42 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         _ => unreachable!(),
                     }
                 }
+                let mut type_var_tuple_count = 0;
                 let mut params = Vec::new();
                 for raw_param in x.type_params.iter() {
+                    if matches!(raw_param, TypeParam::TypeVarTuple(_)) {
+                        if type_var_tuple_count == 1 {
+                            self.error(
+                                errors,
+                                raw_param.range(),
+                                ErrorKind::InvalidTypeVarTuple,
+                                None,
+                                "There cannot be more than one TypeVarTuple type parameter"
+                                    .to_owned(),
+                            );
+                        }
+                        type_var_tuple_count += 1;
+                    }
                     let name = raw_param.name();
                     let restriction = match raw_param {
                         TypeParam::TypeVar(tv) => match &tv.bound {
-                            Some(box Expr::Tuple(tup)) => Restriction::Constraints(
-                                tup.elts.map(|e| self.expr_untype(e, errors)),
-                            ),
-                            Some(e) => Restriction::Bound(self.expr_untype(e, errors)),
+                            Some(box Expr::Tuple(tup)) => {
+                                Restriction::Constraints(tup.elts.map(|e| {
+                                    self.expr_untype(e, TypeFormContext::TypeVarConstraint, errors)
+                                }))
+                            }
+                            Some(e) => Restriction::Bound(self.expr_untype(
+                                e,
+                                TypeFormContext::TypeVarConstraint,
+                                errors,
+                            )),
                             None => Restriction::Unrestricted,
                         },
                         _ => Restriction::Unrestricted,
                     };
-                    let default = raw_param.default().map(|e| self.expr_untype(e, errors));
+                    let default = raw_param
+                        .default()
+                        .map(|e| self.expr_untype(e, TypeFormContext::TypeVarConstraint, errors));
                     params.push(TParamInfo {
                         name: name.id.clone(),
                         quantified: get_quantified(
@@ -1479,36 +1641,24 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     annot.as_ref().and_then(|(x, tcc)| x.ty().map(|t| (t, tcc))),
                     errors,
                 );
-                let expr_range = expr.range();
                 match (annot, &ty) {
                     (Some((annot, _)), _)
                         if annot.annotation.qualifiers.contains(&Qualifier::TypeAlias) =>
                     {
-                        self.as_type_alias(
-                            name,
-                            TypeAliasStyle::LegacyExplicit,
-                            ty,
-                            expr_range,
-                            errors,
-                        )
+                        self.as_type_alias(name, TypeAliasStyle::LegacyExplicit, ty, expr, errors)
                     }
                     // TODO(stroxler, rechen): Do we want to include Type::ClassDef(_)
                     // when there is no annotation, so that `mylist = list` is treated
                     // like a value assignment rather than a type alias?
-                    (None, Type::Type(_)) => self.as_type_alias(
-                        name,
-                        TypeAliasStyle::LegacyImplicit,
-                        ty,
-                        expr_range,
-                        errors,
-                    ),
+                    (None, Type::Type(_)) => {
+                        self.as_type_alias(name, TypeAliasStyle::LegacyImplicit, ty, expr, errors)
+                    }
                     _ => ty,
                 }
             }
             Binding::ScopedTypeAlias(name, params, expr) => {
                 let ty = self.expr_infer(expr, errors);
-                let expr_range = expr.range();
-                let ta = self.as_type_alias(name, TypeAliasStyle::Scoped, ty, expr_range, errors);
+                let ta = self.as_type_alias(name, TypeAliasStyle::Scoped, ty, expr, errors);
                 match ta {
                     Type::Forall(..) => self.error(
                         errors,
@@ -1518,7 +1668,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         format!("Type parameters used in `{name}` but not declared"),
                     ),
                     Type::TypeAlias(ta) => {
-                        let params_range = params.as_ref().map_or(expr_range, |x| x.range);
+                        let params_range = params.as_ref().map_or(expr.range(), |x| x.range);
                         Forall::new_type(
                             name.clone(),
                             self.type_params(
@@ -1882,23 +2032,129 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::Unpack(box Type::Var(v)) if let Some(_guard) = self.recurser.recurse(v) => {
                 self.untype_opt(Type::Unpack(Box::new(self.solver().force_var(v))), range)
             }
-            Type::Unpack(box t) => Some(t),
             _ => None,
         }
     }
 
-    pub fn expr_untype(&self, x: &Expr, errors: &ErrorCollector) -> Type {
-        match x {
-            // TODO: this is only valid in a type argument list for generics or Callable, not as a standalone annotation
-            Expr::List(x) => {
+    pub fn expr_untype(
+        &self,
+        x: &Expr,
+        type_form_context: TypeFormContext,
+        errors: &ErrorCollector,
+    ) -> Type {
+        let result = match x {
+            Expr::List(x) if type_form_context == TypeFormContext::TypeArgument => {
                 let elts: Vec<Param> = x
                     .elts
                     .iter()
-                    .map(|x| Param::PosOnly(self.expr_untype(x, errors), Required::Required))
+                    .map(|x| {
+                        Param::PosOnly(
+                            self.expr_untype(x, type_form_context, errors),
+                            Required::Required,
+                        )
+                    })
                     .collect();
                 Type::ParamSpecValue(ParamList::new(elts))
             }
             _ => self.untype(self.expr_infer(x, errors), x.range(), errors),
+        };
+        if type_form_context != TypeFormContext::ParameterKwargsAnnotation
+            && matches!(result, Type::Unpack(box Type::TypedDict(_)))
+        {
+            return self.error(
+                errors,
+                x.range(),
+                ErrorKind::InvalidAnnotation,
+                None,
+                "Unpack with a TypedDict is only allowed in a **kwargs annotation.".to_owned(),
+            );
         }
+        if type_form_context != TypeFormContext::ParameterKwargsAnnotation
+            && matches!(result, Type::Kwargs(_))
+        {
+            return self.error(
+                errors,
+                x.range(),
+                ErrorKind::InvalidAnnotation,
+                None,
+                "ParamSpec **kwargs is only allowed in a **kwargs annotation.".to_owned(),
+            );
+        }
+        if type_form_context != TypeFormContext::ParameterArgsAnnotation
+            && matches!(result, Type::Args(_))
+        {
+            return self.error(
+                errors,
+                x.range(),
+                ErrorKind::InvalidAnnotation,
+                None,
+                "ParamSpec *args is only allowed in an *args annotation.".to_owned(),
+            );
+        }
+        if !matches!(
+            type_form_context,
+            TypeFormContext::ParameterArgsAnnotation
+                | TypeFormContext::ParameterKwargsAnnotation
+                | TypeFormContext::TypeArgument
+                | TypeFormContext::TupleOrCallableParam
+                | TypeFormContext::GenericBase
+        ) && matches!(result, Type::Unpack(_))
+        {
+            return self.error(
+                errors,
+                x.range(),
+                ErrorKind::InvalidAnnotation,
+                None,
+                "Unpack is not allowed in this context.".to_owned(),
+            );
+        }
+        if !matches!(
+            type_form_context,
+            TypeFormContext::TypeArgument | TypeFormContext::GenericBase
+        ) && matches!(
+            result,
+            Type::Concatenate(_, _) | Type::ParamSpecValue(_) | Type::ParamSpec(_)
+        ) {
+            return self.error(
+                errors,
+                x.range(),
+                ErrorKind::InvalidAnnotation,
+                None,
+                format!("{} is not allowed in this context.", result),
+            );
+        }
+        if let Type::Quantified(quantified) = result {
+            if quantified.is_param_spec()
+                && !matches!(
+                    type_form_context,
+                    TypeFormContext::TypeArgument | TypeFormContext::GenericBase
+                )
+            {
+                return self.error(
+                    errors,
+                    x.range(),
+                    ErrorKind::InvalidAnnotation,
+                    None,
+                    "ParamSpec is not allowed in this context.".to_owned(),
+                );
+            }
+            // We check tuple/callable/generic type arguments separately, so exclude those
+            // to avoid emitting duplicate errors.
+            if quantified.is_type_var_tuple()
+                && !matches!(
+                    type_form_context,
+                    TypeFormContext::TupleOrCallableParam | TypeFormContext::TypeArgument
+                )
+            {
+                return self.error(
+                    errors,
+                    x.range(),
+                    ErrorKind::InvalidAnnotation,
+                    None,
+                    "TypeVarTuple must be unpacked.".to_owned(),
+                );
+            }
+        }
+        result
     }
 }

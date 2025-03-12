@@ -77,18 +77,19 @@ assert_type(f("A", True), str)
 "#,
 );
 
-testcase_with_bug!(
-    "ParamSpec types can only be used in argument positions or when a ParamSpec is expected by a generic",
+testcase!(
     test_paramspec_in_right_place,
     r#"
 from typing import Callable, Concatenate, ParamSpec
 
 P = ParamSpec("P")
 
-def foo(x: P) -> P: ...                           # Rejected
-def foo(x: Concatenate[int, P]) -> int: ...       # Rejected
+def foo(x: P) -> P: ...                           # E: ParamSpec is not allowed in this context. # E: ParamSpec is not allowed in this context.
+def foo(x: Concatenate[int, P]) -> int: ...       # E: Concatenate[int, ?_ParamSpec] is not allowed in this context.
+def foo(x: Callable[Concatenate[P, P], int]) -> int: ...  # E: ParamSpec is not allowed in this context.
 def foo(x: list[P]) -> None: ...                  # E: ParamSpec cannot be used for type parameter
-def foo(x: Callable[[int, str], P]) -> None: ...  # Rejected
+def foo(x: Callable[[int, str], P]) -> None: ...  # E: ParamSpec is not allowed in this context.
+def foo(x: Callable[[P, str], int]) -> None: ...  # E: ParamSpec is not allowed in this context.
 "#,
 );
 
@@ -225,10 +226,10 @@ def puts_p_into_scope(f: Callable[P, int]) -> None:
   def inner(*args: P.args, **kwargs: P.kwargs) -> None:      # Accepted
     pass
 
-  def mixed_up(*args: P.kwargs, **kwargs: P.args) -> None:   # Rejected
+  def mixed_up(*args: P.kwargs, **kwargs: P.args) -> None:   # E: ParamSpec **kwargs is only allowed in a **kwargs annotation. # E: ParamSpec *args is only allowed in an *args annotation.
     pass
 
-  def misplaced(x: P.args) -> None:                          # Rejected
+  def misplaced(x: P.args) -> None:                          # E: ParamSpec *args is only allowed in an *args annotation.
     pass
 
 def out_of_scope(*args: P.args, **kwargs: P.kwargs) -> None: # Rejected
@@ -236,8 +237,7 @@ def out_of_scope(*args: P.args, **kwargs: P.kwargs) -> None: # Rejected
 "#,
 );
 
-testcase_with_bug!(
-    "P.args and P.kwargs can't be used as annotations",
+testcase!(
     test_paramspec_together,
     r#"
 from typing import Callable, ParamSpec
@@ -246,9 +246,9 @@ P = ParamSpec("P")
 
 def puts_p_into_scope(f: Callable[P, int]) -> None:
 
-  stored_args: P.args                           # Rejected
+  stored_args: P.args                           # E: ParamSpec *args is only allowed in an *args annotation.
 
-  stored_kwargs: P.kwargs                       # Rejected
+  stored_kwargs: P.kwargs                       # E: ParamSpec **kwargs is only allowed in a **kwargs annotation.
 
   def just_args(*args: P.args) -> None:         # E: ParamSpec *args and **kwargs must be used together
     pass

@@ -42,7 +42,6 @@ use crate::module::short_identifier::ShortIdentifier;
 use crate::types::alias::resolve_typeshed_alias;
 use crate::types::special_form::SpecialForm;
 use crate::types::types::AnyStyle;
-use crate::util::display::DisplayWith;
 
 impl<'a> BindingsBuilder<'a> {
     fn bind_unimportable_names(&mut self, x: &StmtImportFrom) {
@@ -335,6 +334,8 @@ impl<'a> BindingsBuilder<'a> {
                 Expr::Name(name) => {
                     let name = Ast::expr_name_identifier(name);
                     let ann_key = KeyAnnotation::Annotation(ShortIdentifier::new(&name));
+                    let in_class_body =
+                        matches!(self.scopes.current().kind, ScopeKind::ClassBody(_));
                     self.ensure_type(&mut x.annotation, &mut None);
                     let ann_val = if let Some(special) = SpecialForm::new(&name.id, &x.annotation) {
                         BindingAnnotation::Type(
@@ -343,22 +344,24 @@ impl<'a> BindingsBuilder<'a> {
                         )
                     } else {
                         BindingAnnotation::AnnotateExpr(
-                            AnnotationTarget::Assign(name.id.clone()),
+                            if in_class_body {
+                                AnnotationTarget::ClassMember(name.id.clone())
+                            } else {
+                                AnnotationTarget::Assign(name.id.clone())
+                            },
                             *x.annotation.clone(),
                             None,
                         )
                     };
                     let ann_key = self.table.insert(ann_key, ann_val);
-
-                    let flow_style =
-                        if matches!(self.scopes.current().kind, ScopeKind::ClassBody(_)) {
-                            let initial_value = x.value.as_deref().cloned();
-                            FlowStyle::AnnotatedClassField { initial_value }
-                        } else {
-                            FlowStyle::Annotated {
-                                is_initialized: x.value.is_some(),
-                            }
-                        };
+                    let flow_style = if in_class_body {
+                        let initial_value = x.value.as_deref().cloned();
+                        FlowStyle::AnnotatedClassField { initial_value }
+                    } else {
+                        FlowStyle::Annotated {
+                            is_initialized: x.value.is_some(),
+                        }
+                    };
                     let binding_value = if let Some(value) = x.value {
                         // Treat a name as initialized, but skip actually checking the value, if we are assigning `...` in a stub.
                         if self.module_info.path().is_interface()
@@ -405,7 +408,7 @@ impl<'a> BindingsBuilder<'a> {
                     let ann_key = self.table.insert(
                         KeyAnnotation::AttrAnnotation(x.annotation.range()),
                         BindingAnnotation::AnnotateExpr(
-                            AnnotationTarget::Assign(attr.attr.id.clone()),
+                            AnnotationTarget::ClassMember(attr.attr.id.clone()),
                             *x.annotation,
                             None,
                         ),
@@ -419,7 +422,7 @@ impl<'a> BindingsBuilder<'a> {
                              x.range,
                              format!(
                                  "Type cannot be declared in assignment to non-self attribute `{}.{}`",
-                                 attr.value.display_with(&self.module_info),
+                                 self.module_info.display(&attr.value),
                                  attr.attr.id,
                              ),
                              ErrorKind::BadAssignment,

@@ -34,11 +34,8 @@ use crate::util::lock::RwLock;
 use crate::util::recurser::Recurser;
 use crate::util::uniques::UniqueFactory;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Variable {
-    /// We don't expect to get here, but better than crashing
-    #[default]
-    Unknown,
     /// A variable in a container with an unspecified element type, e.g. `[]: list[V]`
     Contained,
     /// A variable due to generic instantitation, `def f[T](x: T): T` with `f(1)`
@@ -55,7 +52,6 @@ enum Variable {
 impl Display for Variable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Variable::Unknown => write!(f, "Unknown"),
             Variable::Contained => write!(f, "Contained"),
             Variable::Quantified(k, Some(t)) => write!(f, "Quantified({k}, default={t})"),
             Variable::Quantified(k, None) => write!(f, "Quantified({k})"),
@@ -146,20 +142,19 @@ impl Solver {
     /// `Var` (including itself), then we will return the answer.
     pub fn force_var(&self, v: Var) -> Type {
         let mut lock = self.variables.write();
-        match lock.entry(v) {
-            Entry::Occupied(ref e) if let Variable::Answer(t) = e.get() => t.clone(),
-            e => {
+        let e = lock.get_mut(&v).unwrap();
+        match e {
+            Variable::Answer(t) => t.clone(),
+            _ => {
                 let mut default = None;
-                let quantified_kind = if let Entry::Occupied(e) = &e
-                    && let Variable::Quantified(q, default_value) = e.get()
-                {
+                let quantified_kind = if let Variable::Quantified(q, default_value) = e {
                     default = default_value.clone();
                     *q
                 } else {
                     QuantifiedKind::TypeVar
                 };
-                let res = default.unwrap_or(quantified_kind.empty_value());
-                *e.or_default() = Variable::Answer(res.clone());
+                let res = default.unwrap_or_else(|| quantified_kind.empty_value());
+                *e = Variable::Answer(res.clone());
                 res
             }
         }
@@ -303,7 +298,7 @@ impl Solver {
     pub fn finish_quantified(&self, vs: &[Var]) {
         let mut lock = self.variables.write();
         for v in vs {
-            let e = lock.entry(*v).or_default();
+            let e = lock.get_mut(v).unwrap();
             if matches!(*e, Variable::Quantified(_, _)) {
                 *e = Variable::Contained;
             }
@@ -516,8 +511,8 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             (Type::Var(v1), Type::Var(v2)) => {
                 let mut variables = self.solver.variables.write();
                 match (
-                    variables.get(v1).cloned().unwrap_or_default(),
-                    variables.get(v2).cloned().unwrap_or_default(),
+                    variables.get(v1).unwrap().clone(),
+                    variables.get(v2).unwrap().clone(),
                 ) {
                     (Variable::Answer(t1), Variable::Answer(t2)) => {
                         drop(variables);
@@ -552,7 +547,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             }
             (Type::Var(v1), t2) => {
                 let mut variables = self.solver.variables.write();
-                match variables.get(v1).cloned().unwrap_or_default() {
+                match variables.get(v1).unwrap().clone() {
                     Variable::Answer(t1) => {
                         drop(variables);
                         self.is_subset_eq(&t1, t2)
@@ -566,7 +561,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             }
             (t1, Type::Var(v2)) => {
                 let mut variables = self.solver.variables.write();
-                match variables.get(v2).cloned().unwrap_or_default() {
+                match variables.get(v2).unwrap().clone() {
                     Variable::Answer(t2) => {
                         drop(variables);
                         self.is_subset_eq(t1, &t2)

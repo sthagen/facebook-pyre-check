@@ -80,7 +80,7 @@ use crate::table_try_for_each;
 use crate::types::quantified::Quantified;
 use crate::types::types::AnyStyle;
 use crate::types::types::Var;
-use crate::util::display::DisplayWith;
+use crate::util::display::DisplayWithCtx;
 use crate::util::uniques::UniqueFactory;
 
 #[derive(Clone, Dupe, Debug)]
@@ -672,6 +672,7 @@ impl<'a> BindingsBuilder<'a> {
 
     pub fn bind_function_param(
         &mut self,
+        target: AnnotationTarget,
         x: AnyParameterRef,
         function_idx: Idx<KeyFunction>,
         self_type: Option<Idx<KeyClass>>,
@@ -680,11 +681,7 @@ impl<'a> BindingsBuilder<'a> {
         let annot = x.annotation().map(|x| {
             self.table.insert(
                 KeyAnnotation::Annotation(ShortIdentifier::new(name)),
-                BindingAnnotation::AnnotateExpr(
-                    AnnotationTarget::Param(name.id.clone()),
-                    x.clone(),
-                    self_type,
-                ),
+                BindingAnnotation::AnnotateExpr(target.clone(), x.clone(), self_type),
             )
         });
         let (annot, def) = match annot {
@@ -693,10 +690,7 @@ impl<'a> BindingsBuilder<'a> {
                 let var = self.solver.fresh_contained(self.uniques);
                 let annot = self.table.insert(
                     KeyAnnotation::Annotation(ShortIdentifier::new(name)),
-                    BindingAnnotation::Type(
-                        AnnotationTarget::Param(name.id.clone()),
-                        var.to_type(),
-                    ),
+                    BindingAnnotation::Type(target, var.to_type()),
                 );
                 (annot, Either::Right((var, function_idx)))
             }

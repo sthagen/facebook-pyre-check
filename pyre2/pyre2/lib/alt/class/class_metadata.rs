@@ -20,6 +20,7 @@ use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
+use crate::alt::solve::TypeFormContext;
 use crate::alt::types::class_metadata::ClassMetadata;
 use crate::alt::types::class_metadata::DataclassMetadata;
 use crate::alt::types::class_metadata::EnumMetadata;
@@ -151,7 +152,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             .iter()
             .filter_map(|x| {
                 let base_type_and_range = match x {
-                    BaseClass::Expr(x) => Some((self.expr_untype(x, errors), x.range())),
+                    BaseClass::Expr(x) => Some((self.expr_untype(x, TypeFormContext::BaseClassList, errors), x.range())),
                     BaseClass::TypedDict => {
                         is_typed_dict = true;
                         None
@@ -220,7 +221,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         ))
                     }
                     // todo zeina: Ideally, we can directly add this class to the list of base classes. Revist this when fixing the "Any" representation.  
-                    Some((Type::Any(_), _)) =>  {has_base_any = true; None}
+                    Some((Type::Any(_), _)) => {
+                        has_base_any = true;
+                        None
+                    }
                     _ => None,
                 }
             })
@@ -364,7 +368,25 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             && special_base_class.can_apply()
         {
             // This branch handles `Generic[...]` and `Protocol[...]`
-            let args = Ast::unpack_slice(&subscript.slice).map(|x| self.expr_untype(x, errors));
+            let mut type_var_tuple_count = 0;
+            let args = Ast::unpack_slice(&subscript.slice).map(|x| {
+                let ty = self.expr_untype(x, TypeFormContext::GenericBase, errors);
+                if let Type::Unpack(box unpacked) = &ty
+                    && unpacked.is_kind_type_var_tuple()
+                {
+                    if type_var_tuple_count == 1 {
+                        self.error(
+                            errors,
+                            x.range(),
+                            ErrorKind::InvalidInheritance,
+                            None,
+                            "There cannot be more than one TypeVarTuple type parameter".to_owned(),
+                        );
+                    }
+                    type_var_tuple_count += 1;
+                }
+                ty
+            });
             special_base_class.apply(args);
             special_base_class
         } else {
@@ -544,7 +566,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         raw_metaclass: &Expr,
         errors: &ErrorCollector,
     ) -> Option<ClassType> {
-        match self.expr_untype(raw_metaclass, errors) {
+        match self.expr_untype(raw_metaclass, TypeFormContext::BaseClassList, errors) {
             Type::ClassType(meta) => {
                 if self.solver().is_subset_eq(
                     &Type::ClassType(meta.clone()),

@@ -66,6 +66,17 @@ class A:
     "#,
 );
 
+testcase!(
+    test_self_attribute_in_test_setup,
+    r#"
+class MyTestCase:
+    def setUp(self):
+        self.x = 5
+    def run(self):
+        assert self.x == 5
+    "#,
+);
+
 testcase_with_bug!(
     "Example of how making methods read-write but not invariant is unsound",
     test_method_assign,

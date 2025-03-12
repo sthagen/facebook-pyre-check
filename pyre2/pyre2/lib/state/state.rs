@@ -331,13 +331,22 @@ impl State {
                 };
                 set(&mut writer.steps);
                 if todo == Step::Solutions {
-                    if old_solutions.as_ref().map(|x| &x.1)
-                        != writer.steps.solutions.as_ref().map(|x| &x.1)
+                    if let Some(old) = old_solutions.as_ref().map(|x| &x.1)
+                        && let Some(new) = writer.steps.solutions.as_ref().map(|x| &x.1)
+                        && let Some(difference) = old.first_difference(new)
                     {
-                        if old_solutions.is_some() {
-                            debug!("Exports changed for `{}`", module_data.handle.module());
-                            changed = true;
-                        }
+                        debug!(
+                            "Exports changed for `{}`: {}",
+                            module_data.handle.module(),
+                            writer
+                                .steps
+                                .load
+                                .as_ref()
+                                .unwrap()
+                                .module_info
+                                .display(&difference)
+                        );
+                        changed = true;
                         writer.epochs.changed = self.now;
                     }
                     if !self.retain_memory {
@@ -504,7 +513,7 @@ impl State {
         };
         let stdlib = self.get_stdlib(&module_data.handle);
         let lookup = self.lookup(module_data);
-        answers.1.solve_key(
+        answers.1.solve_exported_key(
             &lookup,
             &lookup,
             &answers.0,
@@ -715,8 +724,8 @@ impl State {
         // everything in the cycle and force it to compute.
         let mut changed_twice = SmallSet::new();
         self.ensure_loaders(handles);
-        loop {
-            debug!("Running an epoch");
+        for i in 1.. {
+            debug!("Running epoch {i}");
             self.run_step(handles);
             let changed = mem::take(&mut *self.changed.lock());
             if changed.is_empty() {
