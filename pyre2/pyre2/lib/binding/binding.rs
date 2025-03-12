@@ -557,7 +557,7 @@ impl ContextManagerKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FunctionKind {
+pub enum FunctionSource {
     Stub,
     Impl,
 }
@@ -566,7 +566,7 @@ pub enum FunctionKind {
 pub struct BindingFunction {
     /// A function definition, but with the return/body stripped out.
     pub def: StmtFunctionDef,
-    pub kind: FunctionKind,
+    pub source: FunctionSource,
     pub self_type: Option<Idx<KeyClass>>,
     pub decorators: Box<[Idx<Key>]>,
     pub legacy_tparams: Box<[Idx<KeyLegacyTypeParam>]>,
@@ -619,7 +619,7 @@ pub struct ImplicitReturn {
     pub last_exprs: Option<Box<[Idx<Key>]>>,
     /// Ignore the implicit return type for stub functions (returning `...`). This is
     /// unsafe, but is convenient and matches Pyright's behavior.
-    pub function_kind: FunctionKind,
+    pub function_source: FunctionSource,
 }
 
 #[derive(Clone, Debug)]
@@ -731,7 +731,7 @@ pub enum Binding {
     /// Binding for a function parameter. We either have an annotation, or we will determine the
     /// parameter type when solving the function type. To ensure the parameter is solved before it
     /// can be observed as a Var, we include the function key and force it to be solved first.
-    FunctionParameter(Either<Idx<KeyAnnotation>, (Var, Idx<KeyFunction>)>),
+    FunctionParameter(Either<Idx<KeyAnnotation>, (Var, Idx<KeyFunction>, AnnotationTarget)>),
     /// The result of a `super()` call.
     SuperInstance(SuperStyle, TextRange),
 }

@@ -22,6 +22,7 @@ use crate::error::context::TypeCheckContext;
 use crate::error::kind::ErrorKind;
 use crate::solver::type_order::TypeOrder;
 use crate::types::callable::Callable;
+use crate::types::callable::Function;
 use crate::types::callable::Params;
 use crate::types::module::Module;
 use crate::types::quantified::QuantifiedKind;
@@ -203,38 +204,46 @@ impl Solver {
                 params.extend(ts2.to_vec());
                 *x = Type::Concatenate(params.into_boxed_slice(), pspec.clone());
             }
-            if let Type::Callable(
-                box Callable {
-                    params: Params::ParamSpec(box ts, pspec),
-                    ret,
-                },
-                kind,
-            ) = x
+            let (callable, kind) = match x {
+                Type::Callable(box c) => (Some(c), None),
+                Type::Function(box Function {
+                    signature: c,
+                    metadata: k,
+                }) => (Some(c), Some(k)),
+                _ => (None, None),
+            };
+            if let Some(Callable {
+                params: Params::ParamSpec(box ts, pspec),
+                ret,
+            }) = callable
             {
+                let new_callable = |c| {
+                    if let Some(k) = kind {
+                        Type::Function(Box::new(Function {
+                            signature: c,
+                            metadata: k.clone(),
+                        }))
+                    } else {
+                        Type::Callable(Box::new(c))
+                    }
+                };
                 match pspec {
                     Type::ParamSpecValue(paramlist) => {
                         let params = mem::take(paramlist).prepend_types(ts).into_owned();
-                        let new_callable = Type::Callable(
-                            Box::new(Callable::list(params, ret.clone())),
-                            kind.clone(),
-                        );
+                        let new_callable = new_callable(Callable::list(params, ret.clone()));
                         *x = new_callable;
                     }
                     Type::Ellipsis if ts.is_empty() => {
-                        *x =
-                            Type::Callable(Box::new(Callable::ellipsis(ret.clone())), kind.clone());
+                        *x = new_callable(Callable::ellipsis(ret.clone()));
                     }
                     Type::Concatenate(box ts2, box pspec) => {
                         let mut params = ts.to_vec();
                         params.extend(ts2.to_vec());
-                        *x = Type::Callable(
-                            Box::new(Callable::concatenate(
-                                params.into_boxed_slice(),
-                                pspec.clone(),
-                                ret.clone(),
-                            )),
-                            kind.clone(),
-                        );
+                        *x = new_callable(Callable::concatenate(
+                            params.into_boxed_slice(),
+                            pspec.clone(),
+                            ret.clone(),
+                        ));
                     }
                     _ => {}
                 }

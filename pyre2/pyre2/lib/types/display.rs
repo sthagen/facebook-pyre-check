@@ -18,6 +18,7 @@ use starlark_map::small_map::SmallMap;
 use starlark_map::smallmap;
 
 use crate::module::module_name::ModuleName;
+use crate::types::callable::Function;
 use crate::types::class::TArgs;
 use crate::types::qname::QName;
 use crate::types::quantified::Quantified;
@@ -215,7 +216,11 @@ impl<'a> TypeDisplayContext<'a> {
             // Other things
             Type::Literal(lit) => write!(f, "Literal[{}]", lit),
             Type::LiteralString => write!(f, "LiteralString"),
-            Type::Callable(c, _) => c.fmt_with_type(f, &|t| self.display(t)),
+            Type::Callable(box c)
+            | Type::Function(box Function {
+                signature: c,
+                metadata: _,
+            }) => c.fmt_with_type(f, &|t| self.display(t)),
             Type::Overload(ts) => {
                 write!(
                     f,
@@ -351,7 +356,6 @@ mod tests {
     use crate::module::module_info::ModuleInfo;
     use crate::module::module_path::ModulePath;
     use crate::types::callable::Callable;
-    use crate::types::callable::CallableKind;
     use crate::types::callable::Param;
     use crate::types::callable::ParamList;
     use crate::types::callable::Required;
@@ -519,7 +523,7 @@ mod tests {
         let param2 = Param::KwOnly(Name::new("world"), Type::None, Required::Required);
         let callable = Callable::list(ParamList::new(vec![param1, param2]), Type::None);
         assert_eq!(
-            Type::Callable(Box::new(callable), CallableKind::Anon).to_string(),
+            Type::Callable(Box::new(callable)).to_string(),
             "(hello: None, *, world: None) -> None"
         );
     }

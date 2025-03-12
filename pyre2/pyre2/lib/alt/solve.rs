@@ -32,6 +32,7 @@ use crate::alt::types::yields::YieldFromResult;
 use crate::alt::types::yields::YieldResult;
 use crate::ast::Ast;
 use crate::binding::binding::AnnotationStyle;
+use crate::binding::binding::AnnotationTarget;
 use crate::binding::binding::AnnotationWithTarget;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
@@ -46,7 +47,7 @@ use crate::binding::binding::BindingYield;
 use crate::binding::binding::BindingYieldFrom;
 use crate::binding::binding::ContextManagerKind;
 use crate::binding::binding::EmptyAnswer;
-use crate::binding::binding::FunctionKind;
+use crate::binding::binding::FunctionSource;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyExport;
 use crate::binding::binding::NoneIfRecursive;
@@ -64,6 +65,7 @@ use crate::error::kind::ErrorKind;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
+use crate::types::callable::Function;
 use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Required;
@@ -321,14 +323,24 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             | Expr::Starred(..) => return true,
             Expr::Call(..) => "function call",
             Expr::Lambda(..) => "lambda definition",
+            Expr::List(..) => "list literal",
+            Expr::NumberLiteral(..) => "number literal",
+            Expr::Tuple(..) => "tuple literal",
+            Expr::Dict(..) => "dict literal",
+            Expr::ListComp(..) => "list comprehension",
+            Expr::If(..) => "if expression",
+            Expr::BooleanLiteral(..) => "bool literal",
+            Expr::BoolOp(..) => "boolean operation",
+            Expr::FString(..) => "f-string",
+            Expr::UnaryOp(..) => "unary operation",
             // There are many Expr variants. Not all of them are likely to be used
             // in annotations, even accidentally. We can add branches for specific
             // expression constructs if desired.
-            _ => "this expression",
+            _ => "expression",
         };
         errors.add(
             x.range(),
-            format!("Invalid annotation: {problem} cannot be used in annotations"),
+            format!("{problem} cannot be used in annotations"),
             ErrorKind::InvalidAnnotation,
             None,
         );
@@ -508,7 +520,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     );
                 }
             }
-            Type::Callable(callable, _) => {
+            Type::Callable(box callable)
+            | Type::Function(box Function {
+                signature: callable,
+                metadata: _,
+            }) => {
                 let visit = |t: &mut Type| {
                     self.tvars_to_tparams_for_type_alias(
                         t,
@@ -1301,7 +1317,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 // instead of `None`. Instead, we should just ignore the implicit return for stub
                 // functions when solving Binding::ReturnType. Unfortunately, this leads to
                 // another issue (see comment on Binding::ReturnType).
-                if x.function_kind == FunctionKind::Stub
+                if x.function_source == FunctionSource::Stub
                     || x.last_exprs
                         .as_ref()
                         .is_some_and(|xs| xs.iter().all(|k| self.get_idx(*k).is_never()))
@@ -1765,20 +1781,50 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::Decorator(expr) => self.expr_infer(expr, errors),
             Binding::LambdaParameter(var) => var.to_type(),
             Binding::FunctionParameter(param) => {
-                match param {
-                    Either::Left(key) => self.get_idx(*key).ty().cloned().unwrap_or_else(|| {
-                        // This annotation isn't valid. It's something like `: Final` that doesn't
-                        // have enough information to create a real type.
-                        Type::any_implicit()
-                    }),
-                    Either::Right((var, function_idx)) => {
+                let mut unpacked = false;
+                let (mut annotated_ty, target) = match param {
+                    Either::Left(key) => {
+                        let annotation = self.get_idx(*key);
+                        unpacked = annotation
+                            .annotation
+                            .qualifiers
+                            .contains(&Qualifier::Unpack);
+                        let ty = annotation.ty().cloned().unwrap_or_else(|| {
+                            // This annotation isn't valid. It's something like `: Final` that doesn't
+                            // have enough information to create a real type.
+                            Type::any_implicit()
+                        });
+                        (ty, annotation.target.clone())
+                    }
+                    Either::Right((var, function_idx, target)) => {
                         // Force the function binding to be evaluated, if it hasn't already.
                         // Solving the function will also force the Var type to some concrete type,
                         // and this must happen first so the Var can not interact with other types.
                         self.get_idx(*function_idx);
-                        var.to_type()
+                        (var.to_type(), target.clone())
                     }
+                };
+                match target {
+                    AnnotationTarget::ArgsParam(_) => match annotated_ty {
+                        Type::Unpack(box inner) => {
+                            annotated_ty = inner;
+                        }
+                        Type::Args(_) => {}
+                        _ => annotated_ty = Type::Tuple(Tuple::unbounded(annotated_ty.clone())),
+                    },
+                    AnnotationTarget::KwargsParam(_) => match annotated_ty {
+                        Type::Kwargs(_) => {}
+                        Type::TypedDict(_) if unpacked => {}
+                        _ => {
+                            annotated_ty = self
+                                .stdlib
+                                .dict(self.stdlib.str().to_type(), annotated_ty.clone())
+                                .to_type()
+                        }
+                    },
+                    _ => {}
                 }
+                annotated_ty
             }
             Binding::SuperInstance(style, range) => {
                 match style {
@@ -1853,7 +1899,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Arc<DecoratedFunction> {
         self.function_definition(
             &x.def,
-            x.kind,
+            x.source,
             x.self_type.as_ref(),
             &x.decorators,
             &x.legacy_tparams,

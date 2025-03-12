@@ -25,6 +25,7 @@ use crate::state::loader::Loader;
 use crate::state::loader::LoaderId;
 use crate::state::state::State;
 use crate::state::subscriber::TestSubscriber;
+use crate::test::util::init_test;
 use crate::test::util::TestEnv;
 use crate::util::lock::Mutex;
 use crate::util::prelude::SliceExt;
@@ -160,6 +161,7 @@ struct Incremental {
 
 impl Incremental {
     fn new() -> Self {
+        init_test();
         let data = IncrementalData::default();
         let loader = LoaderId::new(data.dupe());
         let state = State::new();
@@ -196,6 +198,7 @@ impl Incremental {
             &want.map(|x| self.handle(x)),
             Some(Box::new(subscriber.dupe())),
         );
+        self.state.print_errors();
         self.state.check_against_expectations().unwrap();
 
         let mut recompute = recompute.map(|x| (*x).to_owned());
@@ -273,4 +276,42 @@ fn test_incremental_class() {
     i.check(&["main"], &["foo"]);
     i.set("foo", &format!("# before\n{class}"));
     i.check(&["main"], &["foo"]);
+}
+
+#[test]
+fn test_incremental_generic_function() {
+    // These should not change, but do because the quality algorithm doesn't deal
+    // well with Forall.
+    const BROKEN: &str = "main";
+
+    let code = "def f[X](x: X) -> X: ...";
+    let mut i = Incremental::new();
+    i.set("lib", code);
+    i.set("main", "from lib import f");
+    i.check(&["main"], &["main", "lib"]);
+    i.set("lib", &format!("{code} # after"));
+    i.check(&["main"], &["lib", BROKEN]);
+    i.set("lib", &format!("# before\n{code}"));
+    i.check(&["main"], &["lib", BROKEN]);
+}
+
+#[test]
+fn test_incremental_generic_class() {
+    // These should not change, but do because the quality algorithm doesn't deal
+    // well with Forall.
+    const BROKEN: &str = "main";
+
+    let code = "
+from typing import TypeVar, Generic
+T = TypeVar('T')
+class C(Generic[T]): pass";
+
+    let mut i = Incremental::new();
+    i.set("lib", code);
+    i.set("main", "from lib import C");
+    i.check(&["main"], &["main", "lib"]);
+    i.set("lib", &format!("{code} # after"));
+    i.check(&["main"], &["lib", BROKEN]);
+    i.set("lib", &format!("# before\n{code}"));
+    i.check(&["main"], &["lib", BROKEN]);
 }
