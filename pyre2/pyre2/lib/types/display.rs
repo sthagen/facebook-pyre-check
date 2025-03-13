@@ -24,7 +24,6 @@ use crate::types::qname::QName;
 use crate::types::quantified::Quantified;
 use crate::types::types::AnyStyle;
 use crate::types::types::BoundMethod;
-use crate::types::types::Decoration;
 use crate::types::types::NeverStyle;
 use crate::types::types::Type;
 use crate::util::display::append;
@@ -148,37 +147,6 @@ impl<'a> TypeDisplayContext<'a> {
         }
     }
 
-    fn fmt_decoration(&self, decoration: &Decoration, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match decoration {
-            Decoration::StaticMethod(box ty) => {
-                write!(f, "staticmethod[{}]", self.display(ty))
-            }
-            Decoration::Override(box ty) => {
-                write!(f, "override[{}]", self.display(ty))
-            }
-            Decoration::ClassMethod(box ty) => {
-                write!(f, "classmethod[{}]", self.display(ty))
-            }
-            Decoration::Property(box (getter, None)) => {
-                write!(f, "property[{}]", self.display(getter))
-            }
-            Decoration::Property(box (getter, Some(setter))) => {
-                write!(
-                    f,
-                    "property_with_setter[{}, {}]",
-                    self.display(getter),
-                    self.display(setter)
-                )
-            }
-            Decoration::PropertySetterDecorator(box getter) => {
-                write!(f, "property_setter_decorator[{}]", self.display(getter),)
-            }
-            Decoration::EnumMember(box ty) => {
-                write!(f, "enum_member[{}]", self.display(ty))
-            }
-        }
-    }
-
     fn fmt<'b>(&self, t: &'b Type, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match t {
             // Things that have QName's and need qualifying
@@ -221,11 +189,11 @@ impl<'a> TypeDisplayContext<'a> {
                 signature: c,
                 metadata: _,
             }) => c.fmt_with_type(f, &|t| self.display(t)),
-            Type::Overload(ts) => {
+            Type::Overload(overload) => {
                 write!(
                     f,
                     "Overload[{}]",
-                    commas_iter(|| ts.0.iter().map(|t| self.display(t)))
+                    commas_iter(|| overload.signatures.iter().map(|t| self.display(t)))
                 )
             }
             Type::ParamSpecValue(x) => {
@@ -256,6 +224,9 @@ impl<'a> TypeDisplayContext<'a> {
                                 lit_idx = Some(i);
                             }
                             lits.push(lit)
+                        }
+                        Type::Callable(_) | Type::Function(_) => {
+                            display_types.push(format!("({})", self.display(t)))
                         }
                         _ => display_types.push(format!("{}", self.display(t))),
                     }
@@ -321,7 +292,6 @@ impl<'a> TypeDisplayContext<'a> {
                     self.display(&ta.as_type())
                 )
             }
-            Type::Decoration(d) => self.fmt_decoration(d, f),
             Type::SuperInstance(cls, obj) => {
                 write!(f, "super[")?;
                 self.fmt_qname(cls.qname(), f)?;

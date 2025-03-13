@@ -140,7 +140,7 @@ pub enum Step {
 pub struct ComputeStep<Lookup: LookupExport + LookupAnswer>(
     /// First you get given the `ModuleSteps`, from which you should grab what you need (cloning it).
     /// Second you get given the configs, from which you should compute the result.
-    /// Thrid you get given the `ModuleSteps` to update.
+    /// Third you get given the `ModuleSteps` to update.
     pub Box<dyn Fn(&Steps) -> Box<dyn FnOnce(&Context<Lookup>) -> Box<dyn FnOnce(&mut Steps)>>>,
 );
 
@@ -184,7 +184,7 @@ impl Step {
 
     #[inline(never)]
     fn step_load<Lookup>(ctx: &Context<Lookup>) -> Arc<Load> {
-        let error_style = match ctx.loader.find(ctx.module) {
+        let error_style = match ctx.loader.find_import(ctx.module) {
             Ok((_, s)) => s,
             Err(_) => {
                 // We shouldn't reach here, as we must be able to load the module to get here.

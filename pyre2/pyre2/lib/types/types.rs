@@ -18,6 +18,7 @@ use vec1::Vec1;
 
 use crate::assert_words;
 use crate::types::callable::Callable;
+use crate::types::callable::FuncMetadata;
 use crate::types::callable::Function;
 use crate::types::callable::FunctionKind;
 use crate::types::callable::Param;
@@ -236,50 +237,6 @@ impl TypeAlias {
 
 assert_words!(Type, 4);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Decoration {
-    // The result of applying the `@staticmethod` decorator.
-    StaticMethod(Box<Type>),
-    // The result of applying the `@classmethod` decorator.
-    ClassMethod(Box<Type>),
-    // The result of applying the `@property` decorator.
-    Property(Box<(Type, Option<Type>)>),
-    // The result of accessing `.setter` on a property (which produces a decorator
-    // that takes a value and makes it the property getter, returning the result)
-    PropertySetterDecorator(Box<Type>),
-    EnumMember(Box<Type>),
-    Override(Box<Type>),
-}
-
-impl Decoration {
-    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
-        match self {
-            Self::StaticMethod(ty) => f(ty),
-            Self::ClassMethod(ty) => f(ty),
-            Self::Property(box (getter, setter)) => {
-                f(getter);
-                setter.iter().for_each(&mut f)
-            }
-            Self::PropertySetterDecorator(ty) => f(ty),
-            Self::EnumMember(ty) => f(ty),
-            Self::Override(ty) => f(ty),
-        }
-    }
-    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
-        match self {
-            Self::StaticMethod(ty) => f(ty),
-            Self::ClassMethod(ty) => f(ty),
-            Self::Property(box (getter, setter)) => {
-                f(getter);
-                setter.iter_mut().for_each(&mut f)
-            }
-            Self::PropertySetterDecorator(ty) => f(ty),
-            Self::EnumMember(ty) => f(ty),
-            Self::Override(ty) => f(ty),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum CalleeKind {
     Callable,
@@ -365,23 +322,25 @@ impl BoundMethodType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Overload(pub Vec1<Type>);
+pub struct Overload {
+    pub signatures: Vec1<Type>,
+}
 
 impl Overload {
     fn is_typeguard(&self) -> bool {
-        self.0.iter().any(|t| t.is_typeguard())
+        self.signatures.iter().any(|t| t.is_typeguard())
     }
 
     fn is_typeis(&self) -> bool {
-        self.0.iter().any(|t| t.is_typeis())
+        self.signatures.iter().any(|t| t.is_typeis())
     }
 
     fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
-        self.0.iter().for_each(&mut f);
+        self.signatures.iter().for_each(&mut f);
     }
 
     fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
-        self.0.iter_mut().for_each(&mut f);
+        self.signatures.iter_mut().for_each(&mut f);
     }
 }
 
@@ -402,17 +361,23 @@ impl ForallType {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Forall {
-    pub name: Name,
     pub tparams: TParams,
     pub ty: ForallType,
 }
 
 impl Forall {
-    pub fn new_type(name: Name, tparams: TParams, ty: ForallType) -> Type {
+    pub fn new_type(tparams: TParams, ty: ForallType) -> Type {
         if tparams.is_empty() {
             ty.as_type()
         } else {
-            Type::Forall(Box::new(Forall { name, tparams, ty }))
+            Type::Forall(Box::new(Forall { tparams, ty }))
+        }
+    }
+
+    pub fn name(&self) -> Name {
+        match &self.ty {
+            ForallType::Function(func) => func.metadata.kind.as_func_id().func,
+            ForallType::TypeAlias(ta) => (*ta.name).clone(),
         }
     }
 
@@ -508,10 +473,6 @@ pub enum Type {
     Any(AnyStyle),
     Never(NeverStyle),
     TypeAlias(TypeAlias),
-    /// Used to represent decorator-related scenarios that cannot be easily
-    /// represented in terms of normal types - for example, builtin descriptors
-    /// like `@classmethod`, or the result of `@some_property.setter`.
-    Decoration(Decoration),
     /// Represents the result of a super() call. The first ClassType is the class that attribute lookup
     /// on the super instance should be done on (*not* the class passed to the super() call), and the second
     /// ClassType is the second argument (implicit or explicit) to the super() call. For example, in:
@@ -655,11 +616,11 @@ impl Type {
                     metadata: func.metadata.clone(),
                 }))
             }),
-            Type::Overload(overloads) => overloads
-                .0
+            Type::Overload(overload) => overload
+                .signatures
                 .try_mapped_ref(|x| x.to_unbound_callable().ok_or(()))
                 .ok()
-                .map(|overload| Type::Overload(Overload(overload))),
+                .map(|signatures| Type::Overload(Overload { signatures })),
             _ => None,
         }
     }
@@ -675,7 +636,7 @@ impl Type {
             Type::ClassDef(c) => Some(CalleeKind::Class(c.kind())),
             Type::Forall(forall) => forall.as_inner_type().callee_kind(),
             // TODO(rechen): We should have one callee kind per overloaded function rather than one per overload signature.
-            Type::Overload(vs) => vs.0.first().callee_kind(),
+            Type::Overload(overload) => overload.signatures.first().callee_kind(),
             _ => None,
         }
     }
@@ -726,21 +687,52 @@ impl Type {
         seen
     }
 
-    /// Strip the `@override` decoration from a type, and return whether we saw it.
-    ///
-    /// TODO(stroxler): Ideally decorator metadata like `@override`  and `@final` would live to the side of the type,
-    /// like `Qualifier` does. The current code works, but in principle would allow the override to appear somewhere
-    /// nonsensical like in a return type.
-    pub fn extract_override(self) -> (Type, bool) {
-        let mut is_override = false;
-        let stripped_ty = self.transform(|ty: &mut Type| match &ty {
-            Type::Decoration(Decoration::Override(box inner_ty)) => {
-                is_override = true;
-                *ty = inner_ty.clone()
-            }
+    fn check_func_metadata<T: Default>(&self, check: &dyn Fn(&FuncMetadata) -> T) -> T {
+        match self {
+            Type::Function(box func)
+            | Type::Forall(box Forall {
+                ty: ForallType::Function(func),
+                ..
+            })
+            | Type::BoundMethod(box BoundMethod {
+                func: BoundMethodType::Function(func),
+                ..
+            }) => check(&func.metadata),
+            Type::Overload(overload) => overload.signatures.first().check_func_metadata(check),
+            _ => T::default(),
+        }
+    }
+
+    pub fn is_override(&self) -> bool {
+        self.check_func_metadata(&|meta| meta.flags.is_override)
+    }
+
+    pub fn has_enum_member_decoration(&self) -> bool {
+        self.check_func_metadata(&|meta| meta.flags.has_enum_member_decoration)
+    }
+
+    pub fn is_property_getter(&self) -> bool {
+        self.check_func_metadata(&|meta| meta.flags.is_property_getter)
+    }
+
+    pub fn is_property_setter_with_getter(&self) -> Option<Type> {
+        self.check_func_metadata(&|meta| meta.flags.is_property_setter_with_getter.clone())
+    }
+
+    pub fn transform_func_metadata(&mut self, mut f: impl FnMut(&mut FuncMetadata)) {
+        match self {
+            Type::Function(box func)
+            | Type::Forall(box Forall {
+                ty: ForallType::Function(func),
+                ..
+            })
+            | Type::BoundMethod(box BoundMethod {
+                func: BoundMethodType::Function(func),
+                ..
+            }) => f(&mut func.metadata),
+            Type::Overload(overload) => overload.signatures.first_mut().transform_func_metadata(f),
             _ => {}
-        });
-        (stripped_ty, is_override)
+        }
     }
 
     pub fn promote_literals(self, stdlib: &Stdlib) -> Type {
@@ -800,7 +792,7 @@ impl Type {
             }) => c.visit(f),
             Type::BoundMethod(box b) => b.visit(f),
             Type::Union(xs) | Type::Intersect(xs) => xs.iter().for_each(f),
-            Type::Overload(xs) => xs.0.iter().for_each(f),
+            Type::Overload(overload) => overload.signatures.iter().for_each(f),
             Type::ClassType(x) => x.visit(f),
             Type::TypedDict(x) => x.visit(f),
             Type::Tuple(t) => t.visit(f),
@@ -812,7 +804,6 @@ impl Type {
                 f(pspec);
             }
             Type::ParamSpecValue(x) => x.visit(f),
-            Type::Decoration(d) => d.visit(f),
             Type::Type(x)
             | Type::TypeGuard(x)
             | Type::TypeIs(x)
@@ -850,7 +841,7 @@ impl Type {
             }) => c.visit_mut(f),
             Type::BoundMethod(box b) => b.visit_mut(f),
             Type::Union(xs) | Type::Intersect(xs) => xs.iter_mut().for_each(f),
-            Type::Overload(xs) => xs.0.iter_mut().for_each(f),
+            Type::Overload(overload) => overload.signatures.iter_mut().for_each(f),
             Type::ClassType(x) => x.visit_mut(f),
             Type::TypedDict(x) => x.visit_mut(f),
             Type::Tuple(t) => t.visit_mut(f),
@@ -862,7 +853,6 @@ impl Type {
                 f(pspec);
             }
             Type::ParamSpecValue(x) => x.visit_mut(f),
-            Type::Decoration(d) => d.visit_mut(f),
             Type::Type(x)
             | Type::TypeGuard(x)
             | Type::TypeIs(x)

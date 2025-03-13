@@ -35,6 +35,7 @@ use crate::module::module_path::ModuleStyle;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::annotation::Qualifier;
 use crate::types::callable::Callable;
+use crate::types::callable::FuncFlags;
 use crate::types::callable::FuncMetadata;
 use crate::types::callable::Function;
 use crate::types::callable::FunctionKind;
@@ -92,7 +93,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     acc.split_off_first().0
                 } else {
                     acc.reverse();
-                    Type::Overload(Overload(acc))
+                    Type::Overload(Overload { signatures: acc })
                 }
             } else {
                 ty
@@ -116,7 +117,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     );
                     defs.split_off_first().0
                 } else {
-                    Type::Overload(Overload(defs))
+                    Type::Overload(Overload { signatures: defs })
                 }
             } else {
                 first.ty.clone()
@@ -163,21 +164,61 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             defining_cls.as_ref().map(|cls| cls.self_type())
         };
 
+        let mut is_overload = false;
+        let mut is_staticmethod = false;
+        let mut is_classmethod = false;
+        let mut is_property_getter = false;
+        let mut is_property_setter_with_getter = None;
+        let mut has_enum_member_decoration = false;
+        let mut is_override = false;
+        let decorators = decorators
+            .iter()
+            .filter(|k| {
+                let decorator_ty = self.get_idx(**k);
+                match decorator_ty.callee_kind() {
+                    Some(CalleeKind::Function(FunctionKind::Overload)) => {
+                        is_overload = true;
+                        false
+                    }
+                    Some(CalleeKind::Class(ClassKind::StaticMethod)) => {
+                        is_staticmethod = true;
+                        false
+                    }
+                    Some(CalleeKind::Class(ClassKind::ClassMethod)) => {
+                        is_classmethod = true;
+                        false
+                    }
+                    Some(CalleeKind::Class(ClassKind::Property)) => {
+                        is_property_getter = true;
+                        false
+                    }
+                    Some(CalleeKind::Function(FunctionKind::PropertySetter(_))) => {
+                        // When the `setter` attribute is accessed on a property, we return the
+                        // getter with its kind set to FunctionKind::PropertySetter. See
+                        // AnswersSolver::lookup_attr_from_attribute_base for details.
+                        is_property_setter_with_getter = Some(decorator_ty.arc_clone());
+                        false
+                    }
+                    Some(CalleeKind::Class(ClassKind::EnumMember)) => {
+                        has_enum_member_decoration = true;
+                        false
+                    }
+                    Some(CalleeKind::Function(FunctionKind::Override)) => {
+                        is_override = true;
+                        false
+                    }
+                    _ => true,
+                }
+            })
+            .collect::<Vec<_>>();
+
         // Look for a @classmethod or @staticmethod decorator and change the "self" type
         // accordingly. This is not totally correct, since it doesn't account for chaining
         // decorators, or weird cases like both decorators existing at the same time.
-        for x in decorators {
-            match self.get_idx(*x).callee_kind() {
-                Some(CalleeKind::Class(ClassKind::StaticMethod)) => {
-                    self_type = None;
-                    break;
-                }
-                Some(CalleeKind::Class(ClassKind::ClassMethod)) => {
-                    self_type = self_type.map(|ty| Type::Type(Box::new(ty)));
-                    break;
-                }
-                _ => {}
-            }
+        if is_staticmethod {
+            self_type = None;
+        } else if is_classmethod {
+            self_type = self_type.map(|ty| Type::Type(Box::new(ty)));
         }
 
         let mut get_param_ty = |name: &Identifier| {
@@ -332,16 +373,25 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             &def.name.id,
         );
         let mut ty = Forall::new_type(
-            def.name.id.clone(),
             self.type_params(def.range, tparams, errors),
             ForallType::Function(Function {
                 signature: callable,
-                metadata: FuncMetadata { kind },
+                metadata: FuncMetadata {
+                    kind,
+                    flags: FuncFlags {
+                        is_overload,
+                        is_staticmethod,
+                        is_classmethod,
+                        is_property_getter,
+                        is_property_setter_with_getter,
+                        has_enum_member_decoration,
+                        is_override,
+                    },
+                },
             }),
         );
-        let mut is_overload = false;
-        for x in decorators.iter().rev() {
-            ty = self.apply_decorator(*x, ty, &mut is_overload, errors)
+        for x in decorators.into_iter().rev() {
+            ty = self.apply_decorator(*x, ty, errors)
         }
         Arc::new(DecoratedFunction {
             id_range: def.name.range,

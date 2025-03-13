@@ -20,6 +20,7 @@ path = "bin/main.rs"
 [dependencies]
 anyhow = "1.0.95"
 argfile = "0.1.6"
+async-trait = "0.1.86"
 clap = { version = "4.5.30", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 convert_case = "0.6"
 dupe = "0.9.1"
@@ -49,6 +50,7 @@ static_assertions = "1.1.0"
 static_interner = "0.1.1"
 tar = "0.4.44"
 thiserror = "2"
+tokio = { version = "1.41.0", features = ["macros", "rt"] }
 toml = "0.8.19"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.18", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }

@@ -27,6 +27,8 @@ use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
+use crate::types::callable::FuncMetadata;
+use crate::types::callable::FunctionKind;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
 use crate::types::class::Class;
@@ -36,7 +38,6 @@ use crate::types::quantified::Quantified;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
 use crate::types::types::AnyStyle;
-use crate::types::types::Decoration;
 use crate::types::types::Type;
 
 #[derive(Debug)]
@@ -766,14 +767,27 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             AttributeBase::Any(style) => LookupResult::found_type(style.propagate()),
             AttributeBase::Never => LookupResult::found_type(Type::never()),
-            AttributeBase::Property(getter) => {
-                // TODO(stroxler): it is probably possible to synthesize a forall type here
-                // that uses a type var to propagate the setter instead of using a `Decoration`
-                // with hardcoded support in `apply_decorator`. Investigate this option later.
-                LookupResult::found_type(
-                    // TODO(samzhou19815): Support go-to-definition for @property applied symbols
-                    Type::Decoration(Decoration::PropertySetterDecorator(Box::new(getter))),
-                )
+            AttributeBase::Property(mut getter) => {
+                if attr_name == "setter" {
+                    // Get the property's `setter` method, which, when called with a function, returns
+                    // a copy of the property with the passed-in function as its setter. We hack this
+                    // by updating the getter's metadata to mark it as a setter method.
+                    // TODO(stroxler): it is probably possible to synthesize a forall type here
+                    // that uses a type var to propagate the setter. Investigate this option later.
+                    getter.transform_func_metadata(|meta: &mut FuncMetadata| {
+                        meta.kind = FunctionKind::PropertySetter(Box::new(meta.kind.as_func_id()));
+                    });
+                    LookupResult::found_type(
+                        // TODO(samzhou19815): Support go-to-definition for @property applied symbols
+                        getter,
+                    )
+                } else {
+                    let class = self.stdlib.property();
+                    match self.get_instance_attribute(&class, attr_name) {
+                        Some(attr) => LookupResult::Found(attr),
+                        None => LookupResult::NotFound(NotFound::Attribute(class)),
+                    }
+                }
             }
         }
     }
@@ -897,6 +911,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Type::Kwargs(_) => Some(AttributeBase::ClassInstance(stdlib.param_spec_kwargs())),
             Type::None => Some(AttributeBase::ClassInstance(stdlib.none_type())),
             Type::Never(_) => Some(AttributeBase::Never),
+            _ if ty.is_property_getter() => Some(AttributeBase::Property(ty)),
             Type::Callable(_) | Type::Function(_) | Type::Overload(_) => {
                 Some(AttributeBase::ClassInstance(stdlib.function_type()))
             }
@@ -910,11 +925,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None
                 }
             }
-            Type::Decoration(Decoration::Property(box (getter, _))) => {
-                Some(AttributeBase::Property(getter))
-            }
-            Type::Decoration(Decoration::EnumMember(box ty)) => self.as_attribute_base(ty, stdlib),
-            Type::Decoration(_) => None,
             Type::SuperInstance(cls, obj) => Some(AttributeBase::SuperInstance(*cls, *obj)),
             // TODO: check to see which ones should have class representations
             Type::Union(_)

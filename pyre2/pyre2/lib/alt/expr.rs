@@ -38,6 +38,7 @@ use crate::error::collector::ErrorCollector;
 use crate::error::context::ErrorContext;
 use crate::error::context::TypeCheckContext;
 use crate::error::kind::ErrorKind;
+use crate::error::style::ErrorStyle;
 use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::types::callable::Callable;
@@ -46,7 +47,6 @@ use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Params;
 use crate::types::callable::Required;
-use crate::types::class::ClassKind;
 use crate::types::literal::Lit;
 use crate::types::param_spec::ParamSpec;
 use crate::types::special_form::SpecialForm;
@@ -57,7 +57,6 @@ use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
 use crate::types::types::AnyStyle;
 use crate::types::types::CalleeKind;
-use crate::types::types::Decoration;
 use crate::types::types::Type;
 use crate::util::prelude::SliceExt;
 use crate::util::prelude::VecExt;
@@ -146,27 +145,111 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         })
     }
 
+    fn callabe_dunder_helper(
+        &self,
+        method_type: Type,
+        range: TextRange,
+        errors: &ErrorCollector,
+        context: &ErrorContext,
+        op: Operator,
+        call_arg_type: &Type,
+    ) -> Type {
+        let callable = self.as_call_target_or_error(
+            method_type,
+            CallStyle::BinaryOp(op),
+            range,
+            errors,
+            Some(context),
+        );
+        self.call_infer(
+            callable,
+            &[CallArg::Type(call_arg_type, range)],
+            &[],
+            range,
+            errors,
+            Some(context),
+        )
+    }
+
     fn binop_infer(&self, x: &ExprBinOp, errors: &ErrorCollector) -> Type {
         let binop_call = |op: Operator, lhs: &Type, rhs: Type, range: TextRange| -> Type {
             let context = ErrorContext::BinaryOp(op.as_str().to_owned(), lhs.clone(), rhs.clone());
-            // TODO(yangdanny): handle reflected dunder methods
-            let method_type =
-                self.attr_infer(lhs, &Name::new(op.dunder()), range, errors, Some(&context));
-            let callable = self.as_call_target_or_error(
-                method_type,
-                CallStyle::BinaryOp(op),
+
+            let method_type_dunder = self.type_of_attr_get_if_found(
+                lhs,
+                &Name::new(op.dunder()),
                 range,
                 errors,
                 Some(&context),
+                "Expr::binop_infer",
             );
-            self.call_infer(
-                callable,
-                &[CallArg::Type(&rhs, range)],
-                &[],
+
+            let method_type_reflected = self.type_of_attr_get_if_found(
+                &rhs,
+                &Name::new(op.reflected_dunder()),
                 range,
                 errors,
                 Some(&context),
-            )
+                "Expr::binop_infer",
+            );
+
+            // Reflected operator implementation: This deviates from the runtime semantics by calling the reflected dunder if the regular dunder call errors.
+            // At runtime, the reflected dunder is called only if the regular dunder method doesn't exist or if it returns NotImplemented.
+            // This deviation is necessary, given that the typeshed stubs don't record when NotImplemented is returned
+            match (method_type_dunder, method_type_reflected) {
+                (Some(method_type_dunder), Some(method_type_reflected)) => {
+                    let bin_op_new_errors_dunder =
+                        ErrorCollector::new(self.module_info().dupe(), ErrorStyle::Delayed);
+
+                    let ret = self.callabe_dunder_helper(
+                        method_type_dunder,
+                        range,
+                        &bin_op_new_errors_dunder,
+                        &context,
+                        op,
+                        &rhs,
+                    );
+                    if bin_op_new_errors_dunder.is_empty() {
+                        ret
+                    } else {
+                        self.callabe_dunder_helper(
+                            method_type_reflected,
+                            range,
+                            errors,
+                            &context,
+                            op,
+                            lhs,
+                        )
+                    }
+                }
+                (Some(method_type_dunder), None) => self.callabe_dunder_helper(
+                    method_type_dunder,
+                    range,
+                    errors,
+                    &context,
+                    op,
+                    &rhs,
+                ),
+                (None, Some(method_type_reflected)) => self.callabe_dunder_helper(
+                    method_type_reflected,
+                    range,
+                    errors,
+                    &context,
+                    op,
+                    lhs,
+                ),
+                (None, None) => self.error(
+                    errors,
+                    x.range(),
+                    ErrorKind::MissingAttribute,
+                    Some(&context),
+                    format!(
+                        "Missing attribute {} or {}",
+                        op.dunder(),
+                        op.reflected_dunder()
+                    ),
+                ),
+            }
         };
         let lhs = self.expr_infer(&x.left, errors);
         let rhs = self.expr_infer(&x.right, errors);
@@ -594,7 +677,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         &self,
         decorator: Idx<Key>,
         decoratee: Type,
-        overload: &mut bool,
         errors: &ErrorCollector,
     ) -> Type {
         if matches!(&decoratee, Type::ClassDef(cls) if cls.has_qname("typing", "TypeVar")) {
@@ -603,37 +685,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             return decoratee;
         }
         let ty_decorator = self.get_idx(decorator);
-        match ty_decorator.callee_kind() {
-            Some(CalleeKind::Class(ClassKind::StaticMethod)) => {
-                return Type::Decoration(Decoration::StaticMethod(Box::new(decoratee)));
-            }
-            Some(CalleeKind::Class(ClassKind::ClassMethod)) => {
-                return Type::Decoration(Decoration::ClassMethod(Box::new(decoratee)));
-            }
-            Some(CalleeKind::Class(ClassKind::Property)) => {
-                return Type::Decoration(Decoration::Property(Box::new((decoratee, None))));
-            }
-            Some(CalleeKind::Class(ClassKind::EnumMember)) => {
-                return Type::Decoration(Decoration::EnumMember(Box::new(decoratee)));
-            }
-            Some(CalleeKind::Function(FunctionKind::Overload)) => {
-                *overload = true;
-            }
-            Some(CalleeKind::Function(FunctionKind::Override)) => {
-                // if an override decorator exists, then update the callable kind
-                return Type::Decoration(Decoration::Override(Box::new(decoratee)));
-            }
-            _ => {}
-        }
-        match &*ty_decorator {
-            Type::Decoration(Decoration::PropertySetterDecorator(getter)) => {
-                return Type::Decoration(Decoration::Property(Box::new((
-                    (**getter).clone(),
-                    Some(decoratee),
-                ))));
-            }
-            _ => {}
-        }
         if matches!(&decoratee, Type::ClassDef(_)) {
             // TODO: don't blanket ignore class decorators.
             return decoratee;
@@ -1230,7 +1281,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 self.expr_untype(x, TypeFormContext::TypeArgument, errors)
                             });
                             let targs = self.check_and_create_targs(
-                                &forall.name,
+                                &forall.name(),
                                 &forall.tparams,
                                 tys,
                                 x.range,

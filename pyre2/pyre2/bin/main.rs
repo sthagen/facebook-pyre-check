@@ -23,9 +23,9 @@ use pyre2::run::CheckArgs;
 use pyre2::run::CommandExitStatus;
 use pyre2::run::LspArgs;
 use pyre2::ConfigFile;
+use pyre2::FileList;
 use pyre2::Globs;
 use pyre2::NotifyWatcher;
-use pyre2::Watcher;
 
 #[derive(Debug, Parser)]
 #[command(name = "pyre2")]
@@ -104,8 +104,28 @@ fn to_exit_code(status: CommandExitStatus) -> ExitCode {
     }
 }
 
-fn run_check_on_project(
-    watcher: Option<Box<dyn Watcher>>,
+async fn run_check(
+    args: pyre2::run::CheckArgs,
+    watch: bool,
+    files_to_check: Globs,
+    config_finder: &dyn Fn(&Path) -> ConfigFile,
+    allow_forget: bool,
+) -> anyhow::Result<CommandExitStatus> {
+    if watch {
+        let mut watcher = NotifyWatcher::new()?;
+        for path in files_to_check.roots() {
+            watcher.watch_dir(&path)?;
+        }
+        args.run_watch(Box::new(watcher), files_to_check, config_finder)
+            .await?;
+        Ok(CommandExitStatus::Success)
+    } else {
+        args.run_once(files_to_check, config_finder, allow_forget)
+    }
+}
+
+async fn run_check_on_project(
+    watch: bool,
     config: Option<PathBuf>,
     args: pyre2::run::CheckArgs,
     allow_forget: bool,
@@ -114,30 +134,34 @@ fn run_check_on_project(
         .map(|c| get_open_source_config(c.as_path()))
         .transpose()?
         .unwrap_or_default();
-    args.run(
-        watcher,
+    run_check(
+        args,
+        watch,
         config.project_include.clone(),
         &|_| config.clone(),
         allow_forget,
     )
+    .await
 }
 
-fn run_check_on_files(
+async fn run_check_on_files(
     files_to_check: Globs,
-    watcher: Option<Box<dyn Watcher>>,
+    watch: bool,
     args: pyre2::run::CheckArgs,
     allow_forget: bool,
 ) -> anyhow::Result<CommandExitStatus> {
-    args.run(
-        watcher,
+    run_check(
+        args,
+        watch,
         files_to_check,
         // TODO(connernilsen): replace this when we have search paths working
         &|_| ConfigFile::default(),
         allow_forget,
     )
+    .await
 }
 
-fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<CommandExitStatus> {
+async fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<CommandExitStatus> {
     match command {
         Command::Check {
             files,
@@ -145,18 +169,13 @@ fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<CommandEx
             config,
             args,
         } => {
-            let watcher: Option<Box<dyn Watcher>> = if watch {
-                Some(Box::new(NotifyWatcher::new()?))
-            } else {
-                None
-            };
             if !files.is_empty() && config.is_some() {
                 anyhow::bail!("Can either supply `FILES...` OR `--config/-c`, not both.")
             }
             if files.is_empty() {
-                run_check_on_project(watcher, config, args, allow_forget)
+                run_check_on_project(watch, config, args, allow_forget).await
             } else {
-                run_check_on_files(Globs::new(files), watcher, args, allow_forget)
+                run_check_on_files(Globs::new(files), watch, args, allow_forget).await
             }
         }
         Command::BuckCheck(args) => args.run(),
@@ -165,11 +184,11 @@ fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<CommandEx
 }
 
 /// Run based on the command line arguments.
-fn run() -> anyhow::Result<ExitCode> {
+async fn run() -> anyhow::Result<ExitCode> {
     let args = Args::parse_from(get_args_expanded(args_os())?);
     if args.profiling {
         loop {
-            let _ = run_command(args.command.clone(), false);
+            let _ = run_command(args.command.clone(), false).await;
         }
     } else {
         init_tracing(args.verbose, false);
@@ -178,13 +197,14 @@ fn run() -> anyhow::Result<ExitCode> {
         } else {
             Some(args.threads)
         });
-        run_command(args.command, true).map(to_exit_code)
+        run_command(args.command, true).await.map(to_exit_code)
     }
 }
 
-pub fn main() -> ExitCode {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     exit_on_panic();
-    let res = run();
+    let res = run().await;
     match res {
         Ok(code) => code,
         Err(e) => {

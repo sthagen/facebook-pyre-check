@@ -110,7 +110,7 @@ struct CheckLoader {
 }
 
 impl Loader for CheckLoader {
-    fn find(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
+    fn find_import(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
         if let Some(path) = self.sources.get(&module) {
             // FIXME: Because we pre-created these handles, the only real reason to do this
             // is for the error-style, which is a pretty weird reason to do it.
@@ -187,30 +187,21 @@ fn create_loader(
 }
 
 impl Args {
-    pub fn run(
+    pub fn run_once(
         self,
-        watcher: Option<Box<dyn Watcher>>,
         files_to_check: impl FileList + Clone,
         config_finder: &dyn Fn(&Path) -> ConfigFile,
         allow_forget: bool,
     ) -> anyhow::Result<CommandExitStatus> {
-        if let Some(watcher) = watcher {
-            self.run_watch(watcher, files_to_check, config_finder)?;
-            Ok(CommandExitStatus::Success)
-        } else {
-            self.run_inner(files_to_check, config_finder, allow_forget)
-        }
+        self.run_inner(files_to_check, config_finder, allow_forget)
     }
 
-    fn run_watch(
+    pub async fn run_watch(
         self,
         mut watcher: Box<dyn Watcher>,
         files_to_check: impl FileList + Clone,
         config_finder: &dyn Fn(&Path) -> ConfigFile,
     ) -> anyhow::Result<()> {
-        for path in files_to_check.roots() {
-            watcher.watch_dir(&path)?;
-        }
         loop {
             let res = self
                 .clone()
@@ -219,7 +210,7 @@ impl Args {
                 eprintln!("{e:#}");
             }
             loop {
-                let events = watcher.wait()?;
+                let events = watcher.wait().await?;
                 if events.iter().any(|x| !x.kind.is_access()) {
                     break;
                 }

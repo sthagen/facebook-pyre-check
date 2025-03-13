@@ -13,9 +13,9 @@
           "--log rust-lang.rust-analyzer:debug"
         ],
         "outFiles": [
-          "${workspaceFolder}/lsp/out/**/*.js"
+          "${workspaceFolder}/lsp/dist/**/*.js"
         ],
-        "preLaunchTask": "npm: compile",
+        "preLaunchTask": "build extension",
         "skipFiles": [
           "<node_internals>/**/*.js"
         ]

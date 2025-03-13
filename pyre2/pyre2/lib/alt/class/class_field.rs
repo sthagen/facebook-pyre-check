@@ -34,6 +34,7 @@ use crate::types::annotation::Annotation;
 use crate::types::annotation::Qualifier;
 use crate::types::callable::BoolKeywords;
 use crate::types::callable::DataclassKeywords;
+use crate::types::callable::Function;
 use crate::types::callable::FunctionKind;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
@@ -44,7 +45,6 @@ use crate::types::typed_dict::TypedDictField;
 use crate::types::types::BoundMethod;
 use crate::types::types::BoundMethodType;
 use crate::types::types::CalleeKind;
-use crate::types::types::Decoration;
 use crate::types::types::ForallType;
 use crate::types::types::Type;
 
@@ -231,7 +231,7 @@ impl ClassField {
 
     fn as_special_method_type(self, cls: &ClassType) -> Option<Type> {
         self.as_raw_special_method_type(cls)
-            .and_then(|ty| make_bound_method(cls.self_type(), &ty))
+            .and_then(|ty| make_bound_method(cls, &ty))
     }
 
     pub fn as_named_tuple_type(&self) -> Type {
@@ -328,44 +328,56 @@ impl ClassField {
 }
 
 pub fn bind_class_attribute(cls: &Class, attr: Type) -> Attribute {
-    match attr {
-        Type::Decoration(Decoration::StaticMethod(box attr)) => Attribute::read_write(attr),
-        Type::Decoration(Decoration::ClassMethod(box attr)) => Attribute::read_write(
-            make_bound_method(Type::ClassDef(cls.dupe()), &attr).unwrap_or(attr),
-        ),
-        // Accessing a property descriptor on the class gives the property itself,
-        // with no magic access rules at runtime.
-        p @ Type::Decoration(Decoration::Property(_)) => Attribute::read_write(p),
-        attr => Attribute::read_write(attr),
-    }
+    Attribute::read_write(make_bound_classmethod(cls, &attr).unwrap_or(attr))
 }
 
-fn make_bound_method(obj: Type, attr: &Type) -> Option<Type> {
+fn make_bound_method_helper(
+    obj: Type,
+    attr: &Type,
+    should_bind: &dyn Fn(&Function) -> bool,
+) -> Option<Type> {
     let func = match attr {
-        Type::Forall(forall) if matches!(forall.ty, ForallType::Function(..)) => {
+        Type::Forall(forall) if matches!(&forall.ty, ForallType::Function(func) if should_bind(func)) => {
             Some(BoundMethodType::Forall((**forall).clone()))
         }
-        Type::Function(box func) => Some(BoundMethodType::Function(func.clone())),
+        Type::Function(box func) if should_bind(func) => {
+            Some(BoundMethodType::Function(func.clone()))
+        }
         Type::Overload(overload) => Some(BoundMethodType::Overload(overload.clone())),
         _ => None,
     };
     func.map(|func| Type::BoundMethod(Box::new(BoundMethod { obj, func })))
 }
 
+fn make_bound_classmethod(cls: &Class, attr: &Type) -> Option<Type> {
+    let should_bind = |func: &Function| func.metadata.flags.is_classmethod;
+    make_bound_method_helper(Type::ClassDef(cls.dupe()), attr, &should_bind)
+}
+
+fn make_bound_method(cls: &ClassType, attr: &Type) -> Option<Type> {
+    let should_bind = |func: &Function| {
+        !func.metadata.flags.is_staticmethod && !func.metadata.flags.is_classmethod
+    };
+    make_bound_method_helper(cls.self_type(), attr, &should_bind)
+}
+
 fn bind_instance_attribute(cls: &ClassType, attr: Type) -> Attribute {
     match attr {
-        Type::Decoration(Decoration::StaticMethod(box attr)) => Attribute::read_write(attr),
-        Type::Decoration(Decoration::ClassMethod(box attr)) => Attribute::read_write(
-            make_bound_method(Type::ClassDef(cls.class_object().dupe()), &attr).unwrap_or(attr),
-        ),
-        Type::Decoration(Decoration::Property(box (getter, setter))) => Attribute::property(
-            make_bound_method(Type::ClassType(cls.clone()), &getter).unwrap_or(getter),
-            setter.map(|setter| {
-                make_bound_method(Type::ClassType(cls.clone()), &setter).unwrap_or(setter)
-            }),
+        _ if attr.is_property_getter() => Attribute::property(
+            make_bound_method(cls, &attr).unwrap_or(attr),
+            None,
             cls.class_object().dupe(),
         ),
-        attr => Attribute::read_write(make_bound_method(cls.self_type(), &attr).unwrap_or(attr)),
+        _ if let Some(getter) = attr.is_property_setter_with_getter() => Attribute::property(
+            make_bound_method(cls, &getter).unwrap_or(getter),
+            Some(make_bound_method(cls, &attr).unwrap_or(attr)),
+            cls.class_object().dupe(),
+        ),
+        attr => {
+            Attribute::read_write(make_bound_method(cls, &attr).unwrap_or_else(|| {
+                make_bound_classmethod(cls.class_object(), &attr).unwrap_or(attr)
+            }))
+        }
     }
 }
 
@@ -414,15 +426,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             );
         }
 
-        // Determine whether this is an explicit `@override` and remove the decoration from the type if so.
-        let (value_ty, is_override) = value_ty.clone().extract_override();
+        // Determine whether this is an explicit `@override`.
+        let is_override = value_ty.is_override();
 
         // Promote literals. The check on `annotation` is an optimization, it does not (currently) affect semantics.
         // TODO(stroxler): if we see a read-only `Qualifier` like `Final`, it is sound to preserve literals.
         let value_ty = if annotation.map_or(true, |a| a.ty.is_none()) && value_ty.is_literal() {
-            value_ty.promote_literals(self.stdlib)
+            value_ty.clone().promote_literals(self.stdlib)
         } else {
-            value_ty
+            value_ty.clone()
         };
 
         // Types provided in annotations shadow inferred types
