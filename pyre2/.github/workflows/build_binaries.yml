@@ -3,7 +3,8 @@ name: Build binaries
 on:
   push:
     paths:
-      - .github/workflows/build_pyre2_binaries.yml
+      - .github/workflows/build_binaries.yml
+      - pyre2/Cargo.toml
       - pyre2/pyproject.toml
   workflow_dispatch:
 

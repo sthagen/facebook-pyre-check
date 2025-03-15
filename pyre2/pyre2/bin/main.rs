@@ -108,7 +108,7 @@ async fn run_check(
     args: pyre2::run::CheckArgs,
     watch: bool,
     files_to_check: Globs,
-    config_finder: &dyn Fn(&Path) -> ConfigFile,
+    config_finder: &impl Fn(&Path) -> ConfigFile,
     allow_forget: bool,
 ) -> anyhow::Result<CommandExitStatus> {
     if watch {
@@ -116,7 +116,7 @@ async fn run_check(
         for path in files_to_check.roots() {
             watcher.watch_dir(&path)?;
         }
-        args.run_watch(Box::new(watcher), files_to_check, config_finder)
+        args.run_watch(watcher, files_to_check, config_finder)
             .await?;
         Ok(CommandExitStatus::Success)
     } else {
@@ -137,7 +137,7 @@ async fn run_check_on_project(
     run_check(
         args,
         watch,
-        config.project_include.clone(),
+        config.project_includes.clone(),
         &|_| config.clone(),
         allow_forget,
     )

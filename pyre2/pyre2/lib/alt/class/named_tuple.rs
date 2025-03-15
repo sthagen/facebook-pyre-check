@@ -47,7 +47,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .iter()
                 .filter_map(|name| {
                     let attr = self.try_lookup_attr(&Type::ClassType(cls.clone()), name)?;
-                    self.resolve_as_instance_method(attr)
+                    self.resolve_named_tuple_element(attr)
                 })
                 .collect(),
         )
@@ -67,7 +67,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn get_named_tuple_new(&self, cls: &Class, elements: &[Name]) -> ClassSynthesizedField {
         let mut params = vec![Param::Pos(
             Name::new("cls"),
-            Type::Type(Box::new(cls.self_type())),
+            Type::type_form(cls.self_type()),
             Required::Required,
         )];
         params.extend(self.get_named_tuple_field_params(cls, elements));

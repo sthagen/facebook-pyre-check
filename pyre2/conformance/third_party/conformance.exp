@@ -2514,6 +2514,36 @@
     },
     {
       "code": -2,
+      "column": 20,
+      "concise_description": "`ClassVar` arguments may not contain any type variables",
+      "description": "`ClassVar` arguments may not contain any type variables",
+      "line": 45,
+      "name": "invalid-annotation",
+      "stop_column": 21,
+      "stop_line": 45
+    },
+    {
+      "code": -2,
+      "column": 20,
+      "concise_description": "`ClassVar` arguments may not contain any type variables",
+      "description": "`ClassVar` arguments may not contain any type variables",
+      "line": 46,
+      "name": "invalid-annotation",
+      "stop_column": 27,
+      "stop_line": 46
+    },
+    {
+      "code": -2,
+      "column": 20,
+      "concise_description": "`ClassVar` arguments may not contain any type variables",
+      "description": "`ClassVar` arguments may not contain any type variables",
+      "line": 47,
+      "name": "invalid-annotation",
+      "stop_column": 36,
+      "stop_line": 47
+    },
+    {
+      "code": -2,
       "column": 33,
       "concise_description": "`dict[@_, @_]` is not assignable to `list[str]`",
       "description": "`dict[@_, @_]` is not assignable to `list[str]`",
@@ -2634,6 +2664,16 @@
     },
     {
       "code": -2,
+      "column": 1,
+      "concise_description": "Cannot assign to read-only field `stats`",
+      "description": "Cannot assign to read-only field `stats`",
+      "line": 105,
+      "name": "read-only",
+      "stop_column": 19,
+      "stop_line": 105
+    },
+    {
+      "code": -2,
       "column": 13,
       "concise_description": "`ProtoAImpl` is not assignable to `ProtoA`",
       "description": "`ProtoAImpl` is not assignable to `ProtoA`",
@@ -2647,8 +2687,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Class member `method3` is marked as an override, but no parent class has a matching attribute",
-      "description": "Class member `method3` is marked as an override, but no parent class has a matching attribute",
+      "concise_description": "Class member `ChildA.method3` is marked as an override, but no parent class has a matching attribute",
+      "description": "Class member `ChildA.method3` is marked as an override, but no parent class has a matching attribute",
       "line": 53,
       "name": "bad-override",
       "stop_column": 16,
@@ -2657,8 +2697,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Class member `static_method1` is marked as an override, but no parent class has a matching attribute",
-      "description": "Class member `static_method1` is marked as an override, but no parent class has a matching attribute",
+      "concise_description": "Class member `ChildA.static_method1` is marked as an override, but no parent class has a matching attribute",
+      "description": "Class member `ChildA.static_method1` is marked as an override, but no parent class has a matching attribute",
       "line": 79,
       "name": "bad-override",
       "stop_column": 23,
@@ -2667,8 +2707,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Class member `class_method1` is marked as an override, but no parent class has a matching attribute",
-      "description": "Class member `class_method1` is marked as an override, but no parent class has a matching attribute",
+      "concise_description": "Class member `ChildA.class_method1` is marked as an override, but no parent class has a matching attribute",
+      "description": "Class member `ChildA.class_method1` is marked as an override, but no parent class has a matching attribute",
       "line": 84,
       "name": "bad-override",
       "stop_column": 22,
@@ -2677,8 +2717,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Class member `property1` is marked as an override, but no parent class has a matching attribute",
-      "description": "Class member `property1` is marked as an override, but no parent class has a matching attribute",
+      "concise_description": "Class member `ChildA.property1` is marked as an override, but no parent class has a matching attribute",
+      "description": "Class member `ChildA.property1` is marked as an override, but no parent class has a matching attribute",
       "line": 89,
       "name": "bad-override",
       "stop_column": 18,
@@ -3895,7 +3935,28 @@
       "stop_line": 32
     }
   ],
-  "dataclasses_inheritance.py": [],
+  "dataclasses_inheritance.py": [
+    {
+      "code": -2,
+      "column": 5,
+      "concise_description": "ClassVar `DC7.x` overrides instance variable of the same name in parent class `DC6`",
+      "description": "ClassVar `DC7.x` overrides instance variable of the same name in parent class `DC6`",
+      "line": 60,
+      "name": "bad-override",
+      "stop_column": 6,
+      "stop_line": 60
+    },
+    {
+      "code": -2,
+      "column": 5,
+      "concise_description": "Instance variable `DC7.y` overrides ClassVar of the same name in parent class `DC6`",
+      "description": "Instance variable `DC7.y` overrides ClassVar of the same name in parent class `DC6`",
+      "line": 64,
+      "name": "bad-override",
+      "stop_column": 6,
+      "stop_line": 64
+    }
+  ],
   "dataclasses_kwonly.py": [
     {
       "code": -2,
@@ -9096,6 +9157,16 @@
     {
       "code": -2,
       "column": 1,
+      "concise_description": "Cannot assign to read-only field `x`",
+      "description": "Cannot assign to read-only field `x`",
+      "line": 40,
+      "name": "read-only",
+      "stop_column": 4,
+      "stop_line": 40
+    },
+    {
+      "code": -2,
+      "column": 1,
       "concise_description": "Item assignment is not supported on `Point`\n  Object of class `Point` has no attribute `__setitem__`",
       "description": "Item assignment is not supported on `Point`\n  Object of class `Point` has no attribute `__setitem__`",
       "line": 41,
@@ -9105,21 +9176,21 @@
     },
     {
       "code": -2,
-      "column": 1,
-      "concise_description": "TODO: StmtDelete - Bindings::stmt",
-      "description": "TODO: StmtDelete - Bindings::stmt",
+      "column": 5,
+      "concise_description": "Cannot delete read-only field `x`",
+      "description": "Cannot delete read-only field `x`",
       "line": 42,
-      "name": "unsupported",
+      "name": "read-only",
       "stop_column": 8,
       "stop_line": 42
     },
     {
       "code": -2,
-      "column": 1,
-      "concise_description": "TODO: StmtDelete - Bindings::stmt",
-      "description": "TODO: StmtDelete - Bindings::stmt",
+      "column": 5,
+      "concise_description": "Item deletion is not supported on `Point`\n  Object of class `Point` has no attribute `__delitem__`",
+      "description": "Item deletion is not supported on `Point`\n  Object of class `Point` has no attribute `__delitem__`",
       "line": 43,
-      "name": "unsupported",
+      "name": "missing-attribute",
       "stop_column": 9,
       "stop_line": 43
     },
@@ -9376,22 +9447,22 @@
     {
       "code": -2,
       "column": 22,
-      "concise_description": "`Concrete2_Bad3` is not assignable to `Template2`",
-      "description": "`Concrete2_Bad3` is not assignable to `Template2`",
-      "line": 116,
-      "name": "type-mismatch",
-      "stop_column": 38,
-      "stop_line": 116
-    },
-    {
-      "code": -2,
-      "column": 22,
       "concise_description": "`Concrete3_Bad1` is not assignable to `Template3`",
       "description": "`Concrete3_Bad1` is not assignable to `Template3`",
       "line": 156,
       "name": "type-mismatch",
       "stop_column": 38,
       "stop_line": 156
+    },
+    {
+      "code": -2,
+      "column": 22,
+      "concise_description": "`Concrete3_Bad2` is not assignable to `Template3`",
+      "description": "`Concrete3_Bad2` is not assignable to `Template3`",
+      "line": 157,
+      "name": "type-mismatch",
+      "stop_column": 38,
+      "stop_line": 157
     },
     {
       "code": -2,
@@ -9512,14 +9583,34 @@
       "name": "type-mismatch",
       "stop_column": 38,
       "stop_line": 339
+    },
+    {
+      "code": -2,
+      "column": 22,
+      "concise_description": "`Concrete6_Bad2` is not assignable to `Template6`",
+      "description": "`Concrete6_Bad2` is not assignable to `Template6`",
+      "line": 340,
+      "name": "type-mismatch",
+      "stop_column": 38,
+      "stop_line": 340
+    },
+    {
+      "code": -2,
+      "column": 22,
+      "concise_description": "`Concrete6_Bad3` is not assignable to `Template6`",
+      "description": "`Concrete6_Bad3` is not assignable to `Template6`",
+      "line": 341,
+      "name": "type-mismatch",
+      "stop_column": 38,
+      "stop_line": 341
     }
   ],
   "protocols_explicit.py": [
     {
       "code": -2,
       "column": 14,
-      "concise_description": "Class member `rgb` overrides parent class `RGB` in an inconsistent manner",
-      "description": "Class member `rgb` overrides parent class `RGB` in an inconsistent manner",
+      "concise_description": "Class member `Point.rgb` overrides parent class `RGB` in an inconsistent manner",
+      "description": "Class member `Point.rgb` overrides parent class `RGB` in an inconsistent manner",
       "line": 56,
       "name": "bad-override",
       "stop_column": 17,
@@ -9528,8 +9619,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Class member `method1` overrides parent class `Proto7` in an inconsistent manner",
-      "description": "Class member `method1` overrides parent class `Proto7` in an inconsistent manner",
+      "concise_description": "Class member `Mixin7.method1` overrides parent class `Proto7` in an inconsistent manner",
+      "description": "Class member `Mixin7.method1` overrides parent class `Proto7` in an inconsistent manner",
       "line": 157,
       "name": "bad-override",
       "stop_column": 16,
@@ -10075,6 +10166,16 @@
     },
     {
       "code": -2,
+      "column": 5,
+      "concise_description": "`BORDER_WIDTH` is declared as final in parent class `ClassC`",
+      "description": "`BORDER_WIDTH` is declared as final in parent class `ClassC`",
+      "line": 94,
+      "name": "bad-override",
+      "stop_column": 17,
+      "stop_line": 94
+    },
+    {
+      "code": -2,
       "column": 9,
       "concise_description": "TODO: Answers::apply_special_form cannot handle `Final[int]`",
       "description": "TODO: Answers::apply_special_form cannot handle `Final[int]`",
@@ -10197,49 +10298,19 @@
   "qualifiers_final_decorator.py": [
     {
       "code": -2,
-      "column": 5,
-      "concise_description": "Argument `(self: Base2) -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "description": "Argument `(self: Base2) -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "line": 26,
-      "name": "type-mismatch",
-      "stop_column": 11,
-      "stop_line": 26
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "Argument `(cls: type[Base2]) -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "description": "Argument `(cls: type[Base2]) -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "line": 30,
-      "name": "type-mismatch",
-      "stop_column": 11,
-      "stop_line": 30
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "Argument `() -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "description": "Argument `() -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "line": 35,
-      "name": "type-mismatch",
-      "stop_column": 11,
-      "stop_line": 35
-    },
-    {
-      "code": -2,
-      "column": 5,
-      "concise_description": "Argument `(self: Base2, x: int | str) -> int | str` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "description": "Argument `(self: Base2, x: int | str) -> int | str` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "line": 50,
-      "name": "type-mismatch",
-      "stop_column": 11,
-      "stop_line": 50
+      "column": 16,
+      "concise_description": "Cannot extend final class `Base1`",
+      "description": "Cannot extend final class `Base1`",
+      "line": 21,
+      "name": "invalid-inheritance",
+      "stop_column": 21,
+      "stop_line": 21
     },
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Class member `method1` overrides parent class `Base2` in an inconsistent manner",
-      "description": "Class member `method1` overrides parent class `Base2` in an inconsistent manner",
+      "concise_description": "`method1` is declared as final in parent class `Base2`",
+      "description": "`method1` is declared as final in parent class `Base2`",
       "line": 56,
       "name": "bad-override",
       "stop_column": 16,
@@ -10248,8 +10319,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Class member `method2` overrides parent class `Base2` in an inconsistent manner",
-      "description": "Class member `method2` overrides parent class `Base2` in an inconsistent manner",
+      "concise_description": "`method2` is declared as final in parent class `Base2`",
+      "description": "`method2` is declared as final in parent class `Base2`",
       "line": 60,
       "name": "bad-override",
       "stop_column": 16,
@@ -10258,8 +10329,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Class member `method3` overrides parent class `Base2` in an inconsistent manner",
-      "description": "Class member `method3` overrides parent class `Base2` in an inconsistent manner",
+      "concise_description": "`method3` is declared as final in parent class `Base2`",
+      "description": "`method3` is declared as final in parent class `Base2`",
       "line": 64,
       "name": "bad-override",
       "stop_column": 16,
@@ -10268,8 +10339,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Class member `method` overrides parent class `Base3` in an inconsistent manner",
-      "description": "Class member `method` overrides parent class `Base3` in an inconsistent manner",
+      "concise_description": "`method` is declared as final in parent class `Base3`",
+      "description": "`method` is declared as final in parent class `Base3`",
       "line": 81,
       "name": "bad-override",
       "stop_column": 15,
@@ -10277,19 +10348,9 @@
     },
     {
       "code": -2,
-      "column": 5,
-      "concise_description": "Argument `(self: Derived3, x: str) -> str` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "description": "Argument `(self: Derived3, x: str) -> str` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "line": 85,
-      "name": "type-mismatch",
-      "stop_column": 11,
-      "stop_line": 85
-    },
-    {
-      "code": -2,
       "column": 9,
-      "concise_description": "Class member `method` overrides parent class `Base4` in an inconsistent manner",
-      "description": "Class member `method` overrides parent class `Base4` in an inconsistent manner",
+      "concise_description": "`method` is declared as final in parent class `Base4`",
+      "description": "`method` is declared as final in parent class `Base4`",
       "line": 95,
       "name": "bad-override",
       "stop_column": 15,
@@ -10297,33 +10358,13 @@
     },
     {
       "code": -2,
-      "column": 5,
-      "concise_description": "Argument `(self: Base5_2, v: int) -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "description": "Argument `(self: Base5_2, v: int) -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "line": 111,
-      "name": "type-mismatch",
-      "stop_column": 11,
-      "stop_line": 111
-    },
-    {
-      "code": -2,
       "column": 9,
-      "concise_description": "Class member `method` overrides parent class `Base5_2` in an inconsistent manner",
-      "description": "Class member `method` overrides parent class `Base5_2` in an inconsistent manner",
+      "concise_description": "`method` is declared as final in parent class `Base5_2`",
+      "description": "`method` is declared as final in parent class `Base5_2`",
       "line": 118,
       "name": "bad-override",
       "stop_column": 15,
       "stop_line": 118
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "Argument `() -> int` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "description": "Argument `() -> int` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`",
-      "line": 125,
-      "name": "type-mismatch",
-      "stop_column": 7,
-      "stop_line": 125
     }
   ],
   "specialtypes_any.py": [
@@ -10464,16 +10505,6 @@
       "name": "not-callable",
       "stop_column": 22,
       "stop_line": 39
-    },
-    {
-      "code": -2,
-      "column": 12,
-      "concise_description": "Expected a callable, got type[BasicUser | ProUser]",
-      "description": "Expected a callable, got type[BasicUser | ProUser]",
-      "line": 51,
-      "name": "not-callable",
-      "stop_column": 22,
-      "stop_line": 51
     },
     {
       "code": -2,
@@ -11391,8 +11422,8 @@
     {
       "code": -2,
       "column": 4,
-      "concise_description": "Class member `x` overrides parent class `X1` in an inconsistent manner",
-      "description": "Class member `x` overrides parent class `X1` in an inconsistent manner",
+      "concise_description": "Class member `Y1.x` overrides parent class `X1` in an inconsistent manner",
+      "description": "Class member `Y1.x` overrides parent class `X1` in an inconsistent manner",
       "line": 55,
       "name": "bad-override",
       "stop_column": 5,
@@ -11502,12 +11533,12 @@
     },
     {
       "code": -2,
-      "column": 1,
-      "concise_description": "TODO: StmtDelete - Bindings::stmt",
-      "description": "TODO: StmtDelete - Bindings::stmt",
+      "column": 11,
+      "concise_description": "Key `name` in TypedDict `Movie` may not be deleted",
+      "description": "Key `name` in TypedDict `Movie` may not be deleted",
       "line": 49,
-      "name": "unsupported",
-      "stop_column": 18,
+      "name": "delete-error",
+      "stop_column": 17,
       "stop_line": 49
     },
     {
@@ -11529,16 +11560,6 @@
       "name": "missing-attribute",
       "stop_column": 21,
       "stop_line": 62
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "TODO: StmtDelete - Bindings::stmt",
-      "description": "TODO: StmtDelete - Bindings::stmt",
-      "line": 64,
-      "name": "unsupported",
-      "stop_column": 27,
-      "stop_line": 64
     }
   ],
   "typeddicts_readonly.py": [
@@ -11679,8 +11700,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Class member `albums` overrides parent class `AlbumCollection` in an inconsistent manner",
-      "description": "Class member `albums` overrides parent class `AlbumCollection` in an inconsistent manner",
+      "concise_description": "Class member `RecordShop.albums` overrides parent class `AlbumCollection` in an inconsistent manner",
+      "description": "Class member `RecordShop.albums` overrides parent class `AlbumCollection` in an inconsistent manner",
       "line": 49,
       "name": "bad-override",
       "stop_column": 11,
@@ -11689,8 +11710,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Class member `alt` overrides parent class `AlbumCollection` in an inconsistent manner",
-      "description": "Class member `alt` overrides parent class `AlbumCollection` in an inconsistent manner",
+      "concise_description": "Class member `RecordShop.alt` overrides parent class `AlbumCollection` in an inconsistent manner",
+      "description": "Class member `RecordShop.alt` overrides parent class `AlbumCollection` in an inconsistent manner",
       "line": 50,
       "name": "bad-override",
       "stop_column": 8,
@@ -11709,8 +11730,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Class member `ident` overrides parent class `OptionalIdent` in an inconsistent manner",
-      "description": "Class member `ident` overrides parent class `OptionalIdent` in an inconsistent manner",
+      "concise_description": "Class member `User.ident` overrides parent class `OptionalIdent` in an inconsistent manner",
+      "description": "Class member `User.ident` overrides parent class `OptionalIdent` in an inconsistent manner",
       "line": 76,
       "name": "bad-override",
       "stop_column": 10,
@@ -11782,6 +11803,16 @@
     }
   ],
   "typeddicts_required.py": [
+    {
+      "code": -2,
+      "column": 5,
+      "concise_description": "`Required` may only be used for TypedDict members",
+      "description": "`Required` may only be used for TypedDict members",
+      "line": 12,
+      "name": "invalid-annotation",
+      "stop_column": 6,
+      "stop_line": 12
+    },
     {
       "code": -2,
       "column": 8,

@@ -8,6 +8,7 @@
 use std::cmp::Ordering;
 
 use dupe::Dupe;
+use pyrefly_derive::TypeEq;
 use ruff_python_ast::name::Name;
 use starlark_map::ordered_map::OrderedMap;
 
@@ -19,7 +20,7 @@ use crate::types::class::TArgs;
 use crate::types::qname::QName;
 use crate::types::types::Type;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, TypeEq, PartialEq, Eq, Hash)]
 pub struct TypedDictField {
     pub ty: Type,
     pub required: bool,
@@ -36,7 +37,7 @@ impl TypedDictField {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, TypeEq, Eq, PartialEq, Hash)]
 pub struct TypedDict {
     class: Class,
     args: TArgs,
@@ -93,7 +94,7 @@ impl TypedDict {
         ClassType::new(self.class.dupe(), self.args.clone())
     }
 
-    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
+    pub fn visit<'a>(&'a self, mut f: &mut dyn FnMut(&'a Type)) {
         let Self {
             class: _,
             args,
@@ -103,7 +104,7 @@ impl TypedDict {
         fields.values().for_each(|x| f(&x.ty));
     }
 
-    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
+    pub fn visit_mut<'a>(&'a mut self, mut f: &mut dyn FnMut(&'a mut Type)) {
         let Self {
             class: _,
             args,

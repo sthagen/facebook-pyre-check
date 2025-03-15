@@ -43,6 +43,8 @@ use crate::table_for_each;
 use crate::table_mut_for_each;
 use crate::table_try_for_each;
 use crate::types::class::Class;
+use crate::types::equality::TypeEq;
+use crate::types::equality::TypeEqCtx;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::AnyStyle;
 use crate::types::types::Type;
@@ -208,7 +210,7 @@ impl Solutions {
             }
             for (k, v) in x.iter() {
                 match y.get(k) {
-                    Some(v2) if v != v2 => {
+                    Some(v2) if !v.type_eq(v2, &mut TypeEqCtx::default()) => {
                         return Some(SolutionsDifference {
                             key: k,
                             lhs: Some(v),
@@ -313,14 +315,14 @@ impl Answers {
         errors: &ErrorCollector,
         stdlib: &Stdlib,
         uniques: &UniqueFactory,
-        retain_memory: bool,
+        compute_everything: bool,
     ) -> Solutions {
         let mut res = SolutionsTable::default();
 
         fn pre_solve<Ans: LookupAnswer, K: Solve<Ans>>(
             items: &mut SolutionsEntry<K>,
             answers: &AnswersSolver<Ans>,
-            retain_memory: bool,
+            compute_everything: bool,
         ) where
             AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
             BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
@@ -328,7 +330,10 @@ impl Answers {
             if K::EXPORTED {
                 items.reserve(answers.bindings.keys::<K>().len());
             }
-            if !K::EXPORTED && !retain_memory && answers.base_errors.style() == ErrorStyle::Never {
+            if !K::EXPORTED
+                && !compute_everything
+                && answers.base_errors.style() == ErrorStyle::Never
+            {
                 // No point doing anything here.
                 return;
             }
@@ -353,7 +358,7 @@ impl Answers {
         table_mut_for_each!(&mut res, |items| pre_solve(
             items,
             &answers_solver,
-            retain_memory
+            compute_everything
         ));
 
         // Now force all types to be fully resolved.
@@ -456,6 +461,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     pub fn solver(&self) -> &Solver {
         &self.current.solver
+    }
+
+    pub fn for_display(&self, t: Type) -> Type {
+        self.solver().for_display(t)
     }
 
     pub fn get_from_module<K: Solve<Ans> + Keyed<EXPORTED = true>>(
@@ -576,6 +585,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn distribute_over_union(&self, ty: &Type, mut f: impl FnMut(&Type) -> Type) -> Type {
         match ty {
             Type::Union(tys) => self.unions(tys.map(f)),
+            Type::Type(box Type::Union(tys)) => {
+                self.unions(tys.map(|ty| f(&Type::type_form(ty.clone()))))
+            }
             _ => f(ty),
         }
     }

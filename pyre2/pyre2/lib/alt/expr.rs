@@ -60,7 +60,7 @@ use crate::types::types::CalleeKind;
 use crate::types::types::Type;
 use crate::util::prelude::SliceExt;
 use crate::util::prelude::VecExt;
-use crate::visitors::Visitors;
+use crate::util::visit::Visit;
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     // Helper method for inferring the type of a boolean operation over a sequence of values.
@@ -145,7 +145,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         })
     }
 
-    fn callabe_dunder_helper(
+    fn callable_dunder_helper(
         &self,
         method_type: Type,
         range: TextRange,
@@ -201,7 +201,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     let bin_op_new_errors_dunder =
                         ErrorCollector::new(self.module_info().dupe(), ErrorStyle::Delayed);
 
-                    let ret = self.callabe_dunder_helper(
+                    let ret = self.callable_dunder_helper(
                         method_type_dunder,
                         range,
                         &bin_op_new_errors_dunder,
@@ -212,7 +212,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     if bin_op_new_errors_dunder.is_empty() {
                         ret
                     } else {
-                        self.callabe_dunder_helper(
+                        self.callable_dunder_helper(
                             method_type_reflected,
                             range,
                             errors,
@@ -222,7 +222,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         )
                     }
                 }
-                (Some(method_type_dunder), None) => self.callabe_dunder_helper(
+                (Some(method_type_dunder), None) => self.callable_dunder_helper(
                     method_type_dunder,
                     range,
                     errors,
@@ -230,7 +230,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     op,
                     &rhs,
                 ),
-                (None, Some(method_type_reflected)) => self.callabe_dunder_helper(
+                (None, Some(method_type_reflected)) => self.callable_dunder_helper(
                     method_type_reflected,
                     range,
                     errors,
@@ -277,7 +277,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ///
     /// This function canonicalizes to `Type::ClassType` or `Type::TypedDict`
     pub fn canonicalize_all_class_types(&self, ty: Type, range: TextRange) -> Type {
-        ty.transform(|ty| match ty {
+        ty.transform(&mut |ty| match ty {
             Type::SpecialForm(SpecialForm::Tuple) => {
                 *ty = Type::Tuple(Tuple::unbounded(Type::Any(AnyStyle::Implicit)));
             }
@@ -1226,7 +1226,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::FString(x) => {
                 // Ensure we detect type errors in f-string expressions.
                 let mut all_literal_strings = true;
-                Visitors::visit_fstring_expr(x, |x| {
+                x.visit(&mut |x| {
                     let fstring_expr_ty = self.expr_infer(x, errors);
                     if !fstring_expr_ty.is_literal_string() {
                         all_literal_strings = false;
@@ -1281,7 +1281,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 self.expr_untype(x, TypeFormContext::TypeArgument, errors)
                             });
                             let targs = self.check_and_create_targs(
-                                &forall.name(),
+                                &forall.body.name(),
                                 &forall.tparams,
                                 tys,
                                 x.range,
@@ -1292,7 +1292,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 .quantified()
                                 .zip(targs.as_slice().iter().cloned())
                                 .collect::<SmallMap<_, _>>();
-                            forall.as_inner_type().subst(&param_map)
+                            forall.body.as_type().subst(&param_map)
                         }
                         // Note that we have to check for `builtins.type` by name here because this code runs
                         // when we're bootstrapping the stdlib and don't have access to class objects yet.
@@ -1415,7 +1415,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     format!(
                                         "Invalid key for TypedDict `{}`, got `{}`",
                                         typed_dict.name(),
-                                        ty.clone().deterministic_printing()
+                                        self.for_display(ty.clone())
                                     ),
                                 ),
                             })
@@ -1427,7 +1427,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             None,
                             format!(
                                 "Can't apply arguments to non-class, got {}",
-                                t.deterministic_printing()
+                                self.for_display(t)
                             ),
                         ),
                     }

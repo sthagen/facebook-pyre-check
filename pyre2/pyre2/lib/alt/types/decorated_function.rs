@@ -9,18 +9,25 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 
+use pyrefly_derive::TypeEq;
+use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
 
+use crate::module::module_name::ModuleName;
+use crate::types::callable::FuncFlags;
+use crate::types::callable::FuncId;
+use crate::types::callable::FuncMetadata;
+use crate::types::callable::FunctionKind;
 use crate::types::types::Type;
 
 /// The type of a function definition after decorators are applied. Metadata arising from the
 /// decorators can be stored here. Note that the type might not be a function at all, since
 /// decorators can produce any type.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, TypeEq, PartialEq, Eq)]
 pub struct DecoratedFunction {
     pub id_range: TextRange,
     pub ty: Type,
-    pub is_overload: bool,
+    pub metadata: FuncMetadata,
 }
 
 impl Display for DecoratedFunction {
@@ -34,7 +41,14 @@ impl DecoratedFunction {
         DecoratedFunction {
             id_range: TextRange::default(),
             ty: Type::any_implicit(),
-            is_overload: false,
+            metadata: FuncMetadata {
+                kind: FunctionKind::Def(Box::new(FuncId {
+                    module: ModuleName::default(),
+                    cls: None,
+                    func: Name::default(),
+                })),
+                flags: FuncFlags::default(),
+            },
         }
     }
 }

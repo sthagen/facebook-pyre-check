@@ -439,7 +439,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     context,
                                     format!("Multiple values for argument `{}`", name),
                                 );
-                                params.items()[p_idx].visit(|ty| hint = Some(ty));
+                                params.items()[p_idx].visit(&mut |ty| hint = Some(ty));
                             } else if let Some(&(p_idx, ty, required)) = kwparams.get(name) {
                                 seen_names.insert(name.clone(), p_idx);
                                 if required && !field.required {
@@ -510,7 +510,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                         context,
                                         format!(
                                             "Expected argument after ** to have `str` keys, got: {}",
-                                            key.deterministic_printing()
+                                            self.for_display(key)
                                         ),
                                     );
                                 }
@@ -523,7 +523,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     context,
                                     format!(
                                         "Expected argument after ** to be a mapping, got: {}",
-                                        ty.deterministic_printing()
+                                        self.for_display(ty)
                                     ),
                                 );
                             }
@@ -541,7 +541,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             context,
                             format!("Multiple values for argument `{}`", id.id),
                         );
-                        params.items()[p_idx].visit(|ty| {
+                        params.items()[p_idx].visit(&mut |ty| {
                             hint = Some(ty);
                         });
                         has_matching_param = true;

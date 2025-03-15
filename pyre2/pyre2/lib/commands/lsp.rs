@@ -66,7 +66,6 @@ use starlark_map::small_map::SmallMap;
 
 use crate::clap_env;
 use crate::commands::util::module_from_path;
-use crate::error::style::ErrorStyle;
 use crate::metadata::RuntimeMetadata;
 use crate::module::bundled::typeshed;
 use crate::module::finder::find_module;
@@ -81,6 +80,7 @@ use crate::state::handle::Handle;
 use crate::state::loader::FindError;
 use crate::state::loader::Loader;
 use crate::state::loader::LoaderId;
+use crate::state::require::Require;
 use crate::state::state::State;
 use crate::util::lock::Mutex;
 use crate::util::prelude::VecExt;
@@ -172,11 +172,11 @@ struct LspLoader {
 }
 
 impl Loader for LspLoader {
-    fn find_import(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
+    fn find_import(&self, module: ModuleName) -> Result<ModulePath, FindError> {
         if let Some(path) = find_module(module, &self.search_roots) {
-            Ok((path, ErrorStyle::Delayed))
+            Ok(path)
         } else if let Some(path) = typeshed().map_err(FindError::new)?.find(module) {
-            Ok((path, ErrorStyle::Never))
+            Ok(path)
         } else {
             // TODO(connernilsen): add site package path here
             Err(FindError::search_path(&self.search_roots, &[]))
@@ -309,11 +309,14 @@ impl<'a> Server<'a> {
             .lock()
             .keys()
             .map(|x| {
-                Handle::new(
-                    module_from_path(x, &self.include),
-                    ModulePath::memory(x.clone()),
-                    self.config.dupe(),
-                    self.loader.dupe(),
+                (
+                    Handle::new(
+                        module_from_path(x, &self.include),
+                        ModulePath::memory(x.clone()),
+                        self.config.dupe(),
+                        self.loader.dupe(),
+                    ),
+                    Require::Everything,
                 )
             })
             .collect::<Vec<_>>();
@@ -323,7 +326,7 @@ impl<'a> Server<'a> {
             &self.open_files.lock().keys().cloned().collect::<Vec<_>>(),
         );
 
-        self.state.lock().run(&handles, None);
+        self.state.lock().run(&handles, Require::Exports, None);
         let mut diags: SmallMap<PathBuf, Vec<Diagnostic>> = SmallMap::new();
         let open_files = self.open_files.lock();
         for x in open_files.keys() {

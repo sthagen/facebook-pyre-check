@@ -10,9 +10,11 @@ use std::sync::Arc;
 
 use dupe::Dupe;
 use itertools::Either;
+use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::StmtFunctionDef;
+use ruff_text_size::TextRange;
 use vec1::Vec1;
 
 use crate::alt::answers::AnswersSolver;
@@ -45,8 +47,9 @@ use crate::types::callable::Required;
 use crate::types::class::ClassKind;
 use crate::types::types::CalleeKind;
 use crate::types::types::Forall;
-use crate::types::types::ForallType;
+use crate::types::types::Forallable;
 use crate::types::types::Overload;
+use crate::types::types::OverloadType;
 use crate::types::types::Type;
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
@@ -61,16 +64,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let skip_implementation = self.module_info().path().style() == ModuleStyle::Interface
             || class_metadata.is_some_and(|idx| self.get_idx(*idx).is_protocol());
         let def = self.get_idx(idx);
-        if def.is_overload {
+        if def.metadata.flags.is_overload {
             // This function is decorated with @overload. We should warn if this function is actually called anywhere.
             let successor = self.bindings().get(idx).successor;
             let ty = def.ty.clone();
             if successor.is_none() {
                 // This is the last definition in the chain. We should produce an overload type.
-                let mut acc = Vec1::new(ty);
+                let mut acc = Vec1::new((def.id_range, ty));
                 let mut first = def;
                 while let Some(def) = self.step_overload_pred(predecessor) {
-                    acc.push(def.ty.clone());
+                    acc.push((def.id_range, def.ty.clone()));
                     first = def;
                 }
                 if !skip_implementation {
@@ -90,10 +93,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         None,
                         "Overloaded function needs at least two signatures".to_owned(),
                     );
-                    acc.split_off_first().0
+                    acc.split_off_first().0.1
                 } else {
                     acc.reverse();
-                    Type::Overload(Overload { signatures: acc })
+                    Type::Overload(Overload {
+                        signatures: self.extract_signatures(
+                            first.metadata.kind.as_func_id().func,
+                            acc,
+                            errors,
+                        ),
+                        metadata: Box::new(first.metadata.clone()),
+                    })
                 }
             } else {
                 ty
@@ -102,7 +112,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             let mut acc = Vec::new();
             let mut first = def;
             while let Some(def) = self.step_overload_pred(predecessor) {
-                acc.push(def.ty.clone());
+                acc.push((def.id_range, def.ty.clone()));
                 first = def;
             }
             acc.reverse();
@@ -115,9 +125,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         None,
                         "Overloaded function needs at least two signatures".to_owned(),
                     );
-                    defs.split_off_first().0
+                    defs.split_off_first().0.1
                 } else {
-                    Type::Overload(Overload { signatures: defs })
+                    Type::Overload(Overload {
+                        signatures: self.extract_signatures(
+                            first.metadata.kind.as_func_id().func,
+                            defs,
+                            errors,
+                        ),
+                        metadata: Box::new(first.metadata.clone()),
+                    })
                 }
             } else {
                 first.ty.clone()
@@ -171,6 +188,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let mut is_property_setter_with_getter = None;
         let mut has_enum_member_decoration = false;
         let mut is_override = false;
+        let mut has_final_decoration = false;
         let decorators = decorators
             .iter()
             .filter(|k| {
@@ -207,6 +225,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         is_override = true;
                         false
                     }
+                    Some(CalleeKind::Function(FunctionKind::Final)) => {
+                        has_final_decoration = true;
+                        false
+                    }
                     _ => true,
                 }
             })
@@ -218,7 +240,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         if is_staticmethod {
             self_type = None;
         } else if is_classmethod {
-            self_type = self_type.map(|ty| Type::Type(Box::new(ty)));
+            self_type = self_type.map(Type::type_form);
         }
 
         let mut get_param_ty = |name: &Identifier| {
@@ -372,31 +394,31 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             defining_cls.as_ref().map(|cls| cls.name()),
             &def.name.id,
         );
-        let mut ty = Forall::new_type(
-            self.type_params(def.range, tparams, errors),
-            ForallType::Function(Function {
-                signature: callable,
-                metadata: FuncMetadata {
-                    kind,
-                    flags: FuncFlags {
-                        is_overload,
-                        is_staticmethod,
-                        is_classmethod,
-                        is_property_getter,
-                        is_property_setter_with_getter,
-                        has_enum_member_decoration,
-                        is_override,
-                    },
-                },
-            }),
-        );
+        let metadata = FuncMetadata {
+            kind,
+            flags: FuncFlags {
+                is_overload,
+                is_staticmethod,
+                is_classmethod,
+                is_property_getter,
+                is_property_setter_with_getter,
+                has_enum_member_decoration,
+                is_override,
+                has_final_decoration,
+            },
+        };
+        let mut ty = Forallable::Function(Function {
+            signature: callable,
+            metadata: metadata.clone(),
+        })
+        .forall(self.type_params(def.range, tparams, errors));
         for x in decorators.into_iter().rev() {
             ty = self.apply_decorator(*x, ty, errors)
         }
         Arc::new(DecoratedFunction {
             id_range: def.name.range,
             ty,
-            is_overload,
+            metadata,
         })
     }
 
@@ -409,7 +431,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
         if let Binding::Function(idx, pred_, _) = b {
             let def = self.get_idx(*idx);
-            if def.is_overload {
+            if def.metadata.flags.is_overload {
                 *pred = *pred_;
                 Some(def)
             } else {
@@ -418,5 +440,41 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         } else {
             None
         }
+    }
+
+    fn extract_signatures(
+        &self,
+        func: Name,
+        ts: Vec1<(TextRange, Type)>,
+        errors: &ErrorCollector,
+    ) -> Vec1<OverloadType> {
+        ts.mapped(|(range, t)| match t {
+            Type::Callable(box callable) => OverloadType::Callable(callable),
+            Type::Function(function) => OverloadType::Callable(function.signature),
+            Type::Forall(box Forall {
+                tparams,
+                body: Forallable::Function(func),
+            }) => OverloadType::Forall(Forall {
+                tparams,
+                body: func,
+            }),
+            Type::Any(any_style) => {
+                OverloadType::Callable(Callable::ellipsis(any_style.propagate()))
+            }
+            _ => {
+                self.error(
+                    errors,
+                    range,
+                    ErrorKind::InvalidOverload,
+                    None,
+                    format!(
+                        "`{}` has type `{}` after decorator application, which is not callable",
+                        func,
+                        self.for_display(t)
+                    ),
+                );
+                OverloadType::Callable(Callable::ellipsis(Type::any_error()))
+            }
+        })
     }
 }

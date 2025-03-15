@@ -9,6 +9,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::fmt::Display;
 
+use pyrefly_derive::TypeEq;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Keyword;
@@ -20,7 +21,7 @@ use crate::types::types::Type;
 use crate::util::display::commas_iter;
 use crate::util::prelude::SliceExt;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Callable {
     pub params: Params,
     pub ret: Type,
@@ -32,7 +33,7 @@ impl Display for Callable {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Default, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParamList(Vec<Param>);
 
 impl ParamList {
@@ -78,12 +79,12 @@ impl ParamList {
         Ok(())
     }
 
-    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
-        self.0.iter().for_each(|x| x.visit(&mut f));
+    pub fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
+        self.0.iter().for_each(|x| x.visit(f));
     }
 
-    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
-        self.0.iter_mut().for_each(|x| x.visit_mut(&mut f));
+    pub fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
+        self.0.iter_mut().for_each(|x| x.visit_mut(f));
     }
 
     pub fn items(&self) -> &[Param] {
@@ -111,7 +112,7 @@ impl ParamList {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Params {
     List(ParamList),
     Ellipsis,
@@ -121,7 +122,7 @@ pub enum Params {
     ParamSpec(Box<[Type]>, Type),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Param {
     PosOnly(Type, Required),
     Pos(Name, Type, Required),
@@ -130,37 +131,39 @@ pub enum Param {
     Kwargs(Type),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Required {
     Required,
     Optional,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Function {
     pub signature: Callable,
     pub metadata: FuncMetadata,
 }
 
 impl Function {
-    pub fn visit<'a>(&'a self, f: impl FnMut(&'a Type)) {
+    pub fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
         let Self {
             signature,
-            metadata: _,
+            metadata,
         } = self;
-        signature.visit(f)
+        signature.visit(f);
+        metadata.visit(f);
     }
 
-    pub fn visit_mut<'a>(&'a mut self, f: impl FnMut(&'a mut Type)) {
+    pub fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
         let Self {
             signature,
-            metadata: _,
+            metadata,
         } = self;
-        signature.visit_mut(f)
+        signature.visit_mut(f);
+        metadata.visit_mut(f);
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FuncMetadata {
     pub kind: FunctionKind,
     pub flags: FuncFlags,
@@ -177,9 +180,17 @@ impl FuncMetadata {
             flags: FuncFlags::default(),
         }
     }
+
+    pub fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
+        self.flags.visit(f);
+    }
+
+    pub fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
+        self.flags.visit_mut(f);
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct FuncFlags {
     pub is_overload: bool,
     pub is_staticmethod: bool,
@@ -191,9 +202,24 @@ pub struct FuncFlags {
     pub is_property_setter_with_getter: Option<Type>,
     pub has_enum_member_decoration: bool,
     pub is_override: bool,
+    pub has_final_decoration: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+impl FuncFlags {
+    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
+        if let Some(x) = self.is_property_setter_with_getter.as_ref() {
+            f(x);
+        }
+    }
+
+    fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
+        if let Some(x) = self.is_property_setter_with_getter.as_mut() {
+            f(x);
+        }
+    }
+}
+
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FuncId {
     pub module: ModuleName,
     pub cls: Option<Name>,
@@ -218,7 +244,7 @@ impl FuncId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FunctionKind {
     IsInstance,
     IsSubclass,
@@ -230,13 +256,14 @@ pub enum FunctionKind {
     Cast,
     AssertType,
     RevealType,
+    Final,
     PropertySetter(Box<FuncId>),
     Def(Box<FuncId>),
 }
 
 /// A map from keywords to boolean values. Useful for storing sets of keyword arguments for various
 /// dataclass functions.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BoolKeywords(OrderedMap<Name, bool>);
 
 impl BoolKeywords {
@@ -380,21 +407,21 @@ impl Callable {
         )
     }
 
-    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
+    pub fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
         let Self { params, ret } = self;
-        params.visit(&mut f);
+        params.visit(f);
         f(ret)
     }
 
-    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
+    pub fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
         let Self { params, ret } = self;
-        params.visit_mut(&mut f);
+        params.visit_mut(f);
         f(ret)
     }
 }
 
 impl Params {
-    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
+    pub fn visit<'a>(&'a self, mut f: &mut dyn FnMut(&'a Type)) {
         match &self {
             Params::List(params) => params.visit(f),
             Params::Ellipsis => {}
@@ -405,7 +432,7 @@ impl Params {
         }
     }
 
-    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
+    pub fn visit_mut<'a>(&'a mut self, mut f: &mut dyn FnMut(&'a mut Type)) {
         match self {
             Params::List(params) => params.visit_mut(f),
             Params::Ellipsis => {}
@@ -432,7 +459,7 @@ impl Param {
         }
     }
 
-    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
+    pub fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
         match &self {
             Param::PosOnly(ty, _required) => f(ty),
             Param::Pos(_, ty, _required) => f(ty),
@@ -442,7 +469,7 @@ impl Param {
         }
     }
 
-    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
+    pub fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
         match self {
             Param::PosOnly(ty, _required) => f(ty),
             Param::Pos(_, ty, _required) => f(ty),
@@ -476,6 +503,7 @@ impl FunctionKind {
             ("typing", None, "cast") => Self::Cast,
             ("typing", None, "assert_type") => Self::AssertType,
             ("typing", None, "reveal_type") => Self::RevealType,
+            ("typing", None, "final") => Self::Final,
             _ => Self::Def(Box::new(FuncId {
                 module,
                 cls: cls.cloned(),
@@ -510,6 +538,11 @@ impl FunctionKind {
                 module: ModuleName::dataclasses(),
                 cls: None,
                 func: Name::new_static("field"),
+            },
+            Self::Final => FuncId {
+                module: ModuleName::typing(),
+                cls: None,
+                func: Name::new_static("final"),
             },
             Self::Overload => FuncId {
                 module: ModuleName::typing(),

@@ -121,11 +121,7 @@
     "Line 214: Unexpected errors ['`(ParamSpec(?_ParamSpec)) -> None` is not assignable to `ProtocolWithP[?_ParamSpec]`']"
   ],
   "classes_classvar.py": [
-    "Line 45: Expected 1 errors",
-    "Line 46: Expected 1 errors",
-    "Line 47: Expected 1 errors",
-    "Line 54: Expected 1 errors",
-    "Line 105: Expected 1 errors"
+    "Line 54: Expected 1 errors"
   ],
   "classes_override.py": [
     "Lines 56, 65: Expected error (tag 'method4')"
@@ -203,10 +199,7 @@
     "Lines 32, 33: Expected error (tag 'DC4')"
   ],
   "dataclasses_hash.py": [],
-  "dataclasses_inheritance.py": [
-    "Line 60: Expected 1 errors",
-    "Line 64: Expected 1 errors"
-  ],
+  "dataclasses_inheritance.py": [],
   "dataclasses_kwonly.py": [
     "Line 32: Unexpected errors ['Missing argument `a` in function `DC2.__init__`', 'Expected 0 positional arguments, got 1 in function `DC2.__init__`']",
     "Line 35: Unexpected errors ['Missing argument `a` in function `DC2.__init__`', 'Expected 0 positional arguments, got 1 in function `DC2.__init__`']",
@@ -550,9 +543,7 @@
   ],
   "namedtuples_define_functional.py": [],
   "namedtuples_type_compat.py": [],
-  "namedtuples_usage.py": [
-    "Line 40: Expected 1 errors"
-  ],
+  "namedtuples_usage.py": [],
   "narrowing_typeguard.py": [
     "Line 102: Expected 1 errors",
     "Line 107: Expected 1 errors",
@@ -578,10 +569,8 @@
     "Line 108: Expected 1 errors"
   ],
   "protocols_definition.py": [
+    "Line 116: Expected 1 errors",
     "Line 117: Expected 1 errors",
-    "Line 157: Expected 1 errors",
-    "Line 340: Expected 1 errors",
-    "Line 341: Expected 1 errors",
     "Line 281: Unexpected errors ['`Concrete5_Good2` is not assignable to `Template5`']"
   ],
   "protocols_explicit.py": [
@@ -591,7 +580,7 @@
     "Line 110: Expected 1 errors",
     "Line 135: Expected 1 errors",
     "Line 165: Expected 1 errors",
-    "Line 157: Unexpected errors ['Class member `method1` overrides parent class `Proto7` in an inconsistent manner']"
+    "Line 157: Unexpected errors ['Class member `Mixin7.method1` overrides parent class `Proto7` in an inconsistent manner']"
   ],
   "protocols_generic.py": [
     "Line 87: Unexpected errors ['TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access get_parent)']",
@@ -652,7 +641,6 @@
     "Line 65: Expected 1 errors",
     "Line 71: Expected 1 errors",
     "Line 81: Expected 1 errors",
-    "Line 94: Expected 1 errors",
     "Line 107: Expected 1 errors",
     "Line 108: Expected 1 errors",
     "Line 141: Expected 1 errors",
@@ -665,17 +653,13 @@
     "Line 139: Unexpected errors ['TODO: StmtGlobal - Bindings::stmt']"
   ],
   "qualifiers_final_decorator.py": [
-    "Line 21: Expected 1 errors",
     "Lines 67, 75: Expected error (tag 'method4')",
     "Lines 80, 89: Expected error (tag 'Derived3')",
+    "Lines 84, 85, 86: Expected error (tag 'Derived3-2')",
     "Lines 94, 102: Expected error (tag 'Derived4')",
-    "Line 26: Unexpected errors ['Argument `(self: Base2) -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`']",
-    "Line 30: Unexpected errors ['Argument `(cls: type[Base2]) -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`']",
-    "Line 35: Unexpected errors ['Argument `() -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`']",
-    "Line 50: Unexpected errors ['Argument `(self: Base2, x: int | str) -> int | str` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`']",
-    "Line 81: Unexpected errors ['Class member `method` overrides parent class `Base3` in an inconsistent manner']",
-    "Line 95: Unexpected errors ['Class member `method` overrides parent class `Base4` in an inconsistent manner']",
-    "Line 111: Unexpected errors ['Argument `(self: Base5_2, v: int) -> None` is not assignable to parameter `f` with type `TypeVar[_T]` in function `typing.final`']"
+    "Lines 125, 126: Expected error (tag 'func')",
+    "Line 81: Unexpected errors ['`method` is declared as final in parent class `Base3`']",
+    "Line 95: Unexpected errors ['`method` is declared as final in parent class `Base4`']"
   ],
   "specialtypes_any.py": [
     "Line 87: Unexpected errors ['Object of class `ClassA` has no attribute `method2`']",
@@ -692,7 +676,6 @@
   "specialtypes_type.py": [
     "Line 70: Expected 1 errors",
     "Line 39: Unexpected errors ['Expected a callable, got type[?_TypeVar]']",
-    "Line 51: Unexpected errors ['Expected a callable, got type[BasicUser | ProUser]']",
     "Line 84: Unexpected errors ['assert_type(type, type[Any]) failed']",
     "Line 99: Unexpected errors ['Object of class `type` has no attribute `unknown`']",
     "Line 100: Unexpected errors ['Object of class `type` has no attribute `unknown`']",
@@ -743,8 +726,7 @@
     "Line 65: Expected 1 errors"
   ],
   "typeddicts_operations.py": [
-    "Line 60: Unexpected errors ['assert_type(object | None, str | None) failed']",
-    "Line 64: Unexpected errors ['TODO: StmtDelete - Bindings::stmt']"
+    "Line 60: Unexpected errors ['assert_type(object | None, str | None) failed']"
   ],
   "typeddicts_readonly.py": [],
   "typeddicts_readonly_consistency.py": [
@@ -758,15 +740,14 @@
     "Line 106: Expected 1 errors",
     "Line 119: Expected 1 errors",
     "Line 132: Expected 1 errors",
-    "Line 49: Unexpected errors ['Class member `albums` overrides parent class `AlbumCollection` in an inconsistent manner']",
-    "Line 76: Unexpected errors ['Class member `ident` overrides parent class `OptionalIdent` in an inconsistent manner']"
+    "Line 49: Unexpected errors ['Class member `RecordShop.albums` overrides parent class `AlbumCollection` in an inconsistent manner']",
+    "Line 76: Unexpected errors ['Class member `User.ident` overrides parent class `OptionalIdent` in an inconsistent manner']"
   ],
   "typeddicts_readonly_kwargs.py": [],
   "typeddicts_readonly_update.py": [
     "Line 34: Unexpected errors ['Object of class `Mapping` has no attribute `update`']"
   ],
   "typeddicts_required.py": [
-    "Line 12: Expected 1 errors",
     "Line 62: Expected 1 errors",
     "Line 63: Expected 1 errors",
     "Line 74: Unexpected errors [\"Expected a type form, got instance of `Literal['RecursiveMovie']`\"]"

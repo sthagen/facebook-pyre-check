@@ -171,6 +171,16 @@ def f(a: A):
 );
 
 testcase!(
+    test_generic_classvar,
+    r#"
+from typing import ClassVar
+class A[T]:
+    x: ClassVar[T]  # E: `ClassVar` arguments may not contain any type variables
+    y: ClassVar[list[T]]  # E: `ClassVar` arguments may not contain any type variables
+    "#,
+);
+
+testcase!(
     test_self_attribute_annotated_twice,
     r#"
 from typing import assert_type, Literal, Final
@@ -210,8 +220,7 @@ assert_type(C.x1, int)
 "#,
 );
 
-testcase_with_bug!(
-    "TODO(zeina): We are not enforcing `Final` override bans when the type matches",
+testcase!(
     test_final_annotated_override,
     r#"
 from typing import Final
@@ -219,7 +228,7 @@ def f() -> int: ...
 class Base:
     p: Final = f()
 class Derived(Base):
-    p = f()  # Oops, this should be an error
+    p = f()  # E: `p` is declared as final in parent class `Base`
 "#,
 );
 

@@ -16,55 +16,98 @@ use ruff_python_ast::ModModule;
 use ruff_python_ast::Pattern;
 use ruff_python_ast::Stmt;
 
+use crate::util::visit::Visit;
+use crate::util::visit::VisitMut;
+
+impl Visit<Expr> for ModModule {
+    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Expr)) {
+        Visitors::visit_mod_expr(self, f);
+    }
+}
+
+impl VisitMut for Expr {
+    fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Self)) {
+        Visitors::visit_expr_mut(self, f);
+    }
+}
+
+impl Visit for Stmt {
+    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Self)) {
+        Visitors::visit_stmt(self, f);
+    }
+}
+
+impl Visit<Expr> for ExprFString {
+    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Expr)) {
+        Visitors::visit_fstring_expr(self, f);
+    }
+}
+
+impl Visit for Expr {
+    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Self)) {
+        Visitors::visit_expr(self, f);
+    }
+}
+
+impl Visit for Pattern {
+    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Self)) {
+        Visitors::visit_pattern(self, f);
+    }
+}
+
 /// Just used for convenient namespacing - not a real type
 ///
 /// Functions based on <https://ndmitchell.com/#uniplate_30_sep_2007>.
-pub struct Visitors;
+struct Visitors;
 
 impl Visitors {
-    pub fn visit_mod_expr<'a>(x: &'a ModModule, mut f: impl FnMut(&'a Expr)) {
+    fn visit_mod_expr<'a>(x: &'a ModModule, mut f: impl FnMut(&'a Expr)) {
         x.body
             .iter()
             .for_each(|x| Visitors::visit_stmt_expr(x, &mut f));
     }
 
-    pub fn visit_stmt<'a>(x: &'a Stmt, mut f: impl FnMut(&'a [Stmt])) {
+    fn visit_stmt<'a>(x: &'a Stmt, mut f: impl FnMut(&'a Stmt)) {
+        fn fs<'a>(mut f: impl FnMut(&'a Stmt), xs: &'a [Stmt]) {
+            xs.iter().for_each(&mut f);
+        }
+
         match x {
-            Stmt::FunctionDef(x) => f(&x.body),
-            Stmt::ClassDef(x) => f(&x.body),
+            Stmt::FunctionDef(x) => fs(&mut f, &x.body),
+            Stmt::ClassDef(x) => fs(&mut f, &x.body),
             Stmt::For(x) => {
-                f(&x.body);
-                f(&x.orelse)
+                fs(&mut f, &x.body);
+                fs(&mut f, &x.orelse)
             }
             Stmt::While(x) => {
-                f(&x.body);
-                f(&x.orelse);
+                fs(&mut f, &x.body);
+                fs(&mut f, &x.orelse);
             }
             Stmt::If(x) => {
-                f(&x.body);
+                fs(&mut f, &x.body);
                 for x in x.elif_else_clauses.iter() {
-                    f(&x.body);
+                    fs(&mut f, &x.body);
                 }
             }
-            Stmt::With(x) => f(&x.body),
+            Stmt::With(x) => fs(&mut f, &x.body),
             Stmt::Match(x) => {
                 for x in x.cases.iter() {
-                    f(&x.body);
+                    fs(&mut f, &x.body);
                 }
             }
             Stmt::Try(x) => {
-                f(&x.body);
+                fs(&mut f, &x.body);
                 x.handlers.iter().for_each(|x| match x {
-                    ExceptHandler::ExceptHandler(x) => f(&x.body),
+                    ExceptHandler::ExceptHandler(x) => fs(&mut f, &x.body),
                 });
-                f(&x.orelse);
-                f(&x.finalbody);
+                fs(&mut f, &x.orelse);
+                fs(&mut f, &x.finalbody);
             }
             _ => {}
         }
     }
 
-    pub fn visit_fstring_expr<'a>(x: &'a ExprFString, mut f: impl FnMut(&'a Expr)) {
+    fn visit_fstring_expr<'a>(x: &'a ExprFString, mut f: impl FnMut(&'a Expr)) {
         x.value.iter().for_each(|x| match x {
             FStringPart::FString(x) => x.elements.iter().for_each(|x| match x {
                 FStringElement::Literal(_) => {}
@@ -74,7 +117,7 @@ impl Visitors {
         });
     }
 
-    pub fn visit_stmt_expr<'a>(x: &'a Stmt, f: impl FnMut(&'a Expr)) {
+    fn visit_stmt_expr<'a>(x: &'a Stmt, f: impl FnMut(&'a Expr)) {
         struct X<T>(T);
         impl<'a, T: FnMut(&'a Expr)> SourceOrderVisitor<'a> for X<T> {
             fn visit_expr(&mut self, x: &'a Expr) {
@@ -84,7 +127,7 @@ impl Visitors {
         walk_stmt(&mut X(f), x);
     }
 
-    pub fn visit_expr<'a>(x: &'a Expr, mut f: impl FnMut(&'a Expr)) {
+    fn visit_expr<'a>(x: &'a Expr, mut f: impl FnMut(&'a Expr)) {
         match x {
             Expr::BoolOp(x) => x.values.iter().for_each(f),
             Expr::Named(x) => {
@@ -181,7 +224,7 @@ impl Visitors {
         }
     }
 
-    pub fn visit_expr_mut<'a>(x: &'a mut Expr, mut f: impl FnMut(&'a mut Expr)) {
+    fn visit_expr_mut<'a>(x: &'a mut Expr, mut f: impl FnMut(&'a mut Expr)) {
         match x {
             Expr::BoolOp(x) => x.values.iter_mut().for_each(f),
             Expr::Named(x) => {
@@ -293,7 +336,7 @@ impl Visitors {
         }
     }
 
-    pub fn visit_pattern<'a>(x: &'a Pattern, mut f: impl FnMut(&'a Pattern)) {
+    fn visit_pattern<'a>(x: &'a Pattern, mut f: impl FnMut(&'a Pattern)) {
         match x {
             Pattern::MatchValue(_) => {}
             Pattern::MatchSingleton(_) => {}

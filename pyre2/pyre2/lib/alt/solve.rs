@@ -71,6 +71,7 @@ use crate::types::callable::ParamList;
 use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
+use crate::types::display::TypeDisplayContext;
 use crate::types::literal::Lit;
 use crate::types::module::Module;
 use crate::types::param_spec::ParamSpec;
@@ -81,8 +82,7 @@ use crate::types::type_var::TypeVar;
 use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
 use crate::types::types::AnyStyle;
-use crate::types::types::Forall;
-use crate::types::types::ForallType;
+use crate::types::types::Forallable;
 use crate::types::types::TParamInfo;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -358,6 +358,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
         match x {
             _ if let Some(qualifier) = self.expr_qualifier(x, type_form_context, errors) => {
+                match qualifier {
+                    Qualifier::Final | Qualifier::TypeAlias | Qualifier::ClassVar => {}
+                    _ => {
+                        self.error(
+                            errors,
+                            x.range(),
+                            ErrorKind::InvalidAnnotation,
+                            None,
+                            format!("Expected a type argument for `{}`", qualifier,),
+                        );
+                    }
+                }
                 Annotation {
                     qualifiers: vec![qualifier],
                     ty: None,
@@ -369,7 +381,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         self.expr_qualifier(&x.value, type_form_context, errors) =>
             {
                 let unpacked_slice = Ast::unpack_slice(&x.slice);
-                let mut ann = if qualifier == Qualifier::Annotated {
+                if qualifier == Qualifier::Annotated {
                     // TODO: we may want to preserve the extra annotation info for `Annotated` in the future
                     if unpacked_slice.len() < 2 {
                         self.error(
@@ -380,23 +392,29 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             "`Annotated` needs at least one piece of metadata in addition to the type".to_owned(),
                         );
                     }
-                    self.expr_annotation(&unpacked_slice[0], type_form_context, errors)
-                } else {
-                    if unpacked_slice.len() != 1 {
-                        self.error(
-                            errors,
-                            x.range(),
-                            ErrorKind::InvalidAnnotation,
-                            None,
-                            format!(
-                                "Expected 1 type argument for {}, got {}",
-                                qualifier,
-                                unpacked_slice.len()
-                            ),
-                        );
-                    }
-                    self.expr_annotation(&unpacked_slice[0], type_form_context, errors)
-                };
+                } else if unpacked_slice.len() != 1 {
+                    self.error(
+                        errors,
+                        x.range(),
+                        ErrorKind::InvalidAnnotation,
+                        None,
+                        format!(
+                            "Expected 1 type argument for {}, got {}",
+                            qualifier,
+                            unpacked_slice.len()
+                        ),
+                    );
+                }
+                let mut ann = self.expr_annotation(&unpacked_slice[0], type_form_context, errors);
+                if qualifier == Qualifier::ClassVar && ann.get_type().has_type_variable() {
+                    self.error(
+                        errors,
+                        unpacked_slice[0].range(),
+                        ErrorKind::InvalidAnnotation,
+                        None,
+                        "`ClassVar` arguments may not contain any type variables".to_owned(),
+                    );
+                }
                 ann.qualifiers.insert(0, qualifier);
                 ann
             }
@@ -525,7 +543,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 signature: callable,
                 metadata: _,
             }) => {
-                let visit = |t: &mut Type| {
+                let mut visit = |t: &mut Type| {
                     self.tvars_to_tparams_for_type_alias(
                         t,
                         seen_type_vars,
@@ -534,7 +552,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         tparams,
                     )
                 };
-                callable.visit_mut(visit);
+                callable.visit_mut(&mut visit);
             }
             Type::Concatenate(box prefix, box pspec) => {
                 for t in prefix {
@@ -555,7 +573,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 )
             }
             Type::Tuple(tuple) => {
-                let visit = |t: &mut Type| {
+                let mut visit = |t: &mut Type| {
                     self.tvars_to_tparams_for_type_alias(
                         t,
                         seen_type_vars,
@@ -564,7 +582,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         tparams,
                     )
                 };
-                tuple.visit_mut(visit);
+                tuple.visit_mut(&mut visit);
             }
             Type::TypeVar(ty_var) => {
                 let q = match seen_type_vars.entry(ty_var.dupe()) {
@@ -676,10 +694,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             _ => {}
         }
         let ta = TypeAlias::new(name.clone(), ty, style);
-        Forall::new_type(
-            self.type_params(range, tparams, errors),
-            ForallType::TypeAlias(ta),
-        )
+        Forallable::TypeAlias(ta).forall(self.type_params(range, tparams, errors))
     }
 
     fn context_value_enter(
@@ -909,6 +924,79 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         errors: &ErrorCollector,
     ) -> Arc<EmptyAnswer> {
         match binding {
+            BindingExpect::Delete(box x) => match x {
+                Expr::Name(_) => {
+                    self.expr_infer(x, errors);
+                }
+                Expr::Attribute(attr) => {
+                    let base = self.expr_infer(&attr.value, errors);
+                    self.check_attr_delete(
+                        &base,
+                        &attr.attr.id,
+                        attr.range,
+                        errors,
+                        None,
+                        "Answers::solve_expectation::Delete",
+                    );
+                }
+                Expr::Subscript(x) => {
+                    let base = self.expr_infer(&x.value, errors);
+                    let slice_ty = self.expr_infer(&x.slice, errors);
+                    match (&base, &slice_ty) {
+                        (Type::TypedDict(typed_dict), Type::Literal(Lit::String(field_name))) => {
+                            if let Some(field) =
+                                typed_dict.fields().get(&Name::new(field_name.clone()))
+                            {
+                                if field.read_only || field.required {
+                                    self.error(
+                                        errors,
+                                        x.slice.range(),
+                                        ErrorKind::DeleteError,
+                                        None,
+                                        format!(
+                                            "Key `{}` in TypedDict `{}` may not be deleted",
+                                            field_name,
+                                            typed_dict.name(),
+                                        ),
+                                    );
+                                }
+                            } else {
+                                self.error(
+                                    errors,
+                                    x.slice.range(),
+                                    ErrorKind::TypedDictKeyError,
+                                    None,
+                                    format!(
+                                        "TypedDict `{}` does not have key `{}`",
+                                        typed_dict.name(),
+                                        field_name
+                                    ),
+                                );
+                            }
+                        }
+                        (_, _) => {
+                            self.call_method_or_error(
+                                &base,
+                                &dunder::DELITEM,
+                                x.range,
+                                &[],
+                                &[],
+                                errors,
+                                Some(&ErrorContext::DelItem(base.clone())),
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    self.error(
+                        errors,
+                        x.range(),
+                        ErrorKind::DeleteError,
+                        None,
+                        "Invalid target for `del`".to_owned(),
+                    );
+                }
+            },
             BindingExpect::UnpackedLength(b, range, expect) => {
                 let iterable_ty = self.solve_binding_inner(b, errors);
                 let iterables = self.iterate(&iterable_ty, *range, errors);
@@ -970,6 +1058,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     && let Some(t2) = ann2.ty()
                     && *t1 != *t2
                 {
+                    let t1 = self.for_display(t1.clone());
+                    let t2 = self.for_display(t2.clone());
+                    let ctx = TypeDisplayContext::new(&[&t1, &t2]);
                     self.error(
                         errors,
                         self.bindings().idx_to_key(*k1).range(),
@@ -978,8 +1069,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         format!(
                             "Inconsistent type annotations for {}: {}, {}",
                             name,
-                            t1.clone().deterministic_printing(),
-                            t2.clone().deterministic_printing(),
+                            ctx.display(&t1),
+                            ctx.display(&t2),
                         ),
                     );
                 }
@@ -1583,15 +1674,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 } else {
                     let ts = ks
                         .iter()
-                        .map(|k| self.get_idx(*k).arc_clone())
+                        .filter_map(|k| {
+                            let t = self.get_idx(*k);
+                            // Filter out all `@overload`-decorated types except the one that
+                            // accumulates all signatures into a Type::Overload.
+                            if matches!(*t, Type::Overload(_)) || !t.is_overload() {
+                                Some(t.arc_clone())
+                            } else {
+                                None
+                            }
+                        })
                         .collect::<Vec<_>>();
-                    if matches!(ts.last(), Some(Type::Overload(_))) {
-                        // TODO: we should drop only the preceding `@overload`-decorated functions,
-                        // not everything else.
-                        ts.into_iter().last().unwrap()
-                    } else {
-                        self.unions(ts)
-                    }
+                    self.unions(ts)
                 }
             }
             Binding::Narrow(k, op, range) => self.narrow(&self.get_idx(*k), op, *range, errors),
@@ -1684,14 +1778,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     ),
                     Type::TypeAlias(ta) => {
                         let params_range = params.as_ref().map_or(expr.range(), |x| x.range);
-                        Forall::new_type(
-                            self.type_params(
-                                params_range,
-                                self.scoped_type_params(params.as_ref(), errors),
-                                errors,
-                            ),
-                            ForallType::TypeAlias(ta),
-                        )
+                        Forallable::TypeAlias(ta).forall(self.type_params(
+                            params_range,
+                            self.scoped_type_params(params.as_ref(), errors),
+                            errors,
+                        ))
                     }
                     _ => ta,
                 }
@@ -1854,7 +1945,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                     }
                                     t => {
                                         // TODO: handle the case when the second argument is a class
-                                        self.error(errors, *range, ErrorKind::InvalidArgument, None, format!("Expected second argument to `super` to be a class instance, got `{}`", t.clone().deterministic_printing()))
+                                        self.error(
+                                            errors,
+                                            *range,
+                                            ErrorKind::InvalidArgument,
+                                            None,
+                                            format!("Expected second argument to `super` to be a class instance, got `{}`", self.for_display(t.clone())),
+                                        )
                                     }
                                 }
                             }
@@ -1865,7 +1962,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 None,
                                 format!(
                                     "Expected first argument to `super` to be a class object, got `{}`",
-                                    t.clone().deterministic_printing()
+                                    self.for_display(t.clone())
                                 ),
                             ),
                         }
@@ -2023,7 +2120,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         if let Type::Forall(forall) = ty {
             // A generic type alias with no type arguments is OK if all the type params have defaults
             let targs = self.check_and_create_targs(
-                &forall.name(),
+                &forall.body.name(),
                 &forall.tparams,
                 Vec::new(),
                 range,
@@ -2034,7 +2131,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .quantified()
                 .zip(targs.as_slice().iter().cloned())
                 .collect::<SmallMap<_, _>>();
-            ty = forall.as_inner_type().subst(&param_map)
+            ty = forall.body.as_type().subst(&param_map)
         };
         if let Some(t) = self.untype_opt(ty.clone(), range) {
             t
@@ -2046,7 +2143,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 None,
                 format!(
                     "Expected a type form, got instance of `{}`",
-                    ty.deterministic_printing()
+                    self.for_display(ty),
                 ),
             )
         }

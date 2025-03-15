@@ -18,7 +18,6 @@ use ruff_source_file::SourceLocation;
 use serde::Serialize;
 use starlark_map::small_map::SmallMap;
 
-use crate::error::style::ErrorStyle;
 use crate::metadata::RuntimeMetadata;
 use crate::module::module_info::SourceRange;
 use crate::module::module_name::ModuleName;
@@ -27,6 +26,7 @@ use crate::state::handle::Handle;
 use crate::state::loader::FindError;
 use crate::state::loader::Loader;
 use crate::state::loader::LoaderId;
+use crate::state::require::Require;
 use crate::state::state::State;
 use crate::util::prelude::VecExt;
 use crate::util::reduced_stdlib::lookup_stdlib;
@@ -131,18 +131,14 @@ impl DemoEnv {
 }
 
 impl Loader for DemoEnv {
-    fn find_import(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
-        let style = ErrorStyle::Delayed;
+    fn find_import(&self, module: ModuleName) -> Result<ModulePath, FindError> {
         if let Some((path, _)) = self.0.get(&module) {
-            Ok((path.dupe(), style))
+            Ok(path.dupe())
         } else if lookup_stdlib(module).is_some() {
-            Ok((
-                ModulePath::memory(PathBuf::from(format!(
-                    "{}.pyi",
-                    module.as_str().replace('.', "/")
-                ))),
-                style,
-            ))
+            Ok(ModulePath::memory(PathBuf::from(format!(
+                "{}.pyi",
+                module.as_str().replace('.', "/")
+            ))))
         } else {
             Err(FindError::new(anyhow!(
                 "module is not available in sandbox"
@@ -171,7 +167,7 @@ impl Loader for DemoEnv {
 struct Load(Arc<Mutex<DemoEnv>>);
 
 impl Loader for Load {
-    fn find_import(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
+    fn find_import(&self, module: ModuleName) -> Result<ModulePath, FindError> {
         self.0.lock().unwrap().find_import(module)
     }
 
@@ -203,7 +199,11 @@ impl Default for LanguageServiceState {
             DemoEnv::config(),
             loader.dupe(),
         );
-        state.run(&[handle.dupe()], None);
+        state.run(
+            &[(handle.dupe(), Require::Everything)],
+            Require::Exports,
+            None,
+        );
         Self {
             state,
             demo_env,
@@ -218,7 +218,11 @@ impl LanguageServiceState {
         self.demo_env.lock().unwrap().add("test", source);
         self.state
             .invalidate_memory(self.loader.dupe(), &[PathBuf::from("test.py")]);
-        self.state.run(&[self.handle.dupe()], None);
+        self.state.run(
+            &[(self.handle.dupe(), Require::Everything)],
+            Require::Exports,
+            None,
+        );
     }
 
     pub fn get_errors(&self) -> Vec<Diagnostic> {

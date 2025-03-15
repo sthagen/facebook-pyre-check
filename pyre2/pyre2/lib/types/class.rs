@@ -14,6 +14,7 @@ use std::hash::Hasher;
 
 use dupe::Dupe;
 use parse_display::Display;
+use pyrefly_derive::TypeEq;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Identifier;
 use ruff_text_size::TextRange;
@@ -34,7 +35,9 @@ use crate::util::display::commas_iter;
 use crate::util::mutable::Mutable;
 
 /// The name of a nominal type, e.g. `str`
-#[derive(Debug, Clone, Display, Dupe, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Display, Dupe, TypeEq, Eq, PartialEq, Hash, PartialOrd, Ord
+)]
 pub struct Class(ArcId<ClassInner>);
 
 /// Simple properties of class fields that can be attached to the class definition. Note that this
@@ -304,7 +307,7 @@ impl Mutable for Class {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TArgs(Box<[Type]>);
 
 impl TArgs {
@@ -324,12 +327,12 @@ impl TArgs {
         self.0.is_empty()
     }
 
-    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
-        self.0.iter().for_each(&mut f)
+    pub fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
+        self.0.iter().for_each(f)
     }
 
-    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
-        self.0.iter_mut().for_each(&mut f)
+    pub fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
+        self.0.iter_mut().for_each(f)
     }
 
     /// Apply a substitution to type arguments.
@@ -362,7 +365,7 @@ impl Substitution {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClassType(Class, TArgs);
 
 impl Display for ClassType {
@@ -454,12 +457,12 @@ impl ClassType {
         Type::ClassType(self)
     }
 
-    pub fn visit<'a>(&'a self, mut f: impl FnMut(&'a Type)) {
-        self.1.visit(&mut f)
+    pub fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
+        self.1.visit(f)
     }
 
-    pub fn visit_mut<'a>(&'a mut self, mut f: impl FnMut(&'a mut Type)) {
-        self.1.visit_mut(&mut f)
+    pub fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
+        self.1.visit_mut(f)
     }
 
     pub fn self_type(&self) -> Type {

@@ -14,7 +14,6 @@ use std::sync::Arc;
 use dupe::Dupe;
 use starlark_map::small_map::SmallMap;
 
-use crate::error::style::ErrorStyle;
 use crate::metadata::PythonVersion;
 use crate::metadata::RuntimeMetadata;
 use crate::module::module_name::ModuleName;
@@ -23,6 +22,7 @@ use crate::state::handle::Handle;
 use crate::state::loader::FindError;
 use crate::state::loader::Loader;
 use crate::state::loader::LoaderId;
+use crate::state::require::Require;
 use crate::state::state::State;
 use crate::state::subscriber::TestSubscriber;
 use crate::test::util::init_test;
@@ -55,8 +55,11 @@ else:
 
     let f = |name: &str, config: &RuntimeMetadata| {
         let name = ModuleName::from_str(name);
-        let path = loader.find_import(name).unwrap().0;
-        Handle::new(name, path, config.dupe(), loader.dupe())
+        let path = loader.find_import(name).unwrap();
+        (
+            Handle::new(name, path, config.dupe(), loader.dupe()),
+            Require::Everything,
+        )
     };
 
     state.run(
@@ -65,6 +68,7 @@ else:
             f("windows", &windows),
             f("main", &linux),
         ],
+        Require::Exports,
         None,
     );
     state.check_against_expectations().unwrap();
@@ -90,11 +94,9 @@ fn test_multiple_path() {
     struct Load(TestEnv);
 
     impl Loader for Load {
-        fn find_import(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
+        fn find_import(&self, module: ModuleName) -> Result<ModulePath, FindError> {
             match FILES.iter().find(|x| x.0 == module.as_str()) {
-                Some((_, path, _)) => {
-                    Ok((ModulePath::memory(PathBuf::from(path)), ErrorStyle::Delayed))
-                }
+                Some((_, path, _)) => Ok(ModulePath::memory(PathBuf::from(path))),
                 None => self.0.find_import(module),
             }
         }
@@ -112,13 +114,17 @@ fn test_multiple_path() {
     let mut state = State::new();
     state.run(
         &FILES.map(|(name, path, _)| {
-            Handle::new(
-                ModuleName::from_str(name),
-                ModulePath::memory(PathBuf::from(path)),
-                TestEnv::config(),
-                loader.dupe(),
+            (
+                Handle::new(
+                    ModuleName::from_str(name),
+                    ModulePath::memory(PathBuf::from(path)),
+                    TestEnv::config(),
+                    loader.dupe(),
+                ),
+                Require::Everything,
             )
         }),
+        Require::Exports,
         None,
     );
     state.print_errors();
@@ -130,12 +136,9 @@ fn test_multiple_path() {
 struct IncrementalData(Arc<Mutex<SmallMap<ModuleName, Arc<String>>>>);
 
 impl Loader for IncrementalData {
-    fn find_import(&self, module: ModuleName) -> Result<(ModulePath, ErrorStyle), FindError> {
+    fn find_import(&self, module: ModuleName) -> Result<ModulePath, FindError> {
         match self.0.lock().get(&module) {
-            Some(_) => Ok((
-                ModulePath::memory(PathBuf::from(module.as_str())),
-                ErrorStyle::Delayed,
-            )),
+            Some(_) => Ok(ModulePath::memory(PathBuf::from(module.as_str()))),
             None => TestEnv::new().find_import(module),
         }
     }
@@ -195,7 +198,8 @@ impl Incremental {
     fn check(&mut self, want: &[&str], recompute: &[&str]) {
         let subscriber = TestSubscriber::new();
         self.state.run(
-            &want.map(|x| self.handle(x)),
+            &want.map(|x| (self.handle(x), Require::Everything)),
+            Require::Exports,
             Some(Box::new(subscriber.dupe())),
         );
         self.state.print_errors();
@@ -314,4 +318,29 @@ class C(Generic[T]): pass";
     i.check(&["main"], &["lib", BROKEN]);
     i.set("lib", &format!("# before\n{code}"));
     i.check(&["main"], &["lib", BROKEN]);
+}
+
+#[test]
+fn test_change_require() {
+    let t = TestEnv::one("foo", "x: str = 1");
+    let mut state = State::new();
+    let handle = Handle::new(
+        ModuleName::from_str("foo"),
+        ModulePath::memory(PathBuf::from("foo")),
+        TestEnv::config(),
+        LoaderId::new(t),
+    );
+    state.run(&[(handle.dupe(), Require::Exports)], Require::Exports, None);
+    assert_eq!(state.count_errors(), 0);
+    assert!(state.get_bindings(&handle).is_none());
+    state.run(&[(handle.dupe(), Require::Errors)], Require::Exports, None);
+    assert_eq!(state.count_errors(), 1);
+    assert!(state.get_bindings(&handle).is_none());
+    state.run(
+        &[(handle.dupe(), Require::Everything)],
+        Require::Exports,
+        None,
+    );
+    assert_eq!(state.count_errors(), 1);
+    assert!(state.get_bindings(&handle).is_some());
 }

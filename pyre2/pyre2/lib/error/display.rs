@@ -22,9 +22,7 @@ impl ErrorContext {
                 format!("Unary `{}` is not supported on `{}`", op, target,)
             }
             Self::BinaryOp(op, left, right) => {
-                let mut ctx = TypeDisplayContext::new();
-                ctx.add(left);
-                ctx.add(right);
+                let ctx = TypeDisplayContext::new(&[left, right]);
                 format!(
                     "`{}` is not supported between `{}` and `{}`",
                     op,
@@ -36,6 +34,7 @@ impl ErrorContext {
             Self::Await(ty) => format!("Type `{ty}` is not awaitable"),
             Self::Index(ty) => format!("Cannot index into `{ty}`"),
             Self::SetItem(ty) => format!("Item assignment is not supported on `{ty}`"),
+            Self::DelItem(ty) => format!("Item deletion is not supported on `{ty}`"),
             Self::MatchPositional(ty) => {
                 format!("Cannot match positional sub-patterns in `{ty}`")
             }
@@ -45,9 +44,7 @@ impl ErrorContext {
 
 impl TypeCheckKind {
     pub fn format_error(&self, got: &Type, want: &Type, current_module: ModuleName) -> String {
-        let mut ctx = TypeDisplayContext::new();
-        ctx.add(got);
-        ctx.add(want);
+        let mut ctx = TypeDisplayContext::new(&[got, want]);
         match self {
             Self::MagicMethodReturn(cls, func) => {
                 ctx.add(cls);
