@@ -20,9 +20,9 @@ use ruff_python_ast::Identifier;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 
-use crate::ast::AtomicTextRange;
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
+use crate::ruff::text_range::AtomicTextRange;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
 use crate::types::qname::QName;
@@ -33,12 +33,18 @@ use crate::types::types::Type;
 use crate::util::arc_id::ArcId;
 use crate::util::display::commas_iter;
 use crate::util::mutable::Mutable;
+use crate::util::visit::VisitMut;
 
 /// The name of a nominal type, e.g. `str`
 #[derive(
     Debug, Clone, Display, Dupe, TypeEq, Eq, PartialEq, Hash, PartialOrd, Ord
 )]
 pub struct Class(ArcId<ClassInner>);
+
+impl VisitMut<Type> for Class {
+    // There are no types stored inside Class
+    fn visit_mut(&mut self, _: &mut dyn FnMut(&mut Type)) {}
+}
 
 /// Simple properties of class fields that can be attached to the class definition. Note that this
 /// does not include the type of a field, which needs to be computed lazily to avoid a recursive loop.
@@ -331,7 +337,7 @@ impl TArgs {
         self.0.iter().for_each(f)
     }
 
-    pub fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
+    pub fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
         self.0.iter_mut().for_each(f)
     }
 
@@ -461,7 +467,7 @@ impl ClassType {
         self.1.visit(f)
     }
 
-    pub fn visit_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Type)) {
+    pub fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
         self.1.visit_mut(f)
     }
 

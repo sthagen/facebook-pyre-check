@@ -27,6 +27,7 @@ use crate::types::qname::QName;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
 use crate::util::display::commas_iter;
+use crate::util::visit::VisitMut;
 
 #[derive(Clone, Debug, TypeEq, PartialEq, Eq)]
 pub struct ClassMetadata {
@@ -42,6 +43,12 @@ pub struct ClassMetadata {
     has_base_any: bool,
     is_new_type: bool,
     is_final: bool,
+}
+
+impl VisitMut<Type> for ClassMetadata {
+    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
+        self.visit_mut(f);
+    }
 }
 
 impl Display for ClassMetadata {
@@ -169,7 +176,7 @@ impl ClassMetadata {
         self.mro.ancestors_no_object()
     }
 
-    pub fn visit_mut<'a>(&'a mut self, mut f: &mut dyn FnMut(&'a mut Type)) {
+    pub fn visit_mut(&mut self, mut f: &mut dyn FnMut(&mut Type)) {
         self.mro.visit_mut(&mut f)
     }
 }
@@ -192,9 +199,9 @@ impl ClassSynthesizedField {
         }
     }
 
-    fn visit_type_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
+    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
         let mut v = (*self.inner).clone();
-        v.visit_type_mut(f);
+        v.visit_mut(f);
         self.inner = Arc::new(v);
     }
 }
@@ -202,6 +209,12 @@ impl ClassSynthesizedField {
 /// A class's synthesized fields, such as a dataclass's `__init__` method.
 #[derive(Clone, Debug, TypeEq, PartialEq, Eq, Default)]
 pub struct ClassSynthesizedFields(SmallMap<Name, ClassSynthesizedField>);
+
+impl VisitMut<Type> for ClassSynthesizedFields {
+    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
+        self.visit_mut(f);
+    }
+}
 
 impl ClassSynthesizedFields {
     pub fn new(fields: SmallMap<Name, ClassSynthesizedField>) -> Self {
@@ -212,9 +225,9 @@ impl ClassSynthesizedFields {
         self.0.get(name)
     }
 
-    pub fn visit_type_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
+    pub fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
         for field in self.0.values_mut() {
-            field.visit_type_mut(f);
+            field.visit_mut(f);
         }
     }
 }
@@ -387,7 +400,7 @@ impl Mro {
         }
     }
 
-    pub fn visit_mut<'a>(&'a mut self, mut f: &mut dyn FnMut(&'a mut Type)) {
+    pub fn visit_mut(&mut self, mut f: &mut dyn FnMut(&mut Type)) {
         match self {
             Mro::Resolved(ref mut ancestors) => {
                 ancestors.iter_mut().for_each(|c| c.visit_mut(&mut f))

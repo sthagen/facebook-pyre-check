@@ -49,6 +49,7 @@ use crate::types::types::CalleeKind;
 use crate::types::types::Forall;
 use crate::types::types::Forallable;
 use crate::types::types::Type;
+use crate::util::visit::VisitMut;
 
 /// Correctly analyzing which attributes are visible on class objects, as well
 /// as handling method binding correctly, requires distinguishing which fields
@@ -81,6 +82,12 @@ impl ClassFieldInitialization {
 /// both visibility rules and whether method binding should be performed.
 #[derive(Debug, Clone, TypeEq, PartialEq, Eq)]
 pub struct ClassField(ClassFieldInner);
+
+impl VisitMut<Type> for ClassField {
+    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
+        self.visit_mut(f);
+    }
+}
 
 #[derive(Debug, Clone, TypeEq, PartialEq, Eq)]
 enum ClassFieldInner {
@@ -150,7 +157,7 @@ impl ClassField {
         })
     }
 
-    pub fn visit_type_mut(&mut self, mut f: &mut dyn FnMut(&mut Type)) {
+    pub fn visit_mut(&mut self, mut f: &mut dyn FnMut(&mut Type)) {
         match &mut self.0 {
             ClassFieldInner::Simple {
                 ty,
@@ -162,7 +169,7 @@ impl ClassField {
             } => {
                 f(ty);
                 for a in annotation.iter_mut() {
-                    a.visit_type_mut(f);
+                    a.visit_mut(f);
                 }
                 descriptor_getter.iter_mut().for_each(&mut f);
                 descriptor_setter.iter_mut().for_each(f);
@@ -624,7 +631,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         arguments: Arguments { keywords, .. },
                     }) = e
                 {
-                    let mut flags = BoolKeywords::new();
                     // We already type-checked this expression as part of computing the type for the ClassField,
                     // so we can ignore any errors encountered here.
                     let ignore_errors =
@@ -634,6 +640,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         func_ty.callee_kind(),
                         Some(CalleeKind::Function(FunctionKind::DataclassField))
                     ) {
+                        let mut flags = BoolKeywords::new();
                         for kw in keywords {
                             if let Some(id) = &kw.arg
                                 && (id.id == DataclassKeywords::DEFAULT.0
@@ -645,8 +652,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 flags.set_keyword(kw.arg.as_ref(), val);
                             }
                         }
+                        ClassFieldInitialization::Class(Some(flags))
+                    } else {
+                        ClassFieldInitialization::Class(None)
                     }
-                    ClassFieldInitialization::Class(Some(flags))
                 } else {
                     ClassFieldInitialization::Class(None)
                 }
