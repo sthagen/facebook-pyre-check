@@ -1661,7 +1661,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::ClassDef(x, decorators) => match &self.get_idx(*x).0 {
                 None => Type::any_implicit(),
                 Some(cls) => {
-                    let mut ty = Type::ClassDef(cls.clone());
+                    let mut ty = Type::ClassDef(cls.dupe());
                     for x in decorators.iter().rev() {
                         ty = self.apply_decorator(*x, ty, errors)
                     }
@@ -2114,7 +2114,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     }
 
     /// Unwraps a type, originally evaluated as a value, so that it can be used as a type annotation.
-    /// For example, in `def f(x: int): ...`, we evaluate `int` as a value, gettings its type as
+    /// For example, in `def f(x: int): ...`, we evaluate `int` as a value, getting its type as
     /// `type[int]`, then call `untype(type[int])` to get the `int` annotation.
     fn untype(&self, ty: Type, range: TextRange, errors: &ErrorCollector) -> Type {
         let mut ty = ty;

@@ -527,7 +527,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
         // Enum handling:
         // - Check whether the field is a member (which depends only on its type and name)
-        // - Validate that a member should not have an annotation, and should respect any explicit annotatin on `_value_`
+        // - Validate that a member should not have an annotation, and should respect any explicit annotation on `_value_`
         //
         // TODO(stroxler, yangdanny): We currently operate on promoted types, which means we do not infer `Literal[...]`
         // types for the `.value` / `._value_` attributes of literals. This is permitted in the spec although not optimal
@@ -710,7 +710,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             } if descriptor_getter.is_some() || descriptor_setter.is_some() => {
                 Attribute::descriptor(
                     ty.clone(),
-                    DescriptorBase::ClassDef(cls.clone()),
+                    DescriptorBase::ClassDef(cls.dupe()),
                     descriptor_getter.clone(),
                     descriptor_setter.clone(),
                 )
@@ -718,7 +718,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             ClassFieldInner::Simple {
                 initialization: ClassFieldInitialization::Instance,
                 ..
-            } => Attribute::no_access(NoAccessReason::ClassUseOfInstanceAttribute(cls.clone())),
+            } => Attribute::no_access(NoAccessReason::ClassUseOfInstanceAttribute(cls.dupe())),
             ClassFieldInner::Simple {
                 initialization: ClassFieldInitialization::Class(_),
                 ty,
@@ -944,7 +944,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// Get the class's `__init__` method, if we should analyze it
     /// We skip analyzing the call to `__init__` if:
     /// (1) it isn't defined (possible if we've been passed a custom typeshed), or
-    /// (2) the class overrides `object.__new__` but not `object.__init__`, in wich case the
+    /// (2) the class overrides `object.__new__` but not `object.__init__`, in which case the
     ///     `__init__` call always succeeds at runtime.
     pub fn get_dunder_init(&self, cls: &ClassType, overrides_new: bool) -> Option<Type> {
         let init_method = self.get_class_member(cls.class_object(), &dunder::INIT)?;

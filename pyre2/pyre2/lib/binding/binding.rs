@@ -403,7 +403,6 @@ impl DisplayWith<ModuleInfo> for KeyClass {
 }
 
 /// A reference to a field in a class.
-/// The range is the range of the class name, not the field name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct KeyClassField(pub ClassIndex, pub Name);
 
@@ -1005,7 +1004,7 @@ impl AnnotationTarget {
 #[derive(Clone, Debug)]
 pub enum BindingAnnotation {
     /// The type is annotated to be this key, will have the outer type removed.
-    /// Optionally occuring within a class, in which case Self refers to this class.
+    /// Optionally occurring within a class, in which case Self refers to this class.
     AnnotateExpr(AnnotationTarget, Expr, Option<Idx<KeyClass>>),
     /// A literal type we know statically.
     Type(AnnotationTarget, Type),

@@ -222,16 +222,16 @@ impl<'a> TypeDisplayContext<'a> {
             Type::Union(types) if types.is_empty() => write!(f, "Never"),
             Type::Union(types) => {
                 // All Literals will be collected into a single Literal at the index of the first Literal.
-                let mut lit_idx = None;
-                let mut lits = Vec::new();
+                let mut literal_idx = None;
+                let mut literals = Vec::new();
                 let mut display_types = Vec::new();
                 for (i, t) in types.iter().enumerate() {
                     match t {
                         Type::Literal(lit) => {
-                            if lit_idx.is_none() {
-                                lit_idx = Some(i);
+                            if literal_idx.is_none() {
+                                literal_idx = Some(i);
                             }
-                            lits.push(lit)
+                            literals.push(lit)
                         }
                         Type::Callable(_) | Type::Function(_) => {
                             display_types.push(format!("({})", self.display(t)))
@@ -239,9 +239,8 @@ impl<'a> TypeDisplayContext<'a> {
                         _ => display_types.push(format!("{}", self.display(t))),
                     }
                 }
-                if let Some(i) = lit_idx {
-                    let internal_lits = commas_iter(|| lits.iter().map(|t| format!("{t}")));
-                    display_types.insert(i, format!("Literal[{internal_lits}]"));
+                if let Some(i) = literal_idx {
+                    display_types.insert(i, format!("Literal[{}]", commas_iter(|| &literals)));
                 }
                 write!(f, "{}", display_types.join(" | "))
             }
@@ -324,6 +323,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use dupe::Dupe;
     use ruff_python_ast::Identifier;
     use ruff_text_size::TextSize;
     use starlark_map::ordered_map::OrderedMap;
@@ -404,7 +404,7 @@ mod tests {
         );
 
         fn class_type(class: &Class, targs: TArgs) -> Type {
-            Type::ClassType(ClassType::new(class.clone(), targs))
+            Type::ClassType(ClassType::new(class.dupe(), targs))
         }
 
         assert_eq!(
