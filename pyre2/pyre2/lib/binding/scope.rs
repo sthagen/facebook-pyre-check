@@ -162,6 +162,8 @@ pub enum FlowStyle {
     ImportAs(ModuleName),
     /// Am I a function definition? Used to chain overload definitions.
     FunctionDef(Idx<KeyFunction>),
+    /// The name was previously bound, but is now unbound due to `del`
+    Unbound,
 }
 
 #[derive(Debug, Clone)]
@@ -431,6 +433,11 @@ impl Scopes {
             }
         }
         None
+    }
+
+    pub fn get_flow_style(&self, name: &Name) -> Option<&FlowStyle> {
+        self.get_flow_info(name)
+            .and_then(|info| info.style.as_ref())
     }
 
     pub fn get_special_entry<'a>(&'a self, name: &Name) -> Option<SpecialEntry<'a>> {

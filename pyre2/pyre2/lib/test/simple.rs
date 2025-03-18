@@ -99,6 +99,27 @@ def f1() -> None:
 );
 
 testcase!(
+    test_unbound_name,
+    r#"
+x: int
+x + 1  # E: `x` is uninitialized
+x = 1
+x + 1  # OK
+del x
+x + 1  # E: `x` is unbound
+
+y = 1
+y + 1  # OK
+del y
+y + 1  # E: `y` is unbound
+
+# check that we don't fall back to Any when the variable is annotated
+z: int
+z = str(z)  # E: `z` is uninitialized  # E: `str` is not assignable to variable `z` with type `int`
+"#,
+);
+
+testcase!(
     test_extend_final,
     r#"
 from typing import final
@@ -162,7 +183,7 @@ from typing import Literal
 class C[T]: ...
 def append[T](x: C[T], y: T):
     pass
-v: C[int]
+v: C[int] = C()
 append(v, "test")  # E: Argument `Literal['test']` is not assignable to parameter `y` with type `int`
 "#,
 );
@@ -175,7 +196,7 @@ T = TypeVar("T")
 class C(Generic[T]): ...
 def append(x: C[T], y: T):
     pass
-v: C[int]
+v: C[int] = C()
 append(v, "test")  # E: Argument `Literal['test']` is not assignable to parameter `y` with type `int`
 "#,
 );
@@ -188,7 +209,7 @@ T = typing.TypeVar("T")
 class C(typing.Generic[T]): ...
 def append(x: C[T], y: T):
     pass
-v: C[int]
+v: C[int] = C()
 append(v, "test")  # E: Argument `Literal['test']` is not assignable to parameter `y` with type `int`
 "#,
 );
@@ -447,10 +468,10 @@ assert_type(f(1), int)
 testcase!(
     test_final_annotated,
     r#"
-from typing import Final, assert_type, Literal
+from typing import Final, assert_type, Literal, cast
 x: Final[int] = 1
 y: Final = "test"
-z: Final[str]
+z: Final[str] = cast(str, "")
 w: Final[int] = "bad"  # E: `Literal['bad']` is not assignable to `int`
 
 assert_type(x, Literal[1])
@@ -921,11 +942,13 @@ testcase!(
     r#"
 val = 42
 def foo(arg): ...
-a: foo(arg=val)  # E: function call cannot be used in annotations
-b: lambda: None  # E: lambda definition cannot be used in annotations
-c: [foo(arg=val)] # E: list literal cannot be used in annotations
-d: (1, 2) # E: tuple literal cannot be used in annotations
-e: a + b  # E: expression cannot be used in annotations
+def test(
+    a: foo(arg=val),  # E: function call cannot be used in annotations
+    b: lambda: None,  # E: lambda definition cannot be used in annotations
+    c: [foo(arg=val)], # E: list literal cannot be used in annotations
+    d: (1, 2), # E: tuple literal cannot be used in annotations
+    e: 1 + 2,  # E: expression cannot be used in annotations
+): ...
 "#,
 );
 
@@ -1236,8 +1259,8 @@ testcase!(
     test_assert_type_forward_ref,
     r#"
 from typing import assert_type
-x: "ForwardRef"
-assert_type(x, "ForwardRef")
+def test(x: "ForwardRef") -> None:
+    assert_type(x, "ForwardRef")
 class ForwardRef:
     pass
     "#,

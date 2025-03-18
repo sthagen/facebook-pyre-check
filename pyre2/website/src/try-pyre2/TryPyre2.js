@@ -50,10 +50,6 @@ const pyre2WasmInitializedPromise = pyre2WasmUninitializedPromise
   })
   .catch(e => console.log(e));
 
-function isMobile(): boolean {
-  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-}
-
 export default component TryPyre2(
   sampleFilename: string,
   isCodeSnippet: boolean = false,
@@ -71,7 +67,9 @@ export default component TryPyre2(
     number | null,
   >(null);
   const [model, setModel] = useState(null);
+  const [isCopied, setIsCopied] = useState(false);
 
+  // Only run for initial render, and not on subsequent updates
   useEffect(() => {
     setLoading(true);
     pyre2WasmInitializedPromise
@@ -89,22 +87,9 @@ export default component TryPyre2(
       });
   }, []);
 
-  function fetchCurMonacoModelAndTriggerUpdate() {
-    const model = monaco.editor
-      .getModels()
-      .filter(model => model?.uri?.path === `/${sampleFilename}`)[0];
-
-    if (model != null) {
-      // Force update to trigger initial inlay hint
-      model.setValue(model.getValue());
-    }
-
-    return model;
-  }
-
   // Need to add createModel handler in case monaco model was not created at mount time
   monaco.editor.onDidCreateModel(model => {
-    const curModel = fetchCurMonacoModelAndTriggerUpdate();
+    const curModel = fetchCurMonacoModelAndTriggerUpdate(sampleFilename);
     setModel(curModel);
     forceRecheck();
   });
@@ -139,7 +124,7 @@ export default component TryPyre2(
   }
 
   function onEditorMount(editor: any) {
-    const model = fetchCurMonacoModelAndTriggerUpdate();
+    const model = fetchCurMonacoModelAndTriggerUpdate(sampleFilename);
     setModel(model);
 
     if (isCodeSnippet) {
@@ -148,11 +133,101 @@ export default component TryPyre2(
     editorRef.current = editor;
   }
 
-  let editor = null;
+  return (
+    <div className={styles.tryEditor}>
+      <div className={styles.codeEditorContainer}>
+        {getPyre2Editor(
+          isCodeSnippet,
+          sampleFilename,
+          codeSample,
+          forceRecheck,
+          onEditorMount,
+          editorHeightforCodeSnippet,
+        )}
+        {!isCodeSnippet && (
+          <button
+            className={clsx(
+              styles.shareButton,
+              isCopied && styles.shareButtonCopied,
+            )}
+            onClick={() => copyToClipboard(setIsCopied)}
+            aria-label="share URL button">
+            <span className={styles.shareButtonText}>
+              {isCopied ? '✓ URL Copied!' : '📋 Share URL'}
+            </span>
+          </button>
+        )}
+      </div>
+      {showErrorPanel && (
+        <div className={styles.resultsContainer}>
+          <TryPyre2Results
+            loading={loading}
+            errors={errors}
+            internalError={internalError}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function updateURL(code: string) {
+  const compressed = LZString.compressToEncodedURIComponent(code);
+  const newURL = `${window.location.pathname}?code=${compressed}`;
+  window.history.replaceState({}, '', newURL);
+}
+
+function copyToClipboard(setIsCopied: boolean => void) {
+  const currentURL = window.location.href;
+  navigator.clipboard.writeText(currentURL).then(() => {
+    setIsCopied(true);
+    setTimeout(() => setIsCopied(false), 2000);
+  });
+}
+
+function getCodeFromURL() {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  return code ? LZString.decompressFromEncodedURIComponent(code) : null;
+}
+
+function fetchCurMonacoModelAndTriggerUpdate(fileName: string) {
+  const model = monaco.editor
+    .getModels()
+    .filter(model => model?.uri?.path === `/${fileName}`)[0];
+
+  if (model == null) {
+    return null;
+  }
+
+  const codeFromUrl = getCodeFromURL();
+  if (codeFromUrl != null && model != null) {
+    model.setValue(codeFromUrl);
+  }
+
+  // Force update to trigger initial inlay hint
+  model.setValue(model.getValue());
+
+  return model;
+}
+
+function isMobile(): boolean {
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+}
+
+function getPyre2Editor(
+  isCodeSnippet: boolean,
+  fileName: string,
+  codeSample: string,
+  forceRecheck: () => void,
+  onEditorMount: (editor: any) => void,
+  editorHeightforCodeSnippet: number | null,
+) {
   if (isCodeSnippet) {
-    editor = (
+    return (
       <Editor
-        defaultPath={sampleFilename}
+        defaultPath={fileName}
         defaultValue={codeSample}
         defaultLanguage="python"
         theme="vs-light"
@@ -175,13 +250,16 @@ export default component TryPyre2(
     const screenHeight = window.innerHeight;
     const sandboxHeight = (screenHeight * 75) / 100;
 
-    editor = (
+    return (
       <Editor
-        defaultPath={sampleFilename}
+        defaultPath={fileName}
         defaultValue={codeSample}
         defaultLanguage="python"
         theme="vs-light"
-        onChange={forceRecheck}
+        onChange={value => {
+          forceRecheck();
+          updateURL(value);
+        }}
         onMount={onEditorMount}
         height={sandboxHeight}
         options={{
@@ -193,20 +271,4 @@ export default component TryPyre2(
       />
     );
   }
-  return (
-    <div className={styles.tryEditor}>
-      <div className={styles.codeEditorContainer}>
-        <div className={styles.codeEditor}>{editor}</div>
-      </div>
-      {showErrorPanel && (
-        <div className={styles.resultsContainer}>
-          <TryPyre2Results
-            loading={loading}
-            errors={errors}
-            internalError={internalError}
-          />
-        </div>
-      )}
-    </div>
-  );
 }

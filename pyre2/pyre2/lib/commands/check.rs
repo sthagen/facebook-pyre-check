@@ -41,6 +41,7 @@ use crate::state::loader::LoaderId;
 use crate::state::require::Require;
 use crate::state::state::State;
 use crate::state::subscriber::ProgressBarSubscriber;
+use crate::util::display;
 use crate::util::display::number_thousands;
 use crate::util::forgetter::Forgetter;
 use crate::util::fs_anyhow;
@@ -48,6 +49,7 @@ use crate::util::listing::FileList;
 use crate::util::memory::MemoryUsageTrace;
 use crate::util::prelude::SliceExt;
 use crate::util::prelude::VecExt;
+use crate::util::watcher::CategorizedEvents;
 use crate::util::watcher::Watcher;
 
 #[derive(Debug, Clone, ValueEnum, Default)]
@@ -173,6 +175,21 @@ struct RequireLevels {
     default: Require,
 }
 
+async fn get_watcher_events(watcher: &mut impl Watcher) -> anyhow::Result<CategorizedEvents> {
+    loop {
+        let events = CategorizedEvents::new(watcher.wait().await?);
+        if !events.is_empty() {
+            return Ok(events);
+        }
+        if !events.unknown.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Cannot handle uncategorized watcher event on paths [{}]",
+                display::commas_iter(|| events.unknown.iter().map(|x| x.display()))
+            ));
+        }
+    }
+}
+
 impl Args {
     pub fn run_once(
         self,
@@ -180,7 +197,15 @@ impl Args {
         config_finder: &impl Fn(&Path) -> ConfigFile,
         allow_forget: bool,
     ) -> anyhow::Result<CommandExitStatus> {
-        self.run_inner(files_to_check, config_finder, allow_forget)
+        let expanded_file_list = files_to_check.files()?;
+        if expanded_file_list.is_empty() {
+            return Ok(CommandExitStatus::Success);
+        }
+
+        let mut holder = Forgetter::new(State::new(), allow_forget);
+        let require_levels = self.get_required_levels();
+        let handles = self.get_handles(expanded_file_list, config_finder, require_levels.specified);
+        self.run_inner(holder.as_mut(), &handles, require_levels.default)
     }
 
     pub async fn run_watch(
@@ -189,19 +214,21 @@ impl Args {
         files_to_check: impl FileList + Clone,
         config_finder: &impl Fn(&Path) -> ConfigFile,
     ) -> anyhow::Result<()> {
+        // TODO: We currently make 2 unrealistic assumptions, which should be fixed in the future:
+        // - Glob expansion is stable across incremental runs.
+        // - Config search is stable across incremental runs.
+        let expanded_file_list = files_to_check.files()?;
+        let require_levels = self.get_required_levels();
+        let handles = self.get_handles(expanded_file_list, config_finder, require_levels.specified);
+        let mut state = State::new();
         loop {
-            let res = self
-                .clone()
-                .run_inner(files_to_check.clone(), config_finder, false);
+            let res = self.run_inner(&mut state, &handles, require_levels.default);
             if let Err(e) = res {
                 eprintln!("{e:#}");
             }
-            loop {
-                let events = watcher.wait().await?;
-                if events.iter().any(|x| !x.kind.is_access()) {
-                    break;
-                }
-            }
+            let events = get_watcher_events(&mut watcher).await?;
+            // TODO: Handle add/remove events.
+            state.invalidate_disk(&events.modified);
         }
     }
 
@@ -289,26 +316,15 @@ impl Args {
 
     fn run_inner(
         &self,
-        files_to_check: impl FileList,
-        config_finder: &impl Fn(&Path) -> ConfigFile,
-        allow_forget: bool,
+        state: &mut State,
+        handles: &[(Handle, Require)],
+        default_require: Require,
     ) -> anyhow::Result<CommandExitStatus> {
-        let expanded_file_list = files_to_check.files()?;
-        if expanded_file_list.is_empty() {
-            return Ok(CommandExitStatus::Success);
-        }
-
-        let require_levels = self.get_required_levels();
-        let handles = self.get_handles(expanded_file_list, config_finder, require_levels.specified);
-
         let progress = Box::new(ProgressBarSubscriber::new());
         let mut memory_trace = MemoryUsageTrace::start(Duration::from_secs_f32(0.1));
         let start = Instant::now();
-        let state = State::new();
-        let mut holder = Forgetter::new(state, allow_forget);
-        let state = holder.as_mut();
 
-        state.run(&handles, require_levels.default, Some(progress));
+        state.run(handles, default_require, Some(progress));
         let computing = start.elapsed();
         if let Some(path) = &self.output {
             let errors = state.collect_errors();
