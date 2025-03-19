@@ -101,7 +101,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn expr(
         &self,
         x: &Expr,
-        check: Option<(&Type, &TypeCheckContext)>,
+        check: Option<(&Type, &dyn Fn() -> TypeCheckContext)>,
         errors: &ErrorCollector,
     ) -> Type {
         self.expr_with_separate_check_errors(x, check.map(|(ty, tcc)| (ty, tcc, errors)), errors)
@@ -110,7 +110,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn expr_with_separate_check_errors(
         &self,
         x: &Expr,
-        check: Option<(&Type, &TypeCheckContext, &ErrorCollector)>,
+        check: Option<(&Type, &dyn Fn() -> TypeCheckContext, &ErrorCollector)>,
         errors: &ErrorCollector,
     ) -> Type {
         match &check {
@@ -138,7 +138,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         attr_name: &Name,
         range: TextRange,
         errors: &ErrorCollector,
-        context: Option<&ErrorContext>,
+        context: Option<&dyn Fn() -> ErrorContext>,
     ) -> Type {
         self.distribute_over_union(obj, |obj| {
             self.type_of_attr_get(obj, attr_name, range, errors, context, "Expr::attr_infer")
@@ -150,7 +150,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         method_type: Type,
         range: TextRange,
         errors: &ErrorCollector,
-        context: &ErrorContext,
+        context: &dyn Fn() -> ErrorContext,
         op: Operator,
         call_arg_type: &Type,
     ) -> Type {
@@ -173,7 +173,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     fn binop_infer(&self, x: &ExprBinOp, errors: &ErrorCollector) -> Type {
         let binop_call = |op: Operator, lhs: &Type, rhs: Type, range: TextRange| -> Type {
-            let context = ErrorContext::BinaryOp(op.as_str().to_owned(), lhs.clone(), rhs.clone());
+            let context =
+                || ErrorContext::BinaryOp(op.as_str().to_owned(), lhs.clone(), rhs.clone());
 
             let method_type_dunder = self.type_of_attr_get_if_found(
                 lhs,
@@ -704,7 +705,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn expr_infer_with_hint(
         &self,
         x: &Expr,
-        hint: Option<(&Type, &TypeCheckContext)>,
+        hint: Option<(&Type, &dyn Fn() -> TypeCheckContext)>,
         errors: &ErrorCollector,
     ) -> Type {
         let ty = match x {
@@ -714,7 +715,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::UnaryOp(x) => {
                 let t = self.expr_infer(&x.operand, errors);
                 let unop = |t: &Type, f: &dyn Fn(&Lit) -> Option<Type>, method: &Name| {
-                    let context = ErrorContext::UnaryOp(x.op.as_str().to_owned(), t.clone());
+                    let context = || ErrorContext::UnaryOp(x.op.as_str().to_owned(), t.clone());
                     match t {
                         Type::Literal(lit) if let Some(ret) = f(lit) => ret,
                         Type::ClassType(_) => self.call_method_or_error(
@@ -740,7 +741,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             x.range,
                             ErrorKind::UnsupportedOperand,
                             None,
-                            context.format(),
+                            context().format(),
                         ),
                     }
                 };
@@ -783,10 +784,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     )
                 });
                 let params = Params::List(ParamList::new(params));
-                let tcc = TypeCheckContext::unknown();
+                let tcc: &dyn Fn() -> TypeCheckContext = &|| TypeCheckContext::unknown();
                 let ret = self.expr_infer_with_hint(
                     &lambda.body,
-                    return_hint.as_ref().map(|t| (t, &tcc)),
+                    return_hint.as_ref().map(|t| (t, tcc)),
                     errors,
                 );
                 Type::Callable(Box::new(Callable { params, ret }))
@@ -861,11 +862,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             }
                         }
                         _ => {
-                            let tcc = TypeCheckContext::unknown();
+                            let tcc: &dyn Fn() -> TypeCheckContext =
+                                &|| TypeCheckContext::unknown();
                             let ty = self.expr_infer_with_hint(
                                 elt,
                                 if unbounded.is_empty() {
-                                    hint_ts.get(hint_ts_idx).or(default_hint).map(|t| (t, &tcc))
+                                    hint_ts.get(hint_ts_idx).or(default_hint).map(|t| (t, tcc))
                                 } else {
                                     None
                                 },
@@ -924,10 +926,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             }
                         }
                         _ => {
-                            let tcc = TypeCheckContext::unknown();
+                            let tcc: &dyn Fn() -> TypeCheckContext =
+                                &|| TypeCheckContext::unknown();
                             self.expr_infer_with_hint_promote(
                                 x,
-                                elt_hint.as_ref().map(|t| (t, &tcc)),
+                                elt_hint.as_ref().map(|t| (t, tcc)),
                                 errors,
                             )
                         }
@@ -962,15 +965,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         let mut value_tys = Vec::new();
                         flattened_items.iter().for_each(|x| match &x.key {
                             Some(key) => {
-                                let tcc = TypeCheckContext::unknown();
+                                let tcc: &dyn Fn() -> TypeCheckContext =
+                                    &|| TypeCheckContext::unknown();
                                 let key_t = self.expr_infer_with_hint_promote(
                                     key,
-                                    key_hint.as_ref().map(|t| (t, &tcc)),
+                                    key_hint.as_ref().map(|t| (t, tcc)),
                                     errors,
                                 );
                                 let value_t = self.expr_infer_with_hint_promote(
                                     &x.value,
-                                    value_hint.as_ref().map(|t| (t, &tcc)),
+                                    value_hint.as_ref().map(|t| (t, tcc)),
                                     errors,
                                 );
                                 key_tys.push(key_t);
@@ -1006,10 +1010,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.stdlib.set(elem_ty).to_type()
                 } else {
                     let elem_tys = x.elts.map(|x| {
-                        let tcc = TypeCheckContext::unknown();
+                        let tcc: &dyn Fn() -> TypeCheckContext = &|| TypeCheckContext::unknown();
                         self.expr_infer_with_hint_promote(
                             x,
-                            hint.as_ref().map(|t| (t, &tcc)),
+                            hint.as_ref().map(|t| (t, tcc)),
                             errors,
                         )
                     });
@@ -1019,10 +1023,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::ListComp(x) => {
                 let hint = hint.and_then(|(ty, _)| self.decompose_list(ty));
                 self.ifs_infer(&x.generators, errors);
-                let tcc = TypeCheckContext::unknown();
+                let tcc: &dyn Fn() -> TypeCheckContext = &|| TypeCheckContext::unknown();
                 let elem_ty = self.expr_infer_with_hint_promote(
                     &x.elt,
-                    hint.as_ref().map(|t| (t, &tcc)),
+                    hint.as_ref().map(|t| (t, tcc)),
                     errors,
                 );
                 self.stdlib.list(elem_ty).to_type()
@@ -1031,10 +1035,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let hint = hint.and_then(|(ty, _)| self.decompose_set(ty));
                 self.ifs_infer(&x.generators, errors);
                 self.ifs_infer(&x.generators, errors);
-                let tcc = TypeCheckContext::unknown();
+                let tcc: &dyn Fn() -> TypeCheckContext = &|| TypeCheckContext::unknown();
                 let elem_ty = self.expr_infer_with_hint_promote(
                     &x.elt,
-                    hint.as_ref().map(|t| (t, &tcc)),
+                    hint.as_ref().map(|t| (t, tcc)),
                     errors,
                 );
                 self.stdlib.set(elem_ty).to_type()
@@ -1043,15 +1047,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let (key_hint, value_hint) =
                     hint.map_or((None, None), |(ty, _)| self.decompose_dict(ty));
                 self.ifs_infer(&x.generators, errors);
-                let tcc = TypeCheckContext::unknown();
+                let tcc: &dyn Fn() -> TypeCheckContext = &|| TypeCheckContext::unknown();
                 let key_ty = self.expr_infer_with_hint_promote(
                     &x.key,
-                    key_hint.as_ref().map(|t| (t, &tcc)),
+                    key_hint.as_ref().map(|t| (t, tcc)),
                     errors,
                 );
                 let value_ty = self.expr_infer_with_hint_promote(
                     &x.value,
-                    value_hint.as_ref().map(|t| (t, &tcc)),
+                    value_hint.as_ref().map(|t| (t, tcc)),
                     errors,
                 );
                 self.stdlib.dict(key_ty, value_ty).to_type()
@@ -1059,10 +1063,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::Generator(x) => {
                 let yield_hint = hint.and_then(|(ty, _)| self.decompose_generator_yield(ty));
                 self.ifs_infer(&x.generators, errors);
-                let tcc = TypeCheckContext::unknown();
+                let tcc: &dyn Fn() -> TypeCheckContext = &|| TypeCheckContext::unknown();
                 let yield_ty = self.expr_infer_with_hint(
                     &x.elt,
-                    yield_hint.as_ref().map(|t| (t, &tcc)),
+                    yield_hint.as_ref().map(|t| (t, tcc)),
                     errors,
                 );
                 self.stdlib
@@ -1090,8 +1094,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 for (op, comparator) in comparisons {
                     let right = self.expr_infer(comparator, errors);
                     let right_range = comparator.range();
-                    let context =
-                        ErrorContext::BinaryOp(op.as_str().to_owned(), left.clone(), right.clone());
+                    let context = || {
+                        ErrorContext::BinaryOp(op.as_str().to_owned(), left.clone(), right.clone())
+                    };
                     let compare_by_method = |ty, method, arg| {
                         self.call_method(ty, &method, x.range, &[arg], &[], errors, Some(&context))
                     };
@@ -1101,7 +1106,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             x.range,
                             ErrorKind::UnsupportedOperand,
                             None,
-                            context.format(),
+                            context().format(),
                         );
                     };
                     match op {
@@ -1353,7 +1358,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 &x.slice,
                                 x.range,
                                 errors,
-                                Some(&ErrorContext::Index(fun.clone())),
+                                Some(&|| ErrorContext::Index(fun.clone())),
                             ),
                         Type::Tuple(_) if xs.len() == 1 => self.call_method_or_error(
                             &fun,
@@ -1362,7 +1367,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             &[CallArg::Expr(&x.slice)],
                             &[],
                             errors,
-                            Some(&ErrorContext::Index(fun.clone())),
+                            Some(&|| ErrorContext::Index(fun.clone())),
                         ),
                         Type::Any(style) => style.propagate(),
                         Type::ClassType(ref cls)
@@ -1373,7 +1378,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 &x.slice,
                                 x.range,
                                 errors,
-                                Some(&ErrorContext::Index(fun.clone())),
+                                Some(&|| ErrorContext::Index(fun.clone())),
                             )
                         }
                         Type::ClassType(_) => self.call_method_or_error(
@@ -1383,7 +1388,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             &[CallArg::Expr(&x.slice)],
                             &[],
                             errors,
-                            Some(&ErrorContext::Index(fun.clone())),
+                            Some(&|| ErrorContext::Index(fun.clone())),
                         ),
                         Type::TypedDict(typed_dict) => {
                             let key_ty = self.expr_infer(&x.slice, errors);
@@ -1465,7 +1470,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn expr_infer_with_hint_promote(
         &self,
         x: &Expr,
-        hint: Option<(&Type, &TypeCheckContext)>,
+        hint: Option<(&Type, &dyn Fn() -> TypeCheckContext)>,
         errors: &ErrorCollector,
     ) -> Type {
         let ty = self.expr_infer_with_hint(x, hint, errors);
@@ -1485,7 +1490,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         slice: &Expr,
         range: TextRange,
         errors: &ErrorCollector,
-        context: Option<&ErrorContext>,
+        context: Option<&dyn Fn() -> ErrorContext>,
     ) -> Type {
         let xs = Ast::unpack_slice(slice);
         match &xs[0] {

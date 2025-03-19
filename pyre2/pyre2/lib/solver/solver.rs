@@ -342,18 +342,22 @@ impl Solver {
         errors: &ErrorCollector,
         error_kind: ErrorKind,
         loc: TextRange,
-        tcc: &TypeCheckContext,
+        tcc: &dyn Fn() -> TypeCheckContext,
     ) {
-        errors.add(
-            loc,
-            tcc.kind.format_error(
-                &self.for_display(got.clone()),
-                &self.for_display(want.clone()),
-                errors.module_info().name(),
-            ),
-            error_kind,
-            tcc.context.as_ref(),
+        let tcc = tcc();
+        let msg = tcc.kind.format_error(
+            &self.for_display(got.clone()),
+            &self.for_display(want.clone()),
+            errors.module_info().name(),
         );
+        match tcc.context {
+            Some(ctx) => {
+                errors.add(loc, msg, error_kind, Some(&|| ctx.clone()));
+            }
+            None => {
+                errors.add(loc, msg, error_kind, None);
+            }
+        }
     }
 
     /// Union a list of types together. In the process may cause some variables to be forced.
@@ -445,14 +449,9 @@ impl Solver {
                 drop(lock);
                 // We got forced into choosing a type to satisfy a subset constraint, so check we are OK with that.
                 if !self.is_subset_eq(&got, &t, type_order) {
-                    self.error(
-                        &t,
-                        &got,
-                        errors,
-                        ErrorKind::TypeMismatch,
-                        loc,
-                        &TypeCheckContext::unknown(),
-                    );
+                    self.error(&t, &got, errors, ErrorKind::TypeMismatch, loc, &|| {
+                        TypeCheckContext::unknown()
+                    });
                 }
             }
             _ => {

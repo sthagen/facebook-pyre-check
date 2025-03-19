@@ -120,6 +120,59 @@ z = str(z)  # E: `z` is uninitialized  # E: `str` is not assignable to variable 
 );
 
 testcase!(
+    test_unbound_merge_flow,
+    r#"
+def test(cond: bool):
+    if cond:
+        a: int
+    else:
+        a = 1
+    a  # E: `a` may be uninitialized
+    if cond:
+        b: int
+    else:
+        b = 1
+        del b
+    b  # E: `b` is uninitialized
+    if cond:
+        c: int
+    else:
+        c: int = 1
+    c  # E: `c` may be uninitialized
+    if cond:
+        d = 1
+    else:
+        d = 1
+        del d
+    d  # E: `d` may be unbound
+    if cond:
+        e = 1
+    else:
+        e: int
+    e  # E: `e` may be uninitialized
+    if cond:
+        f = 1
+        del f
+    else:
+        f: int
+    f  # E: `f` is uninitialized
+    if cond:
+        g = 1
+        del g
+    else:
+        g = 1
+    g  # E: `g` may be unbound
+    if cond:
+        h = 1
+        del h
+    else:
+        h = 1
+        del h
+    h  # E: `h` is unbound
+"#,
+);
+
+testcase!(
     test_extend_final,
     r#"
 from typing import final
@@ -388,17 +441,6 @@ assert_type(f(), str)
 );
 
 testcase!(
-    test_method_cannot_see_class_scope,
-    r#"
-class C:
-    x: int
-
-    def m(self) -> None:
-        x  # E: Could not find name `x`
-"#,
-);
-
-testcase!(
     test_class_rebind_attribute,
     r#"
 from typing import assert_type
@@ -411,19 +453,6 @@ class C:
     attribute = f(attribute)
 
 assert_type(C().attribute, int)
-"#,
-);
-
-testcase!(
-    test_more_class_scope,
-    r#"
-x: int = 0
-class C:
-    x: str = x # E: `Literal[0]` is not assignable to `str`
-    y: int = x # E: `str` is not assignable to `int`
-    def m(self) -> str:
-        # x refers to global x: int
-        return x # E: Returned type `Literal[0]` is not assignable to declared return type `str`
 "#,
 );
 
@@ -1389,5 +1418,43 @@ class B:
     def __radd__(self, other):
         return 42
 A() + B()
+    "#,
+);
+
+testcase!(
+    test_function_stub,
+    r#"
+def not_a_stub() -> int:  # E: Function declared to return `int` but is missing an explicit `return`
+    pass
+
+def is_a_stub0(self) -> int:  # No error expected here.
+    ...
+
+def is_a_stub1(self) -> int:  # No error expected here.
+    """
+    Some docstring
+    """
+    ...
+    "#,
+);
+
+testcase_with_bug!(
+    "PyTorch TODO: This testcase shouldn't have errors. The issues are:
+    1- implement missing binary operations
+    2- the error about `-` is not supported between `Literal[255]` and `Literal[0] | int` looks wrong ",
+    test_simple_operations,
+    r#"
+from typing import Literal
+def A(x: int | Literal[0], y: int | Literal[255]):
+    x - y # E: `-` is not supported # E: TODO: Expr::binop_infer attribute base undefined
+    "#,
+);
+
+testcase_with_bug!(
+    "PyTorch TODO: This testcase shouldn't have errors. iadd not supported.",
+    test_incremental_add,
+    r#"
+def f(x: int):
+    x += 1 # E: Object of class `int` has no attribute `__iadd__` 
     "#,
 );

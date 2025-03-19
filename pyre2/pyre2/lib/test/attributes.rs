@@ -562,3 +562,108 @@ assert_type(A.x, int)
 A.y  # E: Instance-only attribute `y` of class `A` is not visible on the class
     "#,
 );
+
+testcase!(
+    test_object_getattr,
+    r#"
+from typing import assert_type
+
+class Foo:
+    def __getattr__(self, name: str) -> int: ...
+
+def test(foo: Foo) -> None:
+    assert_type(foo.x, int)
+    assert_type(foo.y, int)
+    foo.x = 1  # E: Object of class `Foo` has no attribute `x`
+    del foo.y  # E: Object of class `Foo` has no attribute `y`
+    "#,
+);
+
+testcase!(
+    test_object_getattr_wrong_signature,
+    r#"
+from typing import assert_type
+
+class Foo:
+    def __getattr__(self, name: int) -> int: ...
+
+def test(foo: Foo) -> None:
+    assert_type(foo.x, int)  # E: Argument `Literal['x']` is not assignable to parameter `name`
+    assert_type(foo.y, int)  # E: Argument `Literal['y']` is not assignable to parameter `name`
+    foo.x = 1  # E: Object of class `Foo` has no attribute `x`
+    del foo.y  # E: Object of class `Foo` has no attribute `y`
+    "#,
+);
+
+testcase!(
+    test_module_getattr,
+    TestEnv::one("foo", "def __getattr__(name: str) -> int: ..."),
+    r#"
+from typing import assert_type
+import foo
+assert_type(foo.x, int)
+assert_type(foo.y, int)
+foo.x = 1  # E: No attribute `x` in module `foo`
+del foo.y  # E: No attribute `y` in module `foo`
+    "#,
+);
+
+testcase!(
+    test_any_subclass,
+    r#"
+from typing import Any, assert_type
+
+class A(Any):
+    x: int
+
+class B(A):
+    y: str
+
+def test0(a: A, b: B, ta: type[A]) -> None:
+    assert_type(a.x, int)
+    assert_type(b.x, int)
+    assert_type(b.y, str)
+    assert_type(ta.mro(), list[type])
+
+    assert_type(a.z, Any)
+    assert_type(b.z, Any)
+    assert_type(ta.z, Any)
+
+class Test(B):
+    def m(self) -> None:
+        assert_type(super().z, Any)
+    "#,
+);
+
+testcase_with_bug!(
+    "PyTorch TODO: support `with` expression and raise the right error at the C() call site",
+    test_with,
+    r#"
+class C:
+    def __init__(self) -> None:
+        self.prev = False
+    def __enter__(self) -> None:
+        self.prev = False
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.prev = False
+    def __new__(cls, orig_func=None):
+        if orig_func is None:
+            return super().__new__(
+                cls  # E: Expected 0 positional arguments, got 1 in function `object.__new__` 
+            ) 
+def f():
+    with C():  # E: TODO: Expr::call_method attribute base undefined # E: Cannot use `object | None` as a context manager
+        pass
+    "#,
+);
+
+testcase_with_bug!(
+    "PyTorch TODO: There should be no error here",
+    test_attr_base,
+    r#"
+def f(x, key, dict):
+    for param in x:
+        if key in dict:  # E: TODO: Expr::call_method attribute base undefined 
+            pass
+    "#,
+);

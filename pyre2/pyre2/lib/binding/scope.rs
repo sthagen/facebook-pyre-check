@@ -135,7 +135,7 @@ impl Static {
     }
 }
 
-/// The current value of the name, plus optionally the current value of the annotation.
+/// Flow-sensitive information about a name.
 #[derive(Default, Clone, Debug)]
 pub struct Flow {
     pub info: SmallMap<Name, FlowInfo>,
@@ -145,8 +145,6 @@ pub struct Flow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowStyle {
-    /// Am I initialized, or am I the result of `x: int`?
-    Annotated { is_initialized: bool },
     /// Am I a type-annotated assignment in a class body?
     AnnotatedClassField { initial_value: Option<Expr> },
     /// Am I the result of an import (which needs merging).
@@ -162,8 +160,26 @@ pub enum FlowStyle {
     ImportAs(ModuleName),
     /// Am I a function definition? Used to chain overload definitions.
     FunctionDef(Idx<KeyFunction>),
+    /// The name is possibly unbound (perhaps due to merging branches)
+    PossiblyUnbound,
+    /// The name is possibly uninitialized (perhaps due to merging branches)
+    PossiblyUninitialized,
     /// The name was previously bound, but is now unbound due to `del`
     Unbound,
+    /// The name was in an annotated declaration like `x: int` but not initialized
+    Uninitialized,
+}
+
+impl FlowStyle {
+    pub fn error_message(&self, name: &Identifier) -> Option<String> {
+        match self {
+            Self::Unbound => Some(format!("`{name}` is unbound")),
+            Self::Uninitialized => Some(format!("`{name}` is uninitialized")),
+            Self::PossiblyUnbound => Some(format!("`{name}` may be unbound")),
+            Self::PossiblyUninitialized => Some(format!("`{name}` may be uninitialized")),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
