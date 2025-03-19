@@ -670,7 +670,8 @@ let initialize
           MissingFlow.add_obscure_models
             ~scheduler
             ~static_analysis_configuration
-            ~pyre_api
+            ~callables_to_definitions_map:
+              (Target.DefinesSharedMemory.read_only callables_to_definitions_map)
             ~stubs:(Target.HashSet.of_list stubs)
             ~initial_models:models
         in
@@ -721,6 +722,8 @@ let initialize
       ~scheduler_policy
       ~override_graph:override_graph_shared_memory
       ~method_kinds:(CallGraph.MethodKind.SharedMemory.read_only method_kinds)
+      ~callables_to_definitions_map:
+        (Target.DefinesSharedMemory.read_only callables_to_definitions_map)
       ~decorators:(CallGraph.CallableToDecoratorsMap.SharedMemory.read_only decorators)
       definitions
   in
@@ -1015,11 +1018,15 @@ let end_to_end_integration_test path context =
       { RepositoryPath.filename = Some filename; path = PyrePath.create_absolute filename }
     in
     let serialize_model callable =
+      let callables_to_definitions_map =
+        Target.DefinesSharedMemory.read_only callables_to_definitions_map
+      in
       TaintReporting.fetch_and_externalize
         ~taint_configuration
         ~fixpoint_state:(TaintFixpoint.State.read_only fixpoint.TaintFixpoint.state)
         ~resolve_module_path
-        ~resolve_callable_location:(Target.get_callable_location ~pyre_api)
+        ~resolve_callable_location:
+          (Target.DefinesSharedMemory.ReadOnly.get_location callables_to_definitions_map)
         ~override_graph:override_graph_shared_memory_read_only
         ~dump_override_models:true
         callable

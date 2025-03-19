@@ -35,6 +35,7 @@ use crate::util::mutable::Mutable;
 /// For Eq/Hash, we only hash the immutable pieces.
 #[derive(Debug, Dupe, Clone)]
 enum Identifiable {
+    #[expect(dead_code)]
     Class(Class),
     ParamSpec(ParamSpec),
     TypeVar(TypeVar),
@@ -92,6 +93,7 @@ impl Mutable for Identifiable {
 }
 
 impl Identifiable {
+    #[expect(dead_code)]
     fn unwrap_class(self) -> Class {
         match self {
             Self::Class(x) => x,
@@ -165,6 +167,10 @@ impl IdCache {
     }
 
     fn get(&self, mut x: Identifiable) -> Identifiable {
+        if true {
+            return x;
+        }
+
         let mut lock = self.0.lock();
 
         // First check if we have already created this thing this time around.
@@ -196,14 +202,7 @@ impl IdCache {
         tparams: TParams,
         fields: SmallMap<Name, ClassFieldProperties>,
     ) -> Class {
-        self.get(Identifiable::Class(Class::new_identity(
-            index,
-            name,
-            module_info,
-            tparams,
-            fields,
-        )))
-        .unwrap_class()
+        Class::new_identity(index, name, module_info, tparams, fields)
     }
 
     pub fn param_spec(&self, name: Identifier, module: ModuleInfo) -> ParamSpec {

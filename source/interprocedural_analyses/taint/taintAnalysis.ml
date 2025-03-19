@@ -332,6 +332,7 @@ let initialize_models
     ~taint_configuration
     ~taint_configuration_shared_memory
     ~class_hierarchy_graph
+    ~callables_to_definitions_map
     ~initial_callables
     ~method_kinds
   =
@@ -426,7 +427,8 @@ let initialize_models
     MissingFlow.add_obscure_models
       ~scheduler
       ~static_analysis_configuration
-      ~pyre_api
+      ~callables_to_definitions_map:
+        (Target.DefinesSharedMemory.read_only callables_to_definitions_map)
       ~stubs:stubs_hashset
       ~initial_models:models
   in
@@ -451,9 +453,9 @@ let compact_ocaml_heap ~name =
 
 
 let compute_coverage
-    ~pyre_api
     ~scheduler
     ~scheduler_policies
+    ~callables_to_definitions_map
     ~resolve_module_path
     ~callables_to_analyze
     ~all_callables
@@ -469,7 +471,7 @@ let compute_coverage
     FileCoverage.from_callables
       ~scheduler
       ~scheduler_policies
-      ~pyre_api
+      ~callables_to_definitions_map
       ~resolve_module_path
       ~callables:callables_to_analyze
   in
@@ -713,6 +715,7 @@ let run_taint_analysis
       ~taint_configuration
       ~taint_configuration_shared_memory
       ~class_hierarchy_graph
+      ~callables_to_definitions_map
       ~initial_callables
       ~method_kinds:(Interprocedural.CallGraph.MethodKind.SharedMemory.read_only method_kinds)
   in
@@ -800,6 +803,13 @@ let run_taint_analysis
           ~start_message:"Building decorator resolution"
           ~end_message:"Decorator resolution built"
       in
+      let () =
+        Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory
+        .save_decorator_counts_to_directory
+          ~static_analysis_configuration
+          ~scheduler
+          callables_to_decorators_map
+      in
       let decorator_resolution =
         Interprocedural.CallGraph.DecoratorResolution.Results.resolve_batch_exn
           ~debug:false
@@ -812,6 +822,8 @@ let run_taint_analysis
                ~default:Interprocedural.CallGraph.SharedMemory.default_scheduler_policy)
           ~override_graph:override_graph_shared_memory
           ~method_kinds:(Interprocedural.CallGraph.MethodKind.SharedMemory.read_only method_kinds)
+          ~callables_to_definitions_map:
+            (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
           ~decorators:
             (Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory.read_only
                callables_to_decorators_map)
@@ -1064,9 +1076,10 @@ let run_taint_analysis
       FileCoverage.empty, RuleCoverage.empty
     else
       compute_coverage
-        ~pyre_api
         ~scheduler
         ~scheduler_policies
+        ~callables_to_definitions_map:
+          (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
         ~resolve_module_path
         ~callables_to_analyze
         ~all_callables
@@ -1104,6 +1117,9 @@ let run_taint_analysis
   let summary =
     match save_results_to with
     | Some result_directory ->
+        let callables_to_definitions_map =
+          Target.DefinesSharedMemory.read_only callables_to_definitions_map
+        in
         TaintReporting.save_results_to_directory
           ~scheduler
           ~taint_configuration:taint_configuration_shared_memory
@@ -1111,7 +1127,8 @@ let run_taint_analysis
           ~output_format
           ~local_root
           ~resolve_module_path
-          ~resolve_callable_location:(Target.get_callable_location ~pyre_api)
+          ~resolve_callable_location:
+            (Target.DefinesSharedMemory.ReadOnly.get_location callables_to_definitions_map)
           ~override_graph:override_graph_shared_memory_read_only
           ~callables
           ~skipped_overrides

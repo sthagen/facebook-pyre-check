@@ -251,6 +251,72 @@ module CallableToDecoratorsMap = struct
 
     let cleanup = T.cleanup ~clean_old:true
 
+    let save_decorator_counts_to_directory
+        ~static_analysis_configuration:
+          {
+            Configuration.StaticAnalysis.save_results_to;
+            output_format;
+            configuration = { local_root; _ };
+            _;
+          }
+        ~scheduler
+        shared_memory
+      =
+      let module DecoratorCount = struct
+        type t = {
+          count: int;
+          decorator: string;
+        }
+        [@@deriving compare]
+
+        let to_json { count; decorator } =
+          [
+            {
+              NewlineDelimitedJson.Line.kind = DecoratorCount;
+              data = `Assoc ["count", `Int count; "decorator", `String decorator];
+            };
+          ]
+      end
+      in
+      let create_decorator_count = function
+        | [] -> None
+        | decorator :: _ as decorators ->
+            Some { DecoratorCount.count = List.length decorators; decorator }
+      in
+      let decorator_counts =
+        shared_memory
+        |> T.to_alist
+        |> List.map ~f:(fun (_, { decorators; _ }) -> List.map ~f:Expression.show decorators)
+        |> List.concat
+        |> List.sort_and_group ~compare:String.compare
+        |> List.filter_map ~f:create_decorator_count
+        |> List.sort ~compare:DecoratorCount.compare
+        |> List.rev
+      in
+      let filename_prefix = "decorator-counts" in
+      match save_results_to with
+      | Some directory -> (
+          Log.info "Writing the decorator counts to `%s`" (PyrePath.absolute directory);
+          match output_format with
+          | Configuration.TaintOutputFormat.Json ->
+              NewlineDelimitedJson.write_file
+                ~path:
+                  (PyrePath.append directory ~element:(Format.asprintf "%s.json" filename_prefix))
+                ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+                ~to_json_lines:DecoratorCount.to_json
+                decorator_counts
+          | Configuration.TaintOutputFormat.ShardedJson ->
+              NewlineDelimitedJson.remove_sharded_files ~directory ~filename_prefix;
+              NewlineDelimitedJson.write_sharded_files
+                ~scheduler
+                ~directory
+                ~filename_prefix
+                ~configuration:(`Assoc ["repo", `String (PyrePath.absolute local_root)])
+                ~to_json_lines:DecoratorCount.to_json
+                decorator_counts)
+      | None -> ()
+
+
     (* We assume `DecoratorPreprocessing.setup_preprocessing` is called before since we use its
        shared memory here. *)
     let create ~callables_to_definitions_map ~scheduler ~scheduler_policy callables =
@@ -3383,8 +3449,9 @@ let resolve_identifier ~define ~pyre_in_context ~identifier =
 
 let resolve_callees
     ~debug
-    ~method_kinds
     ~pyre_in_context
+    ~method_kinds
+    ~callables_to_definitions_map
     ~override_graph
     ~call:({ Call.callee; arguments } as call)
   =
@@ -3449,10 +3516,11 @@ let resolve_callees
         } -> (
             match regular_callees.call_targets with
             | [callee] when Target.is_function_or_method callee.target ->
-                Target.get_module_and_definition
-                  ~pyre_api:(PyrePysaEnvironment.InContext.pyre_api pyre_in_context)
-                  callee.target
-                >>| (fun (_, { Node.value = define; _ }) ->
+                Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map callee.target
+                >>| (fun {
+                           Target.DefinesSharedMemory.Define.define = { Node.value = define; _ };
+                           _;
+                         } ->
                       let { Define.signature = { Define.Signature.parameters; _ }; _ } = define in
                       Define.is_stub define
                       || not (List.exists parameters ~f:(parameter_has_annotation callable_class)))
@@ -3611,6 +3679,7 @@ module NodeVisitorContext = struct
     missing_flow_type_analysis: MissingFlowTypeAnalysis.t option;
     attribute_targets: Target.HashSet.t;
     method_kinds: MethodKind.SharedMemory.ReadOnly.t;
+    callables_to_definitions_map: Target.DefinesSharedMemory.ReadOnly.t;
   }
 end
 
@@ -3635,6 +3704,7 @@ module CalleeVisitor = struct
                define_name;
                attribute_targets;
                method_kinds;
+               callables_to_definitions_map;
                _;
              };
            callees_at_location;
@@ -3658,7 +3728,13 @@ module CalleeVisitor = struct
       let () =
         match value with
         | Expression.Call call ->
-            resolve_callees ~debug ~method_kinds ~pyre_in_context ~override_graph ~call
+            resolve_callees
+              ~debug
+              ~method_kinds
+              ~callables_to_definitions_map
+              ~pyre_in_context
+              ~override_graph
+              ~call
             |> MissingFlowTypeAnalysis.add_unknown_callee ~missing_flow_type_analysis ~expression
             |> ExpressionCallees.from_call
             |> register_targets ~expression_identifier:(call_identifier call)
@@ -3691,7 +3767,13 @@ module CalleeVisitor = struct
             match ComparisonOperator.override ~location comparison with
             | Some { Node.value = Expression.Call call; _ } ->
                 let call = redirect_special_calls ~pyre_in_context call in
-                resolve_callees ~debug ~method_kinds ~pyre_in_context ~override_graph ~call
+                resolve_callees
+                  ~debug
+                  ~method_kinds
+                  ~callables_to_definitions_map
+                  ~pyre_in_context
+                  ~override_graph
+                  ~call
                 |> MissingFlowTypeAnalysis.add_unknown_callee
                      ~missing_flow_type_analysis
                      ~expression
@@ -4824,6 +4906,7 @@ let call_graph_of_define
     ~attribute_targets
     ~decorators
     ~method_kinds
+    ~callables_to_definitions_map
     ~qualifier
     ~define
   =
@@ -4849,6 +4932,7 @@ let call_graph_of_define
       override_graph;
       attribute_targets;
       method_kinds;
+      callables_to_definitions_map;
     }
   in
   let module DefineFixpoint = DefineCallGraphFixpoint (struct
@@ -4914,6 +4998,7 @@ let call_graph_of_callable
         ~attribute_targets
         ~decorators
         ~method_kinds
+        ~callables_to_definitions_map
         ~qualifier
         ~define:(Node.value define)
 
@@ -5034,10 +5119,10 @@ module SharedMemory = struct
                   ~static_analysis_configuration
                   ~pyre_api
                   ~override_graph
+                  ~callables_to_definitions_map
                   ~attribute_targets
                   ~decorators
                   ~method_kinds
-                  ~callables_to_definitions_map
                   ~callable)
               ()
           in
@@ -5147,6 +5232,7 @@ module DecoratorResolution = struct
       ~pyre_in_context
       ~override_graph
       ~method_kinds
+      ~callables_to_definitions_map
       ~decorators:decorators_map
       callable
     =
@@ -5165,6 +5251,7 @@ module DecoratorResolution = struct
           debug;
           override_graph;
           attribute_targets = Target.HashSet.create ();
+          callables_to_definitions_map;
           method_kinds;
         }
       in
@@ -5257,6 +5344,7 @@ module DecoratorResolution = struct
         ~scheduler_policy
         ~override_graph
         ~method_kinds
+        ~callables_to_definitions_map
         ~decorators
         callables
       =
@@ -5267,6 +5355,7 @@ module DecoratorResolution = struct
             ~debug
             ~pyre_in_context
             ~override_graph:(Some (OverrideGraph.SharedMemory.read_only override_graph))
+            ~callables_to_definitions_map
             ~method_kinds
             ~decorators
             callable

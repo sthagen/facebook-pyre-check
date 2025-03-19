@@ -407,6 +407,35 @@ impl BindingTable {
     }
 }
 
+/// Errors that can occur when we try to look up a name
+pub enum LookupError {
+    /// We can't find the name at all
+    NotFound,
+    /// We expected the name to be mutable from the current scope, but it's not
+    NotMutable,
+}
+
+impl LookupError {
+    pub fn message(&self, name: &Identifier) -> String {
+        match self {
+            Self::NotFound => format!("Could not find name `{name}`"),
+            Self::NotMutable => format!("`{name}` is not mutable from the current scope"),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(PartialEq, Eq)]
+pub enum LookupKind {
+    Regular,
+    /// Look up a name that must be mutable from the current scope, like a `del` or augmented assignment statement
+    Mutable,
+    /// Look up a name in a `global` statement
+    Global,
+    /// Look up a name in a `nonlocal` statement
+    Nonlocal,
+}
+
 impl<'a> BindingsBuilder<'a> {
     pub fn init_static_scope(&mut self, x: &[Stmt], top_level: bool) {
         self.scopes.current_mut().stat.stmts(
@@ -468,32 +497,36 @@ impl<'a> BindingsBuilder<'a> {
         self.errors.add(range, msg, error_kind, None);
     }
 
-    fn lookup_name(&mut self, name: &Name) -> Option<Idx<Key>> {
+    pub fn lookup_name(&mut self, name: &Name, kind: LookupKind) -> Result<Idx<Key>, LookupError> {
         let mut barrier = false;
         for scope in self.scopes.iter_rev() {
             if !barrier && let Some(flow) = scope.flow.info.get(name) {
-                return Some(flow.key);
+                return Ok(flow.key);
             } else if !matches!(scope.kind, ScopeKind::ClassBody(_))
                 && let Some(info) = scope.stat.0.get(name)
             {
+                if kind == LookupKind::Mutable && barrier {
+                    return Err(LookupError::NotMutable);
+                }
                 let key = info.as_key(name);
-                return Some(self.table.types.0.insert(key));
+                return Ok(self.table.types.0.insert(key));
             }
             barrier = barrier || scope.barrier;
         }
-        None
+        Err(LookupError::NotFound)
     }
 
-    pub fn forward_lookup(&mut self, name: &Identifier) -> Option<Binding> {
-        self.lookup_name(&name.id).map(Binding::Forward)
+    pub fn forward_lookup(&mut self, name: &Identifier) -> Result<Binding, LookupError> {
+        self.lookup_name(&name.id, LookupKind::Regular)
+            .map(Binding::Forward)
     }
 
     pub fn lookup_legacy_tparam(
         &mut self,
         name: &Identifier,
-    ) -> Either<Idx<KeyLegacyTypeParam>, Option<Idx<Key>>> {
-        let found = self.lookup_name(&name.id);
-        if let Some(mut idx) = found {
+    ) -> Either<Idx<KeyLegacyTypeParam>, Result<Idx<Key>, LookupError>> {
+        let found = self.lookup_name(&name.id, LookupKind::Regular);
+        if let Ok(mut idx) = found {
             loop {
                 if let Some(b) = self.table.types.1.get(idx) {
                     match b {
@@ -647,7 +680,7 @@ impl<'a> BindingsBuilder<'a> {
 
     pub fn bind_narrow_ops(&mut self, narrow_ops: &NarrowOps, use_range: TextRange) {
         for (name, (op, op_range)) in narrow_ops.0.iter() {
-            if let Some(name_key) = self.lookup_name(name) {
+            if let Ok(name_key) = self.lookup_name(name, LookupKind::Regular) {
                 let binding_key = self.table.insert(
                     Key::Narrow(name.clone(), *op_range, use_range),
                     Binding::Narrow(name_key, Box::new(op.clone()), use_range),
@@ -892,6 +925,7 @@ impl LegacyTParamBuilder {
                 builder
                     .lookup_legacy_tparam(name)
                     .map_left(|idx| (name.clone(), idx))
+                    .map_right(|right| right.ok())
             });
         match result {
             Either::Left((_, idx)) => {
