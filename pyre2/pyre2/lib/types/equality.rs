@@ -22,8 +22,6 @@ use crate::module::module_name::ModuleName;
 use crate::types::param_spec::ParamSpec;
 use crate::types::type_var::TypeVar;
 use crate::types::type_var_tuple::TypeVarTuple;
-use crate::util::arc_id::ArcId;
-use crate::util::mutable::Mutable;
 use crate::util::uniques::Unique;
 
 /// Compare a set of types using the same context.
@@ -51,38 +49,59 @@ impl TypeEq for Unique {
     }
 }
 
-fn type_eq_identity<T>(x: &T, y: &T, ctx: &mut SmallMap<T, T>) -> bool
+fn type_eq_identity<T>(
+    x: &T,
+    y: &T,
+    ctx: &mut TypeEqCtx,
+    map: impl Fn(&mut TypeEqCtx) -> &mut SmallMap<T, T>,
+    eq: impl FnOnce(&mut TypeEqCtx) -> bool,
+) -> bool
 where
-    T: Mutable + Dupe + Eq + Hash,
+    T: Dupe + Eq + Hash,
 {
-    match ctx.entry(x.dupe()) {
-        Entry::Occupied(e) => e.get() == y,
-        Entry::Vacant(e) => {
-            if x.immutable_eq(y) {
-                e.insert(y.dupe());
-                true
-            } else {
-                false
-            }
-        }
+    if let Some(res) = map(ctx).get(x) {
+        return res == y;
     }
+    if !eq(ctx) {
+        return false;
+    }
+    map(ctx).insert(x.dupe(), y.dupe());
+    true
 }
 
 impl TypeEq for ParamSpec {
     fn type_eq(&self, other: &Self, ctx: &mut TypeEqCtx) -> bool {
-        type_eq_identity(self, other, &mut ctx.param_spec)
+        type_eq_identity(
+            self,
+            other,
+            ctx,
+            |ctx| &mut ctx.param_spec,
+            |ctx| self.type_eq_inner(other, ctx),
+        )
     }
 }
 
 impl TypeEq for TypeVar {
     fn type_eq(&self, other: &Self, ctx: &mut TypeEqCtx) -> bool {
-        type_eq_identity(self, other, &mut ctx.type_var)
+        type_eq_identity(
+            self,
+            other,
+            ctx,
+            |ctx| &mut ctx.type_var,
+            |ctx| self.type_eq_inner(other, ctx),
+        )
     }
 }
 
 impl TypeEq for TypeVarTuple {
     fn type_eq(&self, other: &Self, ctx: &mut TypeEqCtx) -> bool {
-        type_eq_identity(self, other, &mut ctx.type_var_tuple)
+        type_eq_identity(
+            self,
+            other,
+            ctx,
+            |ctx| &mut ctx.type_var_tuple,
+            |ctx| self.type_eq_inner(other, ctx),
+        )
     }
 }
 
@@ -114,10 +133,6 @@ impl TypeEq for str {}
 impl TypeEq for Name {}
 impl TypeEq for ModuleName {}
 impl TypeEq for TextRange {}
-
-// We don't need to recursively call type_eq since we are doing
-// pointer equality. So don't see whatever is inside.
-impl<T> TypeEq for ArcId<T> {}
 
 impl<T0: TypeEq, T1: TypeEq> TypeEq for (T0, T1) {
     fn type_eq(&self, other: &Self, ctx: &mut TypeEqCtx) -> bool {

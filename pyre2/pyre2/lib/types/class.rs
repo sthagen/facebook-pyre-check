@@ -24,7 +24,6 @@ use starlark_map::small_map::SmallMap;
 
 use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
-use crate::ruff::text_range::AtomicTextRange;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
 use crate::types::equality::TypeEq;
@@ -34,7 +33,6 @@ use crate::types::quantified::QuantifiedKind;
 use crate::types::types::TParams;
 use crate::types::types::Type;
 use crate::util::display::commas_iter;
-use crate::util::mutable::Mutable;
 use crate::util::visit::VisitMut;
 
 /// The name of a nominal type, e.g. `str`
@@ -88,10 +86,10 @@ impl VisitMut<Type> for Class {
 
 /// Simple properties of class fields that can be attached to the class definition. Note that this
 /// does not include the type of a field, which needs to be computed lazily to avoid a recursive loop.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClassFieldProperties {
     is_annotated: bool,
-    range: AtomicTextRange,
+    range: TextRange,
 }
 
 impl PartialEq for ClassFieldProperties {
@@ -103,15 +101,6 @@ impl PartialEq for ClassFieldProperties {
 impl Eq for ClassFieldProperties {}
 impl TypeEq for ClassFieldProperties {}
 
-impl Clone for ClassFieldProperties {
-    fn clone(&self) -> Self {
-        Self {
-            is_annotated: self.is_annotated,
-            range: AtomicTextRange::new(self.range.get()),
-        }
-    }
-}
-
 /// The index of a class within the file, used as a reference to data associated with the class.
 #[derive(
     Debug, Clone, Dupe, Copy, TypeEq, Eq, PartialEq, Hash, PartialOrd, Ord, Display
@@ -122,30 +111,8 @@ impl ClassFieldProperties {
     pub fn new(is_annotated: bool, range: TextRange) -> Self {
         Self {
             is_annotated,
-            range: AtomicTextRange::new(range),
+            range,
         }
-    }
-}
-
-impl Mutable for ClassFieldProperties {
-    fn immutable_hash<H: Hasher>(&self, state: &mut H) {
-        self.is_annotated.hash(state);
-    }
-
-    fn immutable_eq(&self, other: &Self) -> bool {
-        self.is_annotated == other.is_annotated
-    }
-
-    fn mutable_hash<H: Hasher>(&self, state: &mut H) {
-        self.range.get().hash(state);
-    }
-
-    fn mutable_eq(&self, other: &Self) -> bool {
-        self.range.get() == other.range.get()
-    }
-
-    fn mutate(&self, x: &ClassFieldProperties) {
-        self.range.set(x.range.get());
     }
 }
 
@@ -207,7 +174,7 @@ impl Display for ClassInner {
 //   which involves substituting type arguments for the class type parameters as
 //   well as descriptor handling (including method binding).
 impl Class {
-    pub fn new_identity(
+    pub fn new(
         index: ClassIndex,
         name: Identifier,
         module_info: ModuleInfo,
@@ -280,66 +247,11 @@ impl Class {
     }
 
     pub fn field_decl_range(&self, name: &Name) -> Option<TextRange> {
-        Some(self.0.fields.get(name)?.range.get())
+        Some(self.0.fields.get(name)?.range)
     }
 
     pub fn has_qname(&self, module: &str, name: &str) -> bool {
         self.0.qname.module_name().as_str() == module && self.0.qname.id() == name
-    }
-}
-
-impl Mutable for Class {
-    fn immutable_eq(&self, other: &Class) -> bool {
-        if !(self.0.index == other.0.index
-            && self.0.qname.immutable_eq(&other.0.qname)
-            && self.0.tparams == other.0.tparams)
-        {
-            return false;
-        }
-
-        if self.0.fields.len() != other.0.fields.len() {
-            return false;
-        }
-        for (x, y) in self.0.fields.iter().zip(other.0.fields.iter()) {
-            if !(x.0 == y.0 && x.1.immutable_eq(y.1)) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn immutable_hash<H: Hasher>(&self, state: &mut H) {
-        self.0.index.hash(state);
-        self.0.qname.immutable_hash(state);
-        self.0.tparams.hash(state);
-        for x in self.0.fields.iter() {
-            x.0.hash(state);
-            x.1.immutable_hash(state);
-        }
-    }
-
-    fn mutable_eq(&self, other: &Class) -> bool {
-        self.0.qname.mutable_eq(&other.0.qname);
-        for (x, y) in self.0.fields.iter().zip(other.0.fields.iter()) {
-            if !x.1.immutable_eq(y.1) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn mutable_hash<H: Hasher>(&self, state: &mut H) {
-        self.0.qname.mutable_hash(state);
-        for x in self.0.fields.iter() {
-            x.1.mutable_hash(state);
-        }
-    }
-
-    fn mutate(&self, x: &Class) {
-        self.0.qname.mutate(&x.0.qname);
-        for (a, b) in self.0.fields.values().zip(x.0.fields.values()) {
-            a.mutate(b);
-        }
     }
 }
 

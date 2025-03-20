@@ -523,6 +523,16 @@ let compute_coverage
   file_coverage, rule_coverage
 
 
+let cleanup_shared_memory_after_call_graph_fixpoint
+    ~callables_to_decorators_map
+    ~original_define_call_graphs
+    ~call_graph_fixpoint
+  =
+  Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory.cleanup callables_to_decorators_map;
+  Interprocedural.CallGraph.SharedMemory.cleanup original_define_call_graphs;
+  Interprocedural.CallGraphFixpoint.cleanup ~keep_models:true call_graph_fixpoint
+
+
 let run_taint_analysis
     ~static_analysis_configuration:
       ({
@@ -778,7 +788,7 @@ let run_taint_analysis
       ~static_analysis_configuration
   in
 
-  let decorator_resolution =
+  let callables_to_decorators_map =
     if higher_order_call_graph then
       let step_logger =
         StepLogger.start
@@ -798,17 +808,24 @@ let run_taint_analysis
           definitions
       in
       let () = StepLogger.finish step_logger in
-      let step_logger =
-        StepLogger.start
-          ~start_message:"Building decorator resolution"
-          ~end_message:"Decorator resolution built"
-      in
       let () =
         Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory
         .save_decorator_counts_to_directory
           ~static_analysis_configuration
           ~scheduler
           callables_to_decorators_map
+      in
+      callables_to_decorators_map
+    else
+      Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory.empty ()
+  in
+
+  let decorator_resolution =
+    if higher_order_call_graph then
+      let step_logger =
+        StepLogger.start
+          ~start_message:"Building defines and call graphs of decorated targets"
+          ~end_message:"Defines and call graphs of decorated targets built"
       in
       let decorator_resolution =
         Interprocedural.CallGraph.DecoratorResolution.Results.resolve_batch_exn
@@ -830,10 +847,6 @@ let run_taint_analysis
           definitions
       in
       let () = StepLogger.finish step_logger in
-      let () =
-        Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory.cleanup
-          callables_to_decorators_map
-      in
       decorator_resolution
     else
       Interprocedural.CallGraph.DecoratorResolution.Results.empty
@@ -867,12 +880,18 @@ let run_taint_analysis
           ~attribute_targets
           ~skip_analysis_targets
           ~decorators:
-            (Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory.empty ()
-            |> Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory.read_only)
+            (Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory.read_only
+               callables_to_decorators_map)
+          ~decorator_resolution
           ~method_kinds:(Interprocedural.CallGraph.MethodKind.SharedMemory.read_only method_kinds)
           ~definitions
           ~callables_to_definitions_map:
-            (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map))
+            (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+          ~create_dependency_for:
+            (if higher_order_call_graph then
+               Interprocedural.CallGraph.AllTargetsUseCase.CallGraphDependency
+            else
+              Interprocedural.CallGraph.AllTargetsUseCase.TaintAnalysisDependency))
   in
   let () = StepLogger.finish step_logger in
 
@@ -899,6 +918,7 @@ let run_taint_analysis
       ~initial_callables
       ~call_graph:original_whole_program_call_graph
       ~overrides:override_graph_heap
+      ~decorator_resolution
   in
   let () = StepLogger.finish step_logger in
 
@@ -958,10 +978,15 @@ let run_taint_analysis
           ~initial_callables
           ~call_graph:whole_program_call_graph
           ~overrides:override_graph_heap
+          ~decorator_resolution:Interprocedural.CallGraph.DecoratorResolution.Results.empty
       in
       let () = StepLogger.finish step_logger in
-      let () = Interprocedural.CallGraph.SharedMemory.cleanup original_define_call_graphs in
-      let () = Interprocedural.CallGraphFixpoint.cleanup ~keep_models:true fixpoint in
+      let () =
+        cleanup_shared_memory_after_call_graph_fixpoint
+          ~callables_to_decorators_map
+          ~original_define_call_graphs
+          ~call_graph_fixpoint:fixpoint
+      in
       dependency_graph, get_define_call_graph, Some fixpoint
     else
       let get_define_call_graph define_call_graphs callable =
