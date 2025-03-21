@@ -16,6 +16,8 @@ use clap::Parser;
 use clap::Subcommand;
 use pyre2::clap_env;
 use pyre2::get_args_expanded;
+use pyre2::globs::FilteredGlobs;
+use pyre2::globs::Globs;
 use pyre2::init_thread_pool;
 use pyre2::init_tracing;
 use pyre2::run::BuckCheckArgs;
@@ -23,7 +25,6 @@ use pyre2::run::CheckArgs;
 use pyre2::run::CommandExitStatus;
 use pyre2::run::LspArgs;
 use pyre2::ConfigFile;
-use pyre2::Globs;
 use pyre2::NotifyWatcher;
 
 #[derive(Debug, Parser)]
@@ -54,7 +55,12 @@ enum Command {
         /// Files to check (glob supported).
         /// If no file is specified, switch to project-checking mode where the files to
         /// check are determined from the closest configuration file.
+        /// When supplied, `project_excludes` in any config files loaded for these files to check
+        /// are ignored, and we use the default excludes unless overridden with the `--project-excludes` flag.
         files: Vec<String>,
+        /// Files to exclude when type checking.
+        #[clap(long, env = clap_env("PROJECT_EXCLUDES"))]
+        project_excludes: Option<Vec<String>>,
         /// Watch for file changes and re-check them.
         #[clap(long, env = clap_env("WATCH"))]
         watch: bool,
@@ -88,7 +94,7 @@ fn exit_on_panic() {
 
 fn get_open_source_config(file: &Path) -> anyhow::Result<ConfigFile> {
     // TODO: Implement upward-searching for open source config.
-    ConfigFile::from_file(file).map_err(|err| {
+    ConfigFile::from_file(file, true).map_err(|err| {
         let file_str = file.display();
         anyhow!("Failed to parse configuration at {file_str}: {err}")
     })
@@ -106,7 +112,7 @@ fn to_exit_code(status: CommandExitStatus) -> ExitCode {
 async fn run_check(
     args: pyre2::run::CheckArgs,
     watch: bool,
-    files_to_check: Globs,
+    files_to_check: FilteredGlobs,
     config_finder: &impl Fn(&Path) -> ConfigFile,
     allow_forget: bool,
 ) -> anyhow::Result<CommandExitStatus> {
@@ -126,6 +132,7 @@ async fn run_check(
 async fn run_check_on_project(
     watch: bool,
     config: Option<PathBuf>,
+    project_excludes: Option<Vec<String>>,
     args: pyre2::run::CheckArgs,
     allow_forget: bool,
 ) -> anyhow::Result<CommandExitStatus> {
@@ -133,10 +140,12 @@ async fn run_check_on_project(
         .map(|c| get_open_source_config(c.as_path()))
         .transpose()?
         .unwrap_or_default();
+    let project_excludes =
+        project_excludes.map_or_else(|| config.project_excludes.clone(), Globs::new);
     run_check(
         args,
         watch,
-        config.project_includes.clone(),
+        FilteredGlobs::new(config.project_includes.clone(), project_excludes),
         &|_| config.clone(),
         allow_forget,
     )
@@ -145,14 +154,17 @@ async fn run_check_on_project(
 
 async fn run_check_on_files(
     files_to_check: Globs,
+    project_excludes: Option<Vec<String>>,
     watch: bool,
     args: pyre2::run::CheckArgs,
     allow_forget: bool,
 ) -> anyhow::Result<CommandExitStatus> {
+    let project_excludes =
+        project_excludes.map_or_else(ConfigFile::default_project_excludes, Globs::new);
     run_check(
         args,
         watch,
-        files_to_check,
+        FilteredGlobs::new(files_to_check, project_excludes),
         // TODO(connernilsen): replace this when we have search paths working
         &|_| ConfigFile::default(),
         allow_forget,
@@ -164,6 +176,7 @@ async fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<Com
     match command {
         Command::Check {
             files,
+            project_excludes,
             watch,
             config,
             args,
@@ -172,9 +185,16 @@ async fn run_command(command: Command, allow_forget: bool) -> anyhow::Result<Com
                 anyhow::bail!("Can either supply `FILES...` OR `--config/-c`, not both.")
             }
             if files.is_empty() {
-                run_check_on_project(watch, config, args, allow_forget).await
+                run_check_on_project(watch, config, project_excludes, args, allow_forget).await
             } else {
-                run_check_on_files(Globs::new(files), watch, args, allow_forget).await
+                run_check_on_files(
+                    Globs::new(files),
+                    project_excludes,
+                    watch,
+                    args,
+                    allow_forget,
+                )
+                .await
             }
         }
         Command::BuckCheck(args) => args.run(),

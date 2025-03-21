@@ -44,11 +44,12 @@ use crate::binding::binding::BindingFunction;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::BindingYield;
 use crate::binding::binding::BindingYieldFrom;
-use crate::binding::binding::ContextManagerKind;
 use crate::binding::binding::EmptyAnswer;
 use crate::binding::binding::FunctionSource;
+use crate::binding::binding::IsAsync;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyExport;
+use crate::binding::binding::LastStmt;
 use crate::binding::binding::NoneIfRecursive;
 use crate::binding::binding::RaisedException;
 use crate::binding::binding::SizeExpectation;
@@ -61,6 +62,7 @@ use crate::error::context::ErrorContext;
 use crate::error::context::TypeCheckContext;
 use crate::error::context::TypeCheckKind;
 use crate::error::kind::ErrorKind;
+use crate::error::style::ErrorStyle;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::ruff::ast::Ast;
 use crate::types::annotation::Annotation;
@@ -83,6 +85,7 @@ use crate::types::type_var::Variance;
 use crate::types::type_var_tuple::TypeVarTuple;
 use crate::types::types::AnyStyle;
 use crate::types::types::Forallable;
+use crate::types::types::SuperObj;
 use crate::types::types::TParamInfo;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -476,6 +479,34 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    /// Given a type, determine the async iteration type; this is the type
+    /// of `x` if we were to loop using `async for x in iterable`.
+    pub fn async_iterate(
+        &self,
+        iterable: &Type,
+        range: TextRange,
+        errors: &ErrorCollector,
+    ) -> Vec<Iterable> {
+        match iterable {
+            Type::Var(v) if let Some(_guard) = self.recurser.recurse(*v) => {
+                self.async_iterate(&self.solver().force_var(*v), range, errors)
+            }
+            _ => {
+                let context = || ErrorContext::AsyncIteration(iterable.clone());
+                let ty = self.unwrap_async_iterable(iterable).unwrap_or_else(|| {
+                    self.error(
+                        errors,
+                        range,
+                        ErrorKind::NotIterable,
+                        None,
+                        context().format(),
+                    )
+                });
+                vec![Iterable::OfType(ty)]
+            }
+        }
+    }
+
     fn check_is_exception(
         &self,
         x: &Expr,
@@ -701,13 +732,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn context_value_enter(
         &self,
         context_manager_type: &Type,
-        kind: ContextManagerKind,
+        kind: IsAsync,
         range: TextRange,
         errors: &ErrorCollector,
         context: Option<&dyn Fn() -> ErrorContext>,
     ) -> Type {
         match kind {
-            ContextManagerKind::Sync => self.call_method_or_error(
+            IsAsync::Sync => self.call_method_or_error(
                 context_manager_type,
                 &dunder::ENTER,
                 range,
@@ -716,7 +747,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 errors,
                 context,
             ),
-            ContextManagerKind::Async => match self.unwrap_awaitable(&self.call_method_or_error(
+            IsAsync::Async => match self.unwrap_awaitable(&self.call_method_or_error(
                 context_manager_type,
                 &dunder::AENTER,
                 range,
@@ -740,7 +771,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn context_value_exit(
         &self,
         context_manager_type: &Type,
-        kind: ContextManagerKind,
+        kind: IsAsync,
         range: TextRange,
         errors: &ErrorCollector,
         context: Option<&dyn Fn() -> ErrorContext>,
@@ -755,18 +786,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             CallArg::Type(&arg3, range),
         ];
         match kind {
-            ContextManagerKind::Sync => self.call_method_or_error(
+            IsAsync::Sync => self.call_method_or_error(
                 context_manager_type,
-                &kind.as_exit_dunder(),
+                &kind.context_exit_dunder(),
                 range,
                 &exit_arg_types,
                 &[],
                 errors,
                 context,
             ),
-            ContextManagerKind::Async => match self.unwrap_awaitable(&self.call_method_or_error(
+            IsAsync::Async => match self.unwrap_awaitable(&self.call_method_or_error(
                 context_manager_type,
-                &kind.as_exit_dunder(),
+                &kind.context_exit_dunder(),
                 range,
                 &exit_arg_types,
                 &[],
@@ -787,16 +818,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     fn context_value(
         &self,
-        context_manager_type: Type,
-        kind: ContextManagerKind,
+        context_manager_type: &Type,
+        kind: IsAsync,
         range: TextRange,
         errors: &ErrorCollector,
     ) -> Type {
         let context = || ErrorContext::BadContextManager(context_manager_type.clone());
         let enter_type =
-            self.context_value_enter(&context_manager_type, kind, range, errors, Some(&context));
+            self.context_value_enter(context_manager_type, kind, range, errors, Some(&context));
         let exit_type =
-            self.context_value_exit(&context_manager_type, kind, range, errors, Some(&context));
+            self.context_value_exit(context_manager_type, kind, range, errors, Some(&context));
         self.check_type(
             &Type::Union(vec![self.stdlib.bool().to_type(), Type::None]),
             &exit_type,
@@ -805,7 +836,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             &|| TypeCheckContext {
                 kind: TypeCheckKind::MagicMethodReturn(
                     context_manager_type.clone(),
-                    kind.as_exit_dunder(),
+                    kind.context_exit_dunder(),
                 ),
                 context: Some(context()),
             },
@@ -1387,15 +1418,44 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::ReturnImplicit(x) => {
+                // Would context have caught something.
+                fn context_catch(x: &Type) -> bool {
+                    match x {
+                        Type::Union(xs) => xs.iter().any(context_catch),
+                        Type::Any(_) => false, // This is what Pyright does
+                        Type::Literal(Lit::Bool(b)) => *b,
+                        Type::None => false,
+                        _ => true, // Most types have something truthy within them
+                    }
+                }
+
                 // TODO: This is a bit of a hack. We want to implement Pyright's behavior where
                 // stub functions allow any annotation, but we also infer a `Never` return type
                 // instead of `None`. Instead, we should just ignore the implicit return for stub
                 // functions when solving Binding::ReturnType. Unfortunately, this leads to
                 // another issue (see comment on Binding::ReturnType).
                 if x.function_source == FunctionSource::Stub
-                    || x.last_exprs
-                        .as_ref()
-                        .is_some_and(|xs| xs.iter().all(|k| self.get_idx(*k).is_never()))
+                    || x.last_exprs.as_ref().is_some_and(|xs| {
+                        xs.iter().all(|(last, k)| {
+                            let e = self.get_idx(*k);
+                            match last {
+                                LastStmt::Expr => e.is_never(),
+                                LastStmt::With(kind) => {
+                                    let res = self.context_value_exit(
+                                        &e,
+                                        *kind,
+                                        TextRange::default(),
+                                        &ErrorCollector::new(
+                                            self.module_info().dupe(),
+                                            ErrorStyle::Never,
+                                        ),
+                                        None,
+                                    );
+                                    !context_catch(&res)
+                                }
+                            }
+                        })
+                    })
                 {
                     Type::never()
                 } else {
@@ -1487,7 +1547,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     None,
                 )
             }
-            Binding::IterableValue(ann, e) => {
+            Binding::IterableValue(ann, e, is_async) => {
                 let ty = ann.map(|k| self.get_idx(k));
                 let tcc: &dyn Fn() -> TypeCheckContext = &|| {
                     let (name, annot_type) =
@@ -1502,14 +1562,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         name, annot_type,
                     ))
                 };
-                let hint = ty
-                    .clone()
-                    .and_then(|x| x.ty().map(|ty| self.stdlib.iterable(ty.clone()).to_type()));
-                let iterables = self.iterate(
-                    &self.expr(e, hint.as_ref().map(|t| (t, tcc)), errors),
-                    e.range(),
-                    errors,
-                );
+                let iterables = if is_async.is_async() {
+                    let hint = ty.clone().and_then(|x| {
+                        x.ty()
+                            .map(|ty| self.stdlib.async_iterable(ty.clone()).to_type())
+                    });
+                    self.async_iterate(
+                        &self.expr(e, hint.as_ref().map(|t| (t, tcc)), errors),
+                        e.range(),
+                        errors,
+                    )
+                } else {
+                    let hint = ty
+                        .clone()
+                        .and_then(|x| x.ty().map(|ty| self.stdlib.iterable(ty.clone()).to_type()));
+                    self.iterate(
+                        &self.expr(e, hint.as_ref().map(|t| (t, tcc)), errors),
+                        e.range(),
+                        errors,
+                    )
+                };
                 let mut values = Vec::new();
                 for iterable in iterables {
                     match iterable {
@@ -1519,14 +1591,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 self.unions(values)
             }
-            Binding::ContextValue(ann, e, kind) => {
-                let context_manager = self.expr_infer(e, errors);
-                let context_value =
-                    self.context_value(context_manager.clone(), *kind, e.range(), errors);
+            Binding::ContextValue(ann, e, range, kind) => {
+                let context_manager = self.get_idx(*e);
+                let context_value = self.context_value(&context_manager, *kind, *range, errors);
                 let ty = ann.map(|k| self.get_idx(k));
                 match ty.as_ref().and_then(|x| x.ty().map(|t| (t, &x.target))) {
                     Some((ty, target)) => {
-                        self.check_type(ty, &context_value, e.range(), errors, &|| {
+                        self.check_type(ty, &context_value, *range, errors, &|| {
                             TypeCheckContext::of_kind(TypeCheckKind::from_annotation_target(target))
                         })
                     }
@@ -1918,36 +1989,45 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         match &*self.get_idx(*cls_binding) {
                             Type::Any(style) => style.propagate(),
                             cls_type @ Type::ClassDef(cls) => {
+                                let error = |obj_cls| {
+                                    self.error(
+                                        errors,
+                                        *range,
+                                        ErrorKind::InvalidSuperCall,
+                                        None,
+                                        format!(
+                                            "Illegal `super({}, {})` call: `{}` is not an instance or subclass of `{}`",
+                                            cls_type, obj_cls, obj_cls, cls_type
+                                        ),
+                                    )
+                                };
                                 match &*self.get_idx(*obj_binding) {
                                     Type::Any(style) => style.propagate(),
                                     Type::ClassType(obj_cls) => {
                                         let lookup_cls = self.get_super_lookup_class(cls, obj_cls);
                                         lookup_cls.map_or_else(
-                                            || {
-                                                self.error(
-                                                    errors,
-                                                    *range,
-                                                    ErrorKind::InvalidSuperCall,
-                                                    None,
-                                                    format!(
-                                                        "Illegal `super({}, {})` call: `{}` is not an instance or subclass of `{}`",
-                                                        cls_type, obj_cls, obj_cls, cls_type
-                                                    ),
-                                                )
-                                            },
+                                            || error(obj_cls),
                                             |lookup_cls| {
-                                                Type::SuperInstance(Box::new(lookup_cls), Box::new(obj_cls.clone()))
+                                                Type::SuperInstance(Box::new((lookup_cls, SuperObj::Instance(obj_cls.clone()))))
+                                            },
+                                        )
+                                    }
+                                    Type::Type(box Type::ClassType(obj_cls)) => {
+                                        let lookup_cls = self.get_super_lookup_class(cls, obj_cls);
+                                        lookup_cls.map_or_else(
+                                            || error(obj_cls),
+                                            |lookup_cls| {
+                                                Type::SuperInstance(Box::new((lookup_cls, SuperObj::Class(obj_cls.class_object().dupe()))))
                                             },
                                         )
                                     }
                                     t => {
-                                        // TODO: handle the case when the second argument is a class
                                         self.error(
                                             errors,
                                             *range,
                                             ErrorKind::InvalidArgument,
                                             None,
-                                            format!("Expected second argument to `super` to be a class instance, got `{}`", self.for_display(t.clone())),
+                                            format!("Expected second argument to `super` to be a class object or instance, got `{}`", self.for_display(t.clone())),
                                         )
                                     }
                                 }
@@ -1964,7 +2044,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             ),
                         }
                     }
-                    SuperStyle::ImplicitArgs(self_binding) => {
+                    SuperStyle::ImplicitArgs(self_binding, method) => {
                         match &self.get_idx(*self_binding).0 {
                             Some(obj_cls) => {
                                 let obj_type = ClassType::new(
@@ -1973,7 +2053,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 );
                                 let lookup_cls =
                                     self.get_super_lookup_class(obj_cls, &obj_type).unwrap();
-                                Type::SuperInstance(Box::new(lookup_cls), Box::new(obj_type))
+                                let obj = if *method == dunder::NEW {
+                                    // __new__ is special: it's the only static method in which the
+                                    // no-argument form of super is allowed.
+                                    SuperObj::Class(obj_cls.dupe())
+                                } else {
+                                    SuperObj::Instance(obj_type)
+                                };
+                                Type::SuperInstance(Box::new((lookup_cls, obj)))
                             }
                             None => Type::any_implicit(),
                         }
@@ -2016,12 +2103,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     let yield_ty = if let Some(expr) = x.value.as_ref() {
                         self.expr(
                             expr,
-                            Some((&yield_hint, &|| TypeCheckContext::unknown())),
+                            Some((&yield_hint, &|| {
+                                TypeCheckContext::of_kind(TypeCheckKind::YieldValue)
+                            })),
                             errors,
                         )
                     } else {
                         self.check_type(&yield_hint, &Type::None, x.range, errors, &|| {
-                            TypeCheckContext::unknown()
+                            TypeCheckContext::of_kind(TypeCheckKind::UnexpectedBareYield)
                         })
                     };
                     Arc::new(YieldResult { yield_ty, send_ty })
@@ -2087,7 +2176,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     YieldFromResult::any_error()
                 };
                 if let Some(want) = want {
-                    self.check_type(want, &ty, x.range, errors, &|| TypeCheckContext::unknown());
+                    self.check_type(want, &ty, x.range, errors, &|| {
+                        TypeCheckContext::of_kind(TypeCheckKind::YieldFrom)
+                    });
                 }
                 Arc::new(res)
             }

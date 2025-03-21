@@ -95,12 +95,12 @@ class Return: pass
 class Yield2: pass
 
 def my_generator_nested() -> Generator[Yield2, Send, Return]:
-    yield Yield() # E: EXPECTED Yield <: Yield2
+    yield Yield() # E: Type of yielded value `Yield` is not assignable to declared return type `Yield2`
     return Return()
 
 def my_generator() -> Generator[Yield, Send, Return]:
     s = yield Yield()
-    y = yield from  my_generator_nested() # E: EXPECTED Generator[Yield2, Send, Return] <: Generator[Yield, Send, Return]
+    y = yield from  my_generator_nested() # E: Cannot yield from a generator of type `Generator[Yield2, Send, Return]`
 
     assert_type(s, Send)
     assert_type(y, Return)
@@ -165,6 +165,17 @@ from typing import AsyncGenerator, assert_type, Coroutine, Any
 async def async_count_up_to() -> AsyncGenerator[int, None]:
     yield 2
 assert_type(async_count_up_to(), AsyncGenerator[int, None])
+"#,
+);
+
+testcase!(
+    test_bare_yield,
+    r#"
+from typing import Generator
+
+def bare_yield() -> Generator[int, None, None]:
+    yield  # E: Expected to yield a value of type `int`
+
 "#,
 );
 
@@ -298,4 +309,20 @@ def f() -> Generator[None, None, int]:
     yield None
     return "oops"  # E: Returned type `Literal['oops']` is not assignable to declared return type `int`
     "#,
+);
+
+testcase!(
+    test_async_iterate,
+    r#"
+from typing import AsyncGenerator, assert_type
+async def gen() -> AsyncGenerator[int, None]:
+    yield 2
+async def test() -> None:
+    async for x in gen():
+        assert_type(x, int)
+    async for y in [1, 2, 3]:  # E: Type `list[int]` is not an async iterable
+        pass
+    for z in gen():  # E: Type `AsyncGenerator[int, None]` is not iterable
+        pass
+"#,
 );

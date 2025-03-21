@@ -31,6 +31,7 @@ impl ErrorContext {
                 )
             }
             Self::Iteration(ty) => format!("Type `{ty}` is not iterable"),
+            Self::AsyncIteration(ty) => format!("Type `{ty}` is not an async iterable"),
             Self::Await(ty) => format!("Type `{ty}` is not awaitable"),
             Self::Index(ty) => format!("Cannot index into `{ty}`"),
             Self::SetItem(ty) => format!("Item assignment is not supported on `{ty}`"),
@@ -156,6 +157,20 @@ impl TypeCheckKind {
             Self::ExceptionClass => format!(
                 "Invalid exception class: `{}` does not inherit from `{}`",
                 ctx.display(got),
+                ctx.display(want),
+            ),
+            Self::YieldValue => format!(
+                "Type of yielded value `{}` is not assignable to declared return type `{}`",
+                ctx.display(got),
+                ctx.display(want),
+            ),
+            Self::YieldFrom => format!(
+                "Cannot yield from a generator of type `{}` because it does not match the declared return type `{}`",
+                ctx.display(got),
+                ctx.display(want),
+            ),
+            Self::UnexpectedBareYield => format!(
+                "Expected to yield a value of type `{}`, but a bare `yield` gives `None` instead",
                 ctx.display(want),
             ),
             Self::Unknown => {

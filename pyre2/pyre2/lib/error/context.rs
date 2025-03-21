@@ -29,6 +29,8 @@ pub enum ErrorContext {
     BinaryOp(String, Type, Type),
     /// for x in y: ...
     Iteration(Type),
+    /// async for x in y: ...
+    AsyncIteration(Type),
     /// await x
     Await(Type),
     /// x[y]
@@ -109,6 +111,12 @@ pub enum TypeCheckKind {
     AnnAssign,
     /// Class used in an `except C` clause.
     ExceptionClass,
+    /// Yielding a value that conflicts with the return annotation.
+    YieldValue,
+    /// Yielding from an iterator that conflicts with the return annotation.
+    YieldFrom,
+    /// Bare yield when the return annotation expects an actual value.
+    UnexpectedBareYield,
     // TODO: categorize all type checks and remove Unknown and Test designations
     Unknown,
     #[allow(dead_code)]

@@ -48,6 +48,7 @@ use crate::types::types::BoundMethodType;
 use crate::types::types::CalleeKind;
 use crate::types::types::Forall;
 use crate::types::types::Forallable;
+use crate::types::types::SuperObj;
 use crate::types::types::Type;
 use crate::util::visit::VisitMut;
 
@@ -85,7 +86,7 @@ pub struct ClassField(ClassFieldInner);
 
 impl VisitMut<Type> for ClassField {
     fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
-        self.visit_mut(f);
+        self.0.visit0_mut(f);
     }
 }
 
@@ -104,6 +105,26 @@ enum ClassFieldInner {
         // Descriptor setter method, if there is one. `None` indicates no setter.
         descriptor_setter: Option<Type>,
     },
+}
+
+impl VisitMut<Type> for ClassFieldInner {
+    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
+        match self {
+            ClassFieldInner::Simple {
+                ty,
+                annotation,
+                descriptor_getter,
+                descriptor_setter,
+                initialization: _,
+                readonly: _,
+            } => {
+                ty.visit0_mut(f);
+                annotation.visit0_mut(f);
+                descriptor_getter.visit0_mut(f);
+                descriptor_setter.visit0_mut(f);
+            }
+        }
+    }
 }
 
 impl Display for ClassField {
@@ -155,26 +176,6 @@ impl ClassField {
             descriptor_getter: None,
             descriptor_setter: None,
         })
-    }
-
-    pub fn visit_mut(&mut self, mut f: &mut dyn FnMut(&mut Type)) {
-        match &mut self.0 {
-            ClassFieldInner::Simple {
-                ty,
-                annotation,
-                descriptor_getter,
-                descriptor_setter,
-                initialization: _,
-                readonly: _,
-            } => {
-                f(ty);
-                for a in annotation.iter_mut() {
-                    a.visit_mut(f);
-                }
-                descriptor_getter.iter_mut().for_each(&mut f);
-                descriptor_setter.iter_mut().for_each(f);
-            }
-        }
     }
 
     fn initialization(&self) -> ClassFieldInitialization {
@@ -906,11 +907,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn get_super_attribute(
         &self,
         lookup_cls: &ClassType,
-        super_obj: &ClassType,
+        super_obj: &SuperObj,
         name: &Name,
     ) -> Option<Attribute> {
-        self.get_class_member(lookup_cls.class_object(), name)
-            .map(|member| self.as_instance_attribute(Arc::unwrap_or_clone(member.value), super_obj))
+        let member = self.get_class_member(lookup_cls.class_object(), name);
+        match super_obj {
+            SuperObj::Instance(obj) => member
+                .map(|member| self.as_instance_attribute(Arc::unwrap_or_clone(member.value), obj)),
+            SuperObj::Class(obj) => member
+                .map(|member| self.as_class_attribute(Arc::unwrap_or_clone(member.value), obj)),
+        }
     }
 
     /// Gets an attribute from a class definition.

@@ -23,12 +23,13 @@ use crate::binding::binding::AnnotationTarget;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingExpect;
-use crate::binding::binding::ContextManagerKind;
+use crate::binding::binding::IsAsync;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyExpect;
 use crate::binding::binding::RaisedException;
 use crate::binding::bindings::BindingsBuilder;
+use crate::binding::bindings::LookupKind;
 use crate::binding::narrow::NarrowOps;
 use crate::binding::scope::FlowStyle;
 use crate::binding::scope::LoopExit;
@@ -203,6 +204,48 @@ impl<'a> BindingsBuilder<'a> {
             Identifier::new(name.id.clone(), name.range()),
             base.clone(),
         );
+    }
+
+    fn ensure_mutable_name(&mut self, x: &ExprName) {
+        let name = Ast::expr_name_identifier(x.clone());
+        let binding = self
+            .lookup_name(&name.id, LookupKind::Mutable)
+            .map(Binding::Forward);
+        self.ensure_name(&name, binding, LookupKind::Mutable);
+    }
+
+    fn ensure_nonlocal_name(&mut self, name: &Identifier) {
+        let value = self
+            .lookup_name(&name.id, LookupKind::Nonlocal)
+            .map(Binding::Forward);
+        let key = Key::Definition(ShortIdentifier::new(name));
+        match value {
+            Ok(value) => {
+                self.table.insert(key, value);
+            }
+            Err(error) => {
+                // Record a type error and fall back to `Any`.
+                self.error(name.range, error.message(name), ErrorKind::UnknownName);
+                self.table.insert(key, Binding::AnyType(AnyStyle::Error));
+            }
+        }
+    }
+
+    fn ensure_global_name(&mut self, name: &Identifier) {
+        let value = self
+            .lookup_name(&name.id, LookupKind::Global)
+            .map(Binding::Forward);
+        let key = Key::Definition(ShortIdentifier::new(name));
+        match value {
+            Ok(value) => {
+                self.table.insert(key, value);
+            }
+            Err(error) => {
+                // Record a type error and fall back to `Any`.
+                self.error(name.range, error.message(name), ErrorKind::UnknownName);
+                self.table.insert(key, Binding::AnyType(AnyStyle::Error));
+            }
+        }
     }
 
     /// Evaluate the statements and update the bindings.
@@ -475,7 +518,8 @@ impl<'a> BindingsBuilder<'a> {
             Stmt::For(mut x) => {
                 self.setup_loop(x.range, &NarrowOps::new());
                 self.ensure_expr(&mut x.iter);
-                let make_binding = |k| Binding::IterableValue(k, *x.iter.clone());
+                let make_binding =
+                    |k| Binding::IterableValue(k, *x.iter.clone(), IsAsync::new(x.is_async));
                 self.bind_target(&x.target, &make_binding, None);
                 self.ensure_expr(&mut x.target);
                 self.stmts(x.body);
@@ -541,23 +585,25 @@ impl<'a> BindingsBuilder<'a> {
                 self.scopes.current_mut().flow = self.merge_flow(branches, range);
             }
             Stmt::With(x) => {
-                let kind = if x.is_async {
-                    ContextManagerKind::Async
-                } else {
-                    ContextManagerKind::Sync
-                };
+                let kind = IsAsync::new(x.is_async);
                 for mut item in x.items {
                     self.ensure_expr(&mut item.context_expr);
+                    let item_range = item.range();
+                    let expr_range = item.context_expr.range();
+                    let context_idx = self.table.insert(
+                        Key::ContextExpr(expr_range),
+                        Binding::Expr(None, item.context_expr),
+                    );
                     if let Some(mut opts) = item.optional_vars {
                         let make_binding = |k: Option<Idx<KeyAnnotation>>| {
-                            Binding::ContextValue(k, item.context_expr.clone(), kind)
+                            Binding::ContextValue(k, context_idx, expr_range, kind)
                         };
                         self.bind_target(&opts, &make_binding, None);
                         self.ensure_expr(&mut opts);
                     } else {
                         self.table.insert(
-                            Key::Anon(item.range()),
-                            Binding::ContextValue(None, item.context_expr, kind),
+                            Key::Anon(item_range),
+                            Binding::ContextValue(None, context_idx, expr_range, kind),
                         );
                     }
                 }
@@ -763,8 +809,16 @@ impl<'a> BindingsBuilder<'a> {
                     self.bind_unimportable_names(&x);
                 }
             }
-            Stmt::Global(x) => self.todo("Bindings::stmt", &x),
-            Stmt::Nonlocal(x) => self.todo("Bindings::stmt", &x),
+            Stmt::Global(x) => {
+                for name in x.names {
+                    self.ensure_global_name(&name);
+                }
+            }
+            Stmt::Nonlocal(x) => {
+                for name in x.names {
+                    self.ensure_nonlocal_name(&name);
+                }
+            }
             Stmt::Expr(mut x) => {
                 self.ensure_expr(&mut x.value);
                 self.table.insert(

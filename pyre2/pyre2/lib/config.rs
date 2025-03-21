@@ -10,12 +10,15 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::bail;
+use itertools::Itertools;
 use serde::Deserialize;
+use toml::Table;
 
+use crate::globs::Globs;
 use crate::metadata::PythonVersion;
 use crate::metadata::RuntimeMetadata;
 use crate::metadata::DEFAULT_PYTHON_PLATFORM;
-use crate::Globs;
 
 static PYPROJECT_FILE_NAME: &str = "pyproject.toml";
 
@@ -25,11 +28,31 @@ pub fn set_if_some<T: Clone>(config_field: &mut T, value: Option<&T>) {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
+#[serde(transparent)]
+pub struct ExtraConfigs(Table);
+
+// `Value` types in `Table` might not be `Eq`, but we don't actually care about that w.r.t. `ConfigFile`
+impl Eq for ExtraConfigs {}
+
+impl PartialEq for ExtraConfigs {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Deserialize, Clone)]
 pub struct ConfigFile {
     /// Files that should be counted as sources (e.g. user-space code).
+    /// NOTE: this is never replaced with CLI args in this config, but may be overridden by CLI args where used.
     #[serde(default = "ConfigFile::default_project_includes")]
     pub project_includes: Globs,
+
+    /// Files that should be excluded as sources (e.g. user-space code). These take
+    /// precedence over `project_includes`.
+    /// NOTE: this is never replaced with CLI args in this config, but may be overridden by CLI args where used.
+    #[serde(default = "ConfigFile::default_project_excludes")]
+    pub project_excludes: Globs,
 
     /// corresponds to --search-path in Args, the list of directories where imports are
     /// found (including type checked files).
@@ -50,6 +73,10 @@ pub struct ConfigFile {
     // TODO(connernilsen): use python_executable if not set
     #[serde(default)]
     pub site_package_path: Vec<PathBuf>,
+
+    /// Any unknown config items
+    #[serde(default, flatten)]
+    pub extras: ExtraConfigs,
 }
 
 impl Default for ConfigFile {
@@ -60,6 +87,8 @@ impl Default for ConfigFile {
             python_version: PythonVersion::default(),
             site_package_path: Vec::new(),
             project_includes: Self::default_project_includes(),
+            project_excludes: Self::default_project_excludes(),
+            extras: Self::default_extras(),
         }
     }
 }
@@ -69,12 +98,20 @@ impl ConfigFile {
         Globs::new(vec!["".to_owned()])
     }
 
+    pub fn default_project_excludes() -> Globs {
+        Globs::new(vec!["**/__pycache__/**".to_owned(), "**/.*".to_owned()])
+    }
+
     pub fn default_python_platform() -> String {
         DEFAULT_PYTHON_PLATFORM.to_owned()
     }
 
     pub fn default_search_path() -> Vec<PathBuf> {
         vec![PathBuf::from("")]
+    }
+
+    pub fn default_extras() -> ExtraConfigs {
+        ExtraConfigs(Table::new())
     }
 
     pub fn get_runtime_metadata(&self) -> RuntimeMetadata {
@@ -97,9 +134,10 @@ impl ConfigFile {
                 base.push(site_package_path.as_path());
                 *site_package_path = base;
             });
+        self.project_excludes = self.project_excludes.clone().from_root(config_root);
     }
 
-    pub fn from_file(config_path: &Path) -> anyhow::Result<ConfigFile> {
+    pub fn from_file(config_path: &Path, error_on_extras: bool) -> anyhow::Result<ConfigFile> {
         // TODO(connernilsen): fix return type and handle config searching
         let config_str = fs::read_to_string(config_path)?;
         let mut config = if config_path.file_name() == Some(OsStr::new(&PYPROJECT_FILE_NAME)) {
@@ -107,6 +145,11 @@ impl ConfigFile {
         } else {
             Self::parse_config(&config_str)
         }?;
+
+        if error_on_extras && !config.extras.0.is_empty() {
+            let extra_keys = config.extras.0.keys().join(", ");
+            bail!("Extra keys found in config: {extra_keys}");
+        }
 
         if let Some(config_root) = config_path.parent() {
             config.rewrite_with_path_to_config(config_root);
@@ -129,13 +172,13 @@ impl ConfigFile {
         #[derive(Debug, Deserialize)]
         struct Tool {
             #[serde(default)]
-            pub pyre: Option<ConfigFile>,
+            pub pyrefly: Option<ConfigFile>,
         }
 
         let maybe_config = toml::from_str::<PyProject>(config_str)
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
             .tool
-            .and_then(|c| c.pyre);
+            .and_then(|c| c.pyrefly);
         // TODO(connernilsen): we don't want to return a default config here, we should keep searching
         Ok(maybe_config.unwrap_or_else(ConfigFile::default))
     }
@@ -143,57 +186,62 @@ impl ConfigFile {
 
 #[cfg(test)]
 mod tests {
+    use toml::Value;
+
     use super::*;
 
     #[test]
-    fn deserialize_pyre_config() {
+    fn deserialize_pyrefly_config() {
         let config_str = "
-            project_includes = [\"./tests\", \"./implementation\"]
+            project_includes = [\"tests\", \"./implementation\"]
+            project_excludes = [\"tests/untyped/**\"]
+            search_path = [\"../..\"]
             python_platform = \"darwin\"
             python_version = \"1.2.3\"
+            site_package_path = [\"venv/lib/python1.2.3/site-packages\"]
         ";
         let config = ConfigFile::parse_config(config_str).unwrap();
         assert_eq!(
             config,
             ConfigFile {
                 project_includes: Globs::new(vec![
-                    "./tests".to_owned(),
+                    "tests".to_owned(),
                     "./implementation".to_owned()
                 ]),
+                project_excludes: Globs::new(vec!["tests/untyped/**".to_owned()]),
+                search_path: vec![PathBuf::from("../..")],
                 python_platform: "darwin".to_owned(),
                 python_version: PythonVersion::new(1, 2, 3),
-                ..ConfigFile::default()
+                site_package_path: vec![PathBuf::from("venv/lib/python1.2.3/site-packages")],
+                extras: ConfigFile::default_extras(),
             },
         );
     }
 
     #[test]
-    fn deserialize_pyre_config_defaults() {
+    fn deserialize_pyrefly_config_defaults() {
         let config_str = "";
         let config = ConfigFile::parse_config(config_str).unwrap();
         assert_eq!(config, ConfigFile::default());
     }
 
     #[test]
-    fn deserialize_pyre_config_with_unknown() {
+    fn deserialize_pyrefly_config_with_unknown() {
         let config_str = "
-            unknown = \"value\"
+            laszewo = \"good kids\"
             python_platform = \"windows\"
         ";
         let config = ConfigFile::parse_config(config_str).unwrap();
         assert_eq!(
-            config,
-            ConfigFile {
-                python_platform: "windows".to_owned(),
-                ..ConfigFile::default()
-            }
-        )
+            config.extras.0,
+            Table::from_iter([("laszewo".to_owned(), Value::String("good kids".to_owned()))])
+        );
     }
 
     #[test]
     fn deserialize_pyproject_toml() {
         let config_str = "
-            [tool.pyre]
+            [tool.pyrefly]
             project_includes = [\"./tests\", \"./implementation\"]
             python_platform = \"darwin\"
             python_version = \"1.2.3\"
@@ -228,7 +276,7 @@ mod tests {
             table1_value = 2
             [tool.pysa]
             pysa_value = 2
-            [tool.pyre]
+            [tool.pyrefly]
             python_version = \"1.2.3\"
         ";
         let config = ConfigFile::parse_pyproject_toml(config_str).unwrap();
@@ -242,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_pyproject_toml_without_pyre() {
+    fn deserialize_pyproject_toml_without_pyrefly() {
         let config_str = "
             top_level = 1
             [table1]
@@ -255,6 +303,25 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_pyproject_toml_with_unknown_in_pyrefly() {
+        let config_str = "
+            top_level = 1
+            [table1]
+            table1_value = 2
+            [tool.pysa]
+            pysa_value = 2
+            [tool.pyrefly]
+            python_version = \"1.2.3\"
+            inzo = \"overthinker\"
+        ";
+        let config = ConfigFile::parse_pyproject_toml(config_str).unwrap();
+        assert_eq!(
+            config.extras.0,
+            Table::from_iter([("inzo".to_owned(), Value::String("overthinker".to_owned()))])
+        );
+    }
+
+    #[test]
     fn test_rewrite_with_path_to_config() {
         let mut config = ConfigFile::default();
         let path_str = "path/to/my/config".to_owned();
@@ -262,7 +329,11 @@ mod tests {
         config.rewrite_with_path_to_config(&test_path);
 
         let expected_config = ConfigFile {
-            project_includes: Globs::new(vec![path_str]),
+            project_includes: Globs::new(vec![path_str.clone()]),
+            project_excludes: Globs::new(vec![
+                path_str.clone() + "/**/__pycache__/**",
+                path_str.clone() + "/**/.*",
+            ]),
             search_path: vec![test_path.clone(), test_path.clone()],
             ..ConfigFile::default()
         };

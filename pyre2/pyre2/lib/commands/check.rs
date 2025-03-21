@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::BufWriter;
@@ -19,6 +20,7 @@ use clap::Parser;
 use clap::ValueEnum;
 use dupe::Dupe;
 use starlark_map::small_map::SmallMap;
+use starlark_map::small_set::SmallSet;
 use tracing::info;
 
 use crate::clap_env;
@@ -29,6 +31,7 @@ use crate::config::ConfigFile;
 use crate::error::error::Error;
 use crate::error::legacy::LegacyErrors;
 use crate::metadata::PythonVersion;
+use crate::metadata::RuntimeMetadata;
 use crate::module::bundled::typeshed;
 use crate::module::finder::find_module;
 use crate::module::module_name::ModuleName;
@@ -50,7 +53,6 @@ use crate::util::fs_anyhow;
 use crate::util::listing::FileList;
 use crate::util::memory::MemoryUsageTrace;
 use crate::util::prelude::SliceExt;
-use crate::util::prelude::VecExt;
 use crate::util::watcher::CategorizedEvents;
 use crate::util::watcher::Watcher;
 
@@ -86,6 +88,9 @@ pub struct Args {
     report_binding_memory: Option<PathBuf>,
     #[clap(long, env = clap_env("REPORT_TRACE"))]
     report_trace: Option<PathBuf>,
+    /// Process each module individually to figure out how long each step takes.
+    #[clap(long, env = clap_env("REPORT_TIMINGS"))]
+    report_timings: Option<PathBuf>,
     /// Count the number of each error kind. Prints the top N errors, sorted by count, or all errors if N is not specified.
     #[clap(
         long,
@@ -175,6 +180,93 @@ fn create_loader(loader_inputs: LoaderInputs) -> LoaderId {
     LoaderId::new(CheckLoader { loader_inputs })
 }
 
+/// A data structure to facilitate the creation of handles for all the files we want to check.
+struct Handles {
+    /// We want to have different handles to share the same loader if the corresponding files share the same search path.
+    /// This field keeps track of the loaders we've created so far and what search paths they correspond to.
+    loader_factory: SmallMap<LoaderInputs, LoaderId>,
+    /// A mapping from a file to all other information needed to create a `Handle`.
+    /// The value type is basically everything else in `Handle` except for the file path.
+    path_data: HashMap<PathBuf, (ModuleName, RuntimeMetadata, LoaderId)>,
+}
+
+impl Handles {
+    pub fn new(files: Vec<PathBuf>, config_finder: &impl Fn(&Path) -> ConfigFile) -> Self {
+        let mut handles = Self {
+            loader_factory: SmallMap::new(),
+            path_data: HashMap::new(),
+        };
+        for file in files {
+            handles.register_file(file, config_finder);
+        }
+        handles
+    }
+
+    fn register_file(
+        &mut self,
+        path: PathBuf,
+        config_finder: &impl Fn(&Path) -> ConfigFile,
+    ) -> &(ModuleName, RuntimeMetadata, LoaderId) {
+        let config = config_finder(&path);
+        let loader = self.get_or_register_loader(&config);
+        let module_name = module_from_path(&path, &config.search_path);
+        self.path_data
+            .entry(path)
+            .or_insert((module_name, config.get_runtime_metadata(), loader))
+    }
+
+    fn get_or_register_loader(&mut self, config: &ConfigFile) -> LoaderId {
+        let key = LoaderInputs {
+            search_path: config.search_path.clone(),
+            site_package_path: config.site_package_path.clone(),
+        };
+        if let Some(loader) = self.loader_factory.get_mut(&key) {
+            loader.dupe()
+        } else {
+            let loader = create_loader(key.clone());
+            self.loader_factory.insert(key, loader.dupe());
+            loader
+        }
+    }
+
+    pub fn all(&self, specified_require: Require) -> Vec<(Handle, Require)> {
+        self.path_data
+            .iter()
+            .map(|(path, (module_name, runtime_metadata, loader))| {
+                (
+                    Handle::new(
+                        module_name.dupe(),
+                        ModulePath::filesystem(path.to_path_buf()),
+                        runtime_metadata.dupe(),
+                        loader.dupe(),
+                    ),
+                    specified_require,
+                )
+            })
+            .collect()
+    }
+
+    pub fn update(
+        &mut self,
+        created_files: &Vec<PathBuf>,
+        removed_files: &Vec<PathBuf>,
+        config_finder: &impl Fn(&Path) -> ConfigFile,
+    ) -> Vec<LoaderId> {
+        let mut result: SmallSet<LoaderId> = SmallSet::new();
+        for file in created_files {
+            let (_, _, loader) = self.register_file(file.to_path_buf(), config_finder);
+            result.insert(loader.dupe());
+        }
+        for file in removed_files {
+            if let Some((_, _, loader)) = self.path_data.remove(file) {
+                result.insert(loader);
+            }
+            // NOTE: Need to garbage-collect unreachable Loaders at some point
+        }
+        result.into_iter().collect()
+    }
+}
+
 struct RequireLevels {
     specified: Require,
     default: Require,
@@ -198,7 +290,7 @@ async fn get_watcher_events(watcher: &mut impl Watcher) -> anyhow::Result<Catego
 impl Args {
     pub fn run_once(
         self,
-        files_to_check: impl FileList + Clone,
+        files_to_check: impl FileList,
         config_finder: &impl Fn(&Path) -> ConfigFile,
         allow_forget: bool,
     ) -> anyhow::Result<CommandExitStatus> {
@@ -208,15 +300,22 @@ impl Args {
         }
 
         let mut holder = Forgetter::new(State::new(), allow_forget);
+        let handles = Handles::new(
+            expanded_file_list,
+            &self.overriding_config_finder(config_finder),
+        );
         let require_levels = self.get_required_levels();
-        let handles = self.get_handles(expanded_file_list, config_finder, require_levels.specified);
-        self.run_inner(holder.as_mut(), &handles, require_levels.default)
+        self.run_inner(
+            holder.as_mut(),
+            &handles.all(require_levels.specified),
+            require_levels.default,
+        )
     }
 
     pub async fn run_watch(
         self,
         mut watcher: impl Watcher,
-        files_to_check: impl FileList + Clone,
+        files_to_check: impl FileList,
         config_finder: &impl Fn(&Path) -> ConfigFile,
     ) -> anyhow::Result<()> {
         // TODO: We currently make 2 unrealistic assumptions, which should be fixed in the future:
@@ -224,16 +323,29 @@ impl Args {
         // - Config search is stable across incremental runs.
         let expanded_file_list = files_to_check.files()?;
         let require_levels = self.get_required_levels();
-        let handles = self.get_handles(expanded_file_list, config_finder, require_levels.specified);
+        let config_finder = self.overriding_config_finder(config_finder);
+        let mut handles = Handles::new(expanded_file_list, &config_finder);
         let mut state = State::new();
         loop {
-            let res = self.run_inner(&mut state, &handles, require_levels.default);
+            let res = self.run_inner(
+                &mut state,
+                &handles.all(require_levels.specified),
+                require_levels.default,
+            );
             if let Err(e) = res {
                 eprintln!("{e:#}");
             }
             let events = get_watcher_events(&mut watcher).await?;
-            // TODO: Handle add/remove events.
             state.invalidate_disk(&events.modified);
+
+            // TODO: We should filter create/remove events with `files_to_check`
+            state.invalidate_disk(&events.created);
+            state.invalidate_disk(&events.removed);
+            let invalidated_loaders =
+                handles.update(&events.created, &events.removed, &config_finder);
+            for loader in invalidated_loaders {
+                state.invalidate_find(&loader);
+            }
         }
     }
 
@@ -245,6 +357,17 @@ impl Args {
             &mut config.site_package_path,
             self.site_package_path.as_ref(),
         );
+    }
+
+    fn overriding_config_finder<'a>(
+        &'a self,
+        config_finder: &'a impl Fn(&Path) -> ConfigFile,
+    ) -> impl Fn(&Path) -> ConfigFile + 'a {
+        move |path| {
+            let mut config = config_finder(path);
+            self.override_config(&mut config);
+            config
+        }
     }
 
     fn get_required_levels(&self) -> RequireLevels {
@@ -265,58 +388,6 @@ impl Args {
                 Require::Exports
             },
         }
-    }
-
-    fn get_handles(
-        &self,
-        expanded_file_list: Vec<PathBuf>,
-        config_finder: &impl Fn(&Path) -> ConfigFile,
-        specified_require: Require,
-    ) -> Vec<(Handle, Require)> {
-        let files_and_configs = expanded_file_list.into_map(|path| {
-            let mut config = config_finder(&path);
-            self.override_config(&mut config);
-            (path, config)
-        });
-        // We want to partition the files to check by their associated search roots, so we can
-        // create a separate loader for each partition.
-        let mut partition_by_loader_inputs: SmallMap<LoaderInputs, Vec<(PathBuf, ConfigFile)>> =
-            SmallMap::new();
-        for (path, config) in files_and_configs {
-            let key = LoaderInputs {
-                search_path: config.search_path.clone(),
-                site_package_path: config.site_package_path.clone(),
-            };
-            partition_by_loader_inputs
-                .entry(key)
-                .or_default()
-                .push((path, config));
-        }
-
-        partition_by_loader_inputs
-            .into_iter()
-            .flat_map(|(loader_inputs, files_and_configs)| {
-                let files_with_module_name_and_metadata =
-                    files_and_configs.into_map(|(path, config)| {
-                        let module_name = module_from_path(&path, &loader_inputs.search_path);
-                        (path, module_name, config.get_runtime_metadata())
-                    });
-                let loader = create_loader(loader_inputs);
-                files_with_module_name_and_metadata.into_map(
-                    |(path, module_name, runtime_metadata)| {
-                        (
-                            Handle::new(
-                                module_name,
-                                ModulePath::filesystem(path),
-                                runtime_metadata,
-                                loader.dupe(),
-                            ),
-                            specified_require,
-                        )
-                    },
-                )
-            })
-            .collect()
     }
 
     fn run_inner(
@@ -353,6 +424,10 @@ impl Args {
             number_thousands(state.line_count()),
             memory_trace.peak()
         );
+        if let Some(timings) = &self.report_timings {
+            eprintln!("Computing timing information");
+            state.report_timings(timings, Some(Box::new(ProgressBarSubscriber::new())))?;
+        }
         if let Some(debug_info) = &self.debug_info {
             let mut output =
                 serde_json::to_string_pretty(&state.debug_info(&handles.map(|x| x.0.dupe())))?;

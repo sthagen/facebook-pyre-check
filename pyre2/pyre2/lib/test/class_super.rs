@@ -87,7 +87,7 @@ class C:
     def f2(self):
         super(42, self)  # E: Expected first argument to `super` to be a class object, got `Literal[42]`
     def f3(self):
-        super(C, int | str)  # E: Expected second argument to `super` to be a class instance, got `type[int | str]`
+        super(C, int | str)  # E: Expected second argument to `super` to be a class object or instance, got `type[int | str]`
     def f4(self):
         super(Unrelated, self)  # E: Illegal `super(type[Unrelated], C)` call: `C` is not an instance or subclass of `type[Unrelated]`
     "#,
@@ -127,5 +127,72 @@ super(A, A())
 super()  # E: `super` call with no arguments is valid only inside a method
 class B:
     super()  # E: `super` call with no arguments is valid only inside a method
+    "#,
+);
+
+testcase!(
+    test_dunder_new_implicit,
+    r#"
+class A:
+    def __new__(cls, x):
+        return super().__new__(cls)
+    def __init__(self, x):
+        self.x = x
+
+class B(A):
+    def __new__(cls, x):
+        return super().__new__(cls, x)
+    def __init__(self, x):
+        super().__init__(x)
+    "#,
+);
+
+testcase!(
+    test_dunder_new_explicit_with_annotated_cls,
+    r#"
+from typing import Self
+
+class A:
+    def __new__(cls: type[Self], x):
+        return super(A, cls).__new__(cls)
+    def __init__(self, x):
+        self.x = x
+
+class B(A):
+    def __new__(cls: type[Self], x):
+        return super(B, cls).__new__(cls, x)
+    def __init__(self, x):
+        super().__init__(x)
+    "#,
+);
+
+testcase_with_bug!(
+    "There should be no errors",
+    test_dunder_new_explicit_with_unannotated_cls,
+    r#"
+from typing import Self
+
+class A:
+    def __new__(cls, x):
+        return super(A, cls).__new__(cls)  # E: Expected second argument to `super` to be a class object or instance, got `@_`
+    def __init__(self, x):
+        self.x = x
+
+class B(A):
+    def __new__(cls, x):
+        return super(B, cls).__new__(cls, x)  # E: Expected second argument to `super` to be a class object or instance, got `@_`
+    def __init__(self, x):
+        super().__init__(x)
+    "#,
+);
+
+testcase_with_bug!(
+    "There should be no errors",
+    test_super_new_return,
+    r#"
+from typing import Self
+class A:
+    def __new__(cls) -> Self:
+        return super().__new__(cls)  # E: Returned type `object` is not assignable to declared return type `A`
     "#,
 );

@@ -168,6 +168,8 @@ pub enum Key {
     Anon(TextRange),
     /// I am an expression that appears in a statement. The range for this key is the range of the expr itself, which is different than the range of the stmt expr.
     StmtExpr(TextRange),
+    /// I am an expression that appears in a `with` context.
+    ContextExpr(TextRange),
     /// I am the result of joining several branches.
     Phi(Name, TextRange),
     /// I am the result of narrowing a type. The two ranges are the range at which the operation is
@@ -196,6 +198,7 @@ impl Ranged for Key {
             Self::Usage(x) => x.range(),
             Self::Anon(r) => *r,
             Self::StmtExpr(r) => *r,
+            Self::ContextExpr(r) => *r,
             Self::Phi(_, r) => *r,
             Self::Narrow(_, r, _) => *r,
             Self::Anywhere(_, r) => *r,
@@ -212,6 +215,7 @@ impl DisplayWith<ModuleInfo> for Key {
             Self::Usage(x) => write!(f, "use {} {:?}", ctx.display(x), x.range()),
             Self::Anon(r) => write!(f, "anon {r:?}"),
             Self::StmtExpr(r) => write!(f, "stmt expr {r:?}"),
+            Self::ContextExpr(r) => write!(f, "context expr {r:?}"),
             Self::Phi(n, r) => write!(f, "phi {n} {r:?}"),
             Self::Narrow(n, r1, r2) => write!(f, "narrow {n} {r1:?} {r2:?}"),
             Self::Anywhere(n, r) => write!(f, "anywhere {n} {r:?}"),
@@ -558,14 +562,22 @@ pub enum RaisedException {
     WithCause(Box<(Expr, Expr)>),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum ContextManagerKind {
+#[derive(Clone, Dupe, Copy, Debug, Eq, PartialEq)]
+pub enum IsAsync {
     Sync,
     Async,
 }
 
-impl ContextManagerKind {
-    pub fn as_exit_dunder(self) -> Name {
+impl IsAsync {
+    pub fn new(is_async: bool) -> Self {
+        if is_async { Self::Async } else { Self::Sync }
+    }
+
+    pub fn is_async(self) -> bool {
+        matches!(self, Self::Async)
+    }
+
+    pub fn context_exit_dunder(self) -> Name {
         match self {
             Self::Sync => dunder::EXIT,
             Self::Async => dunder::AEXIT,
@@ -626,14 +638,23 @@ pub struct ReturnType {
     pub is_async: bool,
 }
 
+#[derive(Clone, Dupe, Copy, Debug)]
+pub enum LastStmt {
+    /// The last statement is a expression
+    Expr,
+    /// The last statement is a `with`, with the following context,
+    /// which might (if exit is true) catch an exception
+    With(IsAsync),
+}
+
 #[derive(Clone, Debug)]
-pub struct ImplicitReturn {
+pub struct ReturnImplicit {
     /// Terminal statements in the function control flow, used to determine whether the
     /// function has an implicit `None` return.
     /// When `None`, the function always has an implicit `None` return. When `Some(xs)`,
     /// the function has an implicit `None` return if there exists a non-`Never` in this
     /// list.
-    pub last_exprs: Option<Box<[Idx<Key>]>>,
+    pub last_exprs: Option<Box<[(LastStmt, Idx<Key>)]>>,
     /// Ignore the implicit return type for stub functions (returning `...`). This is
     /// unsafe, but is convenient and matches Pyright's behavior.
     pub function_source: FunctionSource,
@@ -644,7 +665,8 @@ pub enum SuperStyle {
     /// A `super(cls, obj)` call. The keys are the arguments.
     ExplicitArgs(Idx<Key>, Idx<Key>),
     /// A no-argument `super()` call. The key is the `Self` type of the class we are in.
-    ImplicitArgs(Idx<KeyClass>),
+    /// The name is the method we are in.
+    ImplicitArgs(Idx<KeyClass>, Name),
     /// `super(Any, Any)`. Useful when we encounter an error.
     Any,
 }
@@ -669,15 +691,17 @@ pub enum Binding {
     /// An expression returned from a function.
     ReturnExplicit(ReturnExplicit),
     /// The implicit return from a function.
-    ReturnImplicit(ImplicitReturn),
+    ReturnImplicit(ReturnImplicit),
     /// The return type of a function.
     ReturnType(ReturnType),
     /// A value in an iterable expression, e.g. IterableValue(\[1\]) represents 1.
-    IterableValue(Option<Idx<KeyAnnotation>>, Expr),
+    /// The second argument is the expression being iterated.
+    /// The third argument indicates whether iteration is async or not.
+    IterableValue(Option<Idx<KeyAnnotation>>, Expr, IsAsync),
     /// A value produced by entering a context manager.
-    /// The second argument is the expression of the context manager. The third argument
-    /// indicates whether the context manager is async or not.
-    ContextValue(Option<Idx<KeyAnnotation>>, Expr, ContextManagerKind),
+    /// The second argument is the expression of the context manager and its range.
+    /// The fourth argument indicates whether the context manager is async or not.
+    ContextValue(Option<Idx<KeyAnnotation>>, Idx<Key>, TextRange, IsAsync),
     /// A value at a specific position in an unpacked iterable expression.
     /// Example: UnpackedValue(('a', 'b')), 1) represents 'b'.
     UnpackedValue(Box<Binding>, TextRange, UnpackedPosition),
@@ -793,18 +817,24 @@ impl DisplayWith<Bindings> for Binding {
             }
             Self::ReturnImplicit(_) => write!(f, "implicit return"),
             Self::ReturnType(_) => write!(f, "return type"),
-            Self::IterableValue(None, x) => write!(f, "iter {}", m.display(x)),
-            Self::IterableValue(Some(k), x) => {
+            Self::IterableValue(None, x, IsAsync::Async) => {
+                write!(f, "async iter {}", m.display(x))
+            }
+            Self::IterableValue(Some(k), x, IsAsync::Async) => {
+                write!(f, "async iter {}: {}", ctx.display(*k), m.display(x))
+            }
+            Self::IterableValue(None, x, IsAsync::Sync) => write!(f, "iter {}", m.display(x)),
+            Self::IterableValue(Some(k), x, IsAsync::Sync) => {
                 write!(f, "iter {}: {}", ctx.display(*k), m.display(x))
             }
             Self::ExceptionHandler(box x, true) => write!(f, "except* {}", m.display(x)),
             Self::ExceptionHandler(box x, false) => write!(f, "except {}", m.display(x)),
-            Self::ContextValue(_ann, x, kind) => {
+            Self::ContextValue(_ann, x, _, kind) => {
                 let name = match kind {
-                    ContextManagerKind::Sync => "context",
-                    ContextManagerKind::Async => "async context",
+                    IsAsync::Sync => "context",
+                    IsAsync::Async => "async context",
                 };
-                write!(f, "{name} {}", m.display(x))
+                write!(f, "{name} {}", ctx.display(*x))
             }
             Self::SubscriptValue(x, subscript) => {
                 write!(
@@ -930,7 +960,7 @@ impl DisplayWith<Bindings> for Binding {
             Self::SuperInstance(SuperStyle::ExplicitArgs(cls, obj), _range) => {
                 write!(f, "super({}, {})", ctx.display(*cls), ctx.display(*obj))
             }
-            Self::SuperInstance(SuperStyle::ImplicitArgs(_), _range) => write!(f, "super()"),
+            Self::SuperInstance(SuperStyle::ImplicitArgs(_, _), _range) => write!(f, "super()"),
             Self::SuperInstance(SuperStyle::Any, _range) => write!(f, "super(Any, Any)"),
         }
     }

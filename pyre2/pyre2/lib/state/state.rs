@@ -10,9 +10,15 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Display;
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::Write;
 use std::mem;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use dupe::Dupe;
 use enum_iterator::Sequence;
@@ -21,6 +27,7 @@ use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use tracing::debug;
+use tracing::error;
 
 use crate::alt::answers::AnswerEntry;
 use crate::alt::answers::AnswerTable;
@@ -105,25 +112,14 @@ pub struct State {
     require: RequireDefault,
 }
 
-impl Drop for State {
-    fn drop(&mut self) {
-        // ModuleData points at ModuleData via the deps/rdeps, we need to clear these links
-        // or we leak memory.
-        for x in self.modules.values() {
-            x.deps.write().clear();
-            x.rdeps.lock().clear();
-        }
-    }
-}
-
 struct ModuleData {
     handle: Handle,
     state: UpgradeLock<Step, ModuleState>,
-    deps: RwLock<HashMap<ModuleName, ArcId<ModuleData>, BuildNoHash>>,
+    deps: RwLock<HashMap<ModuleName, Handle, BuildNoHash>>,
     /// The reverse dependencies of this module. This is used to invalidate on change.
     /// Note that if we are only running once, e.g. on the command line, this isn't valuable.
     /// But we create it anyway for simplicity, since it doesn't seem to add much overhead.
-    rdeps: Mutex<HashMap<Handle, ArcId<ModuleData>>>,
+    rdeps: Mutex<HashSet<Handle>>,
 }
 
 struct ModuleState {
@@ -217,9 +213,15 @@ impl State {
                 // Downgrade to exclusive, so other people can read from us, or we lock up.
                 // But don't give up the lock entirely, so we don't recompute anything
                 let _exclusive = w.exclusive();
-                for d in deps.values() {
-                    let removed = d.rdeps.lock().remove(&module_data.handle);
-                    assert!(removed.is_some());
+                for dep_handle in deps.values() {
+                    let removed = self
+                        .modules
+                        .get(dep_handle)
+                        .unwrap()
+                        .rdeps
+                        .lock()
+                        .remove(&module_data.handle);
+                    assert!(removed);
                 }
             }
         };
@@ -265,9 +267,9 @@ impl State {
         if exclusive.dirty.find {
             let loader = self.get_cached_loader(module_data.handle.loader());
             let mut is_dirty = false;
-            for x in module_data.deps.read().values() {
-                match loader.find_import(x.handle.module()) {
-                    Ok(path) if &path == x.handle.path() => {}
+            for dependency_handle in module_data.deps.read().values() {
+                match loader.find_import(dependency_handle.module()) {
+                    Ok(path) if &path == dependency_handle.path() => {}
                     _ => {
                         is_dirty = true;
                         break;
@@ -375,7 +377,12 @@ impl State {
                 if changed {
                     self.changed.lock().push(module_data.dupe());
                     let mut dirtied = Vec::new();
-                    for x in module_data.rdeps.lock().values() {
+                    for x in module_data
+                        .rdeps
+                        .lock()
+                        .iter()
+                        .map(|handle| self.modules.get(handle).unwrap())
+                    {
                         loop {
                             let reader = x.state.read();
                             if reader.epochs.computed == self.now || reader.dirty.deps {
@@ -727,6 +734,7 @@ impl State {
     fn invalidate_rdeps(&mut self, changed: &[ArcId<ModuleData>]) {
         // We need to invalidate all modules that depend on anything in changed, including transitively.
         fn f(
+            state: &State,
             dirty_handles: &mut SmallMap<ArcId<ModuleData>, bool>,
             stack: &mut HashSet<ArcId<ModuleData>>,
             x: &ArcId<ModuleData>,
@@ -739,7 +747,9 @@ impl State {
             } else {
                 stack.insert(x.dupe());
                 let reader = x.deps.read();
-                let res = reader.values().any(|y| f(dirty_handles, stack, y));
+                let res = reader
+                    .values()
+                    .any(|y| f(state, dirty_handles, stack, state.modules.get(y).unwrap()));
                 stack.remove(x);
                 dirty_handles.insert(x.dupe(), res);
                 res
@@ -752,7 +762,7 @@ impl State {
             .collect::<SmallMap<_, _>>();
         let mut stack = HashSet::new();
         for x in self.modules.values() {
-            f(&mut dirty_handles, &mut stack, x);
+            f(self, &mut dirty_handles, &mut stack, x);
         }
 
         let mut dirty_set = self.dirty.lock();
@@ -910,7 +920,6 @@ impl State {
 
     /// Called if the `find` portion of loading might have changed.
     /// E.g. you have include paths, and a new file appeared earlier on the path.
-    #[expect(dead_code)]
     pub fn invalidate_find(&mut self, loader: &LoaderId) {
         if let Some(cache) = self.loaders.get_mut(loader) {
             *cache = Arc::new(LoaderFindCache::new(loader.dupe()));
@@ -958,6 +967,77 @@ impl State {
             }
         }
     }
+
+    pub fn report_timings(
+        &mut self,
+        path: &Path,
+        subscriber: Option<Box<dyn Subscriber>>,
+    ) -> anyhow::Result<()> {
+        let ms = self.modules.values().cloned().collect::<Vec<_>>();
+        let mut file = BufWriter::new(File::create(path)?);
+        writeln!(file, "Module,Step,Seconds")?;
+        file.flush()?;
+        if let Some(subscriber) = &subscriber {
+            for m in &ms {
+                subscriber.start_work(m.handle.dupe());
+            }
+        }
+        for m in ms {
+            let mut write = |step: &dyn Display, start: Instant| -> anyhow::Result<()> {
+                writeln!(
+                    file,
+                    "{},{},{}",
+                    m.handle.module(),
+                    step,
+                    start.elapsed().as_secs_f32()
+                )?;
+                // Always flush, so if a user aborts we get the timings thus-far
+                file.flush()?;
+                Ok(())
+            };
+
+            let mut alt = Steps::default();
+            let lock = m.state.read();
+            let stdlib = self.get_stdlib(&m.handle);
+            let loader = self.get_cached_loader(m.handle.loader());
+            let ctx = Context {
+                require: Require::Exports,
+                module: m.handle.module(),
+                path: m.handle.path(),
+                config: m.handle.config(),
+                loader: &*loader,
+                uniques: &self.uniques,
+                stdlib: &stdlib,
+                lookup: &self.lookup(m.dupe()),
+            };
+            let mut step = Step::Load; // Start at AST (Load.next)
+            alt.load = lock.steps.load.dupe();
+            while let Some(s) = step.next() {
+                step = s;
+                let start = Instant::now();
+                step.compute().0(&alt)(&ctx)(&mut alt);
+                write(&step, start)?;
+            }
+            let start = Instant::now();
+            let diff = lock
+                .steps
+                .solutions
+                .as_ref()
+                .unwrap()
+                .first_difference(alt.solutions.as_deref().unwrap());
+            write(&"Diff", start)?;
+            if false {
+                // Disabled code, but super useful for debugging differences
+                if let Some(diff) = diff {
+                    error!("Not deterministic {}: {}", m.handle.module(), diff)
+                }
+            }
+            if let Some(subscriber) = &subscriber {
+                subscriber.finish_work(m.handle.dupe(), alt.load.unwrap().dupe());
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct StateHandle<'a> {
@@ -968,7 +1048,7 @@ pub struct StateHandle<'a> {
 impl<'a> StateHandle<'a> {
     fn get_module(&self, module: ModuleName) -> Result<ArcId<ModuleData>, FindError> {
         if let Some(res) = self.module_data.deps.read().get(&module) {
-            return Ok(res.dupe());
+            return Ok(self.state.modules.get(res).unwrap().dupe());
         }
 
         let handle = self.state.import_handle(&self.module_data.handle, module)?;
@@ -977,12 +1057,10 @@ impl<'a> StateHandle<'a> {
             .module_data
             .deps
             .write()
-            .insert(module, res.dupe())
+            .insert(module, res.handle.dupe())
             .is_none()
         {
-            res.rdeps
-                .lock()
-                .insert(self.module_data.handle.dupe(), self.module_data.dupe());
+            res.rdeps.lock().insert(self.module_data.handle.dupe());
         }
         Ok(res)
     }

@@ -16,13 +16,13 @@ use ruff_python_ast::Expr;
 use ruff_python_ast::ExprBoolOp;
 use ruff_python_ast::ExprCall;
 use ruff_python_ast::ExprLambda;
-use ruff_python_ast::ExprName;
 use ruff_python_ast::ExprSubscript;
 use ruff_python_ast::Identifier;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 
 use crate::binding::binding::Binding;
+use crate::binding::binding::IsAsync;
 use crate::binding::binding::Key;
 use crate::binding::binding::SuperStyle;
 use crate::binding::bindings::BindingsBuilder;
@@ -50,7 +50,7 @@ impl<'a> BindingsBuilder<'a> {
     /// record an error and fall back to `Any`.
     ///
     /// This function is the the core scope lookup logic for binding creation.
-    fn ensure_name(
+    pub fn ensure_name(
         &mut self,
         name: &Identifier,
         value: Result<Binding, LookupError>,
@@ -91,19 +91,12 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
-    pub fn ensure_mutable_name(&mut self, x: &ExprName) {
-        let name = Ast::expr_name_identifier(x.clone());
-        let binding = self
-            .lookup_name(&name.id, LookupKind::Mutable)
-            .map(Binding::Forward);
-        self.ensure_name(&name, binding, LookupKind::Mutable);
-    }
-
     fn bind_comprehensions(&mut self, range: TextRange, comprehensions: &mut [Comprehension]) {
         self.scopes.push(Scope::comprehension(range));
         for comp in comprehensions.iter_mut() {
             self.scopes.current_mut().stat.expr_lvalue(&comp.target);
-            let make_binding = |k| Binding::IterableValue(k, comp.iter.clone());
+            let make_binding =
+                |k| Binding::IterableValue(k, comp.iter.clone(), IsAsync::new(comp.is_async));
             self.bind_target(&comp.target, &make_binding, None);
             self.ensure_expr(&mut comp.target);
             for x in comp.ifs.iter() {
@@ -243,23 +236,25 @@ impl<'a> BindingsBuilder<'a> {
                 }
                 let nargs = posargs.len();
                 let style = if nargs == 0 {
-                    let mut in_method = false;
+                    let mut method_name = None;
                     let mut self_type = None;
                     for scope in self.scopes.iter_rev() {
                         match &scope.kind {
-                            ScopeKind::Method(_) => {
-                                in_method = true;
+                            ScopeKind::Method(method) => {
+                                method_name = Some(method.name.id.clone());
                             }
-                            ScopeKind::ClassBody(class_body) if in_method => {
+                            ScopeKind::ClassBody(class_body) if method_name.is_some() => {
                                 self_type = Some(class_body.as_self_type_key());
                                 break;
                             }
                             _ => {}
                         }
                     }
-                    match self_type {
-                        Some(key) => SuperStyle::ImplicitArgs(self.table.classes.0.insert(key)),
-                        None => {
+                    match (self_type, method_name) {
+                        (Some(key), Some(method)) => {
+                            SuperStyle::ImplicitArgs(self.table.classes.0.insert(key), method)
+                        }
+                        _ => {
                             self.error(
                                 *range,
                                 "`super` call with no arguments is valid only inside a method"

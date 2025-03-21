@@ -10,6 +10,7 @@
 const {fbContent} = require('docusaurus-plugin-internaldocs-fb/internal');
 const webpack = require('webpack');
 const MonacoWebpackPlugin = require('monaco-editor-webpack-plugin');
+const StylexPlugin = require('@stylexjs/webpack-plugin');
 
 function getNavBarItems() {
   return [
@@ -30,7 +31,11 @@ function getNavBarItems() {
     },
     // Hide sandbox for internal users since wasm is not supported internally
     process.env.INTERNAL_STATIC_DOCS
-      ? null
+      ? {
+          href: 'https://pyrefly.org/try',
+          label: 'Try',
+          position: 'left',
+        }
       : {
           to: 'try/',
           activeBasePath: 'try',
@@ -93,6 +98,43 @@ module.exports = {
           return {
             // https://stackoverflow.com/questions/69265357/monaco-editor-worker
             plugins: [new MonacoWebpackPlugin()],
+          };
+        },
+      };
+    },
+    function enableStyleX(context, options) {
+      return {
+        name: 'stylex-docusaurus',
+        injectHtmlTags() {
+          return {
+            headTags: [
+              {
+                tagName: 'link',
+                attributes: {
+                  rel: 'stylesheet',
+                  href: context.baseUrl + 'stylex.css',
+                },
+              },
+            ],
+          };
+        },
+
+        configureWebpack(config, isServer, utils) {
+          const dev = config.mode === 'development';
+
+          return {
+            plugins: [
+              new StylexPlugin({
+                dev,
+                genConditionalClasses: true,
+                treeshakeCompensation: true,
+                unstable_moduleResolution: {
+                  type: 'commonJS',
+                  rootDir: context.siteDir,
+                },
+                filename: 'stylex.css',
+              }),
+            ],
           };
         },
       };
