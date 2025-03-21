@@ -13,6 +13,7 @@ use std::hash::Hash;
 use dupe::Dupe;
 use itertools::Either;
 use pyrefly_derive::TypeEq;
+use pyrefly_derive::VisitMut;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
@@ -324,12 +325,8 @@ impl DisplayWith<Bindings> for BindingExpect {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq)]
+#[derive(Debug, Clone, TypeEq, VisitMut, PartialEq, Eq)]
 pub struct EmptyAnswer;
-
-impl VisitMut<Type> for EmptyAnswer {
-    fn visit_mut(&mut self, _: &mut dyn FnMut(&mut Type)) {}
-}
 
 impl Display for EmptyAnswer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -337,14 +334,8 @@ impl Display for EmptyAnswer {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq)]
+#[derive(Debug, Clone, TypeEq, VisitMut, PartialEq, Eq)]
 pub struct NoneIfRecursive<T>(pub Option<T>);
-
-impl<T: VisitMut<Type>> VisitMut<Type> for NoneIfRecursive<T> {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
-        self.0.visit_mut(f);
-    }
-}
 
 impl<T> Display for NoneIfRecursive<T>
 where
@@ -666,7 +657,7 @@ pub enum SuperStyle {
     ExplicitArgs(Idx<Key>, Idx<Key>),
     /// A no-argument `super()` call. The key is the `Self` type of the class we are in.
     /// The name is the method we are in.
-    ImplicitArgs(Idx<KeyClass>, Name),
+    ImplicitArgs(Idx<KeyClass>, Identifier),
     /// `super(Any, Any)`. Useful when we encounter an error.
     Any,
 }
@@ -966,16 +957,10 @@ impl DisplayWith<Bindings> for Binding {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq)]
+#[derive(Debug, Clone, VisitMut, TypeEq, PartialEq, Eq)]
 pub struct AnnotationWithTarget {
     pub target: AnnotationTarget,
     pub annotation: Annotation,
-}
-
-impl VisitMut<Type> for AnnotationWithTarget {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
-        self.annotation.visit_mut(f);
-    }
 }
 
 impl AnnotationWithTarget {
@@ -990,7 +975,7 @@ impl Display for AnnotationWithTarget {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq)]
+#[derive(Debug, Clone, VisitMut, TypeEq, PartialEq, Eq)]
 pub enum AnnotationTarget {
     /// A function parameter with a type annotation
     Param(Name),

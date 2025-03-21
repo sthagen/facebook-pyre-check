@@ -9,6 +9,12 @@ use std::any;
 use std::any::Any;
 
 use const_str;
+use ruff_python_ast::name::Name;
+use ruff_text_size::TextRange;
+use vec1::Vec1;
+
+use crate::module::module_name::ModuleName;
+use crate::util::uniques::Unique;
 
 /// Visitors based on <https://ndmitchell.com/#uniplate_30_sep_2007>.
 pub trait Visit<To: 'static = Self>: 'static + Sized {
@@ -63,7 +69,7 @@ const fn type_eq<T1, T2>() -> bool {
     const_str::equal!(any::type_name::<T1>(), any::type_name::<T2>())
 }
 
-macro_rules! no_children {
+macro_rules! visit_nothing {
     ($t:ty) => {
         impl<To: 'static> Visit<To> for $t {
             const CONTAINS: bool = false;
@@ -77,20 +83,29 @@ macro_rules! no_children {
     };
 }
 
-no_children!(bool);
-no_children!(u8);
-no_children!(u16);
-no_children!(u32);
-no_children!(u64);
-no_children!(u128);
-no_children!(usize);
-no_children!(i8);
-no_children!(i16);
-no_children!(i32);
-no_children!(i64);
-no_children!(i128);
-no_children!(isize);
-no_children!(());
+visit_nothing!(bool);
+visit_nothing!(u8);
+visit_nothing!(u16);
+visit_nothing!(u32);
+visit_nothing!(u64);
+visit_nothing!(u128);
+visit_nothing!(usize);
+visit_nothing!(i8);
+visit_nothing!(i16);
+visit_nothing!(i32);
+visit_nothing!(i64);
+visit_nothing!(i128);
+visit_nothing!(isize);
+visit_nothing!(());
+
+// We can't visit `str` on its own, so this is atomic.
+visit_nothing!(Box<str>);
+
+// Pyrefly types that have nothing inside
+visit_nothing!(Name);
+visit_nothing!(Unique);
+visit_nothing!(ModuleName);
+visit_nothing!(TextRange);
 
 impl<To: 'static, T: Visit<To>> Visit<To> for Vec<T> {
     const CONTAINS: bool = <T as Visit<To>>::CONTAINS0;
@@ -103,6 +118,26 @@ impl<To: 'static, T: Visit<To>> Visit<To> for Vec<T> {
 }
 
 impl<To: 'static, T: VisitMut<To>> VisitMut<To> for Vec<T> {
+    const CONTAINS: bool = <T as VisitMut<To>>::CONTAINS0;
+
+    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut To)) {
+        for item in self {
+            item.visit0_mut(f);
+        }
+    }
+}
+
+impl<To: 'static, T: Visit<To>> Visit<To> for Vec1<T> {
+    const CONTAINS: bool = <T as Visit<To>>::CONTAINS0;
+
+    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a To)) {
+        for item in self {
+            item.visit0(f);
+        }
+    }
+}
+
+impl<To: 'static, T: VisitMut<To>> VisitMut<To> for Vec1<T> {
     const CONTAINS: bool = <T as VisitMut<To>>::CONTAINS0;
 
     fn visit_mut(&mut self, f: &mut dyn FnMut(&mut To)) {
@@ -246,6 +281,8 @@ impl<To: 'static, T0: VisitMut<To>, T1: VisitMut<To>, T2: VisitMut<To>, T3: Visi
 
 #[cfg(test)]
 mod tests {
+    use pyrefly_derive::Visit;
+    use pyrefly_derive::VisitMut;
     use static_assertions::const_assert;
 
     use super::*;
@@ -292,5 +329,78 @@ mod tests {
         const_assert!(!<Vec<Foo> as Visit<i32>>::CONTAINS);
         const_assert!(!<Vec<Foo> as Visit<i32>>::CONTAINS0);
         vec![Foo].visit0(&mut |_: &i32| ());
+    }
+
+    #[derive(Visit, VisitMut, PartialEq, Eq, Debug)]
+    struct Foo {
+        x: i32,
+        f: (Bar, Baz),
+    }
+
+    #[derive(Visit, VisitMut, PartialEq, Eq, Debug)]
+    struct Bar(i32, i32);
+
+    #[derive(Visit, VisitMut, PartialEq, Eq, Debug)]
+    enum Baz {
+        A,
+        B(bool, bool),
+        C { x: i32, y: i32 },
+    }
+
+    #[derive(Visit, VisitMut, PartialEq, Eq, Debug)]
+    struct Generic<T>(T);
+
+    #[test]
+    fn test_visit_derive() {
+        let mut info = (
+            Foo {
+                x: 1,
+                f: (Bar(2, 3), Baz::B(true, false)),
+            },
+            Generic(Baz::A),
+            Baz::C { x: 4, y: 5 },
+        );
+        let mut collect = Vec::new();
+        info.visit0(&mut |x: &i32| collect.push(*x));
+        assert_eq!(&collect, &[1i32, 2, 3, 4, 5]);
+        let mut collect = Vec::new();
+        info.visit0_mut(&mut |x: &mut bool| collect.push(*x));
+        assert_eq!(&collect, &[true, false]);
+        let mut collect = Vec::new();
+        info.visit0(&mut |x: &Bar| collect.push(x));
+        assert_eq!(&collect, &[&Bar(2, 3)]);
+
+        const_assert!(<Foo as Visit<i32>>::CONTAINS0);
+        const_assert!(!<Foo as Visit<u8>>::CONTAINS0);
+        const_assert!(<Generic<i32> as Visit<i32>>::CONTAINS0);
+        const_assert!(!<Generic<i32> as Visit<u8>>::CONTAINS0);
+    }
+
+    #[test]
+    fn test_visit_subset() {
+        #[derive(PartialEq, Eq, Debug)]
+        struct Foo(i32);
+
+        impl Visit<i32> for Foo {
+            fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a i32)) {
+                f(&self.0);
+            }
+        }
+
+        impl VisitMut<i32> for Foo {
+            fn visit_mut(&mut self, f: &mut dyn FnMut(&mut i32)) {
+                f(&mut self.0);
+            }
+        }
+
+        /// We derive Visit/VisitMut for `Foo`, but know it will only work for i32
+        #[derive(Visit, VisitMut, PartialEq, Eq, Debug)]
+        struct Bar(Foo);
+
+        let mut info = Bar(Foo(1));
+        info.visit0_mut(&mut |x: &mut i32| *x += 2);
+        let mut collect = Vec::new();
+        info.visit0(&mut |x: &i32| collect.push(*x));
+        assert_eq!(&collect, &[3i32]);
     }
 }

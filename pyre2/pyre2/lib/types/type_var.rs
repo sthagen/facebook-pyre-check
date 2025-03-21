@@ -11,6 +11,8 @@ use std::hash::Hash;
 
 use dupe::Dupe;
 use pyrefly_derive::TypeEq;
+use pyrefly_derive::Visit;
+use pyrefly_derive::VisitMut;
 use ruff_python_ast::Identifier;
 
 use crate::module::module_info::ModuleInfo;
@@ -19,10 +21,23 @@ use crate::types::equality::TypeEqCtx;
 use crate::types::qname::QName;
 use crate::types::types::Type;
 use crate::util::arc_id::ArcId;
+use crate::util::visit::Visit;
+use crate::util::visit::VisitMut;
 
 /// Used to represent TypeVar calls. Each TypeVar is unique, so use the ArcId to separate them.
 #[derive(Clone, Dupe, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct TypeVar(ArcId<TypeVarInner>);
+
+// This is a lie, we do have types in the bound position
+impl Visit<Type> for TypeVar {
+    const CONTAINS: bool = false;
+    fn visit<'a>(&'a self, _: &mut dyn FnMut(&'a Type)) {}
+}
+
+impl VisitMut<Type> for TypeVar {
+    const CONTAINS: bool = false;
+    fn visit_mut(&mut self, _: &mut dyn FnMut(&mut Type)) {}
+}
 
 impl Display for TypeVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -30,14 +45,18 @@ impl Display for TypeVar {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, Ord, PartialOrd, Hash
+)]
 pub enum Restriction {
     Constraints(Vec<Type>),
     Bound(Type),
     Unrestricted,
 }
 
-#[derive(Debug, Clone, Copy, TypeEq, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[derive(
+    Debug, Clone, Copy, Visit, VisitMut, TypeEq, PartialEq, Eq, Ord, PartialOrd, Hash
+)]
 pub enum Variance {
     Covariant,
     Contravariant,

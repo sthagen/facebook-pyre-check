@@ -12,6 +12,8 @@ use std::sync::Arc;
 use dupe::Dupe;
 use parse_display::Display;
 use pyrefly_derive::TypeEq;
+use pyrefly_derive::Visit;
+use pyrefly_derive::VisitMut;
 use ruff_python_ast::name::Name;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
@@ -46,7 +48,9 @@ use crate::util::visit::Visit;
 use crate::util::visit::VisitMut;
 
 /// An introduced synthetic variable to range over as yet unknown types.
-#[derive(Debug, Copy, Clone, Dupe, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Copy, Clone, Dupe, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub struct Var(Unique);
 
 impl Display for Var {
@@ -70,7 +74,7 @@ impl Var {
 }
 
 /// Bundles together type param info for passing around while building TParams.
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TParamInfo {
     pub name: Name,
     pub quantified: Quantified,
@@ -80,7 +84,9 @@ pub struct TParamInfo {
     pub variance: Option<Variance>,
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub struct TParam {
     /// Display name
     pub name: Name,
@@ -98,7 +104,9 @@ impl Display for TParam {
 
 /// Wraps a vector of type parameters. The constructor ensures that
 /// type parameters without defaults never follow ones with defaults.
-#[derive(Debug, Clone, Default, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Default, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub struct TParams(Vec<TParam>);
 
 impl Display for TParams {
@@ -156,7 +164,7 @@ impl TParams {
 }
 
 #[derive(
-    Debug, Clone, Copy, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash, Display
+    Debug, Clone, Copy, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash, Display
 )]
 pub enum NeverStyle {
     Never,
@@ -164,7 +172,7 @@ pub enum NeverStyle {
 }
 
 #[derive(
-    Debug, Clone, Copy, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash, Display
+    Debug, Clone, Copy, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash, Display
 )]
 pub enum AnyStyle {
     /// The user wrote `Any` literally.
@@ -185,7 +193,9 @@ impl AnyStyle {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash, Display)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash, Display
+)]
 pub enum TypeAliasStyle {
     /// A type alias declared with the `type` keyword
     #[display("ScopedTypeAlias")]
@@ -198,23 +208,13 @@ pub enum TypeAliasStyle {
     LegacyImplicit,
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub struct TypeAlias {
     pub name: Box<Name>,
     ty: Box<Type>,
     pub style: TypeAliasStyle,
-}
-
-impl Visit<Type> for TypeAlias {
-    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
-        f(&self.ty);
-    }
-}
-
-impl VisitMut<Type> for TypeAlias {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
-        f(&mut self.ty);
-    }
 }
 
 impl TypeAlias {
@@ -255,26 +255,12 @@ pub enum CalleeKind {
     Class(ClassKind),
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub struct BoundMethod {
     pub obj: Type,
     pub func: BoundMethodType,
-}
-
-impl Visit<Type> for BoundMethod {
-    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
-        let Self { obj, func } = self;
-        f(obj);
-        func.visit(f);
-    }
-}
-
-impl VisitMut<Type> for BoundMethod {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
-        let Self { obj, func } = self;
-        f(obj);
-        func.visit_mut(f);
-    }
 }
 
 impl BoundMethod {
@@ -287,31 +273,13 @@ impl BoundMethod {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub enum BoundMethodType {
     Function(Function),
     Forall(Forall<Function>),
     Overload(Overload),
-}
-
-impl Visit<Type> for BoundMethodType {
-    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
-        match self {
-            Self::Function(x) => x.visit(f),
-            Self::Forall(x) => x.body.visit(f),
-            Self::Overload(x) => x.visit(f),
-        }
-    }
-}
-
-impl VisitMut<Type> for BoundMethodType {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
-        match self {
-            Self::Function(x) => x.visit_mut(f),
-            Self::Forall(x) => x.body.visit_mut(f),
-            Self::Overload(x) => x.visit_mut(f),
-        }
-    }
 }
 
 impl BoundMethodType {
@@ -342,28 +310,12 @@ impl BoundMethodType {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub struct Overload {
     pub signatures: Vec1<OverloadType>,
     pub metadata: Box<FuncMetadata>,
-}
-
-impl Visit<Type> for Overload {
-    fn visit<'a>(&'a self, mut f: &mut dyn FnMut(&'a Type)) {
-        for t in self.signatures.iter() {
-            t.visit(&mut f);
-        }
-        self.metadata.visit(f);
-    }
-}
-
-impl VisitMut<Type> for Overload {
-    fn visit_mut(&mut self, mut f: &mut dyn FnMut(&mut Type)) {
-        for t in self.signatures.iter_mut() {
-            t.visit_mut(&mut f);
-        }
-        self.metadata.visit_mut(f);
-    }
 }
 
 impl Overload {
@@ -376,28 +328,12 @@ impl Overload {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub enum OverloadType {
     Callable(Callable),
     Forall(Forall<Function>),
-}
-
-impl Visit<Type> for OverloadType {
-    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
-        match self {
-            Self::Callable(c) => c.visit(f),
-            Self::Forall(forall) => forall.body.signature.visit(f),
-        }
-    }
-}
-
-impl VisitMut<Type> for OverloadType {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
-        match self {
-            Self::Callable(c) => c.visit_mut(f),
-            Self::Forall(forall) => forall.body.signature.visit_mut(f),
-        }
-    }
 }
 
 impl OverloadType {
@@ -425,35 +361,21 @@ impl OverloadType {
     }
 }
 
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub struct Forall<T> {
     pub tparams: TParams,
     pub body: T,
 }
 
 /// These are things that can have Forall around them, so often you see `Forall<Forallable>`
-#[derive(Debug, Clone, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+)]
 pub enum Forallable {
     TypeAlias(TypeAlias),
     Function(Function),
-}
-
-impl Visit<Type> for Forallable {
-    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
-        match self {
-            Self::Function(func) => func.visit0(f),
-            Self::TypeAlias(ta) => ta.visit0(f),
-        }
-    }
-}
-
-impl VisitMut<Type> for Forallable {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
-        match self {
-            Self::Function(x) => x.visit0_mut(f),
-            Self::TypeAlias(x) => x.visit0_mut(f),
-        }
-    }
 }
 
 impl Forallable {
@@ -500,7 +422,9 @@ impl Forallable {
 /// The second argument (implicit or explicit) to a super() call.
 /// Either an instance of a class (inside an instance method) or a
 /// class object (inside a classmethod or staticmethod)
-#[derive(Debug, Clone, PartialEq, Eq, TypeEq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Visit, VisitMut, TypeEq, PartialOrd, Ord, Hash
+)]
 pub enum SuperObj {
     Instance(ClassType),
     Class(Class),
@@ -583,50 +507,40 @@ pub enum Type {
 impl Visit for Type {
     fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Self)) {
         match self {
-            Type::Callable(box c) => c.visit(f),
-            Type::Function(box x) => x.visit(f),
-            Type::BoundMethod(box b) => b.visit(f),
-            Type::Union(xs) | Type::Intersect(xs) => xs.iter().for_each(f),
-            Type::Overload(overload) => overload.visit(f),
-            Type::ClassType(x) => x.visit(f),
-            Type::TypedDict(x) => x.visit(f),
-            Type::Tuple(t) => t.visit(f),
-            Type::Forall(forall) => forall.body.visit(f),
-            Type::Concatenate(args, pspec) => {
-                for a in args {
-                    f(a)
-                }
-                f(pspec);
-            }
-            Type::ParamSpecValue(x) => x.visit(f),
-            Type::Type(x)
-            | Type::TypeGuard(x)
-            | Type::TypeIs(x)
-            | Type::Unpack(x)
-            | Type::TypeAlias(TypeAlias { ty: x, .. }) => f(x),
-            Type::SuperInstance(box (cls1, obj)) => {
-                cls1.visit(f);
-                match obj {
-                    SuperObj::Instance(cls2) => cls2.visit(f),
-                    SuperObj::Class(_) => {}
-                }
-            }
-            Type::Literal(_)
-            | Type::Never(_)
-            | Type::LiteralString
-            | Type::Any(_)
-            | Type::ClassDef(_)
-            | Type::Var(_)
-            | Type::None
-            | Type::Module(_)
-            | Type::SpecialForm(_)
-            | Type::Quantified(_)
-            | Type::TypeVar(_)
-            | Type::ParamSpec(_)
-            | Type::Args(_)
-            | Type::Kwargs(_)
-            | Type::TypeVarTuple(_)
-            | Type::Ellipsis => {}
+            Type::Literal(x) => x.visit0(f),
+            Type::LiteralString => {}
+            Type::Callable(x) => x.visit0(f),
+            Type::Function(x) => x.visit0(f),
+            Type::BoundMethod(x) => x.visit0(f),
+            Type::Overload(x) => x.visit0(f),
+            Type::Union(x) => x.visit0(f),
+            Type::Intersect(x) => x.visit0(f),
+            Type::ClassDef(x) => x.visit0(f),
+            Type::ClassType(x) => x.visit0(f),
+            Type::TypedDict(x) => x.visit0(f),
+            Type::Tuple(x) => x.visit0(f),
+            Type::Module(x) => x.visit0(f),
+            Type::Forall(x) => x.visit0(f),
+            Type::Var(x) => x.visit0(f),
+            Type::Quantified(x) => x.visit0(f),
+            Type::TypeGuard(x) => x.visit0(f),
+            Type::TypeIs(x) => x.visit0(f),
+            Type::Unpack(x) => x.visit0(f),
+            Type::TypeVar(x) => x.visit0(f),
+            Type::ParamSpec(x) => x.visit0(f),
+            Type::TypeVarTuple(x) => x.visit0(f),
+            Type::SpecialForm(x) => x.visit0(f),
+            Type::Concatenate(x, _) => x.visit0(f),
+            Type::ParamSpecValue(x) => x.visit0(f),
+            Type::Args(x) => x.visit0(f),
+            Type::Kwargs(x) => x.visit0(f),
+            Type::Type(x) => x.visit0(f),
+            Type::Ellipsis => {}
+            Type::Any(x) => x.visit0(f),
+            Type::Never(x) => x.visit0(f),
+            Type::TypeAlias(x) => x.visit0(f),
+            Type::SuperInstance(x) => x.visit0(f),
+            Type::None => {}
         }
     }
 }
@@ -634,50 +548,40 @@ impl Visit for Type {
 impl VisitMut for Type {
     fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Self)) {
         match self {
-            Type::Callable(box c) => c.visit_mut(f),
-            Type::Function(box x) => x.visit_mut(f),
-            Type::BoundMethod(box b) => b.visit_mut(f),
-            Type::Union(xs) | Type::Intersect(xs) => xs.iter_mut().for_each(f),
-            Type::Overload(overload) => overload.visit_mut(f),
-            Type::ClassType(x) => x.visit_mut(f),
-            Type::TypedDict(x) => x.visit_mut(f),
-            Type::Tuple(t) => t.visit_mut(f),
-            Type::Forall(forall) => forall.body.visit_mut(f),
-            Type::Concatenate(args, pspec) => {
-                for a in args {
-                    f(a)
-                }
-                f(pspec);
-            }
-            Type::ParamSpecValue(x) => x.visit_mut(f),
-            Type::Type(x)
-            | Type::TypeGuard(x)
-            | Type::TypeIs(x)
-            | Type::Unpack(x)
-            | Type::TypeAlias(TypeAlias { ty: x, .. }) => f(x),
-            Type::SuperInstance(box (cls1, obj)) => {
-                cls1.visit_mut(f);
-                match obj {
-                    SuperObj::Instance(cls2) => cls2.visit_mut(f),
-                    SuperObj::Class(_) => {}
-                }
-            }
-            Type::Literal(_)
-            | Type::Never(_)
-            | Type::LiteralString
-            | Type::Any(_)
-            | Type::ClassDef(_)
-            | Type::None
-            | Type::Var(_)
-            | Type::Module(_)
-            | Type::SpecialForm(_)
-            | Type::Quantified(_)
-            | Type::TypeVar(_)
-            | Type::ParamSpec(_)
-            | Type::Args(_)
-            | Type::Kwargs(_)
-            | Type::TypeVarTuple(_)
-            | Type::Ellipsis => {}
+            Type::Literal(x) => x.visit0_mut(f),
+            Type::LiteralString => {}
+            Type::Callable(x) => x.visit0_mut(f),
+            Type::Function(x) => x.visit0_mut(f),
+            Type::BoundMethod(x) => x.visit0_mut(f),
+            Type::Overload(x) => x.visit0_mut(f),
+            Type::Union(x) => x.visit0_mut(f),
+            Type::Intersect(x) => x.visit0_mut(f),
+            Type::ClassDef(x) => x.visit0_mut(f),
+            Type::ClassType(x) => x.visit0_mut(f),
+            Type::TypedDict(x) => x.visit0_mut(f),
+            Type::Tuple(x) => x.visit0_mut(f),
+            Type::Module(x) => x.visit0_mut(f),
+            Type::Forall(x) => x.visit0_mut(f),
+            Type::Var(x) => x.visit0_mut(f),
+            Type::Quantified(x) => x.visit0_mut(f),
+            Type::TypeGuard(x) => x.visit0_mut(f),
+            Type::TypeIs(x) => x.visit0_mut(f),
+            Type::Unpack(x) => x.visit0_mut(f),
+            Type::TypeVar(x) => x.visit0_mut(f),
+            Type::ParamSpec(x) => x.visit0_mut(f),
+            Type::TypeVarTuple(x) => x.visit0_mut(f),
+            Type::SpecialForm(x) => x.visit0_mut(f),
+            Type::Concatenate(x, _) => x.visit0_mut(f),
+            Type::ParamSpecValue(x) => x.visit0_mut(f),
+            Type::Args(x) => x.visit0_mut(f),
+            Type::Kwargs(x) => x.visit0_mut(f),
+            Type::Type(x) => x.visit0_mut(f),
+            Type::Ellipsis => {}
+            Type::Any(x) => x.visit0_mut(f),
+            Type::Never(x) => x.visit0_mut(f),
+            Type::TypeAlias(x) => x.visit0_mut(f),
+            Type::SuperInstance(x) => x.visit0_mut(f),
+            Type::None => {}
         }
     }
 }

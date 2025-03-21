@@ -196,3 +196,43 @@ class A:
         return super().__new__(cls)  # E: Returned type `object` is not assignable to declared return type `A`
     "#,
 );
+
+testcase!(
+    test_staticmethod,
+    r#"
+from typing import assert_type
+
+class A:
+    @staticmethod
+    def f() -> int:
+        return 0
+
+class B(A):
+    @staticmethod
+    def g():
+        # Two-argument super() works fine
+        assert_type(super(B, B).f(), int)
+    @staticmethod
+    def h():
+        # No-argument super() is a runtime error
+        super().f()  # E: `super` call with no arguments is not valid inside a staticmethod
+    "#,
+);
+
+testcase!(
+    test_classmethod,
+    r#"
+from typing import assert_type
+
+class A:
+    @classmethod
+    def f(cls) -> int:
+        return 0
+
+class B(A):
+    @classmethod
+    def g(cls):
+        assert_type(super().f(), int)
+        assert_type(super(B, cls).f(), int)
+    "#,
+);
