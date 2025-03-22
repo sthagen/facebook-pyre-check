@@ -505,82 +505,82 @@ pub enum Type {
 }
 
 impl Visit for Type {
-    fn visit<'a>(&'a self, f: &mut dyn FnMut(&'a Self)) {
+    fn recurse<'a>(&'a self, f: &mut dyn FnMut(&'a Self)) {
         match self {
-            Type::Literal(x) => x.visit0(f),
+            Type::Literal(x) => x.visit(f),
             Type::LiteralString => {}
-            Type::Callable(x) => x.visit0(f),
-            Type::Function(x) => x.visit0(f),
-            Type::BoundMethod(x) => x.visit0(f),
-            Type::Overload(x) => x.visit0(f),
-            Type::Union(x) => x.visit0(f),
-            Type::Intersect(x) => x.visit0(f),
-            Type::ClassDef(x) => x.visit0(f),
-            Type::ClassType(x) => x.visit0(f),
-            Type::TypedDict(x) => x.visit0(f),
-            Type::Tuple(x) => x.visit0(f),
-            Type::Module(x) => x.visit0(f),
-            Type::Forall(x) => x.visit0(f),
-            Type::Var(x) => x.visit0(f),
-            Type::Quantified(x) => x.visit0(f),
-            Type::TypeGuard(x) => x.visit0(f),
-            Type::TypeIs(x) => x.visit0(f),
-            Type::Unpack(x) => x.visit0(f),
-            Type::TypeVar(x) => x.visit0(f),
-            Type::ParamSpec(x) => x.visit0(f),
-            Type::TypeVarTuple(x) => x.visit0(f),
-            Type::SpecialForm(x) => x.visit0(f),
-            Type::Concatenate(x, _) => x.visit0(f),
-            Type::ParamSpecValue(x) => x.visit0(f),
-            Type::Args(x) => x.visit0(f),
-            Type::Kwargs(x) => x.visit0(f),
-            Type::Type(x) => x.visit0(f),
+            Type::Callable(x) => x.visit(f),
+            Type::Function(x) => x.visit(f),
+            Type::BoundMethod(x) => x.visit(f),
+            Type::Overload(x) => x.visit(f),
+            Type::Union(x) => x.visit(f),
+            Type::Intersect(x) => x.visit(f),
+            Type::ClassDef(x) => x.visit(f),
+            Type::ClassType(x) => x.visit(f),
+            Type::TypedDict(x) => x.visit(f),
+            Type::Tuple(x) => x.visit(f),
+            Type::Module(x) => x.visit(f),
+            Type::Forall(x) => x.visit(f),
+            Type::Var(x) => x.visit(f),
+            Type::Quantified(x) => x.visit(f),
+            Type::TypeGuard(x) => x.visit(f),
+            Type::TypeIs(x) => x.visit(f),
+            Type::Unpack(x) => x.visit(f),
+            Type::TypeVar(x) => x.visit(f),
+            Type::ParamSpec(x) => x.visit(f),
+            Type::TypeVarTuple(x) => x.visit(f),
+            Type::SpecialForm(x) => x.visit(f),
+            Type::Concatenate(x, _) => x.visit(f),
+            Type::ParamSpecValue(x) => x.visit(f),
+            Type::Args(x) => x.visit(f),
+            Type::Kwargs(x) => x.visit(f),
+            Type::Type(x) => x.visit(f),
             Type::Ellipsis => {}
-            Type::Any(x) => x.visit0(f),
-            Type::Never(x) => x.visit0(f),
-            Type::TypeAlias(x) => x.visit0(f),
-            Type::SuperInstance(x) => x.visit0(f),
+            Type::Any(x) => x.visit(f),
+            Type::Never(x) => x.visit(f),
+            Type::TypeAlias(x) => x.visit(f),
+            Type::SuperInstance(x) => x.visit(f),
             Type::None => {}
         }
     }
 }
 
 impl VisitMut for Type {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Self)) {
+    fn recurse_mut(&mut self, f: &mut dyn FnMut(&mut Self)) {
         match self {
-            Type::Literal(x) => x.visit0_mut(f),
+            Type::Literal(x) => x.visit_mut(f),
             Type::LiteralString => {}
-            Type::Callable(x) => x.visit0_mut(f),
-            Type::Function(x) => x.visit0_mut(f),
-            Type::BoundMethod(x) => x.visit0_mut(f),
-            Type::Overload(x) => x.visit0_mut(f),
-            Type::Union(x) => x.visit0_mut(f),
-            Type::Intersect(x) => x.visit0_mut(f),
-            Type::ClassDef(x) => x.visit0_mut(f),
-            Type::ClassType(x) => x.visit0_mut(f),
-            Type::TypedDict(x) => x.visit0_mut(f),
-            Type::Tuple(x) => x.visit0_mut(f),
-            Type::Module(x) => x.visit0_mut(f),
-            Type::Forall(x) => x.visit0_mut(f),
-            Type::Var(x) => x.visit0_mut(f),
-            Type::Quantified(x) => x.visit0_mut(f),
-            Type::TypeGuard(x) => x.visit0_mut(f),
-            Type::TypeIs(x) => x.visit0_mut(f),
-            Type::Unpack(x) => x.visit0_mut(f),
-            Type::TypeVar(x) => x.visit0_mut(f),
-            Type::ParamSpec(x) => x.visit0_mut(f),
-            Type::TypeVarTuple(x) => x.visit0_mut(f),
-            Type::SpecialForm(x) => x.visit0_mut(f),
-            Type::Concatenate(x, _) => x.visit0_mut(f),
-            Type::ParamSpecValue(x) => x.visit0_mut(f),
-            Type::Args(x) => x.visit0_mut(f),
-            Type::Kwargs(x) => x.visit0_mut(f),
-            Type::Type(x) => x.visit0_mut(f),
+            Type::Callable(x) => x.visit_mut(f),
+            Type::Function(x) => x.visit_mut(f),
+            Type::BoundMethod(x) => x.visit_mut(f),
+            Type::Overload(x) => x.visit_mut(f),
+            Type::Union(x) => x.visit_mut(f),
+            Type::Intersect(x) => x.visit_mut(f),
+            Type::ClassDef(x) => x.visit_mut(f),
+            Type::ClassType(x) => x.visit_mut(f),
+            Type::TypedDict(x) => x.visit_mut(f),
+            Type::Tuple(x) => x.visit_mut(f),
+            Type::Module(x) => x.visit_mut(f),
+            Type::Forall(x) => x.visit_mut(f),
+            Type::Var(x) => x.visit_mut(f),
+            Type::Quantified(x) => x.visit_mut(f),
+            Type::TypeGuard(x) => x.visit_mut(f),
+            Type::TypeIs(x) => x.visit_mut(f),
+            Type::Unpack(x) => x.visit_mut(f),
+            Type::TypeVar(x) => x.visit_mut(f),
+            Type::ParamSpec(x) => x.visit_mut(f),
+            Type::TypeVarTuple(x) => x.visit_mut(f),
+            Type::SpecialForm(x) => x.visit_mut(f),
+            Type::Concatenate(x, _) => x.visit_mut(f),
+            Type::ParamSpecValue(x) => x.visit_mut(f),
+            Type::Args(x) => x.visit_mut(f),
+            Type::Kwargs(x) => x.visit_mut(f),
+            Type::Type(x) => x.visit_mut(f),
             Type::Ellipsis => {}
-            Type::Any(x) => x.visit0_mut(f),
-            Type::Never(x) => x.visit0_mut(f),
-            Type::TypeAlias(x) => x.visit0_mut(f),
-            Type::SuperInstance(x) => x.visit0_mut(f),
+            Type::Any(x) => x.visit_mut(f),
+            Type::Never(x) => x.visit_mut(f),
+            Type::TypeAlias(x) => x.visit_mut(f),
+            Type::SuperInstance(x) => x.visit_mut(f),
             Type::None => {}
         }
     }
@@ -671,19 +671,6 @@ impl Type {
             | Type::ParamSpec(_) => true,
             _ => false,
         }
-    }
-
-    pub fn has_type_variable(&self) -> bool {
-        if self.is_type_variable() {
-            return true;
-        }
-        let mut has_type_var = false;
-        self.visit(&mut |t| {
-            if t.is_type_variable() {
-                has_type_var = true;
-            }
-        });
-        has_type_var
     }
 
     pub fn is_kind_param_spec(&self) -> bool {
@@ -802,17 +789,16 @@ impl Type {
         });
     }
 
-    #[expect(dead_code)] // Not used, but might be in future
-    pub fn contains(&self, x: &Type) -> bool {
-        fn f(ty: &Type, x: &Type, seen: &mut bool) {
-            if *seen || ty == x {
+    pub fn any(&self, mut predicate: impl FnMut(&Type) -> bool) -> bool {
+        fn f(ty: &Type, predicate: &mut dyn FnMut(&Type) -> bool, seen: &mut bool) {
+            if *seen || predicate(ty) {
                 *seen = true;
             } else {
-                ty.visit(&mut |ty| f(ty, x, seen));
+                ty.recurse(&mut |ty| f(ty, predicate, seen));
             }
         }
         let mut seen = false;
-        f(self, x, &mut seen);
+        f(self, &mut predicate, &mut seen);
         seen
     }
 
@@ -912,7 +898,7 @@ impl Type {
         self.transform(&mut |ty| {
             match ty {
                 Type::Var(v) => {
-                    // FIXME: Should mostly be forcing these before printing
+                    // TODO: Should mostly be forcing these before printing
                     v.zero();
                 }
                 _ => {}
@@ -923,7 +909,7 @@ impl Type {
     /// Visit every type, with the guarantee you will have seen included types before the parent.
     pub fn universe<'a>(&'a self, f: &mut dyn FnMut(&'a Type)) {
         fn g<'a>(ty: &'a Type, f: &mut dyn FnMut(&'a Type)) {
-            ty.visit(&mut |ty| g(ty, f));
+            ty.recurse(&mut |ty| g(ty, f));
             f(ty);
         }
         g(self, f);
@@ -932,7 +918,7 @@ impl Type {
     /// Visit every type, with the guarantee you will have seen included types before the parent.
     pub fn transform_mut(&mut self, f: &mut dyn FnMut(&mut Type)) {
         fn g(ty: &mut Type, f: &mut dyn FnMut(&mut Type)) {
-            ty.visit_mut(&mut |ty| g(ty, f));
+            ty.recurse_mut(&mut |ty| g(ty, f));
             f(ty);
         }
         g(self, f);

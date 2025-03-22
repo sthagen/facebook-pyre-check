@@ -88,6 +88,8 @@ module CallTarget : sig
     val join : t -> t -> t
 
     val bottom : t
+
+    val is_bottom : t -> bool
   end
 
   val target : t -> Target.t
@@ -441,6 +443,8 @@ module CallableToDecoratorsMap : sig
 
     module ReadOnly : sig
       type t
+
+      val get_decorators : t -> Target.t -> Expression.t list option
     end
 
     val read_only : t -> ReadOnly.t
@@ -542,6 +546,8 @@ val higher_order_call_graph_of_define
   :  define_call_graph:DefineCallGraph.t ->
   pyre_api:PyrePysaEnvironment.ReadOnly.t ->
   callables_to_definitions_map:Target.DefinesSharedMemory.ReadOnly.t ->
+  method_kinds:MethodKind.SharedMemory.ReadOnly.t ->
+  callable:Target.t option ->
   qualifier:Reference.t ->
   define:Ast.Statement.Define.t ->
   initial_state:HigherOrderCallGraph.State.t ->

@@ -124,7 +124,7 @@ impl Solver {
     /// Avoids producing things that stack overflow later in the process.
     fn expand_with_limit(&self, t: &mut Type, limit: usize, recurser: &Recurser<Var>) {
         if limit == 0 {
-            // FIXME: Should probably add an error here, and use any_error,
+            // TODO: Should probably add an error here, and use any_error,
             // but don't have any good location information to hand.
             *t = Type::any_implicit();
         } else if let Type::Var(x) = t {
@@ -142,7 +142,7 @@ impl Solver {
                 *t = Type::any_implicit();
             }
         } else {
-            t.visit_mut(&mut |t| self.expand_with_limit(t, limit - 1, recurser));
+            t.recurse_mut(&mut |t| self.expand_with_limit(t, limit - 1, recurser));
         }
     }
 
@@ -171,7 +171,7 @@ impl Solver {
 
     fn deep_force_mut_with_limit(&self, t: &mut Type, limit: usize, recurser: &Recurser<Var>) {
         if limit == 0 {
-            // FIXME: Should probably add an error here, and use any_error,
+            // TODO: Should probably add an error here, and use any_error,
             // but don't have any good location information to hand.
             *t = Type::any_implicit();
         } else if let Type::Var(v) = t {
@@ -182,7 +182,7 @@ impl Solver {
                 *t = Type::any_implicit();
             }
         } else {
-            t.visit_mut(&mut |t| self.deep_force_mut_with_limit(t, limit - 1, recurser));
+            t.recurse_mut(&mut |t| self.deep_force_mut_with_limit(t, limit - 1, recurser));
         }
     }
 

@@ -243,6 +243,10 @@ module CallableToDecoratorsMap = struct
 
       let get = T.ReadOnly.get ~cache:true
 
+      let get_decorators readonly callable =
+        callable |> get readonly >>| fun { decorators; _ } -> decorators
+
+
       let mem = T.ReadOnly.mem
     end
 
@@ -1765,6 +1769,12 @@ module ExpressionCallees = struct
       identifier = identifier >>| IdentifierCallees.regenerate_call_indices ~indexer;
       string_format = string_format >>| StringFormatCallees.regenerate_call_indices ~indexer;
     }
+
+
+  let exist_unresolved_call { call; _ } =
+    match call with
+    | Some { CallCallees.unresolved; _ } -> Unresolved.is_unresolved unresolved
+    | None -> false
 end
 
 (** An aggregate of all possible callees for an arbitrary location.
@@ -2130,6 +2140,13 @@ module DefineCallGraph = struct
        location x have smaller indices than calls on location y. Hence here we rely on the
        assumption that the map is keyed on the locations. *)
     update_expression_callees ~f:(ExpressionCallees.regenerate_call_indices ~indexer)
+
+
+  let exist_unresolved_call =
+    Location.SerializableMap.exists (fun _ map ->
+        LocationCallees.Map.exists
+          (fun _ expression_callees -> ExpressionCallees.exist_unresolved_call expression_callees)
+          map)
 
 
   (** Return all callees of the call graph, depending on the use case. *)
@@ -4293,7 +4310,30 @@ module HigherOrderCallGraph = struct
     val output_define_call_graph : DefineCallGraph.t ref
   end) =
   struct
-    let get_result = State.get TaintAccessPath.Root.LocalResult
+    let self_variable =
+      if Ast.Statement.Define.is_method Context.define then
+        let { Ast.Statement.Define.signature = { parameters; _ }; _ } = Context.define in
+        match TaintAccessPath.normalize_parameters parameters with
+        | { root = TaintAccessPath.Root.PositionalParameter { position = 0; _ }; qualified_name; _ }
+          :: _ ->
+            Some (TaintAccessPath.Root.Variable qualified_name)
+        | _ -> None
+      else
+        None
+
+
+    let get_returned_callables state =
+      self_variable
+      >>| (fun self_variable ->
+            (* For `__init__`, any functions stored in `self` would be returned, in order to
+               propagate them. *)
+            if Reference.is_suffix ~suffix:(Reference.create "__init__") Context.define_name then
+              State.get self_variable state
+            else
+              CallTarget.Set.bottom)
+      |> Option.value ~default:CallTarget.Set.bottom
+      |> CallTarget.Set.join (State.get TaintAccessPath.Root.LocalResult state)
+
 
     let log format =
       if Context.debug then
@@ -4347,13 +4387,24 @@ module HigherOrderCallGraph = struct
         if Target.contain_recursive_target target || exceed_depth target then None else Some target
 
 
-      let rec analyze_call ~pyre_in_context ~location ~call ~arguments ~state =
+      let analyze_callee_targets
+          ~location
+          ~call
+          ~arguments
+          ~unresolved
+          ~argument_callees
+          ~track_apply_call_step_name
+          callee_targets
+        =
         let track_apply_call_step step f =
           CallGraphProfiler.track_apply_call_step
             ~profiler:Context.profiler
             ~analysis:Forward
             ~step
-            ~call_target:None
+            ~call_target:
+              (* A hack to distinguish the profiling of different calls to
+                 `analyze_callee_targets`. *)
+              (Some (Target.Regular.Object track_apply_call_step_name |> Target.from_regular))
             ~location
             ~argument:None
             ~f
@@ -4385,28 +4436,9 @@ module HigherOrderCallGraph = struct
               Some (root, parameter_target.CallTarget.target)
           | _ -> (* TODO: Consider the remaining `argument_matches`. *) None
         in
-        let analyze_arguments
-            ~higher_order_parameters
-            index
-            state_so_far
-            { Call.Argument.value = argument; _ }
-          =
-          let callees, new_state =
-            analyze_expression ~pyre_in_context ~state:state_so_far ~expression:argument
-          in
-          let call_targets_from_higher_order_parameters =
-            match HigherOrderParameterMap.Map.find_opt index higher_order_parameters with
-            | Some { HigherOrderParameter.call_targets; _ } -> call_targets
-            | None -> []
-          in
-          ( new_state,
-            call_targets_from_higher_order_parameters
-            |> CallTarget.Set.of_list
-            |> CallTarget.Set.join callees )
-        in
-        let non_parameterized_targets ~parameterized_call_targets call_targets =
+        let non_parameterized_targets ~parameterized_targets call_targets =
           let regular_targets_from_parameterized =
-            List.filter_map parameterized_call_targets ~f:(function
+            List.filter_map parameterized_targets ~f:(function
                 | { CallTarget.target = Target.Parameterized { regular; _ }; _ } -> Some regular
                 | { CallTarget.target = Target.Regular _; _ } -> None)
           in
@@ -4416,51 +4448,18 @@ module HigherOrderCallGraph = struct
           in
           List.filter call_targets ~f:(fun call_target -> call_target |> is_parameterized |> not)
         in
-        let ({
-               CallCallees.call_targets = original_call_targets;
-               higher_order_parameters;
-               unresolved;
-               _;
-             } as original_call_callees)
-          =
-          track_apply_call_step ResolveCall (fun () ->
-              match
-                DefineCallGraph.resolve_call ~location ~call Context.input_define_call_graph
-              with
-              | Some callees -> callees
-              | None ->
-                  failwith
-                    (Format.asprintf
-                       "Could not find callees for `%a` in `%a` at `%a` in the call graph: `%a`"
-                       Ast.Expression.Call.pp
-                       call
-                       Reference.pp
-                       Context.qualifier
-                       Location.pp
-                       location
-                       DefineCallGraph.pp
-                       Context.input_define_call_graph))
-        in
         let decorated_targets, non_decorated_targets =
           track_apply_call_step PartitionDecoratedTargets (fun () ->
-              partition_decorated_targets original_call_targets)
+              partition_decorated_targets callee_targets)
         in
         (* The analysis of the callee AST handles the redirection to artifically created decorator
            defines. *)
-        let callee_return_values, state =
-          analyze_expression ~pyre_in_context ~state ~expression:call.Call.callee
-        in
         let call_targets_from_callee =
           track_apply_call_step ComputeCalleeTargets (fun () ->
               non_decorated_targets
               |> CallTarget.Set.of_list
               |> CallTarget.Set.join (returned_callables decorated_targets)
-              |> CallTarget.Set.join callee_return_values
               |> CallTarget.Set.elements)
-        in
-        let state, argument_callees =
-          track_apply_call_step AnalyzeArguments (fun () ->
-              List.fold_mapi arguments ~f:(analyze_arguments ~higher_order_parameters) ~init:state)
         in
         let create_call_target = function
           | Some ({ CallTarget.implicit_receiver; _ } as callee_target) :: parameter_targets ->
@@ -4471,6 +4470,25 @@ module HigherOrderCallGraph = struct
               in
               let formal_arguments =
                 callee_regular |> Target.from_regular |> formal_arguments_if_non_stub
+              in
+              let parameter_targets, arguments =
+                match ImplicitArgument.implicit_argument ~is_implicit_new:false callee_target with
+                | ImplicitArgument.Callee ->
+                    ( None :: parameter_targets,
+                      { Call.Argument.name = None; value = call.Call.callee } :: arguments )
+                | ImplicitArgument.CalleeBase ->
+                    let { Node.value = call_expression; location } = call.Call.callee in
+                    let self =
+                      match call_expression with
+                      | Expression.Name (Name.Attribute { base; _ }) -> base
+                      | _ ->
+                          (* Default to a placeholder self if we don't understand/retain information
+                             of what self is. *)
+                          Expression.Constant Constant.NoneLiteral |> Node.create ~location
+                    in
+                    ( None :: parameter_targets,
+                      { Call.Argument.name = None; value = self } :: arguments )
+                | ImplicitArgument.None -> parameter_targets, arguments
               in
               log
                 "Formal arguments of callee regular `%a`: `%a`"
@@ -4498,7 +4516,8 @@ module HigherOrderCallGraph = struct
                     (* Since the original call graphs cannot find the callees, the callee must be
                        discovered by higher order call graph building. Since it is unclear whether
                        the callee is always a function or a method under any context, the arguments
-                       must be explicit, unless the callee is a bound method. *)
+                       must be explicit, unless the callee is a bound method, which is not yet
+                       handled. *)
                     log
                       "Setting `implicit_receiver` to false for callee target `%a`"
                       CallTarget.pp
@@ -4529,7 +4548,7 @@ module HigherOrderCallGraph = struct
           | [] -> [None]
           | list -> List.map ~f:(fun target -> Some target) list
         in
-        let parameterized_call_targets =
+        let parameterized_targets =
           track_apply_call_step CreateParameterizedTargets (fun () ->
               argument_callees
               |> List.map ~f:(fun call_targets ->
@@ -4538,17 +4557,99 @@ module HigherOrderCallGraph = struct
               |> Algorithms.cartesian_product
               |> List.filter_map ~f:create_call_target)
         in
-        (* Do not keep keep higher order parameters if each call target is parameterized. *)
-        let higher_order_parameters =
-          track_apply_call_step HandleHigherOrderParameters (fun () ->
-              if
-                call_targets_from_callee
-                |> non_parameterized_targets ~parameterized_call_targets
-                |> List.is_empty
-              then
-                HigherOrderParameterMap.empty
-              else
-                higher_order_parameters)
+        let non_parameterized_targets =
+          track_apply_call_step FindNonParameterizedTargets (fun () ->
+              non_parameterized_targets ~parameterized_targets call_targets_from_callee)
+        in
+        parameterized_targets, decorated_targets, non_parameterized_targets
+
+
+      let rec analyze_call ~pyre_in_context ~location ~call ~arguments ~state =
+        let track_apply_call_step step f =
+          CallGraphProfiler.track_apply_call_step
+            ~profiler:Context.profiler
+            ~analysis:Forward
+            ~step
+            ~call_target:None
+            ~location
+            ~argument:None
+            ~f
+        in
+        let analyze_arguments
+            ~higher_order_parameters
+            index
+            state_so_far
+            { Call.Argument.value = argument; _ }
+          =
+          let callees, new_state =
+            analyze_expression ~pyre_in_context ~state:state_so_far ~expression:argument
+          in
+          let call_targets_from_higher_order_parameters =
+            match HigherOrderParameterMap.Map.find_opt index higher_order_parameters with
+            | Some { HigherOrderParameter.call_targets; _ } -> call_targets
+            | None -> []
+          in
+          ( new_state,
+            call_targets_from_higher_order_parameters
+            |> CallTarget.Set.of_list
+            |> CallTarget.Set.join callees )
+        in
+        let ({
+               CallCallees.call_targets = original_call_targets;
+               higher_order_parameters;
+               unresolved;
+               init_targets = original_init_targets;
+               _;
+             } as original_call_callees)
+          =
+          track_apply_call_step ResolveCall (fun () ->
+              match
+                DefineCallGraph.resolve_call ~location ~call Context.input_define_call_graph
+              with
+              | Some callees -> callees
+              | None ->
+                  failwith
+                    (Format.asprintf
+                       "Could not find callees for `%a` in `%a` at `%a` in the call graph: `%a`"
+                       Ast.Expression.Call.pp
+                       call
+                       Reference.pp
+                       Context.qualifier
+                       Location.pp
+                       location
+                       DefineCallGraph.pp
+                       Context.input_define_call_graph))
+        in
+        (* The analysis of the callee AST handles the redirection to artifically created decorator
+           defines. *)
+        let callee_return_values, state =
+          analyze_expression ~pyre_in_context ~state ~expression:call.Call.callee
+        in
+        let state, argument_callees =
+          track_apply_call_step AnalyzeArguments (fun () ->
+              List.fold_mapi arguments ~f:(analyze_arguments ~higher_order_parameters) ~init:state)
+        in
+        let parameterized_call_targets, decorated_call_targets, non_parameterized_call_targets =
+          callee_return_values
+          |> CallTarget.Set.elements
+          |> List.rev_append original_call_targets
+          |> analyze_callee_targets
+               ~location
+               ~call
+               ~arguments
+               ~unresolved
+               ~argument_callees
+               ~track_apply_call_step_name:"call_targets"
+        in
+        let parameterized_init_targets, decorated_init_targets, non_parameterized_init_targets =
+          analyze_callee_targets
+            ~location
+            ~call
+            ~arguments
+            ~unresolved
+            ~argument_callees
+            ~track_apply_call_step_name:"init_targets"
+            original_init_targets
         in
         (* Unset `unresolved` when the original call graph building cannot resolve callees under
            cases like `f()` or `f`. *)
@@ -4560,6 +4661,16 @@ module HigherOrderCallGraph = struct
               Unresolved.False
           | _ -> unresolved
         in
+        (* Discard higher order parameters only if each original target is parameterized. *)
+        let higher_order_parameters =
+          if
+            List.is_empty non_parameterized_call_targets
+            && List.is_empty non_parameterized_init_targets
+          then
+            HigherOrderParameterMap.empty
+          else
+            higher_order_parameters
+        in
         track_apply_call_step StoreCallCallees (fun () ->
             Context.output_define_call_graph :=
               DefineCallGraph.set_call_callees
@@ -4569,13 +4680,17 @@ module HigherOrderCallGraph = struct
                   {
                     original_call_callees with
                     call_targets = parameterized_call_targets;
-                    decorated_targets;
+                    decorated_targets =
+                      List.rev_append decorated_init_targets decorated_call_targets;
+                    init_targets = parameterized_init_targets;
                     higher_order_parameters;
                     unresolved;
                   }
                 !Context.output_define_call_graph);
         track_apply_call_step FetchReturnedCallables (fun () ->
-            returned_callables parameterized_call_targets, state)
+            ( returned_callables
+                (List.rev_append parameterized_init_targets parameterized_call_targets),
+              state ))
 
 
       (* Return possible callees and the new state. *)
@@ -4699,18 +4814,24 @@ module HigherOrderCallGraph = struct
         let state =
           match Node.value statement with
           | Statement.Assign { Assign.target; value = Some value; _ } -> (
-              match TaintAccessPath.of_expression ~self_variable:None target with
+              match TaintAccessPath.of_expression ~self_variable target with
               | None -> state
-              | Some { root; path = _ } ->
+              | Some { root; path } ->
                   let callees, state =
                     analyze_expression ~pyre_in_context ~state ~expression:value
                   in
-                  store_callees ~weak:false ~root ~callees state)
+                  (* For now, we ignore the path entirely. Thus, we should only perform strong
+                     updates when writing to an empty path. E.g, `x = foo` should be strong update,
+                     `x.foo = bar` should be a weak update. *)
+                  let strong_update = TaintAccessPath.Path.is_empty path in
+                  store_callees ~weak:(not strong_update) ~root ~callees state)
           | Assign { Assign.target; value = None; _ } -> (
-              match TaintAccessPath.of_expression ~self_variable:None target with
+              match TaintAccessPath.of_expression ~self_variable target with
               | None -> state
-              | Some { root; path = _ } ->
-                  store_callees ~weak:false ~root ~callees:CallTarget.Set.bottom state)
+              | Some { root; path } ->
+                  let strong_update = TaintAccessPath.Path.is_empty path in
+                  store_callees ~weak:(not strong_update) ~root ~callees:CallTarget.Set.bottom state
+              )
           | AugmentedAssign _ -> state
           | Assert _ -> state
           | Break
@@ -4850,6 +4971,8 @@ let higher_order_call_graph_of_define
     ~define_call_graph
     ~pyre_api
     ~callables_to_definitions_map
+    ~method_kinds
+    ~callable
     ~qualifier
     ~define
     ~initial_state
@@ -4892,8 +5015,25 @@ let higher_order_call_graph_of_define
   let returned_callables =
     Fixpoint.Fixpoint.forward ~cfg:(PyrePysaLogic.Cfg.create define) ~initial:initial_state
     |> Fixpoint.Fixpoint.exit
-    >>| Fixpoint.get_result
+    >>| Fixpoint.get_returned_callables
     |> Option.value ~default:CallTarget.Set.bottom
+  in
+  (* To reduce false negatives, if a decorated target's call graph contains any unresolved call,
+     then consider it as returning the target that is being decorated. *)
+  let returned_callables =
+    match callable with
+    | Some callable
+      when Target.is_decorated callable
+           && CallTarget.Set.is_bottom returned_callables
+           && DefineCallGraph.exist_unresolved_call define_call_graph ->
+        let is_class_method, is_static_method =
+          MethodKind.SharedMemory.get_method_kind method_kinds callable
+        in
+        callable
+        |> Target.set_kind Target.Normal
+        |> CallTarget.create ~is_class_method ~is_static_method
+        |> CallTarget.Set.singleton
+    | _ -> returned_callables
   in
   let call_indexer = CallTarget.Indexer.create () in
   {
