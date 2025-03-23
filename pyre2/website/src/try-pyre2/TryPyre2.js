@@ -124,6 +124,7 @@ export default component TryPyre2(
   }
 
   function onEditorMount(editor: any) {
+    console.log('onEditorMount: ', sampleFilename);
     const model = fetchCurMonacoModelAndTriggerUpdate(sampleFilename);
     setModel(model);
 
@@ -159,13 +160,11 @@ export default component TryPyre2(
         )}
       </div>
       {showErrorPanel && (
-        <div className={styles.resultsContainer}>
-          <TryPyre2Results
-            loading={loading}
-            errors={errors}
-            internalError={internalError}
-          />
-        </div>
+        <TryPyre2Results
+          loading={loading}
+          errors={errors}
+          internalError={internalError}
+        />
       )}
     </div>
   );
@@ -233,6 +232,7 @@ function getPyre2Editor(
         theme="vs-light"
         onChange={forceRecheck}
         onMount={onEditorMount}
+        keepCurrentModel={true}
         height={editorHeightforCodeSnippet}
         options={{
           readOnly: isMobile(),
@@ -248,7 +248,10 @@ function getPyre2Editor(
     // use flexbox behavior to make the sandbox height to be 75% of the screen
     // This doesn't seem to work with the monaco editor currently.
     const screenHeight = window.innerHeight;
-    const sandboxHeight = (screenHeight * 75) / 100;
+    const navbarElement = document.querySelector('.navbar'); // Replace with your navbar selector
+    const navbarHeight = navbarElement?.offsetHeight;
+
+    const sandboxHeight = ((screenHeight - navbarHeight) * 75) / 100;
 
     return (
       <Editor
@@ -261,6 +264,7 @@ function getPyre2Editor(
           updateURL(value);
         }}
         onMount={onEditorMount}
+        keepCurrentModel={true}
         height={sandboxHeight}
         options={{
           minimap: {enabled: false},
