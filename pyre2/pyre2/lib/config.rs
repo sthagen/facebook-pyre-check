@@ -13,8 +13,10 @@ use std::path::PathBuf;
 use anyhow::bail;
 use itertools::Itertools;
 use serde::Deserialize;
+use starlark_map::small_map::SmallMap;
 use toml::Table;
 
+use crate::error::kind::ErrorKind;
 use crate::globs::Globs;
 use crate::metadata::PythonVersion;
 use crate::metadata::RuntimeMetadata;
@@ -74,6 +76,9 @@ pub struct ConfigFile {
     #[serde(default)]
     pub site_package_path: Vec<PathBuf>,
 
+    #[serde(default)]
+    pub errors: SmallMap<ErrorKind, bool>,
+
     /// Any unknown config items
     #[serde(default, flatten)]
     pub extras: ExtraConfigs,
@@ -88,6 +93,7 @@ impl Default for ConfigFile {
             site_package_path: Vec::new(),
             project_includes: Self::default_project_includes(),
             project_excludes: Self::default_project_excludes(),
+            errors: SmallMap::default(),
             extras: Self::default_extras(),
         }
     }
@@ -126,6 +132,8 @@ impl ConfigFile {
             base.push(search_root.as_path());
             *search_root = base;
         });
+        // push config to search path to make sure we can fall back to the config directory as an import path
+        // if users forget to add it
         self.search_path.push(config_root.to_path_buf());
         self.site_package_path
             .iter_mut()
@@ -201,6 +209,9 @@ mod tests {
             python_platform = \"darwin\"
             python_version = \"1.2.3\"
             site_package_path = [\"venv/lib/python1.2.3/site-packages\"]
+            [errors]
+            assert_type = true
+            bad_return = false
         ";
         let config = ConfigFile::parse_config(config_str).unwrap();
         assert_eq!(
@@ -216,6 +227,9 @@ mod tests {
                 python_version: PythonVersion::new(1, 2, 3),
                 site_package_path: vec![PathBuf::from("venv/lib/python1.2.3/site-packages")],
                 extras: ConfigFile::default_extras(),
+                errors: SmallMap::from_iter(
+                    [(ErrorKind::AssertType, true), (ErrorKind::BadReturn, false)].into_iter()
+                ),
             },
         );
     }
@@ -328,22 +342,49 @@ mod tests {
         fn with_sep(s: &str) -> String {
             s.replace("/", path::MAIN_SEPARATOR_STR)
         }
-        let mut config = ConfigFile::default();
-        let path_str = with_sep("path/to/my/config");
-        let project_excludes_vec = vec![
-            path_str.clone() + &with_sep("/**/__pycache__/**"),
-            path_str.clone() + &with_sep("/**/.*"),
-        ];
+        let mut config = ConfigFile {
+            project_includes: Globs::new(vec!["path1/**".to_owned(), "path2/path3".to_owned()]),
+            project_excludes: Globs::new(vec!["tests/untyped/**".to_owned()]),
+            search_path: vec![PathBuf::from("../..")],
+            site_package_path: vec![PathBuf::from("venv/lib/python1.2.3/site-packages")],
+            python_platform: ConfigFile::default_python_platform(),
+            python_version: PythonVersion::default(),
+            errors: SmallMap::default(),
+            extras: ConfigFile::default_extras(),
+        };
 
+        let path_str = with_sep("path/to/my/config");
         let test_path = PathBuf::from(path_str.clone());
+
+        let project_includes_vec = vec![
+            path_str.clone() + &with_sep("/path1/**"),
+            path_str.clone() + &with_sep("/path2/path3"),
+        ];
+        let project_excludes_vec = vec![path_str.clone() + &with_sep("/tests/untyped/**")];
+        let search_path = vec![test_path.join("../.."), test_path.clone()];
+        let site_package_path = vec![test_path.join("venv/lib/python1.2.3/site-packages")];
+
         config.rewrite_with_path_to_config(&test_path);
 
         let expected_config = ConfigFile {
-            project_includes: Globs::new(vec![path_str.clone()]),
+            project_includes: Globs::new(project_includes_vec),
             project_excludes: Globs::new(project_excludes_vec),
-            search_path: vec![test_path.clone(), test_path.clone()],
+            search_path,
+            site_package_path,
             ..ConfigFile::default()
         };
         assert_eq!(config, expected_config);
+    }
+
+    #[test]
+    fn test_deserializing_unknown_error_errors() {
+        let config_str = "
+            [errors]
+            subtronics = true
+            zeds_dead = false
+            GRiZ = true
+        ";
+        let err = ConfigFile::parse_config(config_str).unwrap_err();
+        assert!(err.to_string().contains("unknown variant"));
     }
 }
