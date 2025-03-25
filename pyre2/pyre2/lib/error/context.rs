@@ -8,6 +8,7 @@
 use ruff_python_ast::name::Name;
 
 use crate::binding::binding::AnnotationTarget;
+use crate::error::kind::ErrorKind;
 use crate::types::callable::FuncId;
 use crate::types::types::Type;
 
@@ -27,6 +28,8 @@ pub enum ErrorContext {
     UnaryOp(String, Type),
     /// Binary operation like `x + y`
     BinaryOp(String, Type, Type),
+    /// In-place binary operation like `x += y`
+    InplaceBinaryOp(String, Type, Type),
     /// for x in y: ...
     Iteration(Type),
     /// async for x in y: ...
@@ -54,13 +57,42 @@ pub enum ErrorContext {
 #[derive(Debug)]
 pub struct TypeCheckContext {
     pub kind: TypeCheckKind,
+    pub error_kind: ErrorKind,
     pub context: Option<ErrorContext>,
+}
+
+fn error_kind_from_type_check_kind(kind: &TypeCheckKind) -> ErrorKind {
+    use TypeCheckKind::*;
+    match kind {
+        MagicMethodReturn(..) => ErrorKind::BadReturn,
+        AugmentedAssignment => ErrorKind::BadAssignment,
+        ImplicitFunctionReturn(..) => ErrorKind::BadReturn,
+        ExplicitFunctionReturn => ErrorKind::BadReturn,
+        TypeGuardReturn => ErrorKind::BadReturn,
+        CallArgument(..) => ErrorKind::BadArgumentType,
+        CallVarArgs(..) => ErrorKind::BadArgumentType,
+        CallKwArgs(..) => ErrorKind::BadArgumentType,
+        FunctionParameterDefault(..) => ErrorKind::BadFunctionDefinition,
+        TypedDictKey(..) => ErrorKind::TypedDictKeyError,
+        Attribute(..) => ErrorKind::BadAssignment,
+        AnnotatedName(..) => ErrorKind::BadAssignment,
+        IterationVariableMismatch(..) => ErrorKind::BadAssignment,
+        AnnAssign => ErrorKind::BadAssignment,
+        ExceptionClass => ErrorKind::Unknown,
+        YieldValue => ErrorKind::InvalidYield,
+        YieldFrom => ErrorKind::InvalidYield,
+        UnexpectedBareYield => ErrorKind::InvalidYield,
+        Unknown => ErrorKind::Unknown,
+        Test => ErrorKind::Unknown,
+    }
 }
 
 impl TypeCheckContext {
     pub fn of_kind(kind: TypeCheckKind) -> Self {
+        let error_kind = error_kind_from_type_check_kind(&kind);
         Self {
             kind,
+            error_kind,
             context: None,
         }
     }
@@ -82,6 +114,8 @@ pub enum TypeCheckKind {
     /// Check on a magic method that is expected to return a particular type; e.g., a context
     /// manager's `__exit__` method must return `bool | None`.
     MagicMethodReturn(Type, Name),
+    /// Check that the return of an augmented assignment method call is still assignable to the original value
+    AugmentedAssignment,
     /// Implicit return via a path with no explicit return statement. The bool indicates whether
     /// the function has *any* explicit return.
     ImplicitFunctionReturn(bool),

@@ -416,17 +416,16 @@ assert_type(z, str)
 "#,
 );
 
-testcase_with_bug!(
-    "final annotations don't prevent writes on locals",
+testcase!(
     test_final_annotated_local,
     r#"
 from typing import Final
 
 x: Final[int] = 0
-x = 1 # TODO: x can not be assigned
+x = 1  # E: `x` is marked final
 
 y: Final = "foo"
-y = "bar" # TODO: y can not be assigned
+y = "bar"  # E: `y` is marked final
 "#,
 );
 
@@ -1351,15 +1350,6 @@ testcase!(
 from typing import Literal, assert_type
 def A(x: int | Literal[0], y: int | Literal[255]):
     assert_type(x - y, int)
-    "#,
-);
-
-testcase_with_bug!(
-    "PyTorch TODO: This testcase shouldn't have errors. iadd not supported.",
-    test_incremental_add,
-    r#"
-def f(x: int):
-    x += 1 # E: Object of class `int` has no attribute `__iadd__` 
     "#,
 );
 

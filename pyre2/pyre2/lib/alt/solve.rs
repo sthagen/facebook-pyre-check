@@ -11,7 +11,6 @@ use dupe::Dupe;
 use itertools::Either;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::Expr;
-use ruff_python_ast::Operator;
 use ruff_python_ast::TypeParam;
 use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
@@ -824,27 +823,30 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         errors: &ErrorCollector,
     ) -> Type {
-        let context = || ErrorContext::BadContextManager(context_manager_type.clone());
-        let enter_type =
-            self.context_value_enter(context_manager_type, kind, range, errors, Some(&context));
-        let exit_type =
-            self.context_value_exit(context_manager_type, kind, range, errors, Some(&context));
-        self.check_type(
-            &Type::Union(vec![self.stdlib.bool().to_type(), Type::None]),
-            &exit_type,
-            range,
-            errors,
-            &|| TypeCheckContext {
-                kind: TypeCheckKind::MagicMethodReturn(
-                    context_manager_type.clone(),
-                    kind.context_exit_dunder(),
-                ),
-                context: Some(context()),
-            },
-        );
-        // TODO: `exit_type` may also affect exceptional control flow, which is yet to be supported:
-        // https://typing.readthedocs.io/en/latest/spec/exceptions.html#context-managers
-        enter_type
+        self.distribute_over_union(context_manager_type, |context_manager_type| {
+            let context = || ErrorContext::BadContextManager(context_manager_type.clone());
+            let enter_type =
+                self.context_value_enter(context_manager_type, kind, range, errors, Some(&context));
+            let exit_type =
+                self.context_value_exit(context_manager_type, kind, range, errors, Some(&context));
+            self.check_type(
+                &Type::Union(vec![self.stdlib.bool().to_type(), Type::None]),
+                &exit_type,
+                range,
+                errors,
+                &|| TypeCheckContext {
+                    kind: TypeCheckKind::MagicMethodReturn(
+                        context_manager_type.clone(),
+                        kind.context_exit_dunder(),
+                    ),
+                    error_kind: ErrorKind::BadReturn,
+                    context: Some(context()),
+                },
+            );
+            // TODO: `exit_type` may also affect exceptional control flow, which is yet to be supported:
+            // https://typing.readthedocs.io/en/latest/spec/exceptions.html#context-managers
+            enter_type
+        })
     }
 
     pub fn scoped_type_params(
@@ -1327,6 +1329,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             &annot.target,
                         ))
                     };
+                    if annot.annotation.is_final() {
+                        self.error(
+                            errors,
+                            e.range(),
+                            ErrorKind::BadAssignment,
+                            None,
+                            "Assignment target is marked final".to_owned(),
+                        );
+                    }
                     self.expr(e, annot.ty().map(|t| (t, tcc)), errors)
                 }
                 None => self.expr(e, None, errors),
@@ -1626,24 +1637,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     self.unions(exceptions)
                 }
             }
-            Binding::AugAssign(x) => {
-                let base = self.expr_infer(&x.target, errors);
-                if x.op == Operator::Add
-                    && base.is_literal_string()
-                    && self.expr_infer(&x.value, errors).is_literal_string()
-                {
-                    return Type::LiteralString;
-                }
-                self.call_method_or_error(
-                    &base,
-                    &Name::new(x.op.in_place_dunder()),
-                    x.range,
-                    &[CallArg::Expr(&x.value)],
-                    &[],
-                    errors,
-                    None,
-                )
-            }
+            Binding::AugAssign(ann, x) => self.augassign_infer(*ann, x, errors),
             Binding::IterableValue(ann, e, is_async) => {
                 let ty = ann.map(|k| self.get_idx(k));
                 let tcc: &dyn Fn() -> TypeCheckContext = &|| {
@@ -1909,6 +1903,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 }
                             })
                         };
+                        if annot.annotation.is_final() && *style == AnnotationStyle::Forwarded {
+                            self.error(
+                                errors,
+                                expr.range(),
+                                ErrorKind::BadAssignment,
+                                None,
+                                format!("`{}` is marked final", name),
+                            );
+                        }
                         let hint = annot.ty().map(|t| (t, tcc));
                         (
                             Some(annot.annotation.qualifiers.contains(&Qualifier::TypeAlias)),

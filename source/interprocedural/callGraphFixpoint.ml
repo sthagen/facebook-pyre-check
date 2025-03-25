@@ -25,6 +25,9 @@ module CallGraphAnalysis = struct
 
     let join ~iteration:_ = CallGraph.HigherOrderCallGraph.merge
 
+    (* TODO(T218941022): The current widening is not sound, since we only return the right hand
+       side. This can lead to unsoundness (missing call edges), although we haven't seen concrete
+       examples yet. It will also lead to nondeterminism. *)
     let widen ~iteration:_ ~callable:_ ~previous:_ ~next = next
 
     (* Since this is only used to determine if we have reached a fixpoint, it is fine to only check
@@ -133,7 +136,6 @@ module CallGraphAnalysis = struct
               ~define_call_graph
               ~pyre_api
               ~callables_to_definitions_map
-              ~method_kinds
               ~callable:(Some callable)
               ~qualifier
               ~define
