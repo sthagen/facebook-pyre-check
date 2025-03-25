@@ -19,6 +19,7 @@ use ruff_text_size::TextRange;
 use ruff_text_size::TextSize;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
+use starlark_map::Hashed;
 use vec1::Vec1;
 
 use crate::binding::binding::Binding;
@@ -86,13 +87,13 @@ impl StaticInfo {
 impl Static {
     fn add_with_count(
         &mut self,
-        name: Name,
+        name: Hashed<Name>,
         loc: TextRange,
         annot: Option<Idx<KeyAnnotation>>,
         count: usize,
     ) -> &mut StaticInfo {
         // Use whichever one we see first
-        let res = self.0.entry(name).or_insert(StaticInfo {
+        let res = self.0.entry_hashed(name).or_insert(StaticInfo {
             loc,
             annot,
             count: 0,
@@ -103,7 +104,7 @@ impl Static {
     }
 
     pub fn add(&mut self, name: Name, range: TextRange, annot: Option<Idx<KeyAnnotation>>) {
-        self.add_with_count(name, range, annot, 1);
+        self.add_with_count(Hashed::new(name), range, annot, 1);
     }
 
     pub fn stmts(
@@ -119,18 +120,29 @@ impl Static {
         if top_level && module_info.name() != ModuleName::builtins() {
             d.inject_builtins();
         }
-        for (name, def) in d.definitions {
+
+        let mut wildcards = Vec::with_capacity(d.import_all.len());
+        for (m, range) in d.import_all {
+            if let Ok(exports) = lookup.get(m) {
+                wildcards.push((range, exports.wildcard(lookup)));
+            }
+        }
+
+        // Try and avoid rehashing while we insert, with a little bit of spare space
+        let capacity_guess =
+            d.definitions.len() + wildcards.iter().map(|x| x.1.len()).sum::<usize>();
+        self.0.reserve(((capacity_guess * 5) / 4) + 25);
+
+        for (name, def) in d.definitions.into_iter_hashed() {
             let annot = def.annot.map(&mut get_annotation_idx);
             let info = self.add_with_count(name, def.range, annot, def.count);
             info.style = def.style;
         }
-        for (m, range) in d.import_all {
-            if let Ok(exports) = lookup.get(m) {
-                for name in exports.wildcard(lookup).iter() {
-                    // TODO: semantics of import * and global var with same name
-                    self.add_with_count(name.clone(), range, None, 1).style =
-                        DefinitionStyle::ImportModule;
-                }
+        for (range, wildcard) in wildcards {
+            for name in wildcard.iter_hashed() {
+                // TODO: semantics of import * and global var with same name
+                self.add_with_count(name.cloned(), range, None, 1).style =
+                    DefinitionStyle::ImportModule;
             }
         }
     }
@@ -450,15 +462,25 @@ impl Scopes {
     }
 
     pub fn update_flow_info(&mut self, name: &Name, key: Idx<Key>, style: Option<FlowStyle>) {
+        self.update_flow_info_hashed(Hashed::new(name), key, style);
+    }
+
+    pub fn update_flow_info_hashed(
+        &mut self,
+        name: Hashed<&Name>,
+        key: Idx<Key>,
+        style: Option<FlowStyle>,
+    ) {
         self.current_mut()
             .flow
             .info
-            .insert(name.clone(), FlowInfo { key, style });
+            .insert_hashed(name.cloned(), FlowInfo { key, style });
     }
 
     fn get_flow_info(&self, name: &Name) -> Option<&FlowInfo> {
+        let name = Hashed::new(name);
         for scope in self.iter_rev() {
-            if let Some(flow) = scope.flow.info.get(name) {
+            if let Some(flow) = scope.flow.info.get_hashed(name) {
                 return Some(flow);
             }
         }

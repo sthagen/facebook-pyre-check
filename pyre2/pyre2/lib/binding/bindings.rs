@@ -29,8 +29,10 @@ use ruff_python_ast::TypeParams;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use ruff_text_size::TextSize;
+use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
+use starlark_map::Hashed;
 use vec1::Vec1;
 
 use crate::binding::binding::AnnotationTarget;
@@ -325,12 +327,13 @@ impl Bindings {
         }
         let scope_trace = builder.scopes.finish();
         let last_scope = scope_trace.toplevel_scope();
-        for (k, static_info) in &last_scope.stat.0 {
+        let exported = exports.exports(lookup);
+        for (k, static_info) in last_scope.stat.0.iter_hashed() {
             if static_info.is_nonlocal() || static_info.is_global() {
                 // Nonlocal and global don't do anything outside a function
                 continue;
             }
-            let info = last_scope.flow.info.get(k);
+            let info = last_scope.flow.info.get_hashed(k);
             let val = match info {
                 Some(FlowInfo { key, .. }) => {
                     if let Some(ann) = static_info.annot {
@@ -351,8 +354,8 @@ impl Bindings {
                     Binding::AnyType(AnyStyle::Error)
                 }
             };
-            if exports.contains(k, lookup) {
-                builder.table.insert(KeyExport(k.clone()), val);
+            if exported.contains_hashed(k) {
+                builder.table.insert(KeyExport(k.into_key().clone()), val);
             }
         }
         Self(Arc::new(BindingsInner {
@@ -464,7 +467,8 @@ pub enum LookupKind {
 
 impl<'a> BindingsBuilder<'a> {
     pub fn init_static_scope(&mut self, x: &[Stmt], top_level: bool) {
-        self.scopes.current_mut().stat.stmts(
+        let current = self.scopes.current_mut();
+        current.stat.stmts(
             x,
             &self.module_info,
             top_level,
@@ -477,6 +481,8 @@ impl<'a> BindingsBuilder<'a> {
                     .insert(KeyAnnotation::Annotation(x))
             },
         );
+        // Presize the flow, as its likely to need as much space as static
+        current.flow.info.reserve(current.stat.0.capacity());
     }
 
     pub fn stmts(&mut self, xs: Vec<Stmt>) {
@@ -524,6 +530,14 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     pub fn lookup_name(&mut self, name: &Name, kind: LookupKind) -> Result<Idx<Key>, LookupError> {
+        self.lookup_name_hashed(Hashed::new(name), kind)
+    }
+
+    pub fn lookup_name_hashed(
+        &mut self,
+        name: Hashed<&Name>,
+        kind: LookupKind,
+    ) -> Result<Idx<Key>, LookupError> {
         let mut barrier = false;
         let mut allow_nonlocal_reference = kind == LookupKind::Nonlocal;
         let mut allow_global_reference = kind == LookupKind::Global;
@@ -539,7 +553,7 @@ impl<'a> BindingsBuilder<'a> {
             let valid_global_reference = allow_global_reference
                 && !in_current_scope
                 && matches!(scope.kind, ScopeKind::Module);
-            if let Some(flow) = scope.flow.info.get(name) {
+            if let Some(flow) = scope.flow.info.get_hashed(name) {
                 match kind {
                     LookupKind::Regular => {
                         if !barrier || valid_nonlocal_reference || valid_global_reference {
@@ -570,12 +584,12 @@ impl<'a> BindingsBuilder<'a> {
                 }
             }
             if !matches!(scope.kind, ScopeKind::ClassBody(_))
-                && let Some(info) = scope.stat.0.get(name)
+                && let Some(info) = scope.stat.0.get_hashed(name)
             {
                 if !info.is_nonlocal() && !info.is_global() {
                     match kind {
                         LookupKind::Regular => {
-                            let key = info.as_key(name);
+                            let key = info.as_key(name.into_key());
                             return Ok(self.table.types.0.insert(key));
                         }
                         LookupKind::Mutable => {
@@ -585,7 +599,7 @@ impl<'a> BindingsBuilder<'a> {
                         }
                         LookupKind::Nonlocal => {
                             if valid_nonlocal_reference {
-                                let key = info.as_key(name);
+                                let key = info.as_key(name.into_key());
                                 result = Ok(self.table.types.0.insert(key));
                                 // We can't return immediately, because we need to override
                                 // the static annotation in the current scope with the one we found
@@ -597,7 +611,7 @@ impl<'a> BindingsBuilder<'a> {
                         }
                         LookupKind::Global => {
                             if valid_global_reference {
-                                let key = info.as_key(name);
+                                let key = info.as_key(name.into_key());
                                 result = Ok(self.table.types.0.insert(key));
                                 // We can't return immediately, because we need to override
                                 // the static annotation in the current scope with the one we found
@@ -619,7 +633,7 @@ impl<'a> BindingsBuilder<'a> {
             barrier = barrier || scope.barrier;
         }
         if let Some(annot) = static_annot_override
-            && let Some(current_scope_info) = self.scopes.current_mut().stat.0.get_mut(name)
+            && let Some(current_scope_info) = self.scopes.current_mut().stat.0.get_mut_hashed(name)
         {
             current_scope_info.annot = Some(annot);
         }
@@ -731,14 +745,21 @@ impl<'a> BindingsBuilder<'a> {
         key: Idx<Key>,
         style: Option<FlowStyle>,
     ) -> Option<Idx<KeyAnnotation>> {
-        self.scopes.update_flow_info(name, key, style);
-        let info = self.scopes.current().stat.0.get(name).unwrap_or_else(|| {
-            let module = self.module_info.name();
-            panic!("Name `{name}` not found in static scope of module `{module}`")
-        });
+        let name = Hashed::new(name);
+        self.scopes.update_flow_info_hashed(name, key, style);
+        let info = self
+            .scopes
+            .current()
+            .stat
+            .0
+            .get_hashed(name)
+            .unwrap_or_else(|| {
+                let module = self.module_info.name();
+                panic!("Name `{name}` not found in static scope of module `{module}`")
+            });
         if info.count > 1 {
             self.table
-                .insert_anywhere(name.clone(), info.loc)
+                .insert_anywhere(name.into_key().clone(), info.loc)
                 .1
                 .insert(key);
         }
@@ -789,13 +810,13 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     pub fn bind_narrow_ops(&mut self, narrow_ops: &NarrowOps, use_range: TextRange) {
-        for (name, (op, op_range)) in narrow_ops.0.iter() {
-            if let Ok(name_key) = self.lookup_name(name, LookupKind::Regular) {
+        for (name, (op, op_range)) in narrow_ops.0.iter_hashed() {
+            if let Ok(name_key) = self.lookup_name_hashed(name, LookupKind::Regular) {
                 let binding_key = self.table.insert(
-                    Key::Narrow(name.clone(), *op_range, use_range),
+                    Key::Narrow(name.into_key().clone(), *op_range, use_range),
                     Binding::Narrow(name_key, Box::new(op.clone()), use_range),
                 );
-                self.scopes.update_flow_info(name, binding_key, None);
+                self.scopes.update_flow_info_hashed(name, binding_key, None);
             }
         }
     }
@@ -850,29 +871,12 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     /// Helper for loops, inserts a phi key for every name in the given flow.
-    fn insert_phi_keys(&mut self, x: Flow, range: TextRange) -> Flow {
-        let items = x
-            .info
-            .iter_hashed()
-            .map(|x| x.0.cloned())
-            .collect::<SmallSet<_>>();
-        let mut res = SmallMap::with_capacity(items.len());
-        for name in items.into_iter() {
-            let key = self
-                .table
-                .types
-                .0
-                .insert(Key::Phi(name.key().clone(), range));
-            let style = x
-                .info
-                .get_hashed(name.as_ref())
-                .and_then(|old_info| old_info.style.clone());
-            res.insert_hashed(name, FlowInfo { key, style });
+    fn insert_phi_keys(&mut self, mut flow: Flow, range: TextRange) -> Flow {
+        for (name, info) in flow.info.iter_mut() {
+            info.key = self.table.types.0.insert(Key::Phi(name.clone(), range));
         }
-        Flow {
-            info: res,
-            no_next: false,
-        }
+        flow.no_next = false;
+        flow
     }
 
     pub fn setup_loop(&mut self, range: TextRange, narrow_ops: &NarrowOps) {
@@ -912,17 +916,17 @@ impl<'a> BindingsBuilder<'a> {
         }
     }
 
-    fn merge_flow_style(&mut self, styles: Vec<Option<&FlowStyle>>) -> Option<FlowStyle> {
+    fn merge_flow_style(&mut self, styles: Vec<Option<FlowStyle>>) -> Option<FlowStyle> {
         let mut it = styles.into_iter();
         let mut merged = it.next()?;
         for x in it {
-            match (merged, x) {
+            match (&merged, x) {
                 // If they're identical, keep it
-                (l, r) if l == r => {}
+                (l, r) if l == &r => {}
                 // Uninitialized takes precedence over Unbound
                 (Some(FlowStyle::Uninitialized), Some(FlowStyle::Unbound)) => {}
                 (Some(FlowStyle::Unbound), Some(FlowStyle::Uninitialized)) => {
-                    merged = Some(&FlowStyle::Uninitialized);
+                    merged = Some(FlowStyle::Uninitialized);
                 }
                 // Unbound and bound branches merge into PossiblyUnbound
                 // Uninitialized and bound branches merge into PossiblyUninitialized
@@ -944,7 +948,7 @@ impl<'a> BindingsBuilder<'a> {
                 }
             }
         }
-        merged.cloned()
+        merged
     }
 
     pub fn merge_flow(&mut self, mut xs: Vec<Flow>, range: TextRange) -> Flow {
@@ -955,25 +959,44 @@ impl<'a> BindingsBuilder<'a> {
             xs.into_iter().partition(|x| x.no_next);
 
         // We normally go through the visible branches, but if nothing is visible no one is going to
-        // fill in the Phi keys we promised. So just given up and use the hidden branches instead.
+        // fill in the Phi keys we promised. So just give up and use the hidden branches instead.
         if visible_branches.is_empty() {
             visible_branches = hidden_branches;
         }
 
-        let names = visible_branches
-            .iter()
-            .flat_map(|x| x.info.iter_hashed().map(|x| x.0.cloned()))
-            .collect::<SmallSet<_>>();
+        // Collect all the information that we care about from all branches
+        let mut names: SmallMap<Name, (Idx<Key>, SmallSet<Idx<Key>>, Vec<Option<FlowStyle>>)> =
+            SmallMap::with_capacity(visible_branches.first().map_or(0, |x| x.info.len()));
+        let visible_branches_len = visible_branches.len();
+        for flow in visible_branches {
+            for (name, info) in flow.info.into_iter_hashed() {
+                let f = |v: &mut (Idx<Key>, SmallSet<Idx<Key>>, Vec<Option<FlowStyle>>)| {
+                    if info.key != v.0 {
+                        // Optimization: instead of x = phi(x, ...), we can skip the x.
+                        // Avoids a recursive solving step later.
+                        v.1.insert(info.key);
+                    }
+                    v.2.push(info.style);
+                };
+
+                match names.entry_hashed(name) {
+                    Entry::Occupied(mut e) => f(e.get_mut()),
+                    Entry::Vacant(e) => {
+                        let key = self.table.types.0.insert(Key::Phi(e.key().clone(), range));
+                        f(e.insert((
+                            key,
+                            SmallSet::new(),
+                            Vec::with_capacity(visible_branches_len),
+                        )));
+                    }
+                };
+            }
+        }
+
         let mut res = SmallMap::with_capacity(names.len());
-        for name in names.into_iter() {
-            let (values, styles): (SmallSet<Idx<Key>>, Vec<Option<&FlowStyle>>) = visible_branches
-                .iter()
-                .flat_map(|x| x.info.get(name.key()).map(|x| (x.key, x.style.as_ref())))
-                .unzip();
+        for (name, (key, values, styles)) in names.into_iter_hashed() {
             let style = self.merge_flow_style(styles);
-            let key = self
-                .table
-                .insert(Key::Phi(name.key().clone(), range), Binding::phi(values));
+            self.table.insert_idx(key, Binding::phi(values));
             res.insert_hashed(name, FlowInfo { key, style });
         }
         Flow {

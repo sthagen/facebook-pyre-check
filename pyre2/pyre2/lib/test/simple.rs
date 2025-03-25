@@ -1367,3 +1367,24 @@ c = C("test")
 reveal_type(c.field)  # E: revealed type: ?_TypeVar
 "#,
 );
+
+testcase!(
+    test_index_any,
+    r#"
+from typing import Any, assert_type
+
+def foo(x):
+    assert_type(x[0], Any)
+"#,
+);
+
+testcase!(
+    test_index_literal,
+    r#"
+from typing import assert_type
+
+def foo(x):
+    assert_type("Magic"[0], str)
+    assert_type("Magic"[3:4], str)
+"#,
+);

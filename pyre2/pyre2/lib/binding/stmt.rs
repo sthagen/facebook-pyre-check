@@ -289,101 +289,100 @@ impl<'a> BindingsBuilder<'a> {
                 self.bind_assign(name, |_| Binding::Import(module, forward))
             }
             Stmt::Assign(mut x) => {
-                let name = if x.targets.len() == 1
-                    && let Expr::Name(name) = &x.targets[0]
-                {
-                    Some(name)
-                } else {
-                    None
-                };
-                let mut value = *x.value;
-                if let Some(name) = name
-                    && let Expr::Call(call) = &mut value
-                    && let Some(special) = self.as_special_export(&call.func)
-                {
-                    match special {
-                        SpecialExport::TypeVar => {
-                            self.assign_type_var(name, call);
-                            return;
-                        }
-                        SpecialExport::ParamSpec => {
-                            self.assign_param_spec(name, call);
-                            return;
-                        }
-                        SpecialExport::TypeVarTuple => {
-                            self.assign_type_var_tuple(name, call);
-                            return;
-                        }
-                        SpecialExport::Enum | SpecialExport::IntEnum | SpecialExport::StrEnum => {
-                            if let Some((arg_name, members)) = call.arguments.args.split_first_mut()
-                            {
-                                self.assign_enum(name, &mut call.func, arg_name, members);
+                if let [Expr::Name(name)] = x.targets.as_slice() {
+                    if let Expr::Call(call) = &mut *x.value
+                        && let Some(special) = self.as_special_export(&call.func)
+                    {
+                        match special {
+                            SpecialExport::TypeVar => {
+                                self.assign_type_var(name, call);
                                 return;
                             }
-                        }
-                        SpecialExport::TypedDict => {
-                            if let Some((arg_name, members)) = call.arguments.args.split_first_mut()
-                            {
-                                self.assign_typed_dict(
-                                    name,
-                                    &mut call.func,
-                                    arg_name,
-                                    members,
-                                    &mut call.arguments.keywords,
-                                );
+                            SpecialExport::ParamSpec => {
+                                self.assign_param_spec(name, call);
                                 return;
                             }
-                        }
-                        SpecialExport::TypingNamedTuple => {
-                            if let Some((arg_name, members)) = call.arguments.args.split_first_mut()
-                            {
-                                self.assign_typing_named_tuple(
-                                    name,
-                                    &mut call.func,
-                                    arg_name,
-                                    members,
-                                );
+                            SpecialExport::TypeVarTuple => {
+                                self.assign_type_var_tuple(name, call);
                                 return;
                             }
-                        }
-                        SpecialExport::CollectionsNamedTuple => {
-                            if let Some((arg_name, members)) = call.arguments.args.split_first_mut()
-                            {
-                                self.assign_collections_named_tuple(
-                                    name,
-                                    &mut call.func,
-                                    arg_name,
-                                    members,
-                                    &mut call.arguments.keywords,
-                                );
-                                return;
+                            SpecialExport::Enum
+                            | SpecialExport::IntEnum
+                            | SpecialExport::StrEnum => {
+                                if let Some((arg_name, members)) =
+                                    call.arguments.args.split_first_mut()
+                                {
+                                    self.assign_enum(name, &mut call.func, arg_name, members);
+                                    return;
+                                }
                             }
-                        }
-                        SpecialExport::NewType => {
-                            if let [new_type_name, base] = &mut *call.arguments.args {
-                                self.assign_new_type(name, new_type_name, base);
-                                return;
+                            SpecialExport::TypedDict => {
+                                if let Some((arg_name, members)) =
+                                    call.arguments.args.split_first_mut()
+                                {
+                                    self.assign_typed_dict(
+                                        name,
+                                        &mut call.func,
+                                        arg_name,
+                                        members,
+                                        &mut call.arguments.keywords,
+                                    );
+                                    return;
+                                }
                             }
+                            SpecialExport::TypingNamedTuple => {
+                                if let Some((arg_name, members)) =
+                                    call.arguments.args.split_first_mut()
+                                {
+                                    self.assign_typing_named_tuple(
+                                        name,
+                                        &mut call.func,
+                                        arg_name,
+                                        members,
+                                    );
+                                    return;
+                                }
+                            }
+                            SpecialExport::CollectionsNamedTuple => {
+                                if let Some((arg_name, members)) =
+                                    call.arguments.args.split_first_mut()
+                                {
+                                    self.assign_collections_named_tuple(
+                                        name,
+                                        &mut call.func,
+                                        arg_name,
+                                        members,
+                                        &mut call.arguments.keywords,
+                                    );
+                                    return;
+                                }
+                            }
+                            SpecialExport::NewType => {
+                                if let [new_type_name, base] = &mut *call.arguments.args {
+                                    self.assign_new_type(name, new_type_name, base);
+                                    return;
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
-                }
-                self.ensure_expr(&mut value);
-                let name = name.cloned();
-                for target in &mut x.targets {
-                    let make_binding = |k: Option<Idx<KeyAnnotation>>| {
-                        if let Some(name) = &name {
-                            Binding::NameAssign(
-                                name.id.clone(),
-                                k.map(|k| (AnnotationStyle::Forwarded, k)),
-                                Box::new(value.clone()),
-                            )
-                        } else {
-                            Binding::Expr(k, value.clone())
-                        }
-                    };
-                    self.bind_target(target, &make_binding, Some(&value));
-                    self.ensure_expr(target);
+                    self.ensure_expr(&mut x.value);
+                    self.bind_assign(name, |k: Option<Idx<KeyAnnotation>>| {
+                        Binding::NameAssign(
+                            name.id.clone(),
+                            k.map(|k| (AnnotationStyle::Forwarded, k)),
+                            x.value,
+                        )
+                    });
+                } else {
+                    let mut value = *x.value;
+                    self.ensure_expr(&mut value);
+                    for target in &mut x.targets {
+                        let make_binding =
+                            |k: Option<Idx<KeyAnnotation>>| Binding::Expr(k, value.clone());
+                        self.bind_target(target, &make_binding, Some(&value));
+                        self.ensure_expr(target);
+                    }
                 }
             }
             Stmt::AugAssign(mut x) => {
@@ -729,12 +728,13 @@ impl<'a> BindingsBuilder<'a> {
                 ) {
                     match self.lookup.get(m) {
                         Ok(module_exports) => {
+                            let exported = module_exports.exports(self.lookup);
                             for x in x.names {
                                 if &x.name == "*" {
-                                    for name in module_exports.wildcard(self.lookup).iter() {
-                                        let key = Key::Import(name.clone(), x.range);
-                                        let val = if module_exports.contains(name, self.lookup) {
-                                            Binding::Import(m, name.clone())
+                                    for name in module_exports.wildcard(self.lookup).iter_hashed() {
+                                        let key = Key::Import(name.into_key().clone(), x.range);
+                                        let val = if exported.contains_hashed(name) {
+                                            Binding::Import(m, name.into_key().clone())
                                         } else {
                                             self.error(
                                                 x.range,
@@ -745,9 +745,9 @@ impl<'a> BindingsBuilder<'a> {
                                         };
                                         let key = self.table.insert(key, val);
                                         self.bind_key(
-                                            name,
+                                            name.key(),
                                             key,
-                                            Some(FlowStyle::Import(m, name.clone())),
+                                            Some(FlowStyle::Import(m, name.into_key().clone())),
                                         );
                                     }
                                 } else {
@@ -761,7 +761,7 @@ impl<'a> BindingsBuilder<'a> {
                                     // but there is an exception: if we are already looking at the
                                     // `__init__` module of `x`, we always prefer the submodule.
                                     let val = if (self.module_info.name() != m)
-                                        && module_exports.contains(&x.name.id, self.lookup)
+                                        && exported.contains(&x.name.id)
                                     {
                                         Binding::Import(m, x.name.id.clone())
                                     } else {
