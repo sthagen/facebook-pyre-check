@@ -19,8 +19,8 @@ use anyhow::Context as _;
 use clap::Parser;
 use clap::ValueEnum;
 use dupe::Dupe;
+use dupe::IterDupedExt;
 use starlark_map::small_map::SmallMap;
-use starlark_map::small_set::SmallSet;
 use tracing::info;
 
 use crate::clap_env;
@@ -28,8 +28,11 @@ use crate::commands::suppress;
 use crate::commands::util::module_from_path;
 use crate::config::set_if_some;
 use crate::config::ConfigFile;
+use crate::error::error::print_error_counts;
+use crate::error::error::print_errors;
 use crate::error::error::Error;
 use crate::error::legacy::LegacyErrors;
+use crate::error::summarise::print_error_summary;
 use crate::metadata::PythonVersion;
 use crate::metadata::RuntimeMetadata;
 use crate::module::bundled::typeshed;
@@ -246,24 +249,23 @@ impl Handles {
             .collect()
     }
 
-    pub fn update(
+    pub fn loaders(&self) -> Vec<LoaderId> {
+        self.loader_factory.values().duped().collect()
+    }
+
+    pub fn update<'a>(
         &mut self,
-        created_files: &Vec<PathBuf>,
-        removed_files: &Vec<PathBuf>,
+        created_files: impl Iterator<Item = &'a PathBuf>,
+        removed_files: impl Iterator<Item = &'a PathBuf>,
         config_finder: &impl Fn(&Path) -> ConfigFile,
-    ) -> Vec<LoaderId> {
-        let mut result: SmallSet<LoaderId> = SmallSet::new();
+    ) {
         for file in created_files {
-            let (_, _, loader) = self.register_file(file.to_path_buf(), config_finder);
-            result.insert(loader.dupe());
+            self.register_file(file.to_path_buf(), config_finder);
         }
         for file in removed_files {
-            if let Some((_, _, loader)) = self.path_data.remove(file) {
-                result.insert(loader);
-            }
+            self.path_data.remove(file);
             // NOTE: Need to garbage-collect unreachable Loaders at some point
         }
-        result.into_iter().collect()
     }
 }
 
@@ -318,8 +320,7 @@ impl Args {
         files_to_check: impl FileList,
         config_finder: &impl Fn(&Path) -> ConfigFile,
     ) -> anyhow::Result<()> {
-        // TODO: We currently make 2 unrealistic assumptions, which should be fixed in the future:
-        // - Glob expansion is stable across incremental runs.
+        // TODO: We currently make 1 unrealistic assumptions, which should be fixed in the future:
         // - Config search is stable across incremental runs.
         let expanded_file_list = files_to_check.files()?;
         let require_levels = self.get_required_levels();
@@ -338,12 +339,16 @@ impl Args {
             let events = get_watcher_events(&mut watcher).await?;
             state.invalidate_disk(&events.modified);
 
-            // TODO: We should filter create/remove events with `files_to_check`
             state.invalidate_disk(&events.created);
             state.invalidate_disk(&events.removed);
-            let invalidated_loaders =
-                handles.update(&events.created, &events.removed, &config_finder);
-            for loader in invalidated_loaders {
+            // File addition and removal may affect the list of files/handles to check. Update
+            // the handles accordingly.
+            handles.update(
+                events.created.iter().filter(|p| files_to_check.covers(p)),
+                events.removed.iter().filter(|p| files_to_check.covers(p)),
+                &config_finder,
+            );
+            for loader in handles.loaders() {
                 state.invalidate_find(&loader);
             }
         }
@@ -402,24 +407,26 @@ impl Args {
 
         state.run(handles, default_require, Some(progress));
         let computing = start.elapsed();
+        let errors = state.collect_errors();
         if let Some(path) = &self.output {
-            let errors = state.collect_errors();
             self.output_format.write_errors_to_file(path, &errors)?;
         } else {
-            state.print_errors();
+            print_errors(&errors);
         }
         let printing = start.elapsed();
         memory_trace.stop();
         if let Some(limit) = self.count_errors {
-            state.print_error_counts(limit);
+            print_error_counts(&errors, limit);
         }
         if let Some(path_index) = self.summarize_errors {
-            state.print_error_summary(path_index);
+            print_error_summary(&errors, path_index);
         }
         let error_count = state.count_errors();
+        let suppressed_count = state.count_suppressed_errors();
         info!(
-            "{} errors, {} modules, {} lines, took {printing:.2?} ({computing:.2?} without printing errors), peak memory {}",
+            "{} errors ({} suppressed), {} modules, {} lines, took {printing:.2?} ({computing:.2?} without printing errors), peak memory {}",
             number_thousands(error_count),
+            number_thousands(suppressed_count),
             number_thousands(state.module_count()),
             number_thousands(state.line_count()),
             memory_trace.peak()
@@ -446,8 +453,7 @@ impl Args {
             fs_anyhow::write(path, report::trace::trace(state).as_bytes())?;
         }
         if self.suppress_errors {
-            let errors: SmallMap<PathBuf, Vec<Error>> = state
-                .collect_errors()
+            let errors: SmallMap<PathBuf, Vec<Error>> = errors
                 .into_iter()
                 .filter(|e| matches!(e.path().details(), ModulePathDetails::FileSystem(_)))
                 .fold(SmallMap::new(), |mut acc, e| {
@@ -460,7 +466,7 @@ impl Args {
         if self.expectations {
             state.check_against_expectations()?;
             Ok(CommandExitStatus::Success)
-        } else if error_count > 0 {
+        } else if error_count > suppressed_count {
             Ok(CommandExitStatus::UserError)
         } else {
             Ok(CommandExitStatus::Success)

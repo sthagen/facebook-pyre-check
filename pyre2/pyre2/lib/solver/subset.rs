@@ -27,6 +27,8 @@ use crate::types::quantified::QuantifiedKind;
 use crate::types::simplify::unions;
 use crate::types::tuple::Tuple;
 use crate::types::type_var::Variance;
+use crate::types::types::Forall;
+use crate::types::types::Forallable;
 use crate::types::types::TParams;
 use crate::types::types::Type;
 
@@ -63,7 +65,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                         return false;
                     }
                 }
-                (Some(Param::VarArg(Type::Unpack(l))), None) => {
+                (Some(Param::VarArg(_, Type::Unpack(l))), None) => {
                     if self.is_subset_eq(&Type::tuple(Vec::new()), l) {
                         l_arg = l_args.iter().next();
                     } else {
@@ -75,13 +77,13 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                         Param::PosOnly(_, Required::Optional)
                         | Param::Pos(_, _, Required::Optional)
                         | Param::KwOnly(_, _, Required::Optional)
-                        | Param::VarArg(_)
+                        | Param::VarArg(_, _)
                         | Param::Kwargs(_),
                     ),
                     None,
                 ) => return true,
                 (
-                    Some(Param::VarArg(Type::Unpack(box l))),
+                    Some(Param::VarArg(_, Type::Unpack(box l))),
                     Some(Param::PosOnly(_, Required::Required)),
                 ) => {
                     let mut u_types = Vec::new();
@@ -89,7 +91,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                         if let Some(Param::PosOnly(u, Required::Required)) = u_arg {
                             u_types.push(u.clone());
                             u_arg = u_args_iter.next();
-                        } else if let Some(Param::VarArg(Type::Unpack(box u))) = u_arg {
+                        } else if let Some(Param::VarArg(_, Type::Unpack(box u))) = u_arg {
                             if self.is_subset_eq(
                                 &Type::Tuple(Tuple::unpacked(u_types, u.clone(), Vec::new())),
                                 l,
@@ -100,7 +102,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                             } else {
                                 return false;
                             }
-                        } else if let Some(Param::VarArg(u)) = u_arg {
+                        } else if let Some(Param::VarArg(_, u)) = u_arg {
                             if self.is_subset_eq(
                                 &Type::Tuple(Tuple::unpacked(
                                     u_types,
@@ -125,14 +127,14 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                 }
                 (
                     Some(Param::PosOnly(_, _) | Param::Pos(_, _, _)),
-                    Some(Param::VarArg(Type::Unpack(box u))),
+                    Some(Param::VarArg(_, Type::Unpack(box u))),
                 ) => {
                     let mut l_types = Vec::new();
                     loop {
                         if let Some(Param::PosOnly(l, _) | Param::Pos(_, l, _)) = l_arg {
                             l_types.push(l.clone());
                             l_arg = l_args_iter.next();
-                        } else if let Some(Param::VarArg(Type::Unpack(box l))) = l_arg {
+                        } else if let Some(Param::VarArg(_, Type::Unpack(box l))) = l_arg {
                             if self.is_subset_eq(
                                 u,
                                 &Type::Tuple(Tuple::unpacked(l_types, l.clone(), Vec::new())),
@@ -143,7 +145,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                             } else {
                                 return false;
                             }
-                        } else if let Some(Param::VarArg(l)) = l_arg {
+                        } else if let Some(Param::VarArg(_, l)) = l_arg {
                             if self.is_subset_eq(
                                 u,
                                 &Type::Tuple(Tuple::unpacked(
@@ -166,7 +168,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                         }
                     }
                 }
-                (Some(Param::VarArg(l)), Some(Param::PosOnly(u, Required::Required))) => {
+                (Some(Param::VarArg(_, l)), Some(Param::PosOnly(u, Required::Required))) => {
                     if self.is_subset_eq(u, l) {
                         u_arg = u_args_iter.next();
                     } else {
@@ -174,8 +176,8 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                     }
                 }
                 (
-                    Some(Param::VarArg(Type::Unpack(box l))),
-                    Some(Param::VarArg(Type::Unpack(box u))),
+                    Some(Param::VarArg(_, Type::Unpack(box l))),
+                    Some(Param::VarArg(_, Type::Unpack(box u))),
                 ) => {
                     if self.is_subset_eq(u, l) {
                         l_arg = l_args_iter.next();
@@ -184,7 +186,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                         return false;
                     }
                 }
-                (Some(Param::VarArg(l)), Some(Param::VarArg(Type::Unpack(box u)))) => {
+                (Some(Param::VarArg(_, l)), Some(Param::VarArg(_, Type::Unpack(box u)))) => {
                     if self.is_subset_eq(u, &Type::Tuple(Tuple::unbounded(l.clone()))) {
                         l_arg = l_args_iter.next();
                         u_arg = u_args_iter.next();
@@ -192,7 +194,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                         return false;
                     }
                 }
-                (Some(Param::VarArg(Type::Unpack(box l))), Some(Param::VarArg(u))) => {
+                (Some(Param::VarArg(_, Type::Unpack(box l))), Some(Param::VarArg(_, u))) => {
                     if self.is_subset_eq(&Type::Tuple(Tuple::unbounded(u.clone())), l) {
                         l_arg = l_args_iter.next();
                         u_arg = u_args_iter.next();
@@ -200,7 +202,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                         return false;
                     }
                 }
-                (Some(Param::VarArg(l)), Some(Param::VarArg(u))) => {
+                (Some(Param::VarArg(_, l)), Some(Param::VarArg(_, u))) => {
                     if self.is_subset_eq(u, l) {
                         l_arg = l_args_iter.next();
                         u_arg = u_args_iter.next();
@@ -573,6 +575,25 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                 .all(|u| self.is_subset_eq(l, &u.as_type())),
             (l, Type::Union(us)) => us.iter().any(|u| self.is_subset_eq(l, u)),
             (Type::Intersect(ls), u) => ls.iter().any(|l| self.is_subset_eq(l, u)),
+            (Type::Module(_), Type::ClassType(cls))
+                if cls.class_object().has_qname("types", "ModuleType") =>
+            {
+                true
+            }
+            (
+                Type::Function(_)
+                | Type::Overload(_)
+                | Type::Forall(box Forall {
+                    body: Forallable::Function(_),
+                    ..
+                }),
+                Type::ClassType(cls),
+            ) if cls.class_object().has_qname("types", "FunctionType") => true,
+            (Type::BoundMethod(_), Type::ClassType(cls))
+                if cls.class_object().has_qname("types", "MethodType") =>
+            {
+                true
+            }
             (Type::Overload(overload), u) => overload
                 .signatures
                 .iter()
@@ -656,7 +677,7 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
                 )
             }
             (Type::ClassType(ty), _) | (_, Type::ClassType(ty))
-                if self.type_order.extends_any(ty) =>
+                if self.type_order.extends_any(ty.class_object()) =>
             {
                 true
             }
@@ -731,6 +752,14 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             {
                 self.is_subset_eq(&Type::Tuple(Tuple::Concrete(elts)), want)
             }
+            (Type::ClassType(got), Type::SelfType(want)) => self
+                .type_order
+                .has_superclass(got.class_object(), want.class_object()),
+            (Type::Type(box Type::ClassType(got)), Type::SelfType(want)) => {
+                self.type_order.has_metaclass(got.class_object(), want)
+            }
+            (Type::SelfType(_), Type::SelfType(_)) => true,
+            (Type::SelfType(got), _) => self.is_subset_eq(&Type::ClassType(got.clone()), want),
             (Type::Tuple(l), Type::Tuple(u)) => self.is_subset_tuple(l, u),
             (Type::Tuple(Tuple::Concrete(left_elts)), _) => {
                 let tuple_type = self

@@ -405,7 +405,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             got,
                             Some((&want, &|| TypeCheckContext {
                                 kind: TypeCheckKind::Attribute(attr_name.clone()),
-                                error_kind: ErrorKind::BadAssignment,
                                 context: context.map(|ctx| ctx()),
                             })),
                             errors,
@@ -414,7 +413,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     Either::Right(got) => {
                         self.check_type(&want, got, range, errors, &|| TypeCheckContext {
                             kind: TypeCheckKind::Attribute(attr_name.clone()),
-                            error_kind: ErrorKind::BadAssignment,
                             context: context.map(|ctx| ctx()),
                         });
                     }
@@ -824,7 +822,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             AttributeBase::ClassInstance(class) => {
                 match self.get_instance_attribute(&class, attr_name) {
                     Some(attr) => LookupResult::Found(attr),
-                    None if self.extends_any(&class) => {
+                    None if self.extends_any(class.class_object()) => {
                         LookupResult::found_type(Type::Any(AnyStyle::Implicit))
                     }
                     None => LookupResult::NotFound(NotFound::Attribute(class)),
@@ -833,9 +831,13 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             AttributeBase::SuperInstance(cls, obj) => {
                 match self.get_super_attribute(&cls, &obj, attr_name) {
                     Some(attr) => LookupResult::Found(attr),
-                    // TODO(rechen): handle SuperObj::Class here.
-                    None if let SuperObj::Instance(cls) = obj
-                        && self.extends_any(&cls) =>
+                    None if let SuperObj::Instance(cls) = &obj
+                        && self.extends_any(cls.class_object()) =>
+                    {
+                        LookupResult::found_type(Type::Any(AnyStyle::Implicit))
+                    }
+                    None if let SuperObj::Class(cls) = &obj
+                        && self.extends_any(cls) =>
                     {
                         LookupResult::found_type(Type::Any(AnyStyle::Implicit))
                     }
@@ -1012,6 +1014,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         match ty {
             Type::ClassType(class_type) => Some(AttributeBase::ClassInstance(class_type)),
             Type::ClassDef(cls) => Some(AttributeBase::ClassObject(cls)),
+            Type::SelfType(class_type) => Some(AttributeBase::ClassInstance(class_type)),
+            Type::Type(box Type::SelfType(class_type)) => {
+                Some(AttributeBase::ClassObject(class_type.class_object().dupe()))
+            }
             Type::TypedDict(_) => Some(AttributeBase::ClassInstance(stdlib.mapping(
                 stdlib.str().to_type(),
                 stdlib.object_class_type().clone().to_type(),

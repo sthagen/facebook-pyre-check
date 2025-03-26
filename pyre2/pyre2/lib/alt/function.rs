@@ -45,6 +45,7 @@ use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Required;
 use crate::types::class::ClassKind;
+use crate::types::class::ClassType;
 use crate::types::types::CalleeKind;
 use crate::types::types::Forall;
 use crate::types::types::Forallable;
@@ -146,7 +147,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         &self,
         def: &StmtFunctionDef,
         source: FunctionSource,
-        self_type: Option<&Idx<KeyClass>>,
+        class_key: Option<&Idx<KeyClass>>,
         decorators: &[Idx<Key>],
         legacy_tparams: &[Idx<KeyLegacyTypeParam>],
         errors: &ErrorCollector,
@@ -172,12 +173,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             required
         };
 
-        let defining_cls = self_type.and_then(|k| self.get_idx(*k).0.dupe());
+        let defining_cls = class_key.and_then(|k| self.get_idx(*k).0.dupe());
         let mut self_type = if def.name.id == dunder::NEW {
             // __new__ is a staticmethod, and does not take a self parameter.
             None
         } else {
-            defining_cls.as_ref().map(|cls| cls.self_type())
+            defining_cls.as_ref().map(|cls| {
+                let cls_type = ClassType::new(cls.dupe(), self.create_default_targs(cls, None));
+                Type::SelfType(cls_type)
+            })
         };
 
         let mut is_overload = false;
@@ -279,7 +283,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             if let Type::Args(q) = ty {
                 paramspec_args = Some(q);
             }
-            Param::VarArg(ty)
+            Param::VarArg(Some(x.name.id.clone()), ty)
         }));
         if paramspec_args.is_some()
             && let Some(param) = def.parameters.kwonlyargs.first()
@@ -357,7 +361,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 .into_iter()
                 .map(|p| match p {
                     Param::Kwargs(Type::Kwargs(_)) => Param::Kwargs(Type::any_error()),
-                    Param::VarArg(Type::Args(_)) => Param::VarArg(Type::any_error()),
+                    Param::VarArg(name, Type::Args(_)) => Param::VarArg(name, Type::any_error()),
                     _ => p,
                 })
                 .collect();
@@ -365,7 +369,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             params = params
                 .into_iter()
                 .filter_map(|p| match p {
-                    Param::Kwargs(Type::Kwargs(_)) | Param::VarArg(Type::Args(_)) => None,
+                    Param::Kwargs(Type::Kwargs(_)) | Param::VarArg(_, Type::Args(_)) => None,
                     _ => Some(p),
                 })
                 .collect();

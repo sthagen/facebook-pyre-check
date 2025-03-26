@@ -15,7 +15,13 @@ import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import * as stylex from '@stylexjs/stylex';
 import {landingPageStyles} from './index';
-import Firefly from '../components/firefly';
+import Firefly from '../components/landing-page/firefly';
+import QuoteCard from '../components/landing-page/quoteCard';
+import PerformanceComparisonChart from '../components/landing-page/PerformanceComparisonChart';
+import QuotesGrid from '../components/landing-page/quotesGrid';
+import WhyPyrefly from '../components/landing-page/whyPyrefly';
+import LandingPageSection from '../components/landing-page/landingPageSection';
+import LandingPageHeader from '../components/landing-page/landingPageHeader';
 
 // This import serves no runtime purposes, but we import it to force webpack to run babel on it,
 // so we can test whether babel can handle newer syntax.
@@ -26,34 +32,22 @@ export default component NewLandingPage() {
   const context = useDocusaurusContext();
   const {siteConfig} = context;
 
+  // TODO: update content and improve css
   return (
     <Layout
       title="Pyrefly: A Static Type Checker for Python"
       description={siteConfig.description}>
-      <header {...stylex.props(landingPageStyles.featureHero)}>
-        <div className="container">
-          <h1 {...stylex.props(landingPageStyles.title)}>
-            pyrefly<span>.</span>
-          </h1>
-          <p {...stylex.props(landingPageStyles.subtitle)}>
-            <span>
-              {' '}
-              <a
-                href="https://github.com/facebook/pyrefly/milestone/1"
-                {...stylex.props(landingPageStyles.yellowLink)}>
-                Coming soon
-              </a>
-              : A faster Python type checker written in Rust
-            </span>
-          </p>
-          <section>
-            <Firefly />
-            <Firefly />
-            <Firefly />
-            <Firefly />
-          </section>
-        </div>
-      </header>
+      <LandingPageHeader />
+      <LandingPageSection title="Why Pyrefly" child={<WhyPyrefly />} />
+      <LandingPageSection
+        title="Performance Comparison"
+        child={<PerformanceComparisonChart />}
+      />
+      <LandingPageSection
+        title="What People Say About Pyrefly"
+        child={<QuotesGrid />}
+        isLastSection={true}
+      />
     </Layout>
   );
 }

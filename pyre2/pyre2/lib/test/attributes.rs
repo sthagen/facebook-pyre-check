@@ -96,6 +96,20 @@ y.foo()  # result is "hi"
     "#,
 );
 
+testcase_with_bug!(
+    "Attribute lookups can't handle unions",
+    test_attribute_union,
+    r#"
+from typing import assert_type
+class A:
+    x: int
+class B:
+    x: str
+def test(x: A | B):
+    del x.x  # E: TODO: Answers::solve_expectation::Delete attribute base undefined for type: A | B (trying to access x)
+    "#,
+);
+
 testcase!(
     test_callable_boundmethod_subset,
     r#"
@@ -113,7 +127,7 @@ class C3:
     def f(x: int, /) -> str:
         return ""
 def foo(x: Callable[[int], str], c: C, c2: C2, c3: C3):
-    C.f = x  # E: `(int) -> str` is not assignable to attribute `f` with type `(C, int) -> str`
+    C.f = x  # E: `(int) -> str` is not assignable to attribute `f` with type `(Self@C, int) -> str`
     c.f = x
     C2.f = x
     c2.f = x
@@ -347,10 +361,10 @@ def f1(c: Callable[[int], None]):
     pass
 def f2(c: Callable[[C, int], None]):
     pass
-f1(C.f)  # E: Argument `(self: C, x: int) -> None` is not assignable to parameter `c` with type `(int) -> None`
+f1(C.f)  # E: Argument `(self: Self@C, x: int) -> None` is not assignable to parameter `c` with type `(int) -> None`
 f1(C().f)
 f2(C.f)
-f2(C().f)  # E: Argument `BoundMethod[C, (self: C, x: int) -> None]` is not assignable to parameter `c` with type `(C, int) -> None`
+f2(C().f)  # E: Argument `BoundMethod[C, (self: Self@C, x: int) -> None]` is not assignable to parameter `c` with type `(C, int) -> None`
     "#,
 );
 
@@ -631,6 +645,9 @@ def test0(a: A, b: B, ta: type[A]) -> None:
 
 class Test(B):
     def m(self) -> None:
+        assert_type(super().z, Any)
+    @classmethod
+    def m2(cls) -> None:
         assert_type(super().z, Any)
     "#,
 );

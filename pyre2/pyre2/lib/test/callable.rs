@@ -172,7 +172,7 @@ test(f5) # OK
 
 # Lower bound has variadic args of incompatible type
 def f6(*args: str) -> None: ...
-test(f6) # E: Argument `(*str) -> None` is not assignable to parameter `f` with type `(int, int) -> None`
+test(f6) # E: Argument `(*args: str) -> None` is not assignable to parameter `f` with type `(int, int) -> None`
 
 # Lower bound has extra kwargs of arbitrary type
 class Arbitrary: pass
@@ -224,7 +224,7 @@ testcase!(
     test_varargs,
     r#"
 def test(*args: int): ...
-test(1, 2, "foo", 4) # E: Argument `Literal['foo']` is not assignable to parameter with type `int`
+test(1, 2, "foo", 4) # E: Argument `Literal['foo']` is not assignable to varargs parameter `*args` with type `int`
 "#,
 );
 
@@ -313,8 +313,8 @@ from typing import assert_type
 
 def test1(*args: *tuple[int, int, int]): ...
 test1(*(1, 2, 3)) # OK
-test1(*(1, 2)) # E: Unpacked argument `tuple[Literal[1], Literal[2]]` is not assignable to varargs type `tuple[int, int, int]` in function `test1`
-test1(*(1, 2, 3, 4)) # E: Unpacked argument `tuple[Literal[1], Literal[2], Literal[3], Literal[4]]` is not assignable to varargs type `tuple[int, int, int]` in function `test1`
+test1(*(1, 2)) # E: Unpacked argument `tuple[Literal[1], Literal[2]]` is not assignable to varargs parameter `*args` with type `tuple[int, int, int]` in function `test1`
+test1(*(1, 2, 3, 4)) # E: Unpacked argument `tuple[Literal[1], Literal[2], Literal[3], Literal[4]]` is not assignable to varargs parameter `*args` with type `tuple[int, int, int]` in function `test1`
 
 def test2[*T](*args: *tuple[int, *T, int]) -> tuple[*T]: ...
 assert_type(test2(*(1, 2, 3)), tuple[int])
@@ -323,7 +323,7 @@ assert_type(test2(*(1, 2, 3, 4)), tuple[int, int])
 assert_type(test2(1, 2, *(3, 4), 5), tuple[int, int, int])
 assert_type(test2(1, *(2, 3), *("4", 5)), tuple[int, int, str])
 assert_type(test2(1, *[2, 3], 4), tuple[int, ...])
-test2(1, *(2, 3), *(4, "5"))  # E: Unpacked argument `tuple[Literal[1], Literal[2], Literal[3], Literal[4], Literal['5']]` is not assignable to varargs type `tuple[int, *@_, int]` in function `test2`
+test2(1, *(2, 3), *(4, "5"))  # E: Unpacked argument `tuple[Literal[1], Literal[2], Literal[3], Literal[4], Literal['5']]` is not assignable to varargs parameter `*args` with type `tuple[int, *@_, int]` in function `test2`
 "#,
 );
 

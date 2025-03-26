@@ -108,12 +108,33 @@ impl TypeCheckKind {
                     function_suffix(func_id.as_ref(), current_module),
                 )
             }
-            Self::CallVarArgs(func_id) => format!(
-                "Unpacked argument `{}` is not assignable to varargs type `{}`{}",
-                ctx.display(got),
-                ctx.display(want),
-                function_suffix(func_id.as_ref(), current_module)
-            ),
+            Self::CallVarArgs(param, func_id) => {
+                let param_desc = match param {
+                    Some(name) => format!(" `*{name}`"),
+                    None => "".to_owned(),
+                };
+                format!(
+                    "Argument `{}` is not assignable to varargs parameter{} with type `{}`{}",
+                    ctx.display(got),
+                    param_desc,
+                    ctx.display(want),
+                    function_suffix(func_id.as_ref(), current_module),
+                )
+            }
+            Self::CallUnpackVarArgs(name, func_id) => {
+                let name = if let Some(name) = name {
+                    format!(" `*{name}`")
+                } else {
+                    "".to_owned()
+                };
+                format!(
+                    "Unpacked argument `{}` is not assignable to varargs parameter{} with type `{}`{}",
+                    ctx.display(got),
+                    name,
+                    ctx.display(want),
+                    function_suffix(func_id.as_ref(), current_module)
+                )
+            }
             Self::CallKwArgs(arg, param, func_id) => {
                 let arg_desc = match arg {
                     Some(arg) => format!("Keyword argument `{arg}` with type"),
@@ -143,6 +164,11 @@ impl TypeCheckKind {
                 ctx.display(got),
                 key,
                 ctx.display(want),
+            ),
+            Self::TypedDictUnpacking => format!(
+                "Unpacked `{}` is not assignable to `{}`",
+                ctx.display(got),
+                ctx.display(want)
             ),
             Self::Attribute(attr) => format!(
                 "`{}` is not assignable to attribute `{}` with type `{}`",

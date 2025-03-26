@@ -186,14 +186,13 @@ class B(A):
     "#,
 );
 
-testcase_with_bug!(
-    "There should be no errors",
+testcase!(
     test_super_new_return,
     r#"
 from typing import Self
 class A:
     def __new__(cls) -> Self:
-        return super().__new__(cls)  # E: Returned type `object` is not assignable to declared return type `A`
+        return super().__new__(cls)
     "#,
 );
 
@@ -234,5 +233,19 @@ class B(A):
     def g(cls):
         assert_type(super().f(), int)
         assert_type(super(B, cls).f(), int)
+    "#,
+);
+
+testcase!(
+    test_call_instance_method_from_classmethod,
+    r#"
+class A:
+    def f(self):
+        pass
+
+class B(A):
+    @classmethod
+    def g(cls):
+        super().f(B())
     "#,
 );

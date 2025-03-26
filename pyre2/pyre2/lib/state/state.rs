@@ -45,7 +45,6 @@ use crate::binding::bindings::BindingEntry;
 use crate::binding::bindings::BindingTable;
 use crate::binding::bindings::Bindings;
 use crate::binding::table::TableKeyed;
-use crate::error::collector::ErrorCollector;
 use crate::error::error::Error;
 use crate::error::expectation::Expectation;
 use crate::error::kind::ErrorKind;
@@ -76,7 +75,6 @@ use crate::types::class::Class;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::Type;
 use crate::util::arc_id::ArcId;
-use crate::util::display::number_thousands;
 use crate::util::enum_heap::EnumHeap;
 use crate::util::lock::Mutex;
 use crate::util::lock::RwLock;
@@ -593,38 +591,18 @@ impl State {
             .sum()
     }
 
-    pub fn print_errors(&self) {
-        for module in self.modules.values() {
-            let steps = module.state.read();
-            if let Some(load) = &steps.steps.load {
-                load.errors.print();
-            }
-        }
-    }
-
-    pub fn print_error_counts(&self, limit: usize) {
-        let loads = self
-            .modules
+    pub fn count_suppressed_errors(&self) -> usize {
+        self.modules
             .values()
-            .filter_map(|x| x.state.read().steps.load.dupe())
-            .collect::<Vec<_>>();
-        let items = ErrorCollector::count_error_kinds(loads.iter().map(|x| &x.errors));
-        for (error, count) in items.iter().rev().take(limit).rev() {
-            eprintln!(
-                "{} instances of {}",
-                number_thousands(*count),
-                error.to_name()
-            );
-        }
-    }
-
-    pub fn print_error_summary(&self, path_index: usize) {
-        let loads = self
-            .modules
-            .values()
-            .filter_map(|x| x.state.read().steps.load.dupe())
-            .collect::<Vec<_>>();
-        ErrorCollector::print_error_summary(loads.iter().map(|x| &x.errors), path_index);
+            .map(|x| {
+                x.state
+                    .read()
+                    .steps
+                    .load
+                    .as_ref()
+                    .map_or(0, |x| x.errors.count_suppressed())
+            })
+            .sum()
     }
 
     fn get_cached_find_dependency(

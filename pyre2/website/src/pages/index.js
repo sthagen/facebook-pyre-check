@@ -14,7 +14,8 @@ import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import * as stylex from '@stylexjs/stylex';
 import NewLandingPage from './newLandingPage';
-import Firefly from '../components/firefly';
+import Firefly from '../components/landing-page/firefly';
+import LandingPageHeader from '../components/landing-page/landingPageHeader';
 
 // This import serves no runtime purposes, but we import it to force webpack to run babel on it,
 // so we can test whether babel can handle newer syntax.
@@ -31,30 +32,7 @@ export default component Home() {
     <Layout
       title="Pyrefly: A Static Type Checker for Python"
       description={siteConfig.description}>
-      <header {...stylex.props(styles.featureHero)}>
-        <div className="container">
-          <h1 {...stylex.props(styles.title)}>
-            pyrefly<span>.</span>
-          </h1>
-          <p {...stylex.props(styles.subtitle)}>
-            <span>
-              {' '}
-              <a
-                href="https://github.com/facebook/pyrefly/milestone/1"
-                {...stylex.props(styles.yellowLink)}>
-                Coming soon
-              </a>
-              : A faster Python type checker written in Rust
-            </span>
-          </p>
-          <section>
-            <Firefly />
-            <Firefly />
-            <Firefly />
-            <Firefly />
-          </section>
-        </div>
-      </header>
+      <LandingPageHeader />
     </Layout>
   );
 }

@@ -142,8 +142,11 @@ impl CallArgPreEval<'_> {
         context: Option<&dyn Fn() -> ErrorContext>,
     ) {
         let tcc = &|| TypeCheckContext {
-            kind: TypeCheckKind::CallArgument(param_name.cloned(), callable_name.cloned()),
-            error_kind: ErrorKind::BadArgumentType,
+            kind: if vararg {
+                TypeCheckKind::CallVarArgs(param_name.cloned(), callable_name.cloned())
+            } else {
+                TypeCheckKind::CallArgument(param_name.cloned(), callable_name.cloned())
+            },
             context: context.map(|ctx| ctx()),
         };
         match self {
@@ -261,15 +264,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             iparams.next();
                             Some((ty, Some(name), false))
                         }
-                        Param::VarArg(Type::Unpack(box ty)) => {
+                        Param::VarArg(name, Type::Unpack(box ty)) => {
                             // Store args that get matched to an unpacked *args param
                             // Matched args are typechecked separately later
-                            unpacked_vararg = Some(ty);
+                            unpacked_vararg = Some((name, ty));
                             unpacked_vararg_matched_args.push(arg_pre.clone());
                             matched_unpacked_vararg = true;
                             None
                         }
-                        Param::VarArg(ty) => Some((ty, None, true)),
+                        Param::VarArg(name, ty) => Some((ty, name.as_ref(), true)),
                         Param::KwOnly(..) | Param::Kwargs(..) => None,
                     }
                 } else {
@@ -301,7 +304,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
         }
-        if let Some(unpacked_param_ty) = unpacked_vararg {
+        if let Some((unpacked_name, unpacked_param_ty)) = unpacked_vararg {
             let mut prefix = Vec::new();
             let mut middle = Vec::new();
             let mut suffix = Vec::new();
@@ -356,8 +359,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 range,
                 arg_errors,
                 &|| TypeCheckContext {
-                    kind: TypeCheckKind::CallVarArgs(callable_name.clone()),
-                    error_kind: ErrorKind::BadArgumentType,
+                    kind: TypeCheckKind::CallUnpackVarArgs(
+                        unpacked_name.clone(),
+                        callable_name.clone(),
+                    ),
                     context: context.map(|ctx| ctx()),
                 },
             );
@@ -471,7 +476,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                             Some(name.clone()),
                                             callable_name.clone(),
                                         ),
-                                        error_kind: ErrorKind::BadArgumentType,
                                         context: context.map(|ctx| ctx()),
                                     }
                                 });
@@ -497,7 +501,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                                     None,
                                                     callable_name.clone(),
                                                 ),
-                                                error_kind: ErrorKind::BadArgumentType,
                                                 context: context.map(|ctx| ctx()),
                                             },
                                         );
@@ -569,7 +572,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 callable_name.clone(),
                             )
                         },
-                        error_kind: ErrorKind::BadArgumentType,
                         context: context.map(|ctx| ctx()),
                     };
                     self.expr_with_separate_check_errors(
@@ -598,7 +600,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             Some(name.clone()),
                             callable_name.clone(),
                         ),
-                        error_kind: ErrorKind::BadArgumentType,
                         context: context.map(|ctx| ctx()),
                     });
                 }

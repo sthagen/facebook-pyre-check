@@ -23,6 +23,7 @@ use ruff_text_size::TextSize;
 use starlark_map::small_map::SmallMap;
 
 use crate::binding::binding::KeyExport;
+use crate::error::error::print_errors;
 use crate::metadata::RuntimeMetadata;
 use crate::module::bundled::typeshed;
 use crate::module::module_name::ModuleName;
@@ -158,7 +159,7 @@ impl TestEnv {
             Some(Box::new(subscriber.dupe())),
         );
         subscriber.finish();
-        state.print_errors();
+        print_errors(&state.collect_errors());
         (state, move |module| {
             let name = ModuleName::from_str(module);
             Handle::new(
@@ -192,7 +193,10 @@ pub fn code_frame_of_source_at_range(source: &str, range: TextRange) -> String {
             full_line,
             " ".repeat(start_loc.row.to_string().len()),
             " ".repeat(start_loc.column.to_zero_indexed()),
-            "^".repeat(end_loc.column.to_zero_indexed() - start_loc.column.to_zero_indexed())
+            "^".repeat(std::cmp::max(
+                end_loc.column.to_zero_indexed() - start_loc.column.to_zero_indexed(),
+                1
+            ))
         )
     } else {
         panic!("Computing multi-line code frame is unsupported for now.")
