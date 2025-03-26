@@ -28,6 +28,8 @@ use crate::commands::suppress;
 use crate::commands::util::module_from_path;
 use crate::config::set_if_some;
 use crate::config::ConfigFile;
+use crate::config::ErrorConfig;
+use crate::config::ErrorConfigs;
 use crate::error::error::print_error_counts;
 use crate::error::error::print_errors;
 use crate::error::error::Error;
@@ -191,6 +193,8 @@ struct Handles {
     /// A mapping from a file to all other information needed to create a `Handle`.
     /// The value type is basically everything else in `Handle` except for the file path.
     path_data: HashMap<PathBuf, (ModuleName, RuntimeMetadata, LoaderId)>,
+    /// A the underlying HashMap that will be used to create an `ErrorConfigs` when requested.
+    module_to_error_config: HashMap<ModulePath, ErrorConfig>,
 }
 
 impl Handles {
@@ -198,6 +202,7 @@ impl Handles {
         let mut handles = Self {
             loader_factory: SmallMap::new(),
             path_data: HashMap::new(),
+            module_to_error_config: HashMap::new(),
         };
         for file in files {
             handles.register_file(file, config_finder);
@@ -211,6 +216,8 @@ impl Handles {
         config_finder: &impl Fn(&Path) -> ConfigFile,
     ) -> &(ModuleName, RuntimeMetadata, LoaderId) {
         let config = config_finder(&path);
+        self.module_to_error_config
+            .insert(ModulePath::filesystem(path.clone()), config.errors.clone());
         let loader = self.get_or_register_loader(&config);
         let module_name = module_from_path(&path, &config.search_path);
         self.path_data
@@ -253,6 +260,10 @@ impl Handles {
         self.loader_factory.values().duped().collect()
     }
 
+    pub fn error_configs(&self) -> ErrorConfigs {
+        ErrorConfigs::new(self.module_to_error_config.clone())
+    }
+
     pub fn update<'a>(
         &mut self,
         created_files: impl Iterator<Item = &'a PathBuf>,
@@ -264,6 +275,8 @@ impl Handles {
         }
         for file in removed_files {
             self.path_data.remove(file);
+            self.module_to_error_config
+                .remove(&ModulePath::filesystem(file.to_path_buf()));
             // NOTE: Need to garbage-collect unreachable Loaders at some point
         }
     }
@@ -311,6 +324,7 @@ impl Args {
             holder.as_mut(),
             &handles.all(require_levels.specified),
             require_levels.default,
+            &handles.error_configs(),
         )
     }
 
@@ -332,6 +346,7 @@ impl Args {
                 &mut state,
                 &handles.all(require_levels.specified),
                 require_levels.default,
+                &handles.error_configs(),
             );
             if let Err(e) = res {
                 eprintln!("{e:#}");
@@ -400,6 +415,7 @@ impl Args {
         state: &mut State,
         handles: &[(Handle, Require)],
         default_require: Require,
+        error_configs: &ErrorConfigs,
     ) -> anyhow::Result<CommandExitStatus> {
         let progress = Box::new(ProgressBarSubscriber::new());
         let mut memory_trace = MemoryUsageTrace::start(Duration::from_secs_f32(0.1));
@@ -407,7 +423,7 @@ impl Args {
 
         state.run(handles, default_require, Some(progress));
         let computing = start.elapsed();
-        let errors = state.collect_errors();
+        let errors = state.collect_errors(error_configs);
         if let Some(path) = &self.output {
             self.output_format.write_errors_to_file(path, &errors)?;
         } else {
@@ -436,8 +452,9 @@ impl Args {
             state.report_timings(timings, Some(Box::new(ProgressBarSubscriber::new())))?;
         }
         if let Some(debug_info) = &self.debug_info {
-            let mut output =
-                serde_json::to_string_pretty(&state.debug_info(&handles.map(|x| x.0.dupe())))?;
+            let mut output = serde_json::to_string_pretty(
+                &state.debug_info(&handles.map(|x| x.0.dupe()), error_configs),
+            )?;
             if debug_info.extension() == Some(OsStr::new("js")) {
                 output = format!("var data = {output}");
             }
@@ -464,7 +481,7 @@ impl Args {
             suppress::suppress_errors(&errors);
         }
         if self.expectations {
-            state.check_against_expectations()?;
+            state.check_against_expectations(error_configs)?;
             Ok(CommandExitStatus::Success)
         } else if error_count > suppressed_count {
             Ok(CommandExitStatus::UserError)

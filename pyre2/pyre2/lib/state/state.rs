@@ -45,9 +45,11 @@ use crate::binding::bindings::BindingEntry;
 use crate::binding::bindings::BindingTable;
 use crate::binding::bindings::Bindings;
 use crate::binding::table::TableKeyed;
+use crate::config::ErrorConfigs;
 use crate::error::error::Error;
 use crate::error::expectation::Expectation;
 use crate::error::kind::ErrorKind;
+use crate::export::exports::ExportLocation;
 use crate::export::exports::Exports;
 use crate::export::exports::LookupExport;
 use crate::metadata::RuntimeMetadata;
@@ -469,7 +471,7 @@ impl State {
         if !self
             .lookup_export(&module_data)
             .exports(&self.lookup(module_data.dupe()))
-            .contains(name)
+            .contains_key(name)
         {
             self.add_error(
                 &module_data,
@@ -548,12 +550,13 @@ impl State {
         )
     }
 
-    pub fn collect_errors(&self) -> Vec<Error> {
+    pub fn collect_errors(&self, error_configs: &ErrorConfigs) -> Vec<Error> {
         let mut errors = Vec::new();
         for module in self.modules.values() {
+            let error_config = error_configs.get(module.handle.path());
             let steps = module.state.read();
             if let Some(load) = &steps.steps.load {
-                errors.extend(load.errors.collect());
+                errors.extend(load.errors.collect(error_config));
             }
         }
         errors
@@ -875,7 +878,7 @@ impl State {
         Some(result)
     }
 
-    pub fn debug_info(&self, handles: &[Handle]) -> DebugInfo {
+    pub fn debug_info(&self, handles: &[Handle], error_configs: &ErrorConfigs) -> DebugInfo {
         let owned = handles.map(|x| {
             let module = self.get_module(x);
             let steps = module.state.read();
@@ -885,15 +888,19 @@ impl State {
                 steps.steps.solutions.dupe().unwrap(),
             )
         });
-        DebugInfo::new(&owned.map(|x| (&x.0.module_info, &x.0.errors, &x.1.0, &*x.2)))
+        DebugInfo::new(
+            &owned.map(|x| (&x.0.module_info, &x.0.errors, &x.1.0, &*x.2)),
+            error_configs,
+        )
     }
 
-    pub fn check_against_expectations(&self) -> anyhow::Result<()> {
+    pub fn check_against_expectations(&self, error_configs: &ErrorConfigs) -> anyhow::Result<()> {
         for module in self.modules.values() {
             let steps = module.state.read();
             let load = steps.steps.load.as_ref().unwrap();
+            let error_config = error_configs.get(module.handle.path());
             Expectation::parse(load.module_info.dupe(), load.module_info.contents())
-                .check(&load.errors.collect())?;
+                .check(&load.errors.collect(error_config))?;
         }
         Ok(())
     }
@@ -1026,6 +1033,12 @@ impl State {
             info!("Step {step} took {duration:.3} seconds");
         }
         Ok(())
+    }
+
+    pub fn get_exports(&self, handle: &Handle) -> Arc<SmallMap<Name, ExportLocation>> {
+        let module_data = self.get_module(handle);
+        self.lookup_export(&module_data)
+            .exports(&self.lookup(module_data))
     }
 }
 
