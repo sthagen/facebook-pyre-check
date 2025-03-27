@@ -305,6 +305,14 @@ impl BoundMethodType {
         }
     }
 
+    pub fn metadata(&self) -> &FuncMetadata {
+        match self {
+            Self::Function(func) => &func.metadata,
+            Self::Forall(forall) => &forall.body.metadata,
+            Self::Overload(overload) => &overload.metadata,
+        }
+    }
+
     fn is_typeguard(&self) -> bool {
         match self {
             Self::Function(func) => func.signature.is_typeguard(),
@@ -799,6 +807,14 @@ impl Type {
         });
     }
 
+    pub fn subst_self_type_mut(&mut self, replacement: &Type) {
+        self.transform_mut(&mut |t| {
+            if matches!(t, Type::SelfType(_)) {
+                *t = replacement.clone();
+            }
+        })
+    }
+
     pub fn for_each_quantified(&self, f: &mut impl FnMut(Quantified)) {
         self.universe(&mut |x| {
             if let Type::Quantified(x) = x {
@@ -964,7 +980,7 @@ impl Type {
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Type::Literal(Lit::Bool(x)) => Some(*x),
-            Type::Literal(Lit::Int(x)) => Some(*x != 0),
+            Type::Literal(Lit::Int(x)) => Some(x.as_bool()),
             Type::Literal(Lit::Bytes(x)) => Some(!x.is_empty()),
             Type::Literal(Lit::String(x)) => Some(!x.is_empty()),
             Type::None => Some(false),

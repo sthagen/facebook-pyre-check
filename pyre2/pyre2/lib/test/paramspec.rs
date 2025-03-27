@@ -46,6 +46,36 @@ def test(x1: Callable[[int, str], int], x2: Callable[..., int]):
 "#,
 );
 
+testcase_with_bug!(
+    "Generic functions don't work with ParamSpec",
+    test_param_spec_generic_function,
+    r#"
+from typing import Callable, ParamSpec, TypeVar, reveal_type
+def identity[**P, R](x: Callable[P, R]) -> Callable[P, R]:
+    return x
+def foo[T](x: T, y: T) -> T:
+    return x
+foo2 = identity(foo)  # E: Argument `Forall[T, (x: T, y: T) -> T]` is not assignable to parameter `x` with type `(ParamSpec(@_)) -> @_` in function `identity`
+reveal_type(foo2)  # E: revealed type: (ParamSpec(Unknown)) -> Unknown
+"#,
+);
+
+testcase_with_bug!(
+    "Generic class constructors are not type-safe when treated as callables - the ClassDef is promoted to ClassType w/ implicit Any",
+    test_param_spec_generic_class,
+    r#"
+from typing import Callable, ParamSpec, TypeVar, reveal_type
+def identity[**P, R](x: Callable[P, R]) -> Callable[P, R]:
+  return x
+class C[T]:
+  x: T
+  def __init__(self, x: T) -> None:
+    self.x = x
+c2 = identity(C)  # E: Argument `type[C]` is not assignable to parameter `x` with type `(ParamSpec(@_)) -> @_`
+reveal_type(c2)  # E: revealed type: (ParamSpec(Unknown)) -> Unknown
+"#,
+);
+
 testcase!(
     test_function_concatenate,
     r#"

@@ -1236,21 +1236,6 @@ def A(x: int | Literal[0], y: int | Literal[255]):
     "#,
 );
 
-testcase_with_bug!(
-    "Should probably error when setting the field",
-    test_generic_init_field,
-    r#"
-from typing import reveal_type
-
-class C:
-    def __init__[R](self, field: R):
-        self.field = field
-
-c = C("test")
-reveal_type(c.field)  # E: revealed type: ?_TypeVar
-"#,
-);
-
 testcase!(
     test_index_any,
     r#"
@@ -1275,6 +1260,35 @@ class B(A):
     pass
 assert_type(B().f(), B)
 assert_type(B().g(), type[B])
+    "#,
+);
+
+testcase!(
+    test_typing_self_param,
+    r#"
+from typing import Self
+class A:
+    def f(self, x: Self):
+        pass
+class B(A):
+    pass
+def f(a: A, b: B):
+    b.f(b)  # OK
+    b.f(a)  # E:
+    "#,
+);
+
+testcase!(
+    test_typing_self_new_param,
+    r#"
+from typing import Self
+class A:
+    def __new__(cls, x: type[Self]):
+        return super().__new__(cls)
+class B(A):
+    pass
+B(B)  # OK
+B(A)  # E:
     "#,
 );
 
