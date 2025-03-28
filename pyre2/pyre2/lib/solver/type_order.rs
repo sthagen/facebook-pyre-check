@@ -55,6 +55,10 @@ impl<'a, Ans: LookupAnswer> TypeOrder<'a, Ans> {
         }
     }
 
+    pub fn get_metaclass_dunder_call(self, cls: &ClassType) -> Option<Type> {
+        self.0.get_metaclass_dunder_call(cls)
+    }
+
     pub fn is_protocol(self, cls: &Class) -> bool {
         self.0.get_metadata_for_class(cls).is_protocol()
     }
@@ -79,6 +83,10 @@ impl<'a, Ans: LookupAnswer> TypeOrder<'a, Ans> {
 
     pub fn resolve_as_instance_method(self, attr: Attribute) -> Option<Type> {
         self.0.resolve_as_instance_method(attr)
+    }
+
+    pub fn get_class_defining_method(self, cls: &Class, name: &Name) -> Option<Class> {
+        self.0.get_class_defining_method(cls, name)
     }
 
     pub fn is_attr_subset(

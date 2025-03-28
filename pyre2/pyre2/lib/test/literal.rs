@@ -48,7 +48,7 @@ from typing import assert_type, Literal
 x = 1
 y = 0xFFFFFFFFFFFFFFFFFF
 assert_type(x, Literal[1])
-assert_type(y, int)
+assert_type(y, Literal[4722366482869645213695])
 "#,
 );
 
@@ -56,7 +56,7 @@ testcase!(
     test_large_int_type,
     r#"
 from typing import Literal
-x: Literal[0xFFFFFFFFFFFFFFFFFF]  # E: Int literal exceeds range
+x: Literal[0xFFFFFFFFFFFFFFFFFF]
 "#,
 );
 
@@ -160,12 +160,11 @@ good: Literal[Literal[Literal[1, 2, 3], "foo"], 5, None] = "foo"  # E: Invalid l
 "#,
 );
 
-testcase_with_bug!(
-    "Should ban brackets/tuples",
+testcase!(
     test_literal_brackets,
     r#"
 from typing import Literal
-bad6: Literal[(1, "foo", "bar")]  # Should be an error
+bad6: Literal[(1, "foo", "bar")]  # E: Literal arguments cannot be parenthesized
 "#,
 );
 

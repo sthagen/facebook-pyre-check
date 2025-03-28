@@ -33,6 +33,7 @@ use crate::types::literal::Lit;
 use crate::types::module::Module;
 use crate::types::param_spec::ParamSpec;
 use crate::types::quantified::Quantified;
+use crate::types::simplify::unions;
 use crate::types::special_form::SpecialForm;
 use crate::types::stdlib::Stdlib;
 use crate::types::tuple::Tuple;
@@ -898,6 +899,70 @@ impl Type {
         }
     }
 
+    // This doesn't handle generics currently
+    pub fn callable_return_type(&self) -> Option<Type> {
+        match self {
+            Type::Function(box func)
+            | Type::Forall(box Forall {
+                body: Forallable::Function(func),
+                ..
+            })
+            | Type::BoundMethod(box BoundMethod {
+                func: BoundMethodType::Function(func),
+                ..
+            })
+            | Type::BoundMethod(box BoundMethod {
+                func: BoundMethodType::Forall(Forall { body: func, .. }),
+                ..
+            }) => Some(func.signature.ret.clone()),
+            Type::Overload(overload)
+            | Type::BoundMethod(box BoundMethod {
+                func: BoundMethodType::Overload(overload),
+                ..
+            }) => Some(unions(
+                overload
+                    .signatures
+                    .iter()
+                    .map(|x| match x {
+                        OverloadType::Callable(callable) => callable.ret.clone(),
+                        OverloadType::Forall(forall) => forall.body.signature.ret.clone(),
+                    })
+                    .collect(),
+            )),
+            _ => None,
+        }
+    }
+
+    // This doesn't handle generics currently
+    pub fn set_callable_return_type(&mut self, ret: Type) {
+        match self {
+            Type::Function(box func)
+            | Type::Forall(box Forall {
+                body: Forallable::Function(func),
+                ..
+            })
+            | Type::BoundMethod(box BoundMethod {
+                func: BoundMethodType::Function(func),
+                ..
+            })
+            | Type::BoundMethod(box BoundMethod {
+                func: BoundMethodType::Forall(Forall { body: func, .. }),
+                ..
+            }) => {
+                func.signature.ret = ret;
+            }
+            Type::Overload(overload)
+            | Type::BoundMethod(box BoundMethod {
+                func: BoundMethodType::Overload(overload),
+                ..
+            }) => overload.signatures.iter_mut().for_each(|x| match x {
+                OverloadType::Callable(callable) => callable.ret = ret.clone(),
+                OverloadType::Forall(forall) => forall.body.signature.ret = ret.clone(),
+            }),
+            _ => {}
+        }
+    }
+
     pub fn promote_literals(self, stdlib: &Stdlib) -> Type {
         self.transform(&mut |ty| match &ty {
             Type::Literal(lit) => *ty = lit.general_class_type(stdlib).to_type(),
@@ -921,6 +986,14 @@ impl Type {
         self.transform(&mut |ty| {
             if let Type::Any(style) = ty {
                 *style = AnyStyle::Explicit;
+            }
+        })
+    }
+
+    pub fn noreturn_to_never(self) -> Self {
+        self.transform(&mut |ty| {
+            if let Type::Never(style) = ty {
+                *style = NeverStyle::Never;
             }
         })
     }
@@ -1000,10 +1073,6 @@ impl Type {
             }
             _ => None,
         }
-    }
-
-    pub fn is_error(&self) -> bool {
-        matches!(self, Type::Any(AnyStyle::Error))
     }
 }
 

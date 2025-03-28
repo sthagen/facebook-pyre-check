@@ -61,7 +61,7 @@ reveal_type(foo2)  # E: revealed type: (ParamSpec(Unknown)) -> Unknown
 );
 
 testcase_with_bug!(
-    "Generic class constructors are not type-safe when treated as callables - the ClassDef is promoted to ClassType w/ implicit Any",
+    "I would expect this to capture the type var on the class",
     test_param_spec_generic_class,
     r#"
 from typing import Callable, ParamSpec, TypeVar, reveal_type
@@ -71,8 +71,9 @@ class C[T]:
   x: T
   def __init__(self, x: T) -> None:
     self.x = x
-c2 = identity(C)  # E: Argument `type[C]` is not assignable to parameter `x` with type `(ParamSpec(@_)) -> @_`
-reveal_type(c2)  # E: revealed type: (ParamSpec(Unknown)) -> Unknown
+c2 = identity(C)
+reveal_type(c2)  # E: revealed type: () -> Self@object
+x: C[int] = c2(1)  # E: `Self@object` is not assignable to `C[int]`  # E: Expected 0 positional arguments, got 1
 "#,
 );
 
@@ -362,8 +363,7 @@ twice(a_int_b_str, "A", 1)     # Rejected # E: Argument `(a: int, b: str) -> int
 "#,
 );
 
-testcase_with_bug!(
-    "PyTorch TODO: testcase should not emit an error.",
+testcase!(
     test_functools_wraps_paramspec,
     r#"
 from functools import wraps
@@ -371,14 +371,20 @@ from functools import wraps
 def f(fn):
     @wraps(fn)
     def wrapped_fn(x):
-        return fn(x) # E: Unexpected ParamSpec type: `Unknown`
+        return fn(x)
 
     return wrapped_fn
-
-def g(f):
-    @wraps(f)
-    def wrapper(): ...
-
-    return wrapper
 "#,
+);
+
+testcase!(
+    test_bad_paramspec_in_concatenate,
+    r#"
+from typing import Callable, Concatenate
+
+X = Callable[Concatenate[int, "oops"], int]  # E: Expected a `ParamSpec`  # E: Expected a type form
+
+def f(x: X, y):
+    x(0)
+  "#,
 );

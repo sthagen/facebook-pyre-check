@@ -5,23 +5,29 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::slice;
+
 use ruff_python_ast::Expr;
+use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprList;
+use ruff_python_ast::ExprUnaryOp;
+use ruff_python_ast::Number;
+use ruff_python_ast::UnaryOp;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::solve::TypeFormContext;
-use crate::binding::binding::Key;
 use crate::error::collector::ErrorCollector;
 use crate::error::kind::ErrorKind;
-use crate::module::short_identifier::ShortIdentifier;
 use crate::types::callable::Param;
 use crate::types::callable::Required;
+use crate::types::lit_int::LitInt;
 use crate::types::literal::Lit;
 use crate::types::special_form::SpecialForm;
 use crate::types::tuple::Tuple;
+use crate::types::types::AnyStyle;
 use crate::types::types::Type;
 use crate::util::prelude::SliceExt;
 
@@ -153,13 +159,98 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
+    fn apply_literal(&self, x: &Expr, errors: &ErrorCollector) -> Type {
+        match x {
+            Expr::UnaryOp(ExprUnaryOp {
+                op: UnaryOp::UAdd,
+                operand: box Expr::NumberLiteral(n),
+                ..
+            }) if let Number::Int(i) = &n.value => LitInt::from_ast(i).to_type(),
+            Expr::UnaryOp(ExprUnaryOp {
+                op: UnaryOp::USub,
+                operand: box Expr::NumberLiteral(n),
+                ..
+            }) if let Number::Int(i) = &n.value => LitInt::from_ast(i).negate().to_type(),
+            Expr::NumberLiteral(n) if let Number::Int(i) = &n.value => {
+                LitInt::from_ast(i).to_type()
+            }
+            Expr::StringLiteral(x) => Lit::from_string_literal(x).to_type(),
+            Expr::BytesLiteral(x) => Lit::from_bytes_literal(x).to_type(),
+            Expr::BooleanLiteral(x) => Lit::from_boolean_literal(x).to_type(),
+            Expr::NoneLiteral(_) => Type::None,
+            Expr::Name(_) => {
+                fn is_valid_literal(x: &Type) -> bool {
+                    match x {
+                        Type::None | Type::Literal(_) | Type::Any(AnyStyle::Error) => true,
+                        Type::Union(xs) => xs.iter().all(is_valid_literal),
+                        _ => false,
+                    }
+                }
+                let t = self.expr_untype(x, TypeFormContext::TypeArgument, errors);
+                if is_valid_literal(&t) {
+                    t
+                } else {
+                    errors.add(
+                        x.range(),
+                        format!("Invalid type inside literal, `{t}`"),
+                        ErrorKind::InvalidLiteral,
+                        None,
+                    );
+                    Type::any_error()
+                }
+            }
+            Expr::Attribute(ExprAttribute {
+                range,
+                value: box value @ Expr::Name(name),
+                attr: member_name,
+                ctx: _,
+            }) => {
+                let ty = self.expr_infer(value, errors);
+                match ty {
+                    Type::ClassDef(c)
+                        if let Some(e) = self.get_enum_member(&c, &member_name.id) =>
+                    {
+                        e.to_type()
+                    }
+                    Type::Any(AnyStyle::Error) => Type::any_error(),
+                    _ => {
+                        errors.add(
+                            *range,
+                            format!(
+                                "`{}.{}` is not a valid enum member",
+                                name.id, member_name.id
+                            ),
+                            ErrorKind::InvalidLiteral,
+                            None,
+                        );
+                        Type::any_error()
+                    }
+                }
+            }
+            _ => {
+                errors.add(
+                    x.range(),
+                    "Invalid literal expression".to_owned(),
+                    ErrorKind::InvalidLiteral,
+                    None,
+                );
+                Type::any_error()
+            }
+        }
+    }
+
     pub fn apply_special_form(
         &self,
         special_form: SpecialForm,
-        arguments: &[Expr],
+        arguments: &Expr,
         range: TextRange,
         errors: &ErrorCollector,
     ) -> Type {
+        let (arguments, parens) = match arguments {
+            Expr::Tuple(x) => (x.elts.as_slice(), x.parenthesized),
+            _ => (slice::from_ref(arguments), false),
+        };
+
         match special_form {
             SpecialForm::Optional if arguments.len() == 1 => Type::type_form(Type::Union(vec![
                 self.expr_untype(&arguments[0], TypeFormContext::TypeArgument, errors),
@@ -185,25 +276,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 None => Type::type_form(Type::Tuple(Tuple::unbounded(Type::any_error()))),
             },
             SpecialForm::Literal => {
-                let mut literals = Vec::new();
-                for x in arguments.iter() {
-                    let lit = Lit::from_expr(
-                        x,
-                        &|x| self.expr_untype(x, TypeFormContext::TypeArgument, errors),
-                        &|enum_name, member_name| {
-                            let ty = self.get(&Key::Usage(ShortIdentifier::new(&enum_name)));
-                            let cls = match &*ty {
-                                Type::ClassDef(c) => c,
-                                _ => {
-                                    return None;
-                                }
-                            };
-                            self.get_enum_member(cls, member_name)
-                        },
+                if parens {
+                    self.error(
                         errors,
+                        range,
+                        ErrorKind::InvalidLiteral,
+                        None,
+                        "Literal arguments cannot be parenthesized".to_owned(),
                     );
-                    literals.push(lit);
                 }
+                let literals = arguments.map(|x| self.apply_literal(x, errors));
                 Type::type_form(self.unions(literals))
             }
             SpecialForm::Concatenate => {

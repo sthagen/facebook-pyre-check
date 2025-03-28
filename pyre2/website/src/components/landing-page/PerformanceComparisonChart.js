@@ -11,67 +11,108 @@ import * as React from 'react';
 import * as stylex from '@stylexjs/stylex';
 import {useState} from 'react';
 import PerformanceComparisonButton from './PerformanceComparisonButton';
+import ProgressBar from './ProgressBar';
+import {
+  Project,
+  TypeChecker,
+  type ProjectValue,
+  type TypeCheckerValue,
+} from './PerformanceComparisonTypes';
 
-// TODO: convert this to enum when we migrate to typescript
-export type ProjectValue = 'Instagram' | 'PyTorch' | 'Example';
-const Project = Object.freeze({
-  INSTAGRAM: 'Instagram',
-  PYTORCH: 'PyTorch',
-  EXAMPLE: 'Example',
-});
+export default component PerformanceComparisonChart(project: ProjectValue) {
+  const data = getData(project);
 
-export default component PerformanceComparisonChart() {
-  const [selectedProject, setSelectedProject] = useState<ProjectValue>(
-    Project.INSTAGRAM,
-  );
+  // Calculate the maximum duration for scaling
+  const maxDuration = Math.max(...data.map(item => item.durationInSeconds));
 
   return (
-    <div>
-      <div {...stylex.props(styles.buttonRow)}>
-        <PerformanceComparisonButton
-          project={Project.INSTAGRAM}
-          selectedProject={selectedProject}
-          setSelectedProject={setSelectedProject}
-        />
-        <PerformanceComparisonButton
-          project={Project.PYTORCH}
-          selectedProject={selectedProject}
-          setSelectedProject={setSelectedProject}
-        />
-        <PerformanceComparisonButton
-          project={Project.EXAMPLE}
-          selectedProject={selectedProject}
-          setSelectedProject={setSelectedProject}
-        />
-      </div>
-      <div {...stylex.props(styles.chartContainer)}>
-        {/* Chart placeholder */}
-        <div {...stylex.props(styles.chartPlaceholder)}>
-          Performance chart for {selectedProject} will be displayed here
+    <div key={project}>
+      {data.map((typechecker, index) => (
+        <div
+          {...stylex.props(
+            styles.barContainer,
+            index !== data.length - 1 ? {marginBottom: 20} : null,
+          )}
+          key={index}>
+          <span {...stylex.props(styles.typecheckerName)}>
+            <strong>{typechecker.typechecker}</strong>
+          </span>
+          <div {...stylex.props(styles.progressBarContainer)}>
+            <ProgressBar
+              durationInSeconds={typechecker.durationInSeconds}
+              maxDurationInSeconds={maxDuration}
+            />
+          </div>
+          <span {...stylex.props(styles.duration)}>
+            <strong>{`${typechecker.durationInSeconds}s`}</strong>
+          </span>
         </div>
-      </div>
+      ))}
     </div>
   );
 }
 
 const styles = stylex.create({
-  buttonRow: {
+  barContainer: {
+    flex: 1,
     display: 'flex',
-    justifyContent: 'center',
-    gap: '1rem',
-    marginBottom: '2rem',
+    flexDirection: 'row',
   },
-  chartContainer: {
-    minHeight: '400px',
-    border: '1px solid var(--ifm-color-emphasis-300)',
-    borderRadius: '8px',
-    padding: '2rem',
+  typecheckerName: {
+    display: 'inline-block',
+    fontSize: 20,
+    width: 150,
   },
-  chartPlaceholder: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: '100%',
-    color: 'var(--ifm-color-emphasis-600)',
+  progressBarContainer: {
+    flexGrow: 1,
+    marginRight: 20,
+  },
+  duration: {
+    marginLeft: 'auto',
   },
 });
+
+function getData(project: ProjectValue) {
+  const filteredData = performanceComparsionChartData
+    .filter(data => data.project === project)
+    .map(data => data.data);
+
+  if (filteredData.length === 0) {
+    throw new Error(`No data found for project ${project}`);
+  }
+
+  return filteredData[0];
+}
+
+const performanceComparsionChartData = [
+  {
+    project: Project.PYTORCH,
+    data: [
+      {typechecker: TypeChecker.PYREFLY, durationInSeconds: 0.5},
+      {typechecker: TypeChecker.MYPY, durationInSeconds: 8},
+      {typechecker: TypeChecker.PYRIGHT, durationInSeconds: 5},
+      {typechecker: TypeChecker.PYTYPE, durationInSeconds: 12},
+      {typechecker: TypeChecker.PYRE1, durationInSeconds: 15},
+    ],
+  },
+  {
+    project: Project.INSTAGRAM,
+    data: [
+      {typechecker: TypeChecker.PYREFLY, durationInSeconds: 2},
+      {typechecker: TypeChecker.MYPY, durationInSeconds: 50},
+      {typechecker: TypeChecker.PYRIGHT, durationInSeconds: 20},
+      {typechecker: TypeChecker.PYTYPE, durationInSeconds: 40},
+      {typechecker: TypeChecker.PYRE1, durationInSeconds: 40},
+    ],
+  },
+  {
+    project: Project.EXAMPLE,
+    data: [
+      {typechecker: TypeChecker.PYREFLY, durationInSeconds: 2},
+      {typechecker: TypeChecker.MYPY, durationInSeconds: 10},
+      {typechecker: TypeChecker.PYRIGHT, durationInSeconds: 5},
+      {typechecker: TypeChecker.PYTYPE, durationInSeconds: 12},
+      {typechecker: TypeChecker.PYRE1, durationInSeconds: 12},
+    ],
+  },
+];

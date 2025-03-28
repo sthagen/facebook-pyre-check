@@ -60,18 +60,35 @@ impl ModuleErrors {
     }
 
     /// Iterates over all errors, including ignored ones.
-    fn iter_all(&mut self) -> impl Iterator<Item = &Error> {
+    fn iter(&mut self) -> impl Iterator<Item = &Error> {
         self.cleanup();
         self.items.iter()
     }
+}
 
-    /// Iterates over errors that are not ignored.
-    fn iter<'a>(
-        &mut self,
-        error_config: &'a ErrorConfig,
-    ) -> impl Iterator<Item = &Error> + use<'_, 'a> {
-        self.iter_all()
-            .filter(move |x| !x.is_ignored() && error_config.is_enabled(x.error_kind()))
+#[derive(Debug)]
+pub struct CollectedErrors {
+    /// Errors that will be reported to the user.
+    pub shown: Vec<Error>,
+    /// Errors that are suppressed with inline ignore comments.
+    pub suppressed: Vec<Error>,
+    /// Errors that are disabled with configuration options.
+    pub disabled: Vec<Error>,
+}
+
+impl CollectedErrors {
+    pub fn empty() -> Self {
+        Self {
+            shown: Vec::new(),
+            suppressed: Vec::new(),
+            disabled: Vec::new(),
+        }
+    }
+
+    pub fn extend(&mut self, other: CollectedErrors) {
+        self.shown.extend(other.shown);
+        self.suppressed.extend(other.suppressed);
+        self.disabled.extend(other.disabled);
     }
 }
 
@@ -86,7 +103,7 @@ pub struct ErrorCollector {
 
 impl Display for ErrorCollector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for err in self.errors.lock().iter(&ErrorConfig::default()) {
+        for err in self.errors.lock().iter() {
             writeln!(f, "ERROR: {err}")?;
         }
         Ok(())
@@ -149,16 +166,24 @@ impl ErrorCollector {
         self.errors.lock().len()
     }
 
-    pub fn count_suppressed(&self) -> usize {
-        self.errors
-            .lock()
-            .iter_all()
-            .filter(|x| x.is_ignored())
-            .count()
-    }
-
-    pub fn collect(&self, error_config: &ErrorConfig) -> Vec<Error> {
-        self.errors.lock().iter(error_config).cloned().collect()
+    pub fn collect(&self, error_config: &ErrorConfig) -> CollectedErrors {
+        let mut shown = Vec::new();
+        let mut suppressed = Vec::new();
+        let mut disabled = Vec::new();
+        for err in self.errors.lock().iter() {
+            if err.is_ignored() {
+                suppressed.push(err.clone());
+            } else if !error_config.is_enabled(err.error_kind()) {
+                disabled.push(err.clone());
+            } else {
+                shown.push(err.clone());
+            }
+        }
+        CollectedErrors {
+            shown,
+            suppressed,
+            disabled,
+        }
     }
 
     pub fn todo(&self, msg: &str, v: impl Ranged + Debug) {
@@ -236,7 +261,10 @@ mod tests {
             None,
         );
         assert_eq!(
-            errors.collect(&ErrorConfig::default()).map(|x| x.msg()),
+            errors
+                .collect(&ErrorConfig::default())
+                .shown
+                .map(|x| x.msg()),
             vec!["a", "b", "a"]
         );
     }
@@ -287,7 +315,7 @@ mod tests {
         ]));
 
         assert_eq!(
-            errors.collect(&config).map(|x| x.msg()),
+            errors.collect(&config).shown.map(|x| x.msg()),
             vec!["b", "a", "d"]
         );
     }
