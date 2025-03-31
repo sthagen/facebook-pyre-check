@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use dupe::Dupe;
 use ruff_python_ast::name::Name;
-use ruff_text_size::Ranged;
+use ruff_text_size::TextRange;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
@@ -34,6 +34,7 @@ use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::BindingYield;
 use crate::binding::binding::BindingYieldFrom;
 use crate::binding::binding::EmptyAnswer;
+use crate::binding::binding::Initialized;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
 use crate::binding::binding::KeyClass;
@@ -56,101 +57,49 @@ use crate::types::types::Var;
 
 pub trait SolveRecursive: Keyed {
     type Recursive: Dupe = ();
-
-    fn promote_recursive(x: Self::Recursive) -> Self::Answer;
 }
-
 impl SolveRecursive for Key {
     type Recursive = Var;
-    fn promote_recursive(x: Self::Recursive) -> Self::Answer {
-        Type::Var(x)
-    }
-}
-impl SolveRecursive for KeyExpect {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        EmptyAnswer
-    }
 }
 impl SolveRecursive for KeyExport {
     type Recursive = Var;
-    fn promote_recursive(x: Self::Recursive) -> Self::Answer {
-        Type::Var(x)
-    }
 }
-impl SolveRecursive for KeyFunction {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        // TODO(samgoldman) I'm not sure this really makes sense. These bindings should never
-        // be recursive, but this definition is required.
-        DecoratedFunction::recursive()
-    }
-}
-impl SolveRecursive for KeyClass {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        NoneIfRecursive(None)
-    }
-}
-impl SolveRecursive for KeyClassField {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        // TODO(stroxler) Revisit the recursive handling, which needs changes in the plumbing
-        // to work correctly; what we have here is a fallback to permissive gradual typing.
-        ClassField::recursive()
-    }
-}
-impl SolveRecursive for KeyClassSynthesizedFields {
-    type Recursive = ();
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        ClassSynthesizedFields::default()
-    }
-}
-impl SolveRecursive for KeyAnnotation {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        AnnotationWithTarget {
-            target: AnnotationTarget::Assign(Name::default()),
-            annotation: Annotation::default(),
-        }
-    }
-}
-impl SolveRecursive for KeyClassMetadata {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        ClassMetadata::recursive()
-    }
-}
-impl SolveRecursive for KeyLegacyTypeParam {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        LegacyTypeParameterLookup::NotParameter(Type::any_implicit())
-    }
-}
-impl SolveRecursive for KeyYield {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        // In practice, we should never have recursive bindings with yield.
-        YieldResult::recursive()
-    }
-}
-impl SolveRecursive for KeyYieldFrom {
-    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
-        // In practice, we should never have recursive bindings with yield from.
-        YieldFromResult::recursive()
-    }
-}
+impl SolveRecursive for KeyExpect {}
+impl SolveRecursive for KeyFunction {}
+impl SolveRecursive for KeyClass {}
+impl SolveRecursive for KeyClassField {}
+impl SolveRecursive for KeyClassSynthesizedFields {}
+impl SolveRecursive for KeyAnnotation {}
+impl SolveRecursive for KeyClassMetadata {}
+impl SolveRecursive for KeyLegacyTypeParam {}
+impl SolveRecursive for KeyYield {}
+impl SolveRecursive for KeyYieldFrom {}
 
 pub trait Solve<Ans: LookupAnswer>: SolveRecursive {
+    /// Solve the binding.
+    /// Note that the key (`Self`) is not provided, as the result of a binding should
+    /// not depend on the key it was bound to.
     fn solve(
         answers: &AnswersSolver<Ans>,
         binding: &Self::Value,
-        _errors: &ErrorCollector,
+        errors: &ErrorCollector,
     ) -> Arc<Self::Answer>;
 
-    fn recursive(answers: &AnswersSolver<Ans>) -> Self::Recursive;
+    /// We have reached a recursive solve of this binding.
+    /// Create a sentinel value to store information about it.
+    fn create_recursive(answers: &AnswersSolver<Ans>, binding: &Self::Value) -> Self::Recursive;
 
+    /// We hit a recursive case, so promote the recursive value into an answer that needs to be
+    /// sufficient for now.
+    fn promote_recursive(x: Self::Recursive) -> Self::Answer;
+
+    /// We solved a binding, but during its execution we gave some peope back a recursive value.
+    /// Record that recursive value along with the answer.
     fn record_recursive(
         _answers: &AnswersSolver<Ans>,
-        _key: &Self,
-        _answer: Arc<Self::Answer>,
-        _recursive: Self::Recursive,
+        _range: TextRange,
+        _answer: &Arc<Self::Answer>,
+        _recursive: &Self::Recursive,
         _errors: &ErrorCollector,
     ) {
     }
@@ -165,18 +114,22 @@ impl<Ans: LookupAnswer> Solve<Ans> for Key {
         answers.solve_binding(binding, errors)
     }
 
-    fn recursive(answers: &AnswersSolver<Ans>) -> Self::Recursive {
-        answers.solver().fresh_recursive(answers.uniques)
+    fn create_recursive(answers: &AnswersSolver<Ans>, binding: &Self::Value) -> Self::Recursive {
+        answers.create_recursive(binding)
+    }
+
+    fn promote_recursive(x: Self::Recursive) -> Self::Answer {
+        Type::Var(x)
     }
 
     fn record_recursive(
         answers: &AnswersSolver<Ans>,
-        key: &Key,
-        answer: Arc<Type>,
-        recursive: Var,
+        range: TextRange,
+        answer: &Arc<Type>,
+        recursive: &Var,
         errors: &ErrorCollector,
     ) {
-        answers.record_recursive(key.range(), answer, recursive, errors);
+        answers.record_recursive(range, answer, *recursive, errors);
     }
 }
 
@@ -189,7 +142,11 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyExpect {
         answers.solve_expectation(binding, errors)
     }
 
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        EmptyAnswer
+    }
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyExport {
@@ -201,18 +158,22 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyExport {
         answers.solve_binding(binding, errors)
     }
 
-    fn recursive(answers: &AnswersSolver<Ans>) -> Self::Recursive {
-        answers.solver().fresh_recursive(answers.uniques)
+    fn create_recursive(answers: &AnswersSolver<Ans>, binding: &Self::Value) -> Self::Recursive {
+        answers.create_recursive(binding)
+    }
+
+    fn promote_recursive(x: Self::Recursive) -> Self::Answer {
+        Type::Var(x)
     }
 
     fn record_recursive(
         answers: &AnswersSolver<Ans>,
-        key: &KeyExport,
-        answer: Arc<Type>,
-        recursive: Var,
+        range: TextRange,
+        answer: &Arc<Type>,
+        recursive: &Var,
         errors: &ErrorCollector,
     ) {
-        answers.record_recursive(key.range(), answer, recursive, errors);
+        answers.record_recursive(range, answer, *recursive, errors);
     }
 }
 
@@ -225,7 +186,13 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyFunction {
         answers.solve_function(binding, errors)
     }
 
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        // TODO(samgoldman) I'm not sure this really makes sense. These bindings should never
+        // be recursive, but this definition is required.
+        DecoratedFunction::recursive()
+    }
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyClass {
@@ -237,7 +204,11 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyClass {
         answers.solve_class(binding, errors)
     }
 
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        NoneIfRecursive(None)
+    }
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyClassField {
@@ -249,7 +220,13 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyClassField {
         answers.solve_class_field(binding, errors)
     }
 
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        // TODO(stroxler) Revisit the recursive handling, which needs changes in the plumbing
+        // to work correctly; what we have here is a fallback to permissive gradual typing.
+        ClassField::recursive()
+    }
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyClassSynthesizedFields {
@@ -261,7 +238,11 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyClassSynthesizedFields {
         answers.solve_class_synthesized_fields(binding)
     }
 
-    fn recursive(_: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        ClassSynthesizedFields::default()
+    }
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyAnnotation {
@@ -273,7 +254,14 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyAnnotation {
         answers.solve_annotation(binding, errors)
     }
 
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_answers: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        AnnotationWithTarget {
+            target: AnnotationTarget::Assign(Name::default(), Initialized::Yes),
+            annotation: Annotation::default(),
+        }
+    }
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyClassMetadata {
@@ -285,7 +273,11 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyClassMetadata {
         answers.solve_mro(binding, errors)
     }
 
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_answers: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        ClassMetadata::recursive()
+    }
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyLegacyTypeParam {
@@ -297,7 +289,11 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyLegacyTypeParam {
         answers.solve_legacy_tparam(binding)
     }
 
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_answers: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        LegacyTypeParameterLookup::NotParameter(Type::any_implicit())
+    }
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyYield {
@@ -309,7 +305,12 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyYield {
         answers.solve_yield(binding, errors)
     }
 
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_answers: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        // In practice, we should never have recursive bindings with yield.
+        YieldResult::recursive()
+    }
 }
 
 impl<Ans: LookupAnswer> Solve<Ans> for KeyYieldFrom {
@@ -321,5 +322,10 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyYieldFrom {
         answers.solve_yield_from(binding, errors)
     }
 
-    fn recursive(_answers: &AnswersSolver<Ans>) -> Self::Recursive {}
+    fn create_recursive(_answers: &AnswersSolver<Ans>, _: &Self::Value) -> Self::Recursive {}
+
+    fn promote_recursive(_: Self::Recursive) -> Self::Answer {
+        // In practice, we should never have recursive bindings with yield from.
+        YieldFromResult::recursive()
+    }
 }

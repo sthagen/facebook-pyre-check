@@ -6,6 +6,7 @@
  */
 
 use std::ops::Deref;
+use std::sync::Arc;
 
 use dupe::Dupe;
 use itertools::Either;
@@ -258,7 +259,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             let is_total = !keywords.iter().any(|(n, t)| {
                 n.as_str() == "total" && matches!(t, Type::Literal(Lit::Bool(false)))
             });
-            let fields = self.get_typed_dict_fields(cls, &bases_with_metadata, is_total);
+            let fields =
+                self.calculate_typed_dict_metadata_fields(cls, &bases_with_metadata, is_total);
             Some(TypedDictMetadata { fields })
         } else {
             None
@@ -353,6 +355,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             is_final,
             errors,
         )
+    }
+
+    fn calculate_typed_dict_metadata_fields(
+        &self,
+        cls: &Class,
+        bases_with_metadata: &[(ClassType, Arc<ClassMetadata>)],
+        is_total: bool,
+    ) -> SmallMap<Name, bool> {
+        let mut all_fields = SmallMap::new();
+        for (_, metadata) in bases_with_metadata.iter().rev() {
+            if let Some(td) = metadata.typed_dict_metadata() {
+                all_fields.extend(td.fields.clone());
+            }
+        }
+        for name in cls.fields() {
+            if cls.is_field_annotated(name) {
+                all_fields.insert(name.clone(), is_total);
+            }
+        }
+        all_fields
     }
 
     /// This helper deals with special cases where we want to intercept an `Expr`
@@ -452,14 +474,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         for base in bases.iter() {
             match base {
                 BaseClass::Generic(ts) => {
-                    for t in ts.iter() {
+                    for t in ts {
                         if let Some(p) = lookup_tparam(t) {
                             generic_tparams.insert(p);
                         }
                     }
                 }
                 BaseClass::Protocol(ts) if !ts.is_empty() => {
-                    for t in ts.iter() {
+                    for t in ts {
                         if let Some(p) = lookup_tparam(t) {
                             protocol_tparams.insert(p);
                         }
@@ -526,7 +548,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Some(metaclass)
         } else {
             let mut inherited_meta: Option<ClassType> = None;
-            for (_, m) in base_metaclasses.iter() {
+            for (_, m) in base_metaclasses {
                 let m = (*m).clone();
                 let accept_m = match &inherited_meta {
                     None => true,
@@ -555,7 +577,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         // specified directly or through inheritance) is not a subtype of all
         // base class metaclasses.
         let metaclass_type = Type::ClassType(metaclass.clone());
-        for (base_name, m) in base_metaclasses.iter() {
+        for (base_name, m) in base_metaclasses {
             let base_metaclass_type = Type::ClassType((*m).clone());
             if !self
                 .solver()

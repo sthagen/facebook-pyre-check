@@ -481,11 +481,11 @@ def bar(x: str) -> str: ...
             &[],
             &["overload", "foo", "bar"],
         );
-        let foo = defs.definitions.get(&Name::new("foo")).unwrap();
+        let foo = defs.definitions.get(&Name::new_static("foo")).unwrap();
         assert_eq!(foo.style, DefinitionStyle::Local);
         assert_eq!(foo.count, 3);
 
-        let bar = defs.definitions.get(&Name::new("bar")).unwrap();
+        let bar = defs.definitions.get(&Name::new_static("bar")).unwrap();
         assert_eq!(bar.style, DefinitionStyle::Local);
         assert_eq!(bar.count, 2);
     }
@@ -511,10 +511,10 @@ __all__.remove('r')
             &["a", "b", "__all__"],
         );
         let loc = TextRange::default();
-        let a = &DunderAllEntry::Name(loc, Name::new("a"));
-        let b = &DunderAllEntry::Name(loc, Name::new("b"));
+        let a = &DunderAllEntry::Name(loc, Name::new_static("a"));
+        let b = &DunderAllEntry::Name(loc, Name::new_static("b"));
         let foo = &DunderAllEntry::Module(loc, ModuleName::from_str("foo"));
-        let r = &DunderAllEntry::Remove(loc, Name::new("r"));
+        let r = &DunderAllEntry::Remove(loc, Name::new_static("r"));
         assert_eq!(
             defs.dunder_all.map(|x| x),
             vec![a, b, a, b, foo, a, b, foo, a, r]

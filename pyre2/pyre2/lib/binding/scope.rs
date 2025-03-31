@@ -177,7 +177,8 @@ pub enum FlowStyle {
     /// would get `foo.bar` here.
     ImportAs(ModuleName),
     /// Am I a function definition? Used to chain overload definitions.
-    FunctionDef(Idx<KeyFunction>),
+    /// If so, does my return type have an explicit annotation?
+    FunctionDef(Idx<KeyFunction>, bool),
     /// The name is possibly unbound (perhaps due to merging branches)
     PossiblyUnbound,
     /// The name is possibly uninitialized (perhaps due to merging branches)
@@ -453,11 +454,11 @@ impl Scopes {
         scope
     }
 
-    pub fn iter_rev(&self) -> impl Iterator<Item = &Scope> {
+    pub fn iter_rev(&self) -> impl ExactSizeIterator<Item = &Scope> {
         self.scopes.iter().map(|node| &node.scope).rev()
     }
 
-    pub fn iter_rev_mut(&mut self) -> impl Iterator<Item = &mut Scope> {
+    pub fn iter_rev_mut(&mut self) -> impl ExactSizeIterator<Item = &mut Scope> {
         self.scopes.iter_mut().map(|node| &mut node.scope).rev()
     }
 

@@ -155,7 +155,7 @@ impl Default for ConfigFile {
 
 impl ConfigFile {
     pub fn default_project_includes() -> Globs {
-        Globs::new(vec!["".to_owned()])
+        Globs::new(vec!["**/*.py".to_owned()])
     }
 
     pub fn default_project_excludes() -> Globs {
@@ -287,9 +287,10 @@ mod tests {
                 python_version: PythonVersion::new(1, 2, 3),
                 site_package_path: vec![PathBuf::from("venv/lib/python1.2.3/site-packages")],
                 extras: ConfigFile::default_extras(),
-                errors: ErrorConfig::new(HashMap::from_iter(
-                    [(ErrorKind::AssertType, true), (ErrorKind::BadReturn, false)].into_iter()
-                )),
+                errors: ErrorConfig::new(HashMap::from_iter([
+                    (ErrorKind::AssertType, true),
+                    (ErrorKind::BadReturn, false)
+                ])),
             },
         );
     }

@@ -21,11 +21,20 @@ impl Ignore {
     pub fn new(code: &str) -> Self {
         let mut ignores = SmallSet::new();
         for (line, line_str) in code.lines().enumerate() {
-            if line_str.contains("# type: ignore") {
+            if Self::is_ignore_directive(line_str) {
                 ignores.insert(OneIndexed::from_zero_indexed(line));
             }
         }
         Self { ignores }
+    }
+
+    fn is_ignore_directive(line: &str) -> bool {
+        line.split("# ").skip(1).any(|part| {
+            part.starts_with("type: ignore")
+                || part.starts_with("pyrefly: ignore")
+                || part.starts_with("pyre-ignore")
+                || part.starts_with("pyre-fixme")
+        })
     }
 
     pub fn is_ignored(&self, range: &SourceRange, msg: &str) -> bool {
@@ -35,5 +44,23 @@ impl Ignore {
         // We convert to/from zero-indexed because OneIndexed does not implement Step.
         (range.start.row.to_zero_indexed().saturating_sub(1)..=range.end.row.to_zero_indexed())
             .any(|x| self.ignores.contains(&OneIndexed::from_zero_indexed(x)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_ignore_directive() {
+        assert!(Ignore::is_ignore_directive(
+            "stuff # type: ignore # and then stuff"
+        ));
+        assert!(Ignore::is_ignore_directive(
+            "more # stuff # type: ignore[valid-type]"
+        ));
+        assert!(!Ignore::is_ignore_directive("# ignore: pyrefly"));
+        assert!(!Ignore::is_ignore_directive(" pyrefly: ignore"));
+        assert!(!Ignore::is_ignore_directive("normal line"));
     }
 }

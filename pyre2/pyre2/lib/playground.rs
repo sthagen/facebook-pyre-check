@@ -84,6 +84,7 @@ pub struct Diagnostic {
     #[serde(rename(serialize = "endColumn"))]
     pub end_col: i32,
     pub message: String,
+    pub kind: String,
     pub severity: i32,
 }
 
@@ -229,9 +230,9 @@ impl Default for LanguageServiceState {
 impl LanguageServiceState {
     pub fn update_source(&mut self, source: String) {
         self.demo_env.lock().unwrap().add("test", source);
-        self.state
-            .invalidate_memory(self.loader.dupe(), &[PathBuf::from("test.py")]);
-        self.state.run(
+        let transaction = self.state.transaction_mut();
+        transaction.invalidate_memory(self.loader.dupe(), &[PathBuf::from("test.py")]);
+        transaction.run(
             &[(self.handle.dupe(), Require::Everything)],
             Require::Exports,
             None,
@@ -240,6 +241,9 @@ impl LanguageServiceState {
 
     pub fn get_errors(&self) -> Vec<Diagnostic> {
         self.state
+            .transaction()
+            .readable()
+            .get_loads([&self.handle])
             .collect_errors(&ErrorConfigs::default())
             .shown
             .into_iter()
@@ -251,6 +255,7 @@ impl LanguageServiceState {
                     end_line: range.end.row.to_zero_indexed() as i32 + 1,
                     end_col: range.end.column.to_zero_indexed() as i32 + 1,
                     message: e.msg().to_owned(),
+                    kind: e.error_kind().to_name().to_owned(),
                     severity: 8,
                 }
             })
@@ -260,9 +265,11 @@ impl LanguageServiceState {
     pub fn query_type(&mut self, line: i32, column: i32) -> Option<TypeQueryResult> {
         let handle = self.handle.dupe();
         self.state
+            .transaction()
+            .readable()
             .get_module_info(&handle)
             .map(|info| info.to_text_size((line - 1) as u32, (column - 1) as u32))
-            .and_then(|position| self.state.hover(&handle, position))
+            .and_then(|position| self.state.transaction().hover(&handle, position))
             .map(|t| t.to_string())
             .map(|result| TypeQueryResult {
                 contents: vec![TypeQueryContent {
@@ -275,9 +282,11 @@ impl LanguageServiceState {
     pub fn goto_definition(&mut self, line: i32, column: i32) -> Option<Range> {
         let handle = self.handle.dupe();
         self.state
+            .transaction()
+            .readable()
             .get_module_info(&handle)
             .map(|info| info.to_text_size((line - 1) as u32, (column - 1) as u32))
-            .and_then(|position| self.state.goto_definition(&handle, position))
+            .and_then(|position| self.state.transaction().goto_definition(&handle, position))
             .map(|range_with_mod_info| {
                 Range::new(
                     range_with_mod_info
@@ -290,10 +299,12 @@ impl LanguageServiceState {
     pub fn autocomplete(&mut self, line: i32, column: i32) -> Vec<AutoCompletionItem> {
         let handle = self.handle.dupe();
         self.state
+            .transaction()
+            .readable()
             .get_module_info(&handle)
             .map(|info| info.to_text_size((line - 1) as u32, (column - 1) as u32))
             .map_or(Vec::new(), |position| {
-                self.state.completion(&handle, position)
+                self.state.transaction().completion(&handle, position)
             })
             .into_iter()
             .map(
@@ -315,9 +326,11 @@ impl LanguageServiceState {
 
     pub fn inlay_hint(&mut self) -> Vec<InlayHint> {
         let handle = self.handle.dupe();
-        self.state
+        let transaction = self.state.transaction();
+        transaction
+            .readable()
             .get_module_info(&handle)
-            .zip(self.state.inlay_hints(&handle))
+            .zip(transaction.inlay_hints(&handle))
             .map(|(info, hints)| {
                 hints.into_map(|(position, label)| {
                     let position = Position::new(info.source_location(position));
@@ -331,6 +344,7 @@ impl LanguageServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::kind::ErrorKind;
 
     #[test]
     fn test_regular_import() {
@@ -357,6 +371,8 @@ mod tests {
             "Could not find import of `t`, module is not available in sandbox",
             "Parse error: Expected 'import', found newline at byte range 6..6",
         ];
+        let expected_error_kinds: Vec<ErrorKind> =
+            vec![ErrorKind::MissingModuleAttribute, ErrorKind::ParseError];
 
         assert_eq!(
             state
@@ -365,6 +381,18 @@ mod tests {
                 .map(|x| x.message)
                 .collect::<Vec<_>>(),
             expected_errors,
+        );
+
+        assert_eq!(
+            state
+                .get_errors()
+                .into_iter()
+                .map(|x| x.kind)
+                .collect::<Vec<_>>(),
+            expected_error_kinds
+                .iter()
+                .map(|k| k.to_name())
+                .collect::<Vec<_>>(),
         );
     }
 }

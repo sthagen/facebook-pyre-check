@@ -72,12 +72,6 @@ impl TypeCheckContext {
     pub fn unknown() -> Self {
         Self::of_kind(TypeCheckKind::Unknown)
     }
-
-    /// Temporary helper to label errors as Test to aid classification.
-    #[allow(dead_code)]
-    pub fn test() -> Self {
-        Self::of_kind(TypeCheckKind::Test)
-    }
 }
 
 #[derive(Debug)]
@@ -129,8 +123,6 @@ pub enum TypeCheckKind {
     UnexpectedBareYield,
     // TODO: categorize all type checks and remove Unknown and Test designations
     Unknown,
-    #[allow(dead_code)]
-    Test,
 }
 
 impl TypeCheckKind {
@@ -140,7 +132,7 @@ impl TypeCheckKind {
             | AnnotationTarget::ArgsParam(_)
             | AnnotationTarget::KwargsParam(_) => Self::Unknown,
             AnnotationTarget::Return(_func) => Self::ExplicitFunctionReturn,
-            AnnotationTarget::Assign(name) => Self::AnnotatedName(name.clone()),
+            AnnotationTarget::Assign(name, _is_initialized) => Self::AnnotatedName(name.clone()),
             AnnotationTarget::ClassMember(member) => Self::Attribute(member.clone()),
         }
     }
@@ -168,7 +160,6 @@ impl TypeCheckKind {
             Self::YieldFrom => ErrorKind::InvalidYield,
             Self::UnexpectedBareYield => ErrorKind::InvalidYield,
             Self::Unknown => ErrorKind::Unknown,
-            Self::Test => ErrorKind::Unknown,
         }
     }
 }

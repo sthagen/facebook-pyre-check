@@ -35,7 +35,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
         }
         elements.sort_by_key(|e| e.1.start());
-        elements.iter().map(|e| e.0.clone()).collect()
+        elements.into_iter().map(|(name, _)| name).collect()
     }
 
     pub fn named_tuple_element_types(&self, cls: &ClassType) -> Option<Vec<Type>> {
@@ -67,7 +67,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     fn get_named_tuple_new(&self, cls: &Class, elements: &[Name]) -> ClassSynthesizedField {
         let mut params = vec![Param::Pos(
-            Name::new("cls"),
+            Name::new_static("cls"),
             Type::type_form(cls.instance_type()),
             Required::Required,
         )];

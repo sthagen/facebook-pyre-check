@@ -17,6 +17,7 @@ use ruff_python_ast::Arguments;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprCall;
 use ruff_text_size::TextRange;
+use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswersSolver;
@@ -98,6 +99,7 @@ enum ClassFieldInner {
         descriptor_getter: Option<Type>,
         // Descriptor setter method, if there is one. `None` indicates no setter.
         descriptor_setter: Option<Type>,
+        is_function_without_return_annotation: bool,
     },
 }
 
@@ -119,6 +121,7 @@ impl ClassField {
         readonly: bool,
         descriptor_getter: Option<Type>,
         descriptor_setter: Option<Type>,
+        is_function_without_return_annotation: bool,
     ) -> Self {
         Self(ClassFieldInner::Simple {
             ty,
@@ -127,7 +130,16 @@ impl ClassField {
             readonly,
             descriptor_getter,
             descriptor_setter,
+            is_function_without_return_annotation,
         })
+    }
+
+    /// Get the raw type. Only suitable for use in this module, this type may
+    /// not correspond to the type of any actual operations on the attribute.
+    fn raw_type(&self) -> &Type {
+        match &self.0 {
+            ClassFieldInner::Simple { ty, .. } => ty,
+        }
     }
 
     pub fn new_synthesized(ty: Type) -> Self {
@@ -138,6 +150,7 @@ impl ClassField {
             readonly: false,
             descriptor_getter: None,
             descriptor_setter: None,
+            is_function_without_return_annotation: false,
         })
     }
 
@@ -149,6 +162,7 @@ impl ClassField {
             readonly: false,
             descriptor_getter: None,
             descriptor_setter: None,
+            is_function_without_return_annotation: false,
         })
     }
 
@@ -167,6 +181,7 @@ impl ClassField {
                 readonly,
                 descriptor_getter,
                 descriptor_setter,
+                is_function_without_return_annotation,
             } => Self(ClassFieldInner::Simple {
                 ty: cls.instantiate_member(ty.clone()),
                 annotation: annotation.clone(),
@@ -178,6 +193,7 @@ impl ClassField {
                 descriptor_setter: descriptor_setter
                     .as_ref()
                     .map(|ty| cls.instantiate_member(ty.clone())),
+                is_function_without_return_annotation: *is_function_without_return_annotation,
             }),
         }
     }
@@ -300,6 +316,15 @@ impl ClassField {
     pub fn has_explicit_annotation(&self) -> bool {
         match &self.0 {
             ClassFieldInner::Simple { annotation, .. } => annotation.is_some(),
+        }
+    }
+
+    pub fn is_function_without_return_annotation(&self) -> bool {
+        match &self.0 {
+            ClassFieldInner::Simple {
+                is_function_without_return_annotation,
+                ..
+            } => *is_function_without_return_annotation,
         }
     }
 
@@ -426,6 +451,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         annotation: Option<&Annotation>,
         initial_value: &ClassFieldInitialValue,
         class: &Class,
+        is_function_without_return_annotation: bool,
         range: TextRange,
         errors: &ErrorCollector,
     ) -> ClassField {
@@ -500,6 +526,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             value_ty.clone()
         };
 
+        let ty = match initial_value {
+            ClassFieldInitialValue::Class(_) | ClassFieldInitialValue::Instance(None) => ty,
+            ClassFieldInitialValue::Instance(Some(method_name)) => self
+                .check_and_sanitize_method_scope_type_parameters(
+                    class,
+                    method_name,
+                    ty,
+                    name,
+                    range,
+                    errors,
+                ),
+        };
+
         // Enum handling:
         // - Check whether the field is a member (which depends only on its type and name)
         // - Validate that a member should not have an annotation, and should respect any explicit annotation on `_value_`
@@ -541,10 +580,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let is_namedtuple_member = metadata
             .named_tuple_metadata()
             .is_some_and(|named_tuple| named_tuple.elements.contains(name));
-        let is_frozen_dataclass = metadata
-            .dataclass_metadata()
-            .is_some_and(|dataclass| dataclass.kws.is_set(&DataclassKeywords::FROZEN));
-        let readonly = is_namedtuple_member || is_frozen_dataclass;
+        let is_frozen_dataclass_field = metadata.dataclass_metadata().is_some_and(|dataclass| {
+            dataclass.kws.is_set(&DataclassKeywords::FROZEN) && dataclass.fields.contains(name)
+        });
+        let readonly = is_namedtuple_member || is_frozen_dataclass_field;
 
         // Identify whether this is a descriptor
         let (mut descriptor_getter, mut descriptor_setter) = (None, None);
@@ -577,6 +616,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             readonly,
             descriptor_getter,
             descriptor_setter,
+            is_function_without_return_annotation,
         );
         self.check_class_field_for_override_mismatch(
             name,
@@ -635,6 +675,53 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     ClassFieldInitialization::Class(None)
                 }
             }
+        }
+    }
+
+    fn check_and_sanitize_method_scope_type_parameters(
+        &self,
+        class: &Class,
+        method_name: &Name,
+        ty: Type,
+        name: &Name,
+        range: TextRange,
+        errors: &ErrorCollector,
+    ) -> Type {
+        let mut qs = SmallSet::new();
+        ty.collect_quantifieds(&mut qs);
+        if let Some(method_field) =
+            self.get_non_synthesized_field_from_current_class_only(class, method_name)
+        {
+            match &method_field.raw_type() {
+                Type::Forall(box Forall { tparams, .. }) => {
+                    let gradual_fallbacks: SmallMap<_, _> = tparams
+                        .iter()
+                        .filter_map(|param| {
+                            let q = &param.quantified;
+                            if qs.contains(q) {
+                                self.error(
+                                    errors,
+                                    range,
+                                    ErrorKind::InvalidTypeVar,
+                            None,
+                                format!(
+                                        "Cannot initialize attribute `{}` to a value that depends on method-scoped type variable `{}`",
+                                        name,
+                                        &param.name,
+                                    ),
+                                );
+                                Some((*q, q.as_gradual_type()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    ty.subst(&gradual_fallbacks)
+                }
+                _ => ty,
+            }
+        } else {
+            ty
         }
     }
 
@@ -700,7 +787,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 ..
             } => {
                 if field.depends_on_class_type_parameter(cls) {
-                    Attribute::no_access(NoAccessReason::ClassAttributeIsGeneric(cls.clone()))
+                    Attribute::no_access(NoAccessReason::ClassAttributeIsGeneric(cls.dupe()))
                 } else {
                     bind_class_attribute(cls, ty.clone())
                 }
@@ -872,10 +959,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    pub fn get_class_defining_method(&self, cls: &Class, name: &Name) -> Option<Class> {
-        self.get_class_member(cls, name).map(|m| m.defining_class)
-    }
-
     pub fn get_instance_attribute(&self, cls: &ClassType, name: &Name) -> Option<Attribute> {
         self.get_class_member(cls.class_object(), name)
             .map(|member| self.as_instance_attribute(Arc::unwrap_or_clone(member.value), cls))
@@ -925,15 +1008,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    /// Get the class's `__init__` method, if we should analyze it
-    /// We skip analyzing the call to `__init__` if:
-    /// (1) it isn't defined (possible if we've been passed a custom typeshed), or
-    /// (2) the class overrides `object.__new__` but not `object.__init__`, in which case the
-    ///     `__init__` call always succeeds at runtime.
-    pub fn get_dunder_init(&self, cls: &ClassType, overrides_new: bool) -> Option<Type> {
+    /// Get the class's `__init__` method. The second argument controls whether we return an inherited `object.__init__`.
+    pub fn get_dunder_init(&self, cls: &ClassType, get_object_init: bool) -> Option<Type> {
         let init_method = self.get_class_member(cls.class_object(), &dunder::INIT)?;
-        if !(overrides_new
-            && init_method.defined_on(self.stdlib.object_class_type().class_object()))
+        if get_object_init
+            || !init_method.defined_on(self.stdlib.object_class_type().class_object())
         {
             Arc::unwrap_or_clone(init_method.value).as_special_method_type(cls)
         } else {
@@ -941,7 +1020,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    /// Get the metaclass `__call__` method.
+    /// Get the metaclass `__call__` method
     pub fn get_metaclass_dunder_call(&self, cls: &ClassType) -> Option<Type> {
         let metadata = self.get_metadata_for_class(cls.class_object());
         let metaclass = metadata.metaclass()?;
@@ -949,6 +1028,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         if attr.defined_on(self.stdlib.builtins_type().class_object()) {
             // The behavior of `type.__call__` is already baked into our implementation of constructors,
             // so we can skip analyzing it at the type level.
+            None
+        } else if attr.value.is_function_without_return_annotation() {
+            // According to the typing spec:
+            // If a custom metaclass __call__ method is present but does not have an annotated return type,
+            // type checkers may assume that the method acts like type.__call__.
+            // https://typing.python.org/en/latest/spec/constructors.html#converting-a-constructor-to-callable
             None
         } else {
             Arc::unwrap_or_clone(attr.value).as_special_method_type(metaclass)

@@ -891,3 +891,29 @@ from typing import assert_type
 assert_type(imported.exported, None)
 "#,
 );
+
+testcase!(
+    test_loop_increment,
+    r#"
+from typing import assert_type, Literal
+
+def f(cond: bool):
+    n = 1
+    while cond:
+        n += 1
+    assert_type(n, Literal[1] | int)
+"#,
+);
+
+testcase!(
+    test_loop_test_and_increment,
+    r#"
+from typing import assert_type, Literal
+
+def f(cond: bool):
+    n = 1
+    while n < 10:
+        n += 1
+    assert_type(n, Literal[1] | int)
+"#,
+);

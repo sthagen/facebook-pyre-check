@@ -349,9 +349,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         // Based on https://typing.readthedocs.io/en/latest/spec/constructors.html.
         let instance_ty = Type::ClassType(cls.clone());
         if let Some(ret) = self.call_metaclass(&cls, range, args, keywords, errors, context)
-            && !self
-                .solver()
-                .is_subset_eq(&ret, &instance_ty, self.type_order())
+            && !self.is_compatible_constructor_return(&ret, cls.class_object())
         {
             // Got something other than an instance of the class under construction.
             return ret;
@@ -379,10 +377,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 );
                 let has_errors = !dunder_new_errors.is_empty();
                 errors.extend(dunder_new_errors);
-                if !self
-                    .solver()
-                    .is_subset_eq(&ret, &instance_ty, self.type_order())
-                {
+                if !self.is_compatible_constructor_return(&ret, cls.class_object()) {
                     // Got something other than an instance of the class under construction.
                     return ret;
                 }
@@ -390,7 +385,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             } else {
                 (false, false)
             };
-        if let Some(init_method) = self.get_dunder_init(&cls, overrides_new) {
+        // If the class overrides `object.__new__` but not `object.__init__`, the `__init__` call
+        // always succeeds at runtime, so we skip analyzing it.
+        if let Some(init_method) = self.get_dunder_init(&cls, !overrides_new) {
             let dunder_init_errors =
                 ErrorCollector::new(self.module_info().dupe(), ErrorStyle::Delayed);
             self.call_infer(
@@ -426,7 +423,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Type {
         // We know `__init__` exists because we synthesize it.
         let init_method = self
-            .get_dunder_init(&typed_dict.as_class_type(), false)
+            .get_dunder_init(&typed_dict.as_class_type(), true)
             .unwrap();
         self.call_infer(
             self.as_call_target_or_error(
@@ -574,7 +571,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Type {
         let mut closest_overload = None;
         let mut fewest_errors: Option<ErrorCollector> = None;
-        for callable in overloads.into_iter() {
+        for callable in overloads {
             let arg_errors = ErrorCollector::new(self.module_info().dupe(), ErrorStyle::Delayed);
             let call_errors = ErrorCollector::new(self.module_info().dupe(), ErrorStyle::Delayed);
             let res = self.callable_infer(

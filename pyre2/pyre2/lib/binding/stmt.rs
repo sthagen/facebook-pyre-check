@@ -23,6 +23,7 @@ use crate::binding::binding::AnnotationTarget;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
 use crate::binding::binding::BindingExpect;
+use crate::binding::binding::Initialized;
 use crate::binding::binding::IsAsync;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyAnnotation;
@@ -42,7 +43,7 @@ use crate::module::short_identifier::ShortIdentifier;
 use crate::ruff::ast::Ast;
 use crate::types::alias::resolve_typeshed_alias;
 use crate::types::special_form::SpecialForm;
-use crate::types::types::AnyStyle;
+use crate::types::types::Type;
 
 impl<'a> BindingsBuilder<'a> {
     fn bind_unimportable_names(&mut self, x: &StmtImportFrom) {
@@ -50,7 +51,7 @@ impl<'a> BindingsBuilder<'a> {
             if &x.name != "*" {
                 let asname = x.asname.as_ref().unwrap_or(&x.name);
                 // We pass None as imported_from, since we are really faking up a local error definition
-                self.bind_definition(asname, Binding::AnyType(AnyStyle::Error), None);
+                self.bind_definition(asname, Binding::Type(Type::any_error()), None);
             }
         }
     }
@@ -226,7 +227,7 @@ impl<'a> BindingsBuilder<'a> {
             Err(error) => {
                 // Record a type error and fall back to `Any`.
                 self.error(name.range, error.message(name), ErrorKind::UnknownName);
-                self.table.insert(key, Binding::AnyType(AnyStyle::Error));
+                self.table.insert(key, Binding::Type(Type::any_error()));
             }
         }
     }
@@ -243,7 +244,7 @@ impl<'a> BindingsBuilder<'a> {
             Err(error) => {
                 // Record a type error and fall back to `Any`.
                 self.error(name.range, error.message(name), ErrorKind::UnknownName);
-                self.table.insert(key, Binding::AnyType(AnyStyle::Error));
+                self.table.insert(key, Binding::Type(Type::any_error()));
             }
         }
     }
@@ -404,7 +405,7 @@ impl<'a> BindingsBuilder<'a> {
                     self.ensure_type(&mut x.annotation, &mut None);
                     let ann_val = if let Some(special) = SpecialForm::new(&name.id, &x.annotation) {
                         BindingAnnotation::Type(
-                            AnnotationTarget::Assign(name.id.clone()),
+                            AnnotationTarget::Assign(name.id.clone(), Initialized::Yes),
                             special.to_type(),
                         )
                     } else {
@@ -412,7 +413,14 @@ impl<'a> BindingsBuilder<'a> {
                             if in_class_body {
                                 AnnotationTarget::ClassMember(name.id.clone())
                             } else {
-                                AnnotationTarget::Assign(name.id.clone())
+                                AnnotationTarget::Assign(
+                                    name.id.clone(),
+                                    if x.value.is_some() {
+                                        Initialized::Yes
+                                    } else {
+                                        Initialized::No
+                                    },
+                                )
                             },
                             *x.annotation.clone(),
                             None,
@@ -454,7 +462,7 @@ impl<'a> BindingsBuilder<'a> {
                     } else {
                         Binding::AnnotatedType(
                             ann_key,
-                            Box::new(Binding::AnyType(AnyStyle::Implicit)),
+                            Box::new(Binding::Type(Type::any_implicit())),
                         )
                     };
                     if let Some(ann) = self.bind_definition(&name, binding, flow_style)
@@ -479,7 +487,7 @@ impl<'a> BindingsBuilder<'a> {
                     );
                     let value_binding = match &x.value {
                         Some(v) => Binding::Expr(None, *v.clone()),
-                        None => Binding::AnyType(AnyStyle::Implicit),
+                        None => Binding::Type(Type::any_implicit()),
                     };
                     if !self.bind_attr_if_self(&attr, value_binding, Some(ann_key)) {
                         self.error(
@@ -508,7 +516,11 @@ impl<'a> BindingsBuilder<'a> {
                         self.type_params(params);
                     }
                     self.ensure_type(&mut x.value, &mut None);
-                    let binding = Binding::ScopedTypeAlias(name.id.clone(), x.type_params, x.value);
+                    let binding = Binding::ScopedTypeAlias(
+                        name.id.clone(),
+                        x.type_params.map(|x| *x),
+                        x.value,
+                    );
                     self.bind_definition(&Ast::expr_name_identifier(name), binding, None);
                 } else {
                     self.todo("Bindings::stmt TypeAlias", &x);
@@ -741,7 +753,7 @@ impl<'a> BindingsBuilder<'a> {
                                                 format!("Could not import `{name}` from `{m}`"),
                                                 ErrorKind::MissingModuleAttribute,
                                             );
-                                            Binding::AnyType(AnyStyle::Error)
+                                            Binding::Type(Type::any_error())
                                         };
                                         let key = self.table.insert(key, val);
                                         self.bind_key(
@@ -781,7 +793,7 @@ impl<'a> BindingsBuilder<'a> {
                                                 ),
                                                 ErrorKind::MissingModuleAttribute,
                                             );
-                                            Binding::AnyType(AnyStyle::Error)
+                                            Binding::Type(Type::any_error())
                                         }
                                     };
                                     self.bind_definition(

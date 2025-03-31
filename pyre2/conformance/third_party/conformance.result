@@ -131,12 +131,10 @@
     "Line 74: Unexpected errors ['assert_type(Class5[list[int]], Class5[set[str]]) failed', 'No matching overload found for function `Class5.__init__`, reporting errors for closest overload: `(value: int) -> None`', \"Argument `Literal['']` is not assignable to parameter `value` with type `int` in function `Class5.__init__`\"]",
     "Line 75: Unexpected errors ['assert_type(Class5[list[int]], Class5[float]) failed', 'No matching overload found for function `Class5.__init__`, reporting errors for closest overload: `(value: int) -> None`', 'Argument `float` is not assignable to parameter `value` with type `int` in function `Class5.__init__`']"
   ],
-  "constructors_call_metaclass.py": [
-    "Line 23: Unexpected errors ['assert_type(Class1, Never) failed', 'Missing argument `x` in function `Class1.__new__`']"
-  ],
+  "constructors_call_metaclass.py": [],
   "constructors_call_new.py": [
-    "Line 64: Unexpected errors ['assert_type(Class4, Class4 | Any) failed', 'Missing argument `x` in function `Class4.__init__`']",
-    "Line 76: Unexpected errors ['assert_type(Class5, Never) failed', 'Missing argument `x` in function `Class5.__init__`']"
+    "Line 116: Unexpected errors ['assert_type(Class8[int], Class8[list[int]]) failed']",
+    "Line 117: Unexpected errors ['assert_type(Class8[str], Class8[list[str]]) failed']"
   ],
   "constructors_call_type.py": [
     "Line 63: Unexpected errors ['Expected a callable, got type[?_TypeVar]']",
@@ -145,18 +143,18 @@
     "Line 80: Unexpected errors ['Expected a callable, got type[?_TypeVar]']"
   ],
   "constructors_callable.py": [
-    "Line 38: Expected 1 errors",
     "Line 65: Expected 1 errors",
     "Line 66: Expected 1 errors",
     "Line 67: Expected 1 errors",
     "Line 184: Expected 1 errors",
-    "Line 37: Unexpected errors ['assert_type(Self@object, Class1) failed', 'Expected 0 positional arguments, got 1']",
-    "Line 50: Unexpected errors ['assert_type(Self@object, Class2) failed']",
-    "Line 64: Unexpected errors ['assert_type(Self@Class3, Class3) failed']",
-    "Line 164: Unexpected errors ['assert_type(Self@object, Class7[int]) failed', 'Expected 0 positional arguments, got 1']",
-    "Line 165: Unexpected errors ['assert_type(Self@object, Class7[str]) failed', 'Expected 0 positional arguments, got 1']",
-    "Line 183: Unexpected errors ['assert_type(Self@Class8, Class8[str]) failed']",
-    "Line 194: Unexpected errors ['assert_type(Self@object, Class9) failed', 'Expected 0 positional arguments, got 2']"
+    "Line 195: Expected 1 errors",
+    "Line 62: Unexpected errors ['Argument `type[Class3]` is not assignable to parameter `cb` with type `(*args: Unknown, **Unknown) -> Self@Class3` in function `accepts_callable`']",
+    "Line 64: Unexpected errors ['assert_type(Self, Class3) failed']",
+    "Line 164: Unexpected errors ['assert_type(Class7[Any], Class7[int]) failed']",
+    "Line 165: Unexpected errors ['assert_type(Class7[Any], Class7[str]) failed', \"Argument `Literal['']` is not assignable to parameter `x` with type `int`\"]",
+    "Line 183: Unexpected errors ['assert_type(Self, Class8[str]) failed']",
+    "Line 192: Unexpected errors ['Argument `type[Class9]` is not assignable to parameter `cb` with type `(ParamSpec(@_)) -> @_` in function `accepts_callable`']",
+    "Line 194: Unexpected errors ['assert_type(Any, Class9) failed']"
   ],
   "constructors_consistency.py": [],
   "dataclasses_descriptors.py": [
@@ -211,7 +209,6 @@
   "dataclasses_transform_converter.py": [
     "Line 118: Expected 1 errors",
     "Line 29: Unexpected errors ['Argument `tuple[Forall[S, T, (*, converter: (S) -> T, default: S | None, default_factory: (() -> S) | None) -> T]]` is not assignable to parameter `field_specifiers` with type `tuple[((...) -> Any) | type[Any], ...]` in function `typing.dataclass_transform`']",
-    "Line 102: Unexpected errors ['`Self@object` is not assignable to `ConverterClass`', 'Argument `type[ConverterClass]` is not assignable to parameter `converter` with type `(@_) -> Self@object` in function `model_field`']",
     "Line 112: Unexpected errors ['Expected 0 positional arguments, got 5 in function `object.__init__`']",
     "Line 114: Unexpected errors [\"`Literal['f1']` is not assignable to attribute `field0` with type `int`\"]",
     "Line 115: Unexpected errors [\"`Literal['f6']` is not assignable to attribute `field3` with type `ConverterClass`\"]",
@@ -323,7 +320,7 @@
     "Line 148: Unexpected errors ['Class `Foo6` uses type variables not specified in `Generic` or `Protocol` base']",
     "Line 151: Unexpected errors ['assert_type(type[Foo6[Ellipsis, tuple[str]]], type[Foo6[Ellipsis, tuple[str, (float, bool)]]]) failed', 'Expected a valid ParamSpec expression', 'Expected a valid ParamSpec expression']",
     "Line 152: Unexpected errors ['Expected a valid ParamSpec expression', 'Expected a valid ParamSpec expression']",
-    "Line 166: Unexpected errors ['assert_type((Self@Foo7) -> Self@Foo7, (Foo7[int]) -> Foo7[int]) failed']",
+    "Line 166: Unexpected errors ['assert_type((Self) -> Self, (Foo7[int]) -> Foo7[int]) failed']",
     "Line 167: Unexpected errors ['assert_type(Any, int) failed', 'Instance-only attribute `attr` of class `Foo7` is not visible on the class']"
   ],
   "generics_defaults_referential.py": [
@@ -360,9 +357,7 @@
     "Line 96: Expected 1 errors"
   ],
   "generics_self_advanced.py": [
-    "Line 35: Unexpected errors ['assert_type(Self@ChildB, Self) failed']",
     "Line 38: Unexpected errors ['assert_type(ChildB, Self) failed']",
-    "Line 42: Unexpected errors ['assert_type(type[Self@ChildB], type[Self]) failed']",
     "Line 43: Unexpected errors ['assert_type(Any, list[Self]) failed', 'Instance-only attribute `a` of class `ChildB` is not visible on the class']",
     "Line 44: Unexpected errors ['assert_type(Any, Self) failed', 'Instance-only attribute `a` of class `ChildB` is not visible on the class']",
     "Line 45: Unexpected errors ['assert_type(ChildB, Self) failed']"
@@ -373,12 +368,9 @@
   "generics_self_basic.py": [
     "Line 20: Expected 1 errors",
     "Line 33: Expected 1 errors",
-    "Line 14: Unexpected errors ['assert_type(Self@Shape, Self) failed']",
     "Line 15: Unexpected errors ['Object of class `Shape` has no attribute `scale`']",
-    "Line 27: Unexpected errors ['assert_type(type[Self@Shape], type[Self]) failed']",
     "Line 28: Unexpected errors ['Expected a callable, got type[Self@Shape]']",
-    "Line 37: Unexpected errors ['Expected a callable, got type[Self@Shape]']",
-    "Line 40: Unexpected errors ['assert_type(Self@Shape, Self) failed']"
+    "Line 37: Unexpected errors ['Expected a callable, got type[Self@Shape]']"
   ],
   "generics_self_protocols.py": [
     "Line 58: Unexpected errors ['Argument `ReturnConcreteShape` is not assignable to parameter `shape` with type `ShapeProtocol` in function `accepts_shape`']"
@@ -438,7 +430,7 @@
   ],
   "generics_typevartuple_callable.py": [],
   "generics_typevartuple_concat.py": [
-    "Line 56: Unexpected errors ['Returned type `tuple[*tuple[Unknown, ...], Unknown]` is not assignable to declared return type `tuple[*?_TypeVarTuple, ?_TypeVar]`']"
+    "Line 56: Unexpected errors ['Returned type `tuple[*tuple[@_, ...], Unknown]` is not assignable to declared return type `tuple[*?_TypeVarTuple, ?_TypeVar]`', 'Cannot index into `tuple[?_TypeVar, *?_TypeVarTuple]`\\n  No matching overload found for function `tuple.__getitem__`, reporting errors for closest overload: `(SupportsIndex) -> Unknown`', 'Argument `slice[int, int, int]` is not assignable to parameter with type `SupportsIndex` in function `tuple.__getitem__`']"
   ],
   "generics_typevartuple_overloads.py": [],
   "generics_typevartuple_specialization.py": [
@@ -498,10 +490,7 @@
     "Line 52: Unexpected errors ['assert_type(str, LiteralString) failed']",
     "Line 111: Unexpected errors [\"assert_type(str, Literal['hello']) failed\"]"
   ],
-  "literals_parameterizations.py": [
-    "Line 60: Expected 1 errors",
-    "Line 35: Unexpected errors ['Invalid literal expression']"
-  ],
+  "literals_parameterizations.py": [],
   "literals_semantics.py": [],
   "namedtuples_define_class.py": [
     "Line 59: Expected 1 errors",
@@ -520,7 +509,9 @@
     "Line 195: Expected 1 errors",
     "Line 199: Expected 1 errors"
   ],
-  "overloads_basic.py": [],
+  "overloads_basic.py": [
+    "Line 36: Unexpected errors ['assert_type(Any, bytes) failed', 'Cannot index into `Bytes`\\n  No matching overload found for function `Bytes.__getitem__`, reporting errors for closest overload: `(__i: int) -> int`', 'Argument `slice[int, int, int]` is not assignable to parameter `__i` with type `int` in function `Bytes.__getitem__`']"
+  ],
   "protocols_class_objects.py": [
     "Line 29: Expected 1 errors",
     "Line 34: Expected 1 errors",
@@ -593,7 +584,6 @@
     "Line 81: Unexpected errors ['Expected a callable, got type[?_TypeVar]']"
   ],
   "qualifiers_final_annotation.py": [
-    "Line 16: Expected 1 errors",
     "Line 34: Expected 1 errors",
     "Line 38: Expected 1 errors",
     "Line 54: Expected 1 errors",

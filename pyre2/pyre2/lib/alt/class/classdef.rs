@@ -41,6 +41,24 @@ use crate::util::display::count;
 use crate::util::prelude::SliceExt;
 
 impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
+    // Given a constructor (__new__ or metaclass __call__) that returns `ty`, return true if the type is:
+    // - SelfType or ClassType representing some subclass of `class`
+    // - union only containing the aforementioned types
+    // Docs:
+    // https://typing.python.org/en/latest/spec/constructors.html#new-method
+    // https://typing.python.org/en/latest/spec/constructors.html#converting-a-constructor-to-callable
+    pub fn is_compatible_constructor_return(&self, ty: &Type, class: &Class) -> bool {
+        match ty {
+            Type::SelfType(ty_cls) | Type::ClassType(ty_cls) => {
+                self.has_superclass(ty_cls.class_object(), class)
+            }
+            Type::Union(xs) => xs
+                .iter()
+                .all(|x| self.is_compatible_constructor_return(x, class)),
+            _ => false,
+        }
+    }
+
     pub fn class_definition(
         &self,
         index: ClassIndex,
@@ -329,8 +347,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn type_of_instance(&self, cls: &Class, targs: TArgs) -> Type {
         let metadata = self.get_metadata_for_class(cls);
         if metadata.is_typed_dict() {
-            let fields = self.sub_typed_dict_fields(cls, &targs);
-            Type::TypedDict(Box::new(TypedDict::new(cls.dupe(), targs, fields)))
+            Type::TypedDict(Box::new(TypedDict::new(cls.dupe(), targs)))
         } else {
             Type::ClassType(ClassType::new(cls.dupe(), targs))
         }

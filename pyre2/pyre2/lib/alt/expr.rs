@@ -120,7 +120,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     /// Infers types for `if` clauses in the given comprehensions.
     /// This is for error detection only; the types are not used.
     fn ifs_infer(&self, comps: &[Comprehension], errors: &ErrorCollector) {
-        for comp in comps.iter() {
+        for comp in comps {
             for if_clause in comp.ifs.iter() {
                 self.expr_infer(if_clause, errors);
             }
@@ -581,7 +581,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let mut param_vars = Vec::new();
                 if let Some(parameters) = &lambda.parameters {
                     param_vars.reserve(parameters.len());
-                    for x in parameters.iter() {
+                    for x in parameters {
                         param_vars.push((&x.name().id, self.bindings().get_lambda_param(x.name())));
                     }
                 }
@@ -714,8 +714,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 } else {
                     let elem_tys = x.elts.map(|x| match x {
                         Expr::Starred(ExprStarred { box value, .. }) => {
+                            let hint = elt_hint
+                                .as_ref()
+                                .map(|ty| self.stdlib.iterable(ty.clone()).to_type());
                             let unpacked_ty =
-                                self.expr_infer_with_hint_promote(value, hint, errors);
+                                self.expr_infer_with_hint_promote(value, hint.as_ref(), errors);
                             if let Some(iterable_ty) = self.unwrap_iterable(&unpacked_ty) {
                                 iterable_ty
                             } else {
@@ -1102,7 +1105,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             self.distribute_over_union(&key_ty, |ty| match ty {
                                 Type::Literal(Lit::String(field_name)) => {
                                     if let Some(field) =
-                                        typed_dict.fields().get(&Name::new(field_name.clone()))
+                                        self.typed_dict_field(&typed_dict, &Name::new(field_name))
                                     {
                                         field.ty.clone()
                                     } else {
@@ -1151,8 +1154,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Expr::Name(x) => match x.id.as_str() {
                 "" => Type::any_error(), // Must already have a parse error
-                // TODO(stroxler): The handling of `typing.Any` should use proper name resolution.
-                "Any" => Type::type_form(Type::any_explicit()),
                 _ => self
                     .get(&Key::Usage(ShortIdentifier::expr_name(x)))
                     .arc_clone(),

@@ -79,18 +79,39 @@ class CustomMeta(type):
     def __call__(cls) -> NoReturn:
         raise NotImplementedError("Class not constructable")
 class C7(metaclass=CustomMeta):
-    def __new__(cls, *args, **kwargs) -> Self:
+    def __new__(cls, x: int) -> Self:
         return super(C7, cls).__new__(cls)
 
 x1: Callable[[], int] = int
-x2: Callable[[str], C1] = C1  # E: `type[C1]` is not assignable to `(str) -> C1`
+x2: Callable[[str], C1] = C1
 x3: Callable[[str], C2] = C2
 x4: Callable[[str], C3] = C3
-x5: Callable[[], C4] = C4  # E: `type[C4]` is not assignable to `() -> C4`
+x5: Callable[[], C4] = C4
 x6: Callable[[int], int] = C5
 x7: Callable[[int], C6] = C6
 x8: Callable[[], NoReturn] = C7
+
+x9: Callable[[], str] = int  # E:
+x10: Callable[[], C2] = C2  # E:
+x11: Callable[[int], C3] = C3  # E:
+x12: Callable[[int], C5] = C5  # E:
 "#,
+);
+
+testcase!(
+    test_callable_constructor_unannotated_metaclass_call,
+    r#"
+from typing import Self, Callable
+class Meta(type):
+    # This is unannotated, so we should treat it as compatible and use the signature of __new__
+    def __call__(cls, x: str):
+        raise TypeError("Cannot instantiate class")
+class MyClass(metaclass=Meta):
+    def __new__(cls, x: int) -> Self:
+        return super().__new__(cls)
+x1: Callable[[int], MyClass] = MyClass  # OK
+x2: Callable[[str], MyClass] = MyClass  # E: `type[MyClass]` is not assignable to `(str) -> MyClass`
+    "#,
 );
 
 testcase!(
@@ -612,4 +633,14 @@ class B(A):
     pass
 B().f("")  # E: in function `A.f`
     "#,
+);
+
+testcase!(
+    test_never_callable,
+    r#"
+from typing import Never
+
+def f(x: Never) -> Never:
+    return x()
+"#,
 );

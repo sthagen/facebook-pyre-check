@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::iter;
 use std::sync::Arc;
 
 use dupe::Dupe;
@@ -45,6 +46,7 @@ use crate::binding::binding::BindingYield;
 use crate::binding::binding::BindingYieldFrom;
 use crate::binding::binding::EmptyAnswer;
 use crate::binding::binding::FunctionSource;
+use crate::binding::binding::Initialized;
 use crate::binding::binding::IsAsync;
 use crate::binding::binding::Key;
 use crate::binding::binding::KeyExport;
@@ -62,6 +64,7 @@ use crate::error::context::TypeCheckContext;
 use crate::error::context::TypeCheckKind;
 use crate::error::kind::ErrorKind;
 use crate::error::style::ErrorStyle;
+use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::ruff::ast::Ast;
 use crate::types::annotation::Annotation;
@@ -94,7 +97,6 @@ use crate::util::prelude::SliceExt;
 use crate::util::visit::VisitMut;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[allow(dead_code)]
 pub enum TypeFormContext {
     /// Expression in a base class list
     BaseClassList,
@@ -118,7 +120,8 @@ pub enum TypeFormContext {
     /// Scoped type params for functions and classes
     TypeVarConstraint,
     /// Variable annotation outside of a class definition
-    VarAnnotation,
+    /// Is the variable assigned a value here?
+    VarAnnotation(Initialized),
 }
 
 pub enum Iterable {
@@ -256,7 +259,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Some(Qualifier::Final)
                     if !matches!(
                         type_form_context,
-                        TypeFormContext::ClassVarAnnotation | TypeFormContext::VarAnnotation,
+                        TypeFormContext::ClassVarAnnotation | TypeFormContext::VarAnnotation(_),
                     ) =>
                 {
                     self.error(
@@ -290,7 +293,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     qualifier
                 }
                 Some(Qualifier::TypeAlias)
-                    if type_form_context != TypeFormContext::VarAnnotation =>
+                    if !matches!(type_form_context, TypeFormContext::VarAnnotation(_)) =>
                 {
                     self.error(
                         errors,
@@ -364,7 +367,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         match x {
             _ if let Some(qualifier) = self.expr_qualifier(x, type_form_context, errors) => {
                 match qualifier {
-                    Qualifier::Final | Qualifier::TypeAlias | Qualifier::ClassVar => {}
+                    Qualifier::TypeAlias | Qualifier::ClassVar => {}
+                    // A local variable annotated assignment is only allowed to have an un-parameterized
+                    // Final annotation if it's initialized with a value
+                    Qualifier::Final
+                        if !matches!(
+                            type_form_context,
+                            TypeFormContext::VarAnnotation(Initialized::No)
+                        ) => {}
                     _ => {
                         self.error(
                             errors,
@@ -424,7 +434,21 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 ann.qualifiers.insert(0, qualifier);
                 ann
             }
-            _ => Annotation::new_type(self.expr_untype(x, type_form_context, errors)),
+            _ => {
+                let ann_ty = self.expr_untype(x, type_form_context, errors);
+                if let Type::SpecialForm(special_form) = ann_ty
+                    && !special_form.is_valid_unparameterized_annotation()
+                {
+                    self.error(
+                        errors,
+                        x.range(),
+                        ErrorKind::InvalidAnnotation,
+                        None,
+                        format!("Expected a type argument for `{}`", special_form),
+                    );
+                }
+                Annotation::new_type(ann_ty)
+            }
         }
     }
 
@@ -984,7 +1008,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     match (&base, &slice_ty) {
                         (Type::TypedDict(typed_dict), Type::Literal(Lit::String(field_name))) => {
                             if let Some(field) =
-                                typed_dict.fields().get(&Name::new(field_name.clone()))
+                                self.typed_dict_field(typed_dict, &Name::new(field_name))
                             {
                                 if field.read_only || field.required {
                                     self.error(
@@ -1180,6 +1204,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     annotation.as_deref().map(|annot| &annot.annotation),
                     &field.initial_value,
                     class,
+                    field.is_function_without_return_annotation,
                     field.range,
                     errors,
                 )
@@ -1210,7 +1235,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let mut lookup_cls = None;
         let metadata = self.get_metadata_for_class(obj.class_object());
         let mut found = false;
-        for ancestor in [obj].into_iter().chain(metadata.ancestors(self.stdlib)) {
+        for ancestor in iter::once(obj).chain(metadata.ancestors(self.stdlib)) {
             if ancestor.class_object() == cls {
                 found = true;
                 // Handle the corner case of `ancestor` being `object` (and
@@ -1467,7 +1492,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     } else {
                         self.unions(
                             returns
-                                .chain(std::iter::once(implicit_return.arc_clone()))
+                                .chain(iter::once(implicit_return.arc_clone()))
                                 .collect(),
                         )
                     };
@@ -1656,7 +1681,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             None => (None, None),
                             Some(t) => (
                                 match &t.target {
-                                    AnnotationTarget::Assign(name)
+                                    AnnotationTarget::Assign(name, _)
                                     | AnnotationTarget::ClassMember(name) => Some(name.clone()),
                                     _ => None,
                                 },
@@ -1717,7 +1742,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let value_ty = self.solve_binding_inner(b, errors);
                 match (&base, &slice_ty) {
                     (Type::TypedDict(typed_dict), Type::Literal(Lit::String(field_name))) => {
-                        if let Some(field) = typed_dict.fields().get(&Name::new(field_name.clone()))
+                        if let Some(field) =
+                            self.typed_dict_field(typed_dict, &Name::new(field_name))
                         {
                             if field.read_only {
                                 self.error(
@@ -1838,14 +1864,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             },
             Binding::Forward(k) => self.get_idx(*k).arc_clone(),
-            Binding::Phi(ks) => {
+            Binding::Phi(ks, default) => {
+                // We force the default first so that if we hit a recursive case it is already available
+                let default_val = default.map(|x| self.get_idx(x));
+
+                let get_idx = |k: Idx<Key>| {
+                    if Some(k) == *default {
+                        // Just optimise looking up Idx twice
+                        default_val.dupe().unwrap()
+                    } else {
+                        self.get_idx(k)
+                    }
+                };
+
                 if ks.len() == 1 {
-                    self.get_idx(*ks.first().unwrap()).arc_clone()
+                    get_idx(*ks.first().unwrap()).arc_clone()
                 } else {
                     let ts = ks
                         .iter()
                         .filter_map(|k| {
-                            let t = self.get_idx(*k);
+                            let t: Arc<Type> = get_idx(*k);
                             // Filter out all `@overload`-decorated types except the one that
                             // accumulates all signatures into a Type::Overload.
                             if matches!(*t, Type::Overload(_)) || !t.is_overload() {
@@ -1863,7 +1901,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 Some(ty) => (*ty).clone(),
                 None => self.solve_binding_inner(val, errors),
             },
-            Binding::AnyType(x) => Type::Any(*x),
+            Binding::Type(x) => x.clone(),
             Binding::StrType => self.stdlib.str().to_type(),
             Binding::TypeParameter(q) => Type::type_form(q.to_type()),
             Binding::Module(m, path, prev) => {
@@ -2269,7 +2307,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         match self.canonicalize_all_class_types(ty, range) {
             Type::Union(xs) if !xs.is_empty() => {
                 let mut ts = Vec::new();
-                for x in xs.into_iter() {
+                for x in xs {
                     let t = self.untype_opt(x, range)?;
                     ts.push(t);
                 }
@@ -2378,6 +2416,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 ErrorKind::InvalidAnnotation,
                 None,
                 format!("{} is not allowed in this context.", result),
+            );
+        }
+        if let Type::SpecialForm(special_form) = result
+            && !special_form.is_valid_unparameterized_annotation()
+        {
+            self.error(
+                errors,
+                x.range(),
+                ErrorKind::InvalidAnnotation,
+                None,
+                format!("Expected a type argument for `{}`", special_form),
             );
         }
         if let Type::Quantified(quantified) = result {

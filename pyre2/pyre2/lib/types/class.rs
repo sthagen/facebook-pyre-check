@@ -96,7 +96,11 @@ impl Class {
     }
 
     pub fn self_param(&self) -> Param {
-        Param::Pos(Name::new("self"), self.instance_type(), Required::Required)
+        Param::Pos(
+            Name::new_static("self"),
+            self.instance_type(),
+            Required::Required,
+        )
     }
 
     pub fn index(&self) -> ClassIndex {
@@ -111,7 +115,7 @@ impl Class {
         self.0.qname.module_info()
     }
 
-    pub fn fields(&self) -> impl Iterator<Item = &Name> {
+    pub fn fields(&self) -> impl ExactSizeIterator<Item = &Name> {
         self.0.fields.keys()
     }
 

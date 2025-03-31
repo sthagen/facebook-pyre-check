@@ -80,7 +80,7 @@ use crate::table;
 use crate::table_for_each;
 use crate::table_try_for_each;
 use crate::types::quantified::Quantified;
-use crate::types::types::AnyStyle;
+use crate::types::types::Type;
 use crate::types::types::Var;
 use crate::util::display::DisplayWithCtx;
 use crate::util::uniques::UniqueFactory;
@@ -194,13 +194,25 @@ impl Bindings {
     where
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
     {
-        self.0.table.get::<K>().0.key_to_idx(k).unwrap_or_else(|| {
-            panic!(
-                "key_to_idx - key not found, module `{}`, path `{}`, key {k:?}",
-                self.0.module_info.name(),
-                self.0.module_info.path(),
-            )
-        })
+        self.key_to_idx_hashed(Hashed::new(k))
+    }
+
+    pub fn key_to_idx_hashed<K: Keyed>(&self, k: Hashed<&K>) -> Idx<K>
+    where
+        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+    {
+        self.0
+            .table
+            .get::<K>()
+            .0
+            .key_to_idx_hashed(k)
+            .unwrap_or_else(|| {
+                panic!(
+                    "key_to_idx - key not found, module `{}`, path `{}`, key {k:?}",
+                    self.0.module_info.name(),
+                    self.0.module_info.path(),
+                )
+            })
     }
 
     pub fn get<K: Keyed>(&self, idx: Idx<K>) -> &K::Value
@@ -351,7 +363,7 @@ impl Bindings {
                         ErrorKind::InternalError,
                         None,
                     );
-                    Binding::AnyType(AnyStyle::Error)
+                    Binding::Type(Type::any_error())
                 }
             };
             if exported.contains_key_hashed(k) {
@@ -406,9 +418,9 @@ impl BindingTable {
         match self
             .types
             .1
-            .insert_if_missing(idx, || Binding::Phi(SmallSet::new()))
+            .insert_if_missing(idx, || Binding::Phi(SmallSet::new(), None))
         {
-            Binding::Phi(phi) => (idx, phi),
+            Binding::Phi(phi, _) => (idx, phi),
             _ => unreachable!(),
         }
     }
@@ -453,7 +465,6 @@ impl LookupError {
     }
 }
 
-#[allow(dead_code)]
 #[derive(PartialEq, Eq)]
 pub enum LookupKind {
     Regular,
@@ -951,7 +962,16 @@ impl<'a> BindingsBuilder<'a> {
         merged
     }
 
-    pub fn merge_flow(&mut self, mut xs: Vec<Flow>, range: TextRange) -> Flow {
+    pub fn merge_flow(&mut self, xs: Vec<Flow>, range: TextRange) -> Flow {
+        self.merge_flow_is_loop(xs, range, false)
+    }
+
+    pub fn merge_flow_is_loop(
+        &mut self,
+        mut xs: Vec<Flow>,
+        range: TextRange,
+        is_loop: bool,
+    ) -> Flow {
         if xs.len() == 1 && xs[0].no_next {
             return xs.pop().unwrap();
         }
@@ -996,7 +1016,14 @@ impl<'a> BindingsBuilder<'a> {
         let mut res = SmallMap::with_capacity(names.len());
         for (name, (key, values, styles)) in names.into_iter_hashed() {
             let style = self.merge_flow_style(styles);
-            self.table.insert_idx(key, Binding::phi(values));
+            self.table.insert_idx(
+                key,
+                if is_loop {
+                    Binding::phi_first_default(values)
+                } else {
+                    Binding::phi(values)
+                },
+            );
             res.insert_hashed(name, FlowInfo { key, style });
         }
         Flow {
@@ -1007,7 +1034,7 @@ impl<'a> BindingsBuilder<'a> {
 
     fn merge_loop_into_current(&mut self, mut branches: Vec<Flow>, range: TextRange) {
         branches.push(mem::take(&mut self.scopes.current_mut().flow));
-        self.scopes.current_mut().flow = self.merge_flow(branches, range);
+        self.scopes.current_mut().flow = self.merge_flow_is_loop(branches, range, true);
     }
 }
 

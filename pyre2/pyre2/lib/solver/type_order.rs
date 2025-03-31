@@ -9,14 +9,18 @@ use dupe::Clone_;
 use dupe::Copy_;
 use dupe::Dupe_;
 use ruff_python_ast::name::Name;
+use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
 use crate::alt::answers::AnswersSolver;
 use crate::alt::answers::LookupAnswer;
 use crate::alt::attr::Attribute;
+use crate::types::callable::Required;
 use crate::types::class::Class;
 use crate::types::class::ClassType;
 use crate::types::stdlib::Stdlib;
+use crate::types::typed_dict::TypedDict;
+use crate::types::typed_dict::TypedDictField;
 use crate::types::types::Type;
 
 /// `TypeOrder` provides a minimal API allowing `Subset` to request additional
@@ -43,6 +47,10 @@ impl<'a, Ans: LookupAnswer> TypeOrder<'a, Ans> {
 
     pub fn as_superclass(self, class: &ClassType, want: &Class) -> Option<ClassType> {
         self.0.as_superclass(class, want)
+    }
+
+    pub fn is_compatible_constructor_return(self, ty: &Type, class: &Class) -> bool {
+        self.0.is_compatible_constructor_return(ty, class)
     }
 
     pub fn has_metaclass(self, cls: &Class, metaclass: &ClassType) -> bool {
@@ -85,10 +93,6 @@ impl<'a, Ans: LookupAnswer> TypeOrder<'a, Ans> {
         self.0.resolve_as_instance_method(attr)
     }
 
-    pub fn get_class_defining_method(self, cls: &Class, name: &Name) -> Option<Class> {
-        self.0.get_class_defining_method(cls, name)
-    }
-
     pub fn is_attr_subset(
         self,
         got: &Attribute,
@@ -108,5 +112,21 @@ impl<'a, Ans: LookupAnswer> TypeOrder<'a, Ans> {
 
     pub fn promote_silently(self, cls: &Class) -> Type {
         self.0.promote_silently(cls)
+    }
+
+    pub fn get_dunder_new(self, cls: &ClassType) -> Option<Type> {
+        self.0.get_dunder_new(cls)
+    }
+
+    pub fn get_dunder_init(self, cls: &ClassType, get_object_init: bool) -> Option<Type> {
+        self.0.get_dunder_init(cls, get_object_init)
+    }
+
+    pub fn typed_dict_fields(self, typed_dict: &TypedDict) -> SmallMap<Name, TypedDictField> {
+        self.0.typed_dict_fields(typed_dict)
+    }
+
+    pub fn typed_dict_kw_param_info(self, typed_dict: &TypedDict) -> Vec<(Name, Type, Required)> {
+        self.0.typed_dict_kw_param_info(typed_dict)
     }
 }

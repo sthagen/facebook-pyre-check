@@ -6,7 +6,6 @@
  */
 
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_fstring_literal,
@@ -150,13 +149,13 @@ def f(x: Z) -> None:
 "#,
 );
 
-testcase_with_bug!(
-    "Should support nested literal",
+testcase!(
     test_literal_direct_nesting,
     r#"
 from typing import Literal
 
-good: Literal[Literal[Literal[1, 2, 3], "foo"], 5, None] = "foo"  # E: Invalid literal expression
+good: Literal[Literal[Literal[1, 2, 3], "foo"], 5, None] = "foo"
+bad: Literal[Literal, 3]  # E: Expected a type argument for `Literal`  # E: Invalid type inside literal, `Literal`
 "#,
 );
 
@@ -168,11 +167,11 @@ bad6: Literal[(1, "foo", "bar")]  # E: Literal arguments cannot be parenthesized
 "#,
 );
 
-testcase_with_bug!(
-    "Should ban empty literals",
+testcase!(
     test_literal_with_nothing,
     r#"
 from typing import Literal
-bad6: Literal # Should be an error
+bad1: Literal # E: Expected a type argument for `Literal`
+bad2: list[Literal]  # E: Expected a type argument for `Literal`
 "#,
 );

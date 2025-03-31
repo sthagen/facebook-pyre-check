@@ -40,7 +40,7 @@ use crate::graph::index::Idx;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::ruff::ast::Ast;
 use crate::types::callable::unexpected_keyword;
-use crate::types::types::AnyStyle;
+use crate::types::types::Type;
 use crate::util::visit::VisitMut;
 
 impl<'a> BindingsBuilder<'a> {
@@ -86,14 +86,14 @@ impl<'a> BindingsBuilder<'a> {
             Err(error) => {
                 // Record a type error and fall back to `Any`.
                 self.error(name.range, error.message(name), ErrorKind::UnknownName);
-                self.table.insert(key, Binding::AnyType(AnyStyle::Error));
+                self.table.insert(key, Binding::Type(Type::any_error()));
             }
         }
     }
 
     fn bind_comprehensions(&mut self, range: TextRange, comprehensions: &mut [Comprehension]) {
         self.scopes.push(Scope::comprehension(range));
-        for comp in comprehensions.iter_mut() {
+        for comp in comprehensions {
             self.scopes.current_mut().stat.expr_lvalue(&comp.target);
             let make_binding =
                 |k| Binding::IterableValue(k, comp.iter.clone(), IsAsync::new(comp.is_async));
@@ -109,7 +109,7 @@ impl<'a> BindingsBuilder<'a> {
     pub fn bind_lambda(&mut self, lambda: &ExprLambda) {
         self.scopes.push(Scope::function(lambda.range));
         if let Some(parameters) = &lambda.parameters {
-            for x in parameters.iter() {
+            for x in parameters {
                 self.bind_lambda_param(x.name());
             }
         }

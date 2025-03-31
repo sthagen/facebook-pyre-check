@@ -6,7 +6,6 @@
  */
 
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_def,
@@ -202,8 +201,8 @@ assert_type(c.__match_args__, tuple[Literal['x']])  # Ok
     "#,
 );
 
-testcase_with_bug!(
-    "TODO: consider erroring on unannotated attributes",
+testcase!(
+    bug = "TODO: consider erroring on unannotated attributes",
     test_unannotated_attribute,
     r#"
 import dataclasses
@@ -334,7 +333,7 @@ class C:
 );
 
 testcase!(
-    test_dataclasses_field,
+    test_dataclasses_field_with_init_flag,
     r#"
 from dataclasses import dataclass, field
 @dataclass
@@ -343,6 +342,16 @@ class C:
     y: str
 C(y="")  # OK
 C(x=0, y="")  # E: Unexpected keyword argument `x`
+    "#,
+);
+
+testcase!(
+    test_dataclass_field_with_default_factory,
+    r#"
+from dataclasses import dataclass, field
+@dataclass(frozen=True)
+class C:
+    x: list[str] = field(default_factory=list)
     "#,
 );
 
@@ -493,5 +502,21 @@ from dataclasses import dataclass
 class A:
     x: int = int()
 A()  # OK
+    "#,
+);
+
+testcase!(
+    test_override,
+    r#"
+import dataclasses
+class A:
+    pass
+class B:
+    def f(self, x: A) -> None:
+        raise NotImplementedError()
+@dataclasses.dataclass(frozen=True)
+class C(B):
+    def f(self, x: A) -> None:
+        pass
     "#,
 );

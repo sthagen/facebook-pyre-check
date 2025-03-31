@@ -55,7 +55,8 @@ impl<T, R> Calculation<T, R> {
 }
 
 impl<T: Dupe, R: Dupe> Calculation<T, R> {
-    /// Get the value if it has been calculated.
+    /// Get the value if it has been calculated, otherwise `None`.
+    /// Does not block.
     pub fn get(&self) -> Option<T> {
         let lock = self.0.lock();
         match &*lock {
@@ -70,7 +71,7 @@ impl<T: Dupe, R: Dupe> Calculation<T, R> {
     where
         R: Default,
     {
-        self.calculate_with_recursive(calculate, || R::default())
+        self.calculate_with_recursive(calculate, R::default)
             .ok()
             .map(|(r, _)| r)
     }

@@ -7,7 +7,6 @@
 
 use crate::test::util::TestEnv;
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_subscript_unpack_assign,
@@ -351,6 +350,16 @@ def f(x: X[int]):
 );
 
 testcase!(
+    test_assign_final,
+    r#"
+from typing import Final
+x: Final   # E: Expected a type argument for `Final`
+y: Final[int]  # OK
+z: Final = 1  # OK
+    "#,
+);
+
+testcase!(
     test_aug_assign_integer,
     r#"
 def f(x: int):
@@ -505,7 +514,7 @@ testcase!(
     r#"
 def expect_str(x: str): ...
 def test(x: None):
-    x += expect_str(0) # E: `+=` is not supported between `None` and `Never` # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
+    x += expect_str(0) # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
 "#,
 );
 
@@ -516,7 +525,7 @@ def expect_str(x: str): ...
 class C:
     __iadd__: None = None
 def test(x: C):
-    x += expect_str(0) # E: `+=` is not supported between `C` and `Never` # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
+    x += expect_str(0) # E: Argument `Literal[0]` is not assignable to parameter `x` with type `str`
 "#,
 );
 
@@ -565,8 +574,8 @@ x3: B
     "#,
 );
 
-testcase_with_bug!(
-    "False negative",
+testcase!(
+    bug = "False negative",
     test_read_before_write,
     r#"
 x = y  # this should be an error
@@ -574,8 +583,8 @@ y = 42
     "#,
 );
 
-testcase_with_bug!(
-    "We never validate that assignments to unpacked targets are valid",
+testcase!(
+    bug = "We never validate that assignments to unpacked targets are valid",
     test_assign_unpacked_with_existing_annotations,
     r#"
 x: int

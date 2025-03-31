@@ -17,7 +17,11 @@ use crate::test::util::mk_state;
 use crate::testcase;
 
 pub fn get_class_metadata(name: &str, handle: &Handle, state: &State) -> Arc<ClassMetadata> {
-    let solutions = state.get_solutions(handle).unwrap();
+    let solutions = state
+        .transaction()
+        .readable()
+        .get_solutions(handle)
+        .unwrap();
 
     let res = get_class(name, handle, state).and_then(|cls| {
         let x = solutions.get(&KeyClassMetadata(cls.index()));
@@ -34,16 +38,25 @@ fn get_mro_names(name: &str, handle: &Handle, state: &State) -> Vec<String> {
         .collect()
 }
 
-fn assert_no_errors(state: &State) {
+fn assert_no_errors(handle: &Handle, state: &State) {
     assert_eq!(
-        state.collect_errors(&ErrorConfigs::default()).shown.len(),
+        state
+            .transaction()
+            .readable()
+            .get_loads([handle])
+            .collect_errors(&ErrorConfigs::default())
+            .shown
+            .len(),
         0,
         "Expected no errors"
     );
 }
 
-fn assert_has_error(state: &State, error_msg: &str, assertion_msg: &str) {
+fn assert_has_error(handle: &Handle, state: &State, error_msg: &str, assertion_msg: &str) {
     state
+        .transaction()
+        .readable()
+        .get_loads([handle])
         .collect_errors(&ErrorConfigs::default())
         .shown
         .iter()
@@ -77,7 +90,7 @@ class B(A): pass
 class C(B, A): pass
 "#,
     );
-    assert_no_errors(&driver);
+    assert_no_errors(&handle, &driver);
     let mro_a = get_mro_names("A", &handle, &driver);
     assert_eq!(mro_a.len(), 0);
     let mro_b = get_mro_names("B", &handle, &driver);
@@ -96,7 +109,7 @@ class C(A, B): pass
 class D(B, A): pass
 "#,
     );
-    assert_no_errors(&driver);
+    assert_no_errors(&handle, &driver);
     let mro_a = get_mro_names("A", &handle, &driver);
     assert_eq!(mro_a.len(), 0);
     let mro_b = get_mro_names("B", &handle, &driver);
@@ -126,7 +139,7 @@ class K2(B, D, E): pass
 class Z(K1, K3, K2): pass
 "#,
     );
-    assert_no_errors(&driver);
+    assert_no_errors(&handle, &driver);
     // O has no ancestors
     let mro_o = get_mro_names("O", &handle, &driver);
     assert_eq!(mro_o.len(), 0);
@@ -159,6 +172,7 @@ class D(C): pass  # we will still record the MRO up until a linearization failur
     );
     // We give up on computing the ancestors of C and record an error.
     assert_has_error(
+        &handle,
         &driver,
         "Class `main.C` has a nonlinearizable inheritance chain detected at `main.A`",
         "No error for nonlinearizable inheritance chain",
@@ -179,16 +193,19 @@ class C(B): pass
 "#,
     );
     assert_has_error(
+        &handle,
         &state,
         "Class `main.A` inheriting from `main.C` creates a cycle",
         "No error for cyclical inheritance chain at `main.A`",
     );
     assert_has_error(
+        &handle,
         &state,
         "Class `main.B` inheriting from `main.A` creates a cycle",
         "No error for cyclical inheritance chain at `main.B`",
     );
     assert_has_error(
+        &handle,
         &state,
         "Class `main.C` inheriting from `main.B` creates a cycle",
         "No error for cyclical inheritance chain at `main.C`",

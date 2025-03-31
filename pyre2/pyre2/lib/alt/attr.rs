@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::iter;
+
 use dupe::Dupe;
 use itertools::Either;
 use ruff_python_ast::name::Name;
@@ -60,6 +62,12 @@ pub struct Attribute {
     inner: AttributeInner,
 }
 
+#[derive(Debug)]
+enum Visibility {
+    ReadOnly,
+    ReadWrite,
+}
+
 /// The result of an attempt to access an attribute (with a get or set operation).
 ///
 /// The operation is either permitted with an attribute `Type`, or is not allowed
@@ -70,9 +78,7 @@ enum AttributeInner {
     /// not allow the access pattern (for example class access on an instance-only attribute)
     NoAccess(NoAccessReason),
     /// A read-write attribute with a closed form type for both get and set actions.
-    ReadWrite(Type),
-    /// A read-only attribute.
-    ReadOnly(Type),
+    Simple(Type, Visibility),
     /// A property is a special attribute were regular access invokes a getter.
     /// It optionally might have a setter method; if not, trying to set it is an access error
     Property(Type, Option<Type>, Class),
@@ -156,13 +162,13 @@ impl Attribute {
 
     pub fn read_write(ty: Type) -> Self {
         Attribute {
-            inner: AttributeInner::ReadWrite(ty),
+            inner: AttributeInner::Simple(ty, Visibility::ReadWrite),
         }
     }
 
     pub fn read_only(ty: Type) -> Self {
         Attribute {
-            inner: AttributeInner::ReadOnly(ty),
+            inner: AttributeInner::Simple(ty, Visibility::ReadOnly),
         }
     }
 
@@ -376,10 +382,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let base = Type::ClassType(enum_.cls.clone());
         match self.lookup_attr_no_union(&base, &Name::new_static("_value_")) {
             LookupResult::Found(attr) => match attr.inner {
-                AttributeInner::ReadWrite(ty) => Some(ty),
+                AttributeInner::Simple(ty, ..) => Some(ty),
                 // NOTE: We currently do not expect to use `__getattr__` for `_value_` annotation lookup.
-                AttributeInner::ReadOnly(_)
-                | AttributeInner::NoAccess(_)
+                AttributeInner::NoAccess(_)
                 | AttributeInner::Property(..)
                 | AttributeInner::Descriptor(..)
                 | AttributeInner::GetAttr(..) => None,
@@ -412,7 +417,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             e.to_error_msg(attr_name),
                         );
                     }
-                    AttributeInner::ReadWrite(want) => match got {
+                    AttributeInner::Simple(want, Visibility::ReadWrite) => match got {
                         Either::Left(got) => {
                             self.expr(
                                 got,
@@ -430,7 +435,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             });
                         }
                     },
-                    AttributeInner::ReadOnly(_) => {
+                    AttributeInner::Simple(_, Visibility::ReadOnly) => {
                         self.error(
                             errors,
                             range,
@@ -581,7 +586,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 LookupResult::Found(attr) => match attr.inner {
                     // TODO: deleting attributes is allowed at runtime, but is not type-safe
                     // except for descriptors that implement `__delete__`
-                    AttributeInner::ReadWrite(_)
+                    AttributeInner::Simple(_, Visibility::ReadWrite)
                     | AttributeInner::Property(_, _, _)
                     | AttributeInner::Descriptor(_) => {}
                     AttributeInner::NoAccess(e) => {
@@ -593,7 +598,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             e.to_error_msg(attr_name),
                         );
                     }
-                    AttributeInner::ReadOnly(_) => {
+                    AttributeInner::Simple(_, Visibility::ReadOnly) => {
                         self.error(
                             errors,
                             range,
@@ -645,33 +650,40 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         match (&got.inner, &want.inner) {
             (_, AttributeInner::NoAccess(_)) => true,
             (AttributeInner::NoAccess(_), _) => false,
+            (AttributeInner::Property(_, _, _), AttributeInner::Simple(..)) => false,
             (
-                AttributeInner::Property(_, _, _),
-                AttributeInner::ReadOnly(_) | AttributeInner::ReadWrite(_),
+                AttributeInner::Simple(_, Visibility::ReadOnly),
+                AttributeInner::Property(_, Some(_), _)
+                | AttributeInner::Simple(_, Visibility::ReadWrite),
             ) => false,
             (
-                AttributeInner::ReadOnly(_),
-                AttributeInner::Property(_, Some(_), _) | AttributeInner::ReadWrite(_),
-            ) => false,
-            (
-                AttributeInner::ReadWrite(got @ Type::BoundMethod(_)),
-                AttributeInner::ReadWrite(want @ Type::BoundMethod(_)),
+                // TODO(stroxler): Investigate this case more: methods should be ReadOnly, but
+                // in some cases for unknown reasons they wind up being ReadWrite.
+                AttributeInner::Simple(got @ Type::BoundMethod(_), Visibility::ReadWrite),
+                AttributeInner::Simple(want @ Type::BoundMethod(_), Visibility::ReadWrite),
             ) => is_subset(got, want),
-            (AttributeInner::ReadWrite(got), AttributeInner::ReadWrite(want)) => {
-                is_subset(got, want) && is_subset(want, got)
-            }
             (
-                AttributeInner::ReadOnly(got) | AttributeInner::ReadWrite(got),
-                AttributeInner::ReadOnly(want),
+                AttributeInner::Simple(got, Visibility::ReadWrite),
+                AttributeInner::Simple(want, Visibility::ReadWrite),
+            ) => is_subset(got, want) && is_subset(want, got),
+            (
+                AttributeInner::Simple(got, ..),
+                AttributeInner::Simple(want, Visibility::ReadOnly),
             ) => is_subset(got, want),
-            (AttributeInner::ReadOnly(got), AttributeInner::Property(want, _, _)) => {
+            (
+                AttributeInner::Simple(got, Visibility::ReadOnly),
+                AttributeInner::Property(want, _, _),
+            ) => {
                 is_subset(
                     // Synthesize a getter method
                     &Type::callable_ellipsis(got.clone()),
                     want,
                 )
             }
-            (AttributeInner::ReadWrite(got), AttributeInner::Property(want, want_setter, _)) => {
+            (
+                AttributeInner::Simple(got, Visibility::ReadWrite),
+                AttributeInner::Property(want, want_setter, _),
+            ) => {
                 if !is_subset(
                     // Synthesize a getter method
                     &Type::callable_ellipsis(got.clone()),
@@ -740,7 +752,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Result<Type, NoAccessReason> {
         match attr.inner {
             AttributeInner::NoAccess(reason) => Err(reason),
-            AttributeInner::ReadWrite(ty) | AttributeInner::ReadOnly(ty) => Ok(ty),
+            AttributeInner::Simple(ty, Visibility::ReadWrite)
+            | AttributeInner::Simple(ty, Visibility::ReadOnly) => Ok(ty),
             AttributeInner::Property(getter, ..) => {
                 Ok(self.call_property_getter(getter, range, errors, context))
             }
@@ -784,7 +797,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             // TODO(stroxler): ReadWrite attributes are not actually methods but limiting access to
             // ReadOnly breaks unit tests; we should investigate callsites to understand this better.
             // NOTE(grievejia): We currently do not expect to use `__getattr__` for this lookup.
-            AttributeInner::ReadOnly(ty) | AttributeInner::ReadWrite(ty) => Some(ty),
+            AttributeInner::Simple(ty, Visibility::ReadOnly)
+            | AttributeInner::Simple(ty, Visibility::ReadWrite) => Some(ty),
             AttributeInner::NoAccess(_)
             | AttributeInner::Property(..)
             | AttributeInner::Descriptor(..)
@@ -797,8 +811,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         // NOTE(grievejia): We do not use `__getattr__` here because this lookup is expected to be inovked
         // on NamedTuple attributes with known names.
         match attr.inner {
-            AttributeInner::ReadOnly(ty) => Some(ty),
-            AttributeInner::ReadWrite(_)
+            AttributeInner::Simple(ty, Visibility::ReadOnly) => Some(ty),
+            AttributeInner::Simple(_, Visibility::ReadWrite)
             | AttributeInner::NoAccess(_)
             | AttributeInner::Property(..)
             | AttributeInner::Descriptor(..)
@@ -1140,7 +1154,7 @@ pub struct AttrInfo {
 impl<'a, Ans: LookupAnswer + LookupExport> AnswersSolver<'a, Ans> {
     fn completions_class(&self, cls: &Class, res: &mut Vec<AttrInfo>) {
         let mut seen = SmallSet::new();
-        for c in std::iter::once(cls).chain(
+        for c in iter::once(cls).chain(
             self.get_metadata_for_class(cls)
                 .ancestors(self.stdlib)
                 .map(|x| x.class_object()),

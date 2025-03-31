@@ -11,7 +11,6 @@ use ruff_python_ast::name::Name;
 use ruff_python_ast::DictItem;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
-use starlark_map::ordered_map::OrderedMap;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 use starlark_map::smallmap;
@@ -33,9 +32,7 @@ use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Required;
 use crate::types::class::Class;
-use crate::types::class::ClassType;
 use crate::types::class::Substitution;
-use crate::types::class::TArgs;
 use crate::types::literal::Lit;
 use crate::types::typed_dict::TypedDict;
 use crate::types::typed_dict::TypedDictField;
@@ -49,14 +46,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         range: TextRange,
         errors: &ErrorCollector,
     ) {
-        let fields = typed_dict.fields();
+        let fields = self.typed_dict_fields(typed_dict);
         let mut has_expansion = false;
         let mut keys: SmallSet<Name> = SmallSet::new();
         dict_items.iter().for_each(|x| match &x.key {
             Some(key) => {
                 let key_type = self.expr_infer(key, errors);
                 if let Type::Literal(Lit::String(name)) = key_type {
-                    let key_name = Name::new(name.clone());
+                    let key_name = Name::new(name);
                     if let Some(field) = fields.get(&key_name) {
                         self.expr(
                             &x.value,
@@ -75,7 +72,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             None,
                             format!(
                                 "Key `{}` is not defined in TypedDict `{}`",
-                                name,
+                                key_name,
                                 typed_dict.name()
                             ),
                         );
@@ -121,52 +118,59 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    pub fn get_typed_dict_fields(
-        &self,
-        cls: &Class,
-        bases_with_metadata: &[(ClassType, Arc<ClassMetadata>)],
-        is_total: bool,
-    ) -> SmallMap<Name, bool> {
-        let mut all_fields = SmallMap::new();
-        for (_, metadata) in bases_with_metadata.iter().rev() {
-            if let Some(td) = metadata.typed_dict_metadata() {
-                all_fields.extend(td.fields.clone());
-            }
-        }
-        for name in cls.fields() {
-            if cls.is_field_annotated(name) {
-                all_fields.insert(name.clone(), is_total);
-            }
-        }
-        all_fields
-    }
-
-    pub fn sub_typed_dict_fields(
-        &self,
-        cls: &Class,
-        targs: &TArgs,
-    ) -> OrderedMap<Name, TypedDictField> {
-        let tparams = cls.tparams();
-        let substitution = Substitution::new(
+    fn substitution(&self, typed_dict: &TypedDict, class: &Class) -> Substitution {
+        let targs = typed_dict.targs();
+        let tparams = class.tparams();
+        Substitution::new(
             tparams
                 .quantified()
                 .zip(targs.as_slice().iter().cloned())
                 .collect(),
-        );
-        let metadata = self.get_metadata_for_class(cls);
-        metadata
-            .typed_dict_metadata()
-            .unwrap()
-            .fields
+        )
+    }
+
+    // Get the field names + requiredness, given the ClassMetadata of a typed dict.
+    // Callers must be certain the class is a typed dict, we will panic if it is not.
+    fn fields_from_metadata<'m>(metadata: &'m ClassMetadata) -> &'m SmallMap<Name, bool> {
+        &metadata.typed_dict_metadata().unwrap().fields
+    }
+
+    fn class_field_to_typed_dict_field(
+        &self,
+        class: &Class,
+        substitution: &Substitution,
+        name: &Name,
+        is_total: bool,
+    ) -> Option<TypedDictField> {
+        self.get_class_member(class, name).and_then(|member| {
+            Arc::unwrap_or_clone(member.value)
+                .as_typed_dict_field_info(is_total)
+                .map(|field| field.substitute(substitution))
+        })
+    }
+
+    pub fn typed_dict_fields(&self, typed_dict: &TypedDict) -> SmallMap<Name, TypedDictField> {
+        let class = typed_dict.class_object();
+        let metadata = self.get_metadata_for_class(class);
+        let substitution = self.substitution(typed_dict, class);
+        Self::fields_from_metadata(&metadata)
             .iter()
             .filter_map(|(name, is_total)| {
-                self.get_class_member(cls, name)
-                    .and_then(|member| {
-                        Arc::unwrap_or_clone(member.value).as_typed_dict_field_info(*is_total)
-                    })
-                    .map(|field| (name.clone(), field.substitute(&substitution)))
+                self.class_field_to_typed_dict_field(class, &substitution, name, *is_total)
+                    .map(|field| (name.clone(), field))
             })
             .collect()
+    }
+
+    pub fn typed_dict_field(&self, typed_dict: &TypedDict, name: &Name) -> Option<TypedDictField> {
+        let class = typed_dict.class_object();
+        let metadata = self.get_metadata_for_class(class);
+        let substitution = self.substitution(typed_dict, class);
+        Self::fields_from_metadata(&metadata)
+            .get(name)
+            .and_then(|is_total| {
+                self.class_field_to_typed_dict_field(class, &substitution, name, *is_total)
+            })
     }
 
     fn get_typed_dict_init(
@@ -210,5 +214,22 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         Some(ClassSynthesizedFields::new(
             smallmap! { dunder::INIT => self.get_typed_dict_init(cls, &td.fields) },
         ))
+    }
+
+    pub fn typed_dict_kw_param_info(&self, typed_dict: &TypedDict) -> Vec<(Name, Type, Required)> {
+        self.typed_dict_fields(typed_dict)
+            .iter()
+            .map(|(name, field)| {
+                (
+                    name.clone(),
+                    field.ty.clone(),
+                    if field.required {
+                        Required::Required
+                    } else {
+                        Required::Optional
+                    },
+                )
+            })
+            .collect()
     }
 }

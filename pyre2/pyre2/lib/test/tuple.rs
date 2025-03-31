@@ -256,12 +256,24 @@ def test(x: tuple[int, *tuple[str, ...]]) -> None:
 );
 
 testcase!(
+    bug = "Regressed with an upgrade of typeshed. Should have no bugs.",
     test_tuple_slice_non_literal,
     r#"
 from typing import assert_type
 def test(x: tuple[int, str, bool], y: tuple[int, ...], start: int, stop: int, step: int):
-    assert_type(x[start:stop:step], tuple[int | str | bool, ...])
-    assert_type(y[start:stop:step], tuple[int, ...])
+    assert_type(x[start:stop:step], tuple[int | str | bool, ...]) # E: # E: # E:
+    assert_type(y[start:stop:step], tuple[int, ...]) # E: # E: # E:
+"#,
+);
+
+testcase!(
+    bug = "Slice subset should work",
+    test_slice_subset,
+    r#"
+def f(x: slice) -> None:
+    pass
+def g(x: slice[int, int, int]) -> None:
+    f(x) # E: `slice[int, int, int]` is not assignable to parameter `x` with type `slice[Any, TypeVar[_StartT_co], TypeVar[_StartT_co] | TypeVar[_StopT_co]]`
 "#,
 );
 

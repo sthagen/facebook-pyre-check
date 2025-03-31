@@ -6,7 +6,6 @@
  */
 
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_class_init,
@@ -240,6 +239,50 @@ assert_type(C(), C)
 );
 
 testcase!(
+    test_metaclass_call_noreturn,
+    r#"
+from typing import Self, NoReturn, Never, assert_type
+class Meta(type):
+    def __call__(cls, *args, **kwargs) -> NoReturn:
+        raise TypeError("Cannot instantiate class")
+class MyClass(metaclass=Meta):
+    def __new__(cls, *args, **kwargs) -> Self:
+        return super().__new__(cls, *args, **kwargs)
+assert_type(MyClass(), Never)
+    "#,
+);
+
+testcase!(
+    test_metaclass_call_unannotated,
+    r#"
+from typing import Self
+class Meta(type):
+    # This is unannotated, so we should treat it as compatible and use the signature of __new__
+    def __call__(cls, *args, **kwargs):
+        raise TypeError("Cannot instantiate class")
+class MyClass(metaclass=Meta):
+    def __new__(cls, x: int) -> Self:
+        return super().__new__(cls)
+MyClass()  # E: Missing argument `x` in function `MyClass.__new__`
+    "#,
+);
+
+testcase!(
+    test_new_explicit_any_return,
+    r#"
+from typing import Any, assert_type
+class MyClass:
+    def __new__(cls) -> Any:
+        return 0
+    # The __init__ method will not be called in this case, so
+    # it should not be evaluated.
+    def __init__(self, x: int):
+        pass
+assert_type(MyClass(), Any)
+    "#,
+);
+
+testcase!(
     test_cls_type_in_new_annotated,
     r#"
 from typing import Self
@@ -250,8 +293,8 @@ A.__new__(int)  # E: `type[int]` is not assignable to parameter `cls`
     "#,
 );
 
-testcase_with_bug!(
-    "We should give the first parameter of `__new__` a type of `type[Self]` even when unannotated",
+testcase!(
+    bug = "We should give the first parameter of `__new__` a type of `type[Self]` even when unannotated",
     test_cls_type_in_new_unannotated,
     r#"
 class A:

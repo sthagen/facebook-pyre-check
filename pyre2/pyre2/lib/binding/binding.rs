@@ -55,7 +55,6 @@ use crate::types::class::ClassFieldProperties;
 use crate::types::class::ClassIndex;
 use crate::types::equality::TypeEq;
 use crate::types::quantified::Quantified;
-use crate::types::types::AnyStyle;
 use crate::types::types::Type;
 use crate::types::types::Var;
 use crate::util::display::commas_iter;
@@ -81,7 +80,7 @@ assert_words!(BindingExpect, 8);
 assert_words!(BindingAnnotation, 13);
 assert_words!(BindingClass, 22);
 assert_words!(BindingClassMetadata, 8);
-assert_words!(BindingClassField, 22);
+assert_words!(BindingClassField, 23);
 assert_bytes!(BindingClassSynthesizedFields, 4);
 assert_bytes!(BindingLegacyTypeParam, 4);
 assert_words!(BindingYield, 3);
@@ -705,8 +704,8 @@ pub enum Binding {
     /// A record of an "augmented assignment" statement like `x -= _`
     /// or `a.b *= _`. These desugar to special method calls.
     AugAssign(Option<Idx<KeyAnnotation>>, StmtAugAssign),
-    /// The Any type.
-    AnyType(AnyStyle),
+    /// An explicit type.
+    Type(Type),
     /// The str type.
     StrType,
     /// A type parameter.
@@ -725,7 +724,8 @@ pub enum Binding {
     /// A forward reference to another binding.
     Forward(Idx<Key>),
     /// A phi node, representing the union of several alternative keys.
-    Phi(SmallSet<Idx<Key>>),
+    /// Optionally contain a value to default if you end up being recursive.
+    Phi(SmallSet<Idx<Key>>, Option<Idx<Key>>),
     /// A narrowed type.
     Narrow(Idx<Key>, Box<NarrowOp>, TextRange),
     /// An import of a module.
@@ -774,7 +774,17 @@ impl Binding {
         if xs.len() == 1 {
             Self::Forward(xs.into_iter().next().unwrap())
         } else {
-            Self::Phi(xs)
+            Self::Phi(xs, None)
+        }
+    }
+
+    /// Like `phi`, uses the first element as the default.
+    pub fn phi_first_default(xs: SmallSet<Idx<Key>>) -> Self {
+        if xs.len() == 1 {
+            Self::Forward(xs.into_iter().next().unwrap())
+        } else {
+            let default = xs.iter().next().copied();
+            Self::Phi(xs, default)
         }
     }
 }
@@ -855,7 +865,7 @@ impl DisplayWith<Bindings> for Binding {
             Self::ClassDef(x, _) => write!(f, "{}", ctx.display(*x)),
             Self::Forward(k) => write!(f, "{}", ctx.display(*k)),
             Self::AugAssign(_, s) => write!(f, "augmented_assign {:?}", s),
-            Self::AnyType(s) => write!(f, "anytype {s}"),
+            Self::Type(t) => write!(f, "type {t}"),
             Self::StrType => write!(f, "strtype"),
             Self::TypeParameter(q) => write!(f, "type_parameter {q}"),
             Self::CheckLegacyTypeParam(k, _) => {
@@ -876,7 +886,7 @@ impl DisplayWith<Bindings> for Binding {
                     }
                 )
             }
-            Self::Phi(xs) => {
+            Self::Phi(xs, default) => {
                 write!(f, "phi(")?;
                 for (i, x) in xs.iter().enumerate() {
                     if i != 0 {
@@ -884,7 +894,11 @@ impl DisplayWith<Bindings> for Binding {
                     }
                     write!(f, "{}", ctx.display(*x))?;
                 }
-                write!(f, ")")
+                write!(f, ")")?;
+                if let Some(x) = default {
+                    write!(f, " default {}", ctx.display(*x))?;
+                }
+                Ok(())
             }
             Self::Narrow(k, op, _) => {
                 write!(f, "narrow({}, {op:?})", ctx.display(*k))
@@ -957,6 +971,12 @@ impl DisplayWith<Bindings> for Binding {
     }
 }
 
+#[derive(Debug, Clone, Copy, VisitMut, TypeEq, PartialEq, Eq)]
+pub enum Initialized {
+    Yes,
+    No,
+}
+
 #[derive(Debug, Clone, VisitMut, TypeEq, PartialEq, Eq)]
 pub struct AnnotationWithTarget {
     pub target: AnnotationTarget,
@@ -984,7 +1004,8 @@ pub enum AnnotationTarget {
     /// A return type annotation on a function. The name is that of the function
     Return(Name),
     /// An annotated assignment. For attribute assignments, the name is the attribute name ("attr" in "x.attr")
-    Assign(Name),
+    /// Does the annotated assignment have an initial value?
+    Assign(Name, Initialized),
     /// A member of a class
     ClassMember(Name),
 }
@@ -996,7 +1017,7 @@ impl Display for AnnotationTarget {
             Self::ArgsParam(name) => write!(f, "args {name}"),
             Self::KwargsParam(name) => write!(f, "kwargs {name}"),
             Self::Return(name) => write!(f, "{name} return"),
-            Self::Assign(name) => write!(f, "var {name}"),
+            Self::Assign(name, _initialized) => write!(f, "var {name}"),
             Self::ClassMember(name) => write!(f, "attr {name}"),
         }
     }
@@ -1009,7 +1030,7 @@ impl AnnotationTarget {
             Self::ArgsParam(_) => TypeFormContext::ParameterArgsAnnotation,
             Self::KwargsParam(_) => TypeFormContext::ParameterKwargsAnnotation,
             Self::Return(_) => TypeFormContext::ReturnAnnotation,
-            Self::Assign(_) => TypeFormContext::VarAnnotation,
+            Self::Assign(_, is_initialized) => TypeFormContext::VarAnnotation(*is_initialized),
             Self::ClassMember(_) => TypeFormContext::ClassVarAnnotation,
         }
     }
@@ -1069,6 +1090,7 @@ pub struct BindingClassField {
     pub annotation: Option<Idx<KeyAnnotation>>,
     pub range: TextRange,
     pub initial_value: ClassFieldInitialValue,
+    pub is_function_without_return_annotation: bool,
 }
 
 impl DisplayWith<Bindings> for BindingClassField {
@@ -1083,7 +1105,6 @@ pub enum ClassFieldInitialValue {
     /// The field does not have an initial value. If a name is provided, it is the name of the
     /// method where the field was inferred (which will be None for fields declared but not
     /// initialized in the class body, or for instance-only fields of synthesized classes)
-    #[expect(dead_code)] // TODO(stroxler) Use this in class field solving.
     Instance(Option<Name>),
     /// The field has an initial value.
     ///

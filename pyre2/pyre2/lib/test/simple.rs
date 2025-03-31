@@ -7,7 +7,6 @@
 
 use crate::test::util::TestEnv;
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_canonicalized_call,
@@ -687,8 +686,8 @@ z: int = "3"  # E: `Literal['3']` is not assignable to `int`
 "#,
 );
 
-testcase_with_bug!(
-    "An ignore comment should attach to either the current line or next line, but not both",
+testcase!(
+    bug = "An ignore comment should attach to either the current line or next line, but not both",
     test_ignore_attachment,
     r#"
 # type: ignore
@@ -699,8 +698,8 @@ y: int = "2"  # TODO: this error should not be suppressed
 "#,
 );
 
-testcase_with_bug!(
-    "This test is a placeholder, we've commented out the check for missing type arguments because until we have configurable errors it causes too many problems.",
+testcase!(
+    bug = "This test is a placeholder, we've commented out the check for missing type arguments because until we have configurable errors it causes too many problems.",
     test_untype_with_missing_targs,
     r#"
 class C[T]: pass
@@ -872,8 +871,8 @@ assert_type(x, list[int])
     "#,
 );
 
-testcase_with_bug!(
-    "TODO",
+testcase!(
+    bug = "TODO",
     test_type_of_type,
     r#"
 class C:
@@ -1056,20 +1055,13 @@ f("test")
     "#,
 );
 
-// TODO(stroxler): We currently are using a raw name match to handle `Any`, which
-// causes two problems: `typing.Any` won't work correctly, and a user can't define
-// a new name `Any` in their own namespace.
-//
-// We encountered a surprising stub in typeshed that affects our options for
-// solving this, so we are deferring the fix for now, this test records the problem.
-testcase_with_bug!(
-    "Any should be resolved properly rather than using a raw name match",
+testcase!(
     test_resolving_any_correctly,
     r#"
 import typing
-x: typing.Any = 1  # E: Expected a type form, got instance of `object`
+x: typing.Any = 1
 class Any: ...
-a: Any = Any()  # E: Expected a callable, got type[Any]
+a: Any = Any()
 "#,
 );
 
@@ -1247,52 +1239,6 @@ def foo(x):
 );
 
 testcase!(
-    test_typing_self_return,
-    r#"
-from typing import Self, assert_type
-class A:
-    def f(self) -> Self:
-        return self
-    @classmethod
-    def g(cls) -> type[Self]:
-        return cls
-class B(A):
-    pass
-assert_type(B().f(), B)
-assert_type(B().g(), type[B])
-    "#,
-);
-
-testcase!(
-    test_typing_self_param,
-    r#"
-from typing import Self
-class A:
-    def f(self, x: Self):
-        pass
-class B(A):
-    pass
-def f(a: A, b: B):
-    b.f(b)  # OK
-    b.f(a)  # E:
-    "#,
-);
-
-testcase!(
-    test_typing_self_new_param,
-    r#"
-from typing import Self
-class A:
-    def __new__(cls, x: type[Self]):
-        return super().__new__(cls)
-class B(A):
-    pass
-B(B)  # OK
-B(A)  # E:
-    "#,
-);
-
-testcase!(
     test_module_type,
     r#"
 import types
@@ -1331,4 +1277,11 @@ def f(x: type):
     pass
 f(A)
     "#,
+);
+
+testcase!(
+    test_list_star_with_hint,
+    r#"
+x: list[str] | int = ["a", *["b"]]
+"#,
 );

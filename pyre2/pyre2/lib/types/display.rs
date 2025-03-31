@@ -351,7 +351,6 @@ mod tests {
     use dupe::Dupe;
     use ruff_python_ast::Identifier;
     use ruff_text_size::TextSize;
-    use starlark_map::ordered_map::OrderedMap;
 
     use super::*;
     use crate::module::module_info::ModuleInfo;
@@ -518,8 +517,8 @@ mod tests {
 
     #[test]
     fn test_display_callable() {
-        let param1 = Param::Pos(Name::new("hello"), Type::None, Required::Required);
-        let param2 = Param::KwOnly(Name::new("world"), Type::None, Required::Required);
+        let param1 = Param::Pos(Name::new_static("hello"), Type::None, Required::Required);
+        let param2 = Param::KwOnly(Name::new_static("world"), Type::None, Required::Required);
         let callable = Callable::list(ParamList::new(vec![param1, param2]), Type::None);
         assert_eq!(
             Type::Callable(Box::new(callable)).to_string(),
@@ -532,7 +531,7 @@ mod tests {
         let cls = fake_class("C", "test", 0, Vec::new());
         let t = Type::None;
         let targs = TArgs::new(vec![t]);
-        let td = TypedDict::new(cls, targs, OrderedMap::new());
+        let td = TypedDict::new(cls, targs);
         assert_eq!(
             Type::TypedDict(Box::new(td)).to_string(),
             "TypedDict[C[None]]"

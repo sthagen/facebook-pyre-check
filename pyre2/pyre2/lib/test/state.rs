@@ -64,16 +64,16 @@ else:
         )
     };
 
-    state.run(
-        &[
-            f("linux", &linux),
-            f("windows", &windows),
-            f("main", &linux),
-        ],
-        Require::Exports,
-        None,
-    );
+    let handles = [
+        f("linux", &linux),
+        f("windows", &windows),
+        f("main", &linux),
+    ];
+    state.run(&handles, Require::Exports, None);
     state
+        .transaction()
+        .readable()
+        .get_loads(handles.iter().map(|(handle, _)| handle))
         .check_against_expectations(&ErrorConfigs::default())
         .unwrap();
 }
@@ -113,30 +113,31 @@ fn test_multiple_path() {
         }
     }
 
-    let loader = LoaderId::new(Load(TestEnv::new()));
+    let test_env = TestEnv::new();
+    let config = test_env.metadata();
+    let loader = LoaderId::new(Load(test_env));
 
     let mut state = State::new();
+    let handles = FILES.map(|(name, path, _)| {
+        Handle::new(
+            ModuleName::from_str(name),
+            ModulePath::memory(PathBuf::from(path)),
+            config.dupe(),
+            loader.dupe(),
+        )
+    });
     state.run(
-        &FILES.map(|(name, path, _)| {
-            (
-                Handle::new(
-                    ModuleName::from_str(name),
-                    ModulePath::memory(PathBuf::from(path)),
-                    TestEnv::config(),
-                    loader.dupe(),
-                ),
-                Require::Everything,
-            )
-        }),
+        &handles.map(|x| (x.dupe(), Require::Everything)),
         Require::Exports,
         None,
     );
-    print_errors(&state.collect_errors(&ErrorConfigs::default()).shown);
-    state
+    let loads = state.transaction().readable().get_loads(handles.iter());
+    print_errors(&loads.collect_errors(&ErrorConfigs::default()).shown);
+    loads
         .check_against_expectations(&ErrorConfigs::default())
         .unwrap();
     assert_eq!(
-        state.collect_errors(&ErrorConfigs::default()).shown.len(),
+        loads.collect_errors(&ErrorConfigs::default()).shown.len(),
         3
     );
 }
@@ -191,6 +192,7 @@ impl Incremental {
             .lock()
             .insert(ModuleName::from_str(file), Arc::new(content.to_owned()));
         self.state
+            .transaction_mut()
             .invalidate_memory(self.loader.dupe(), &[PathBuf::from(file)]);
     }
 
@@ -206,13 +208,19 @@ impl Incremental {
     /// Run a check. Expect recompute things to have changed.
     fn check(&mut self, want: &[&str], recompute: &[&str]) {
         let subscriber = TestSubscriber::new();
+        let handles = want.map(|x| self.handle(x));
         self.state.run(
-            &want.map(|x| (self.handle(x), Require::Everything)),
+            &handles.map(|x| (x.dupe(), Require::Everything)),
             Require::Exports,
             Some(Box::new(subscriber.dupe())),
         );
-        print_errors(&self.state.collect_errors(&ErrorConfigs::default()).shown);
-        self.state
+        let loads = self
+            .state
+            .transaction()
+            .readable()
+            .get_loads(handles.iter());
+        print_errors(&loads.collect_errors(&ErrorConfigs::default()).shown);
+        loads
             .check_against_expectations(&ErrorConfigs::default())
             .unwrap();
 
@@ -278,48 +286,53 @@ fn test_incremental_cyclic() {
 }
 
 /// Check that the interface is consistent as we change things.
-fn test_interface_consistent(code: &str, broken: bool) {
+fn test_interface_consistent(code: &str) {
     let mut i = Incremental::new();
     i.set("main", code);
     i.check(&["main"], &["main"]);
-    let base = i.state.get_solutions(&i.handle("main")).unwrap();
+    let base = i
+        .state
+        .transaction()
+        .readable()
+        .get_solutions(&i.handle("main"))
+        .unwrap();
 
     i.set("main", &format!("{code} # after"));
     i.check(&["main"], &["main"]);
-    let suffix = i.state.get_solutions(&i.handle("main")).unwrap();
+    let suffix = i
+        .state
+        .transaction()
+        .readable()
+        .get_solutions(&i.handle("main"))
+        .unwrap();
 
     i.set("main", &format!("# before\n{code}"));
     i.check(&["main"], &["main"]);
-    let prefix = i.state.get_solutions(&i.handle("main")).unwrap();
+    let prefix = i
+        .state
+        .transaction()
+        .readable()
+        .get_solutions(&i.handle("main"))
+        .unwrap();
 
     let same = base.first_difference(&base);
     let suffix = suffix.first_difference(&base);
     let prefix = prefix.first_difference(&base);
-    if !broken {
-        assert!(same.is_none(), "{code:?} led to {same:?}");
-        assert!(suffix.is_none(), "{code:?} led to {suffix:?}");
-        assert!(prefix.is_none(), "{code:?} led to {prefix:?}");
-    } else {
-        assert!(
-            same.is_some() || suffix.is_some() || prefix.is_some(),
-            "{code:?} now works"
-        );
-    }
+    assert!(same.is_none(), "{code:?} led to {same:?}");
+    assert!(suffix.is_none(), "{code:?} led to {suffix:?}");
+    assert!(prefix.is_none(), "{code:?} led to {prefix:?}");
 }
 
 #[test]
 fn test_interfaces() {
-    #[allow(dead_code)]
-    const BROKEN: bool = true;
-
-    test_interface_consistent("x: int = 1\ndef f(y: bool) -> list[str]: return []", false);
+    test_interface_consistent("x: int = 1\ndef f(y: bool) -> list[str]: return []");
 
     // Important to have a class with a field, as those also have positions
-    test_interface_consistent("class X: y: int", false);
+    test_interface_consistent("class X: y: int");
 
     // These should not change, but do because the quality algorithm doesn't deal
     // well with Forall.
-    test_interface_consistent("def f[X](x: X) -> X: ...", false);
+    test_interface_consistent("def f[X](x: X) -> X: ...");
 
     // These should not change, but do because the quality algorithm doesn't deal
     // well with Forall.
@@ -328,11 +341,10 @@ fn test_interfaces() {
 from typing import TypeVar, Generic
 T = TypeVar('T')
 class C(Generic[T]): pass",
-        false,
     );
 
     // Another failing example
-    test_interface_consistent("class C[T]: x: T", false);
+    test_interface_consistent("class C[T]: x: T");
 
     // Another failing example
     test_interface_consistent(
@@ -340,7 +352,6 @@ class C(Generic[T]): pass",
 from typing import TypeVar, Generic
 T = TypeVar('T')
 class C(Generic[T]): x: T",
-        false,
     );
 
     test_interface_consistent(
@@ -349,7 +360,6 @@ from typing import TypeVar, Generic
 T = TypeVar('T')
 class C(Generic[T]): pass
 class D(C[T]): pass",
-        false,
     );
 
     test_interface_consistent(
@@ -357,16 +367,14 @@ class D(C[T]): pass",
 from typing import TypeVar
 class C: pass
 T = TypeVar('T', bound=C)",
-        false,
     );
 
     test_interface_consistent(
         "
-class C:
-    def __init__[R](self, field: R) -> None:
+class C[R]:
+    def __init__(self, field: R) -> None:
         self.field = R
 ",
-        false,
     );
 }
 
@@ -377,29 +385,65 @@ fn test_change_require() {
     let handle = Handle::new(
         ModuleName::from_str("foo"),
         ModulePath::memory(PathBuf::from("foo")),
-        TestEnv::config(),
+        t.metadata(),
         LoaderId::new(t),
     );
     state.run(&[(handle.dupe(), Require::Exports)], Require::Exports, None);
     assert_eq!(
-        state.collect_errors(&ErrorConfigs::default()).shown.len(),
+        state
+            .transaction()
+            .readable()
+            .get_loads([&handle])
+            .collect_errors(&ErrorConfigs::default())
+            .shown
+            .len(),
         0
     );
-    assert!(state.get_bindings(&handle).is_none());
+    assert!(
+        state
+            .transaction()
+            .readable()
+            .get_bindings(&handle)
+            .is_none()
+    );
     state.run(&[(handle.dupe(), Require::Errors)], Require::Exports, None);
     assert_eq!(
-        state.collect_errors(&ErrorConfigs::default()).shown.len(),
+        state
+            .transaction()
+            .readable()
+            .get_loads([&handle])
+            .collect_errors(&ErrorConfigs::default())
+            .shown
+            .len(),
         1
     );
-    assert!(state.get_bindings(&handle).is_none());
+    assert!(
+        state
+            .transaction()
+            .readable()
+            .get_bindings(&handle)
+            .is_none()
+    );
     state.run(
         &[(handle.dupe(), Require::Everything)],
         Require::Exports,
         None,
     );
     assert_eq!(
-        state.collect_errors(&ErrorConfigs::default()).shown.len(),
+        state
+            .transaction()
+            .readable()
+            .get_loads([&handle])
+            .collect_errors(&ErrorConfigs::default())
+            .shown
+            .len(),
         1
     );
-    assert!(state.get_bindings(&handle).is_some());
+    assert!(
+        state
+            .transaction()
+            .readable()
+            .get_bindings(&handle)
+            .is_some()
+    );
 }

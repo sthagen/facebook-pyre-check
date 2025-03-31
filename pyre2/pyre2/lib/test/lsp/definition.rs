@@ -17,7 +17,7 @@ use crate::test::util::get_batched_lsp_operations_report_allow_error;
 
 fn get_test_report(state: &State, handle: &Handle, position: TextSize) -> String {
     if let Some(TextRangeWithModuleInfo { module_info, range }) =
-        state.goto_definition(handle, position)
+        state.transaction().goto_definition(handle, position)
     {
         format!(
             "Definition Result:\n{}",
@@ -76,7 +76,7 @@ Definition Result:
 4 | def f(x: list[int], y: str, z: Literal[42]):
                                     ^
 Definition Result:
-218 | Literal: _SpecialForm
+217 | Literal: _SpecialForm
       ^^^^^^^
 
 8 | yyy = f([1, 2, 3], "test", 42)
@@ -140,7 +140,7 @@ Definition Result:
 6 | foo: Literal[1] = 1
              ^
 Definition Result:
-218 | Literal: _SpecialForm
+217 | Literal: _SpecialForm
       ^^^^^^^
 
 8 | bar = f([1], "", 42)

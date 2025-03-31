@@ -8,7 +8,6 @@
 //! Many of these tests come from <https://typing.readthedocs.io/en/latest/spec/generics.html#paramspec>.
 
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_callable_param_spec,
@@ -46,11 +45,11 @@ def test(x1: Callable[[int, str], int], x2: Callable[..., int]):
 "#,
 );
 
-testcase_with_bug!(
-    "Generic functions don't work with ParamSpec",
+testcase!(
+    bug = "Generic functions don't work with ParamSpec",
     test_param_spec_generic_function,
     r#"
-from typing import Callable, ParamSpec, TypeVar, reveal_type
+from typing import Callable, reveal_type
 def identity[**P, R](x: Callable[P, R]) -> Callable[P, R]:
     return x
 def foo[T](x: T, y: T) -> T:
@@ -60,11 +59,11 @@ reveal_type(foo2)  # E: revealed type: (ParamSpec(Unknown)) -> Unknown
 "#,
 );
 
-testcase_with_bug!(
-    "I would expect this to capture the type var on the class",
-    test_param_spec_generic_class,
+testcase!(
+    bug = "Generic class constructors don't work with ParamSpec",
+    test_param_spec_generic_constructor,
     r#"
-from typing import Callable, ParamSpec, TypeVar, reveal_type
+from typing import Callable, reveal_type
 def identity[**P, R](x: Callable[P, R]) -> Callable[P, R]:
   return x
 class C[T]:
@@ -72,8 +71,19 @@ class C[T]:
   def __init__(self, x: T) -> None:
     self.x = x
 c2 = identity(C)
-reveal_type(c2)  # E: revealed type: () -> Self@object
-x: C[int] = c2(1)  # E: `Self@object` is not assignable to `C[int]`  # E: Expected 0 positional arguments, got 1
+reveal_type(c2)  # E: revealed type: (x: Unknown) -> C[Unknown]
+x: C[int] = c2(1)
+"#,
+);
+
+testcase!(
+    test_param_spec_invariance,
+    r#"
+from typing import Callable, reveal_type
+def identity[**P, R](x: Callable[P, R]) -> Callable[P, R]:
+  return x
+def test(f1: Callable[[int], None] | Callable[[str], None]):
+  f3 = identity(f1)  # E: Argument `((int) -> None) | ((str) -> None)` is not assignable to parameter `x` with type `(int) -> None` in function `identity`
 "#,
 );
 
@@ -244,8 +254,8 @@ reveal_type(transform(bar)) # Should return (a: str, /, *args: bool) -> bool # E
 "#,
 );
 
-testcase_with_bug!(
-    "P.args and P.kwargs should only work when P is in scope",
+testcase!(
+    bug = "P.args and P.kwargs should only work when P is in scope",
     test_paramspec_component_usage,
     r#"
 from typing import Callable, ParamSpec
@@ -341,8 +351,8 @@ def foo(x: int, *args: P1.args, **kwargs: P2.kwargs) -> None: ...  # E: *args an
 "#,
 );
 
-testcase_with_bug!(
-    "Rejects everything",
+testcase!(
+    bug = "Rejects everything",
     test_paramspec_twice,
     r#"
 from typing import Callable, ParamSpec

@@ -6,7 +6,6 @@
  */
 
 use ruff_python_ast::name::Name;
-use ruff_python_ast::Identifier;
 use starlark_map::smallmap;
 
 use crate::alt::answers::AnswersSolver;
@@ -28,11 +27,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn get_new_type_init(&self, cls: &Class, base: ClassType) -> ClassSynthesizedField {
         let params = vec![
             cls.self_param(),
-            Param::Pos(
-                Name::new(Identifier::new("_x", cls.range())),
-                base.to_type(),
-                Required::Required,
-            ),
+            Param::Pos(Name::new_static("_x"), base.to_type(), Required::Required),
         ];
         let ty = Type::Function(Box::new(Function {
             signature: Callable::list(ParamList::new(params), cls.instance_type()),
@@ -48,15 +43,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     fn get_new_type_new(&self, cls: &Class, base: ClassType) -> ClassSynthesizedField {
         let params = vec![
             Param::Pos(
-                Name::new("cls"),
+                Name::new_static("cls"),
                 Type::type_form(cls.instance_type()),
                 Required::Required,
             ),
-            Param::Pos(
-                Name::new(Identifier::new("_x", cls.range())),
-                base.to_type(),
-                Required::Required,
-            ),
+            Param::Pos(Name::new_static("_x"), base.to_type(), Required::Required),
         ];
         let ty = Type::Function(Box::new(Function {
             signature: Callable::list(ParamList::new(params), cls.instance_type()),
@@ -72,7 +63,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let is_new_type = metadata.is_new_type();
 
         if is_new_type && base_type.len() == 1 {
-            let (base_class, _) = base_type[0].clone();
+            let (base_class, _) = &base_type[0];
             Some(ClassSynthesizedFields::new(smallmap! {
                 dunder::NEW => self.get_new_type_new(cls, base_class.clone()),
                 dunder::INIT => self.get_new_type_init(cls, base_class.clone()),

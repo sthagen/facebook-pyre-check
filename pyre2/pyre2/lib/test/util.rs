@@ -6,6 +6,7 @@
  */
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,11 +39,31 @@ use crate::state::state::State;
 use crate::state::subscriber::TestSubscriber;
 use crate::types::class::Class;
 use crate::types::types::Type;
+use crate::util::prelude::SliceExt;
 use crate::util::thread_pool::init_thread_pool;
+use crate::util::thread_pool::ThreadCount;
 use crate::util::trace::init_tracing;
+use crate::PythonVersion;
 
 #[macro_export]
 macro_rules! testcase {
+    (bug = $explanation:literal, $name:ident, $imports:expr, $contents:literal,) => {
+        #[test]
+        fn $name() -> anyhow::Result<()> {
+            $crate::test::util::testcase_for_macro($imports, $contents, file!(), line!() + 1)
+        }
+    };
+    (bug = $explanation:literal, $name:ident, $contents:literal,) => {
+        #[test]
+        fn $name() -> anyhow::Result<()> {
+            $crate::test::util::testcase_for_macro(
+                $crate::test::util::TestEnv::new(),
+                $contents,
+                file!(),
+                line!() + 1,
+            )
+        }
+    };
     ($name:ident, $imports:expr, $contents:literal,) => {
         #[test]
         fn $name() -> anyhow::Result<()> {
@@ -62,33 +83,15 @@ macro_rules! testcase {
     };
 }
 
-#[macro_export]
-macro_rules! testcase_with_bug {
-    ($explanation:literal, $name:ident, $imports:expr, $contents:literal,) => {
-        #[test]
-        fn $name() -> anyhow::Result<()> {
-            $crate::test::util::testcase_for_macro($imports, $contents, file!(), line!() + 1)
-        }
-    };
-    ($explanation:literal, $name:ident, $contents:literal,) => {
-        #[test]
-        fn $name() -> anyhow::Result<()> {
-            $crate::test::util::testcase_for_macro(
-                $crate::test::util::TestEnv::new(),
-                $contents,
-                file!(),
-                line!() + 1,
-            )
-        }
-    };
-}
-
 fn default_path(module: ModuleName) -> PathBuf {
     PathBuf::from(format!("{}.py", module.as_str().replace('.', "/")))
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct TestEnv(SmallMap<ModuleName, (ModulePath, Option<String>)>);
+pub struct TestEnv {
+    modules: SmallMap<ModuleName, (ModulePath, Option<String>)>,
+    version: PythonVersion,
+}
 
 impl TestEnv {
     pub fn new() -> Self {
@@ -97,8 +100,14 @@ impl TestEnv {
         Self::default()
     }
 
+    pub fn new_with_version(version: PythonVersion) -> Self {
+        let mut res = Self::new();
+        res.version = version;
+        res
+    }
+
     pub fn add_with_path(&mut self, name: &str, code: &str, path: &str) {
-        self.0.insert(
+        self.modules.insert(
             ModuleName::from_str(name),
             (
                 ModulePath::memory(PathBuf::from(path)),
@@ -110,7 +119,7 @@ impl TestEnv {
     pub fn add(&mut self, name: &str, code: &str) {
         let module_name = ModuleName::from_str(name);
         let relative_path = ModulePath::memory(default_path(module_name));
-        self.0
+        self.modules
             .insert(module_name, (relative_path, Some(code.to_owned())));
     }
 
@@ -128,45 +137,47 @@ impl TestEnv {
 
     pub fn add_real_path(&mut self, name: &str, path: PathBuf) {
         let module_name = ModuleName::from_str(name);
-        self.0
+        self.modules
             .insert(module_name, (ModulePath::filesystem(path), None));
     }
 
-    pub fn config() -> RuntimeMetadata {
-        RuntimeMetadata::default()
+    pub fn metadata(&self) -> RuntimeMetadata {
+        RuntimeMetadata::new(self.version, "linux".to_owned())
     }
 
     pub fn to_state(self) -> (State, impl Fn(&str) -> Handle) {
-        let config = Self::config();
+        let config = self.metadata();
         let loader = LoaderId::new(self.clone());
         let handles = self
-            .0
+            .modules
             .into_iter()
             // Reverse so we start at the last file, which is likely to be what the user
             // would have opened, so make it most faithful.
             .rev()
-            .map(|(x, (path, _))| {
-                (
-                    Handle::new(x, path, config.dupe(), loader.dupe()),
-                    Require::Everything,
-                )
-            })
+            .map(|(x, (path, _))| Handle::new(x, path, config.dupe(), loader.dupe()))
             .collect::<Vec<_>>();
         let mut state = State::new();
         let subscriber = TestSubscriber::new();
         state.run(
-            &handles,
+            &handles.map(|x| (x.dupe(), Require::Everything)),
             Require::Exports,
             Some(Box::new(subscriber.dupe())),
         );
         subscriber.finish();
-        print_errors(&state.collect_errors(&ErrorConfigs::default()).shown);
+        print_errors(
+            &state
+                .transaction()
+                .readable()
+                .get_loads(handles.iter())
+                .collect_errors(&ErrorConfigs::default())
+                .shown,
+        );
         (state, move |module| {
             let name = ModuleName::from_str(module);
             Handle::new(
                 name,
                 loader.find_import(name).unwrap(),
-                Self::config(),
+                config.dupe(),
                 loader.dupe(),
             )
         })
@@ -250,9 +261,19 @@ pub fn mk_multi_file_state(
         test_env.add(name, code);
     }
     let (state, handle) = test_env.to_state();
+    let mut handles = HashMap::new();
+    for (name, _) in files {
+        handles.insert(*name, handle(name));
+    }
     if assert_zero_errors {
         assert_eq!(
-            state.collect_errors(&ErrorConfigs::default()).shown.len(),
+            state
+                .transaction()
+                .readable()
+                .get_loads(handles.values())
+                .collect_errors(&ErrorConfigs::default())
+                .shown
+                .len(),
             0
         );
     }
@@ -312,7 +333,7 @@ pub fn get_batched_lsp_operations_report_allow_error(
 
 impl Loader for TestEnv {
     fn find_import(&self, module: ModuleName) -> Result<ModulePath, FindError> {
-        if let Some((path, _)) = self.0.get(&module) {
+        if let Some((path, _)) = self.modules.get(&module) {
             Ok(path.dupe())
         } else if let Some(path) = typeshed().map_err(FindError::new)?.find(module) {
             Ok(path)
@@ -325,7 +346,7 @@ impl Loader for TestEnv {
         // This function involves scanning all paths to find what matches.
         // Not super efficient, but fine for tests, and we don't have many modules.
         let memory_path = ModulePath::memory(path.to_owned());
-        for (p, contents) in self.0.values() {
+        for (p, contents) in self.modules.values() {
             if p == &memory_path
                 && let Some(c) = contents
             {
@@ -339,7 +360,7 @@ impl Loader for TestEnv {
 pub fn init_test() {
     init_tracing(true, true);
     // Enough threads to see parallelism bugs, but not too many to debug through.
-    init_thread_pool(Some(3));
+    init_thread_pool(ThreadCount::NumThreads(NonZeroUsize::new(3).unwrap()));
 }
 
 /// Should only be used from the `testcase!` macro.
@@ -351,7 +372,7 @@ pub fn testcase_for_macro(
 ) -> anyhow::Result<()> {
     init_test();
     let mut start_line = line as usize + 1;
-    if !env.0.is_empty() {
+    if !env.modules.is_empty() {
         start_line += 1;
     }
     env.add_with_path(
@@ -364,9 +385,11 @@ pub fn testcase_for_macro(
     let limit = 10;
     for _ in 0..3 {
         let start = Instant::now();
-        env.clone()
-            .to_state()
-            .0
+        let (state, handle) = env.clone().to_state();
+        state
+            .transaction()
+            .readable()
+            .get_loads([&handle("main")])
             .check_against_expectations(&ErrorConfigs::default())?;
         if start.elapsed().as_secs() <= limit {
             return Ok(());
@@ -383,7 +406,11 @@ pub fn mk_state(code: &str) -> (Handle, State) {
 }
 
 pub fn get_class(name: &str, handle: &Handle, state: &State) -> Option<Class> {
-    let solutions = state.get_solutions(handle).unwrap();
+    let solutions = state
+        .transaction()
+        .readable()
+        .get_solutions(handle)
+        .unwrap();
 
     match solutions.get(&KeyExport(Name::new(name))).map(|x| &**x) {
         Some(Type::ClassDef(cls)) => Some(cls.dupe()),

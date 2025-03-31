@@ -14,7 +14,6 @@ import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import * as stylex from '@stylexjs/stylex';
-import {landingPageStyles} from './index';
 import Firefly from '../components/landing-page/firefly';
 import QuoteCard from '../components/landing-page/quoteCard';
 import PerformanceComparisonChartSection from '../components/landing-page/PerformanceComparisonChartSection';
@@ -37,10 +36,15 @@ export default component NewLandingPage() {
       title="Pyrefly: A Static Type Checker for Python"
       description={siteConfig.description}>
       <LandingPageHeader />
-      <LandingPageSection title="Why Pyrefly" child={<WhyPyrefly />} />
+      <LandingPageSection
+        title="Why Pyrefly"
+        child={<WhyPyrefly />}
+        isFirstSection={true}
+      />
       <LandingPageSection
         title="Performance Comparison"
         child={<PerformanceComparisonChartSection />}
+        hasBrownBackground={true}
       />
       <LandingPageSection
         title="What People Say About Pyrefly"

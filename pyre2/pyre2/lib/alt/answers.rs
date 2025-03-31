@@ -16,9 +16,11 @@ use dupe::OptionDupedExt;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::SmallMap;
+use starlark_map::Hashed;
 
 use crate::alt::traits::Solve;
 use crate::alt::traits::SolveRecursive;
+use crate::binding::binding::Binding;
 use crate::binding::binding::Keyed;
 use crate::binding::bindings::BindingEntry;
 use crate::binding::bindings::BindingTable;
@@ -47,6 +49,7 @@ use crate::types::equality::TypeEq;
 use crate::types::equality::TypeEqCtx;
 use crate::types::stdlib::Stdlib;
 use crate::types::types::AnyStyle;
+use crate::types::types::NeverStyle;
 use crate::types::types::Type;
 use crate::types::types::Var;
 use crate::util::display::DisplayWith;
@@ -137,7 +140,7 @@ impl DisplayWith<ModuleInfo> for Solutions {
         where
             BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
         {
-            for (key, answer) in entry.iter() {
+            for (key, answer) in entry {
                 writeln!(f, "{} = {}", ctx.display(key), answer)?;
             }
             Ok(())
@@ -196,11 +199,22 @@ impl Solutions {
         &self.0
     }
 
+    #[allow(dead_code)] // Used in tests.
     pub fn get<K: Keyed<EXPORTED = true>>(&self, key: &K) -> Option<&Arc<<K as Keyed>::Answer>>
     where
         SolutionsTable: TableKeyed<K, Value = SolutionsEntry<K>>,
     {
-        self.0.get().get(key)
+        self.get_hashed(Hashed::new(key))
+    }
+
+    pub fn get_hashed<K: Keyed<EXPORTED = true>>(
+        &self,
+        key: Hashed<&K>,
+    ) -> Option<&Arc<<K as Keyed>::Answer>>
+    where
+        SolutionsTable: TableKeyed<K, Value = SolutionsEntry<K>>,
+    {
+        self.0.get().get_hashed(key)
     }
 
     /// Find the first key that differs between two solutions, with the two values.
@@ -218,7 +232,7 @@ impl Solutions {
         {
             let y = y.0.get::<K>();
             if y.len() > x.len() {
-                for (k, v) in y.iter() {
+                for (k, v) in y {
                     if !x.contains_key(k) {
                         return Some(SolutionsDifference {
                             key: (k, k),
@@ -229,7 +243,7 @@ impl Solutions {
                 }
                 unreachable!();
             }
-            for (k, v) in x.iter() {
+            for (k, v) in x {
                 match y.get(k) {
                     Some(v2) if !v.type_eq(v2, ctx) => {
                         return Some(SolutionsDifference {
@@ -399,7 +413,7 @@ impl Answers {
         errors: &ErrorCollector,
         stdlib: &Stdlib,
         uniques: &UniqueFactory,
-        key: &K,
+        key: Hashed<&K>,
     ) -> Arc<K::Answer>
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
@@ -415,7 +429,7 @@ impl Answers {
             recurser: &Recurser::new(),
             current: self,
         };
-        let v = solver.get(key);
+        let v = solver.get_hashed(key);
         let mut vv = (*v).clone();
         vv.visit_mut(&mut |x| self.solver.deep_force_mut(x));
         Arc::new(vv)
@@ -511,12 +525,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         TypeOrder::new(self)
     }
 
-    pub fn get_idx<K: Solve<Ans>>(&self, idx: Idx<K>) -> Arc<K::Answer>
+    fn get_calculation<K: Solve<Ans>>(
+        &self,
+        idx: Idx<K>,
+    ) -> &Calculation<Arc<K::Answer>, K::Recursive>
     where
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
     {
-        let calculation = self.current.table.get::<K>().get(idx).unwrap_or_else(|| {
+        self.current.table.get::<K>().get(idx).unwrap_or_else(|| {
             // Do not fix a panic by removing this error.
             // We should always be sure before calling `get`.
             panic!(
@@ -524,17 +541,28 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.module_info().name(),
                 self.module_info().display(self.bindings().idx_to_key(idx)),
             )
-        });
+        })
+    }
+
+    pub fn get_idx<K: Solve<Ans>>(&self, idx: Idx<K>) -> Arc<K::Answer>
+    where
+        AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
+        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+    {
+        let calculation = self.get_calculation(idx);
         let result = calculation.calculate_with_recursive(
             || {
                 let binding = self.bindings().get(idx);
                 K::solve(self, binding, self.base_errors)
             },
-            || K::recursive(self),
+            || {
+                let binding = self.bindings().get(idx);
+                K::create_recursive(self, binding)
+            },
         );
         if let Ok((v, Some(r))) = &result {
-            let k = self.bindings().idx_to_key(idx);
-            K::record_recursive(self, k, v.dupe(), r.clone(), self.base_errors);
+            let k = self.bindings().idx_to_key(idx).range();
+            K::record_recursive(self, k, v, r, self.base_errors);
         }
         match result {
             Ok((v, _)) => v,
@@ -547,19 +575,38 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
         BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
     {
-        self.get_idx(self.bindings().key_to_idx(k))
+        self.get_hashed(Hashed::new(k))
+    }
+
+    pub fn get_hashed<K: Solve<Ans>>(&self, k: Hashed<&K>) -> Arc<K::Answer>
+    where
+        AnswerTable: TableKeyed<K, Value = AnswerEntry<K>>,
+        BindingTable: TableKeyed<K, Value = BindingEntry<K>>,
+    {
+        self.get_idx(self.bindings().key_to_idx_hashed(k))
+    }
+
+    pub fn create_recursive(&self, binding: &Binding) -> Var {
+        let t = if let Binding::Phi(_, Some(default)) = binding {
+            self.get_calculation(*default)
+                .get()
+                .map(|t| t.arc_clone().promote_literals(self.stdlib))
+        } else {
+            None
+        };
+        self.solver().fresh_recursive(self.uniques, t)
     }
 
     pub fn record_recursive(
         &self,
         loc: TextRange,
-        answer: Arc<Type>,
+        answer: &Arc<Type>,
         recursive: Var,
         errors: &ErrorCollector,
     ) {
         self.solver().record_recursive(
             recursive,
-            answer.arc_clone(),
+            (**answer).clone(),
             self.type_order(),
             errors,
             loc,
@@ -593,6 +640,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     pub fn distribute_over_union(&self, ty: &Type, mut f: impl FnMut(&Type) -> Type) -> Type {
         match ty {
+            Type::Never(_) => Type::Never(NeverStyle::Never),
             Type::Union(tys) => self.unions(tys.map(f)),
             Type::Type(box Type::Union(tys)) => {
                 self.unions(tys.map(|ty| f(&Type::type_form(ty.clone()))))

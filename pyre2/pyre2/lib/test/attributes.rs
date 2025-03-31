@@ -7,7 +7,6 @@
 
 use crate::test::util::TestEnv;
 use crate::testcase;
-use crate::testcase_with_bug;
 
 testcase!(
     test_set_attribute,
@@ -77,8 +76,8 @@ class MyTestCase:
     "#,
 );
 
-testcase_with_bug!(
-    "Example of how making methods read-write but not invariant is unsound",
+testcase!(
+    bug = "Example of how making methods read-write but not invariant is unsound",
     test_method_assign,
     r#"
 from typing import Protocol
@@ -208,8 +207,8 @@ def f(a: A):
     "#,
 );
 
-testcase_with_bug!(
-    "TODO(stroxler): We are always promoting literals. It is sound to preserve literals for read-only attributes",
+testcase!(
+    bug = "TODO(stroxler): We are always promoting literals. It is sound to preserve literals for read-only attributes",
     test_final_attribute_assined_in_init,
     r#"
 from typing import assert_type, Final, Literal
@@ -450,22 +449,6 @@ C.x  # E: Generic attribute `x` of class `C` is not visible on the class
 );
 
 testcase!(
-    test_use_self,
-    r#"
-from typing import assert_type
-from typing import Self
-import typing
-from typing import Self as Myself
-
-class C:
-    def m(self, x: Self, y: Myself) -> list[typing.Self]:
-        return [self, x, y]
-
-assert_type(C().m(C(), C()), list[C])
-"#,
-);
-
-testcase!(
     test_var_attribute,
     r#"
 from typing import assert_type
@@ -651,18 +634,17 @@ class Test(B):
     "#,
 );
 
-testcase_with_bug!(
-    "TODO(stroxler): Should probably error when setting the field",
-    test_generic_init_field,
+testcase!(
+    test_field_using_method_scope_type_variable,
     r#"
-from typing import reveal_type
+from typing import assert_type, Any
 
 class C:
     def __init__[R](self, field: R):
-        self.field = field
+        self.field = field  # E: Cannot initialize attribute `field` to a value that depends on method-scoped type variable `R`
 
 c = C("test")
-reveal_type(c.field)  # E: revealed type: ?_TypeVar
+assert_type(c.field, Any)
 "#,
 );
 
@@ -683,6 +665,23 @@ def f():
     with C():  # E: `NoneType` has no attribute `__enter__`  # E: `NoneType` has no attribute `__exit__`
         pass
     "#,
+);
+
+testcase!(
+    bug = "TODO(stroxler): We need to define the semantics of generic class nesting and avoid leaked type variables",
+    test_class_nested_inside_generic_class,
+    r#"
+from typing import Any, assert_type, reveal_type
+class Outer[T]:
+    class Inner:
+        x: T | None = None
+assert_type(Outer[int].Inner, type[Outer.Inner])
+assert_type(Outer.Inner, type[Outer.Inner])
+reveal_type(Outer[int].Inner.x)  # E: revealed type: ?_TypeVar | None
+reveal_type(Outer.Inner.x)  # E: revealed type: ?_TypeVar | None
+reveal_type(Outer[int].Inner().x)  # E: revealed type: ?_TypeVar | None
+reveal_type(Outer.Inner().x)  # E: revealed type: ?_TypeVar | None
+   "#,
 );
 
 testcase!(

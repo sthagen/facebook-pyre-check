@@ -215,37 +215,40 @@ mod tests {
     fn test_first_component() {
         assert_eq!(
             ModuleName::from_str("a.b.c").first_component(),
-            Name::new("a")
+            Name::new_static("a")
         );
-        assert_eq!(ModuleName::from_str("a").first_component(), Name::new("a"));
+        assert_eq!(
+            ModuleName::from_str("a").first_component(),
+            Name::new_static("a")
+        );
     }
 
     #[test]
     fn test_relative() {
         let base = ModuleName::from_str("a.b.c");
         assert_eq!(
-            base.new_maybe_relative(false, 0, Some(&Name::new("d")))
+            base.new_maybe_relative(false, 0, Some(&Name::new_static("d")))
                 .unwrap(),
             ModuleName::from_str("d")
         );
         assert_eq!(
-            base.new_maybe_relative(false, 1, Some(&Name::new("d")))
+            base.new_maybe_relative(false, 1, Some(&Name::new_static("d")))
                 .unwrap(),
             ModuleName::from_str("a.b.d")
         );
         assert_eq!(
-            base.new_maybe_relative(false, 2, Some(&Name::new("d")))
+            base.new_maybe_relative(false, 2, Some(&Name::new_static("d")))
                 .unwrap(),
             ModuleName::from_str("a.d")
         );
         assert_eq!(
-            base.new_maybe_relative(false, 3, Some(&Name::new("d")))
+            base.new_maybe_relative(false, 3, Some(&Name::new_static("d")))
                 .unwrap(),
             ModuleName::from_str("d")
         );
         // TODO: This is wrong. The relative level 4 should be invalid
         assert_eq!(
-            base.new_maybe_relative(false, 4, Some(&Name::new("d"))),
+            base.new_maybe_relative(false, 4, Some(&Name::new_static("d"))),
             None
         );
         assert_eq!(
