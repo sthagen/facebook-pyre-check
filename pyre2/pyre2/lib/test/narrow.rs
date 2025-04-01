@@ -19,6 +19,23 @@ def f(x: str | None):
 );
 
 testcase!(
+    bug = "PyTorch TODO: implement attribute narrowing",
+    test_attr_refine,
+    r#"
+from typing import Any, Optional, reveal_type
+
+class N:
+    type: Optional[Any]
+
+def add_inference_rule(n: N):
+    reveal_type(n) # E: revealed type: N
+    reveal_type(n.type) # E: revealed type: Any | None
+    n.type = 3
+    reveal_type(n.type + 3) # E: revealed type: int | Unknown # E: `+` is not supported between `None` and `Literal[3]`
+"#,
+);
+
+testcase!(
     test_truthy_falsy,
     r#"
 from typing import assert_type, Literal
@@ -677,6 +694,24 @@ def f(xs: list[int | None]):
 "#,
 );
 
+// Note: the narrowing code isn't actually what's giving us this behavior,
+// it comes from flow-aware type information taking precedence over static
+// annotations. But the end result is narrowing behavior.
+testcase!(
+    test_assignment_and_narrowing,
+    r#"
+from typing import assert_type, Literal
+def foo(x: int | str):
+    y: int | str = x
+    assert_type(x, int | str)
+    assert_type(y, int | str)
+    x = 42
+    y = 42
+    assert_type(x, Literal[42])
+    assert_type(y, Literal[42])
+    "#,
+);
+
 testcase!(
     test_bad_typeguard_return,
     r#"
@@ -689,11 +724,33 @@ def g(x) -> TypeGuard[str]:  # E: Function declared to return `TypeGuard[str]` b
 );
 
 testcase!(
-    test_isinstance_any,
+    test_isinstance_any_second,
     r#"
 from typing import Any
 def f(x: int | str, y: Any):
     if isinstance(x, y):
         pass
     "#,
+);
+
+testcase!(
+    test_isinstance_any_literally,
+    r#"
+from typing import Any
+def f(x: int | str):
+    if isinstance(x, Any): # E: Expected class object, got type[Any]
+        pass
+    "#,
+);
+
+testcase!(
+    test_isinstance_any_first,
+    r#"
+from typing import Any, assert_type
+def f(x: Any):
+    if isinstance(x, bool):
+        assert_type(x, bool)
+    else:
+        assert_type(x, Any)
+"#,
 );

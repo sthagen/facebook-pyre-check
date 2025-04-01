@@ -90,6 +90,8 @@ use crate::util::prelude::VecExt;
 pub struct Args {
     #[clap(long = "search-path", env = clap_env("SEARCH_PATH"))]
     pub(crate) search_path: Vec<PathBuf>,
+    #[clap(long = "site-package-path", env = clap_env("SITE_PACKAGE_PATH"))]
+    pub(crate) site_package_path: Vec<PathBuf>,
 }
 
 struct Server<'a> {
@@ -133,8 +135,9 @@ pub fn run_lsp(
         }
     };
     let search_path = args.search_path;
+    let site_package_path = args.site_package_path;
     let send = |msg| connection.sender.send(msg).unwrap();
-    let mut server = Server::new(&send, initialization_params, search_path);
+    let mut server = Server::new(&send, initialization_params, search_path, site_package_path);
     eprintln!("Reading messages");
     for msg in &connection.receiver {
         if matches!(&msg, Message::Request(req) if connection.handle_shutdown(req)?) {
@@ -171,6 +174,7 @@ impl Args {
 struct LspLoader {
     open_files: Arc<Mutex<SmallMap<PathBuf, (i32, Arc<String>)>>>,
     search_path: Vec<PathBuf>,
+    site_package_path: Vec<PathBuf>,
 }
 
 impl Loader for LspLoader {
@@ -179,9 +183,13 @@ impl Loader for LspLoader {
             Ok(path)
         } else if let Some(path) = typeshed().map_err(FindError::new)?.find(module) {
             Ok(path)
+        } else if let Some(path) = find_module(module, &self.site_package_path) {
+            Ok(path)
         } else {
-            // TODO(connernilsen): add site package path here
-            Err(FindError::search_path(&self.search_path, &[]))
+            Err(FindError::search_path(
+                &self.search_path,
+                &self.site_package_path,
+            ))
         }
     }
 
@@ -273,11 +281,13 @@ impl<'a> Server<'a> {
         send: &'a dyn Fn(Message),
         initialize_params: InitializeParams,
         search_path: Vec<PathBuf>,
+        site_package_path: Vec<PathBuf>,
     ) -> Self {
         let open_files = Arc::new(Mutex::new(SmallMap::new()));
         let loader = LoaderId::new(LspLoader {
             open_files: open_files.dupe(),
             search_path: search_path.clone(),
+            site_package_path,
         });
         Self {
             send,
@@ -323,21 +333,20 @@ impl<'a> Server<'a> {
             })
             .collect::<Vec<_>>();
 
-        let mut lock = self.state.lock();
-        let transaction = lock.transaction_mut();
-        transaction.invalidate_memory(
+        let state = self.state.lock();
+        let mut transaction = state.new_committable_transaction(Require::Exports, None);
+        transaction.as_mut().invalidate_memory(
             self.loader.dupe(),
             &self.open_files.lock().keys().cloned().collect::<Vec<_>>(),
         );
-
-        transaction.run(&handles, Require::Exports, None);
+        state.run_with_committing_transaction(transaction, &handles);
         let mut diags: SmallMap<PathBuf, Vec<Diagnostic>> = SmallMap::new();
         let open_files = self.open_files.lock();
         for x in open_files.keys() {
             diags.insert(x.as_path().to_owned(), Vec::new());
         }
         // TODO(connernilsen): replace with real error config from config file
-        for e in lock
+        for e in state
             .transaction()
             .readable()
             .get_loads(handles.iter().map(|(handle, _)| handle))

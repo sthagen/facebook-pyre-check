@@ -155,11 +155,15 @@ impl Default for ConfigFile {
 
 impl ConfigFile {
     pub fn default_project_includes() -> Globs {
-        Globs::new(vec!["**/*.py".to_owned()])
+        Globs::new(vec!["**/*".to_owned()])
     }
 
     pub fn default_project_excludes() -> Globs {
-        Globs::new(vec!["**/__pycache__/**".to_owned(), "**/.*".to_owned()])
+        Globs::new(vec![
+            "**/__pycache__/**".to_owned(),
+            // match any hidden file, but don't match `.` or `..` (equivalent to regex: `\.[^/\.]{0,1}.*`)
+            "**/.[!/.]*".to_owned(),
+        ])
     }
 
     pub fn default_python_platform() -> String {
@@ -201,6 +205,26 @@ impl ConfigFile {
                 *site_package_path = base;
             });
         self.project_excludes = self.project_excludes.clone().from_root(config_root);
+    }
+
+    pub fn validate(&self) {
+        fn warn_on_invalid(p: &Path, field: &str) {
+            if p.exists() {
+                return;
+            }
+            let p = if p == Path::new("") {
+                Path::new("./")
+            } else {
+                p
+            };
+            tracing::warn!("Nonexistent `{field}` found: {}", p.display());
+        }
+        self.site_package_path
+            .iter()
+            .for_each(|p| warn_on_invalid(p, "site_package_path"));
+        self.search_path
+            .iter()
+            .for_each(|p| warn_on_invalid(p, "search_path"));
     }
 
     pub fn from_file(config_path: &Path, error_on_extras: bool) -> anyhow::Result<ConfigFile> {

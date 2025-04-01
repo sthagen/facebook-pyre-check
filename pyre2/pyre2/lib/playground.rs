@@ -206,7 +206,7 @@ impl Default for LanguageServiceState {
         };
         let load = Load(demo_env.dupe());
         let loader = LoaderId::new(load);
-        let mut state = State::new();
+        let state = State::new();
         let handle = Handle::new(
             ModuleName::from_str("test"),
             ModulePath::memory(PathBuf::from("test.py")),
@@ -230,12 +230,15 @@ impl Default for LanguageServiceState {
 impl LanguageServiceState {
     pub fn update_source(&mut self, source: String) {
         self.demo_env.lock().unwrap().add("test", source);
-        let transaction = self.state.transaction_mut();
-        transaction.invalidate_memory(self.loader.dupe(), &[PathBuf::from("test.py")]);
-        transaction.run(
+        let mut transaction = self
+            .state
+            .new_committable_transaction(Require::Exports, None);
+        transaction
+            .as_mut()
+            .invalidate_memory(self.loader.dupe(), &[PathBuf::from("test.py")]);
+        self.state.run_with_committing_transaction(
+            transaction,
             &[(self.handle.dupe(), Require::Everything)],
-            Require::Exports,
-            None,
         );
     }
 
@@ -369,7 +372,7 @@ mod tests {
         state.update_source("from t".to_owned());
         let expected_errors: Vec<&str> = vec![
             "Could not find import of `t`, module is not available in sandbox",
-            "Parse error: Expected 'import', found newline at byte range 6..6",
+            "Parse error: Expected 'import', found newline",
         ];
         let expected_error_kinds: Vec<ErrorKind> =
             vec![ErrorKind::MissingModuleAttribute, ErrorKind::ParseError];
