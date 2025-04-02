@@ -674,6 +674,70 @@ def f(n: N):
 );
 
 testcase!(
+    bug = "PyTorch TODO: Should we admit this program and should reveal_type be Any",
+    test_attr_unknown,
+    r#"
+class Op:
+    default: str
+class Namespace:
+    def __getattr__(self, op_name):
+        if op_name == "__file__":
+            return "test"
+        return Op()
+x = Namespace().some_op.default # E:  Object of class `str` has no attribute `default
+
+"#,
+);
+
+testcase!(
+    bug = "PyTorch TODO: Should we admit this program and should reveal_type be Any",
+    test_attr_unknown,
+    r#"
+class Op:
+    default: str
+class Namespace:
+    def __getattr__(self, op_name):
+        if op_name == "__file__":
+            return "test"
+        return Op()
+x = Namespace().some_op.default # E:  Object of class `str` has no attribute `default
+
+"#,
+);
+
+testcase!(
+    bug = "PyTorch TODO: Should we admit this program and should reveal_type be Any",
+    test_attr_unknown,
+    r#"
+class Op:
+    default: str
+class Namespace:
+    def __getattr__(self, op_name):
+        if op_name == "__file__":
+            return "test"
+        return Op()
+x = Namespace().some_op.default # E:  Object of class `str` has no attribute `default
+
+"#,
+);
+
+testcase!(
+    bug = "PyTorch TODO: Should we admit this program and should reveal_type be Any",
+    test_attr_unknown,
+    r#"
+class Op:
+    default: str
+class Namespace:
+    def __getattr__(self, op_name):
+        if op_name == "__file__":
+            return "test"
+        return Op()
+x = Namespace().some_op.default # E:  Object of class `str` has no attribute `default
+
+"#,
+);
+
+testcase!(
     test_with,
     r#"
 class C:
@@ -716,5 +780,15 @@ def f(x, key, dict):
     for param in x:
         if key in dict:
             pass
+    "#,
+);
+
+testcase!(
+    test_classvar_no_value,
+    r#"
+from typing import ClassVar, assert_type
+class C:
+    x: ClassVar[int]
+assert_type(C.x, int)
     "#,
 );
