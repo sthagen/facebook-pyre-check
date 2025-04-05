@@ -15,38 +15,19 @@
 
 /* You can override the default Infima variables here. */
 
-@font-face {
-  font-family: 'Source Serif Pro';
-  src: url('/fonts/SourceSerifPro-Regular.ttf') format('truetype');
-  font-weight: normal;
-  font-style: normal;
-}
-
-@font-face {
-  font-family: 'Source Serif Pro';
-  src: url('/fonts/SourceSerifPro-Bold.ttf') format('truetype');
-  font-weight: bold;
-  font-style: normal;
-}
-
-@font-face {
-  font-family: 'Montserrat';
-  src: url('/fonts/Montserrat-Regular.ttf') format('truetype');
-  font-weight: normal;
-  font-style: normal;
-}
-
 
 :root {
   --ifm-navbar-height: 3.5rem;
   --ifm-navbar-padding-vertical: 0;
 
   /* color palette */
-  --color-background: #384048;
+  --color-background: #2d343a;
   --color-primary: #fe9801;
   --color-secondary: #ff7701;
   --color-accent: #ff4300;
   --color-text: #efefef;
+  --dark-yellow: #e59c24;
+  --light-grey: #7f8790;
 }
 
 .docusaurus-highlight-code-line {

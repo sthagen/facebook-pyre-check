@@ -189,15 +189,17 @@ def compare_conformance_output(
 
 
 def get_pyre2_command() -> list[str]:
-    with resources.path(__package__, "pyre2.exe") as pyre2_path:
-        return [
-            str(pyre2_path),
-            "check",
-            "--expectations",
-            # We seem to be a bit non-deterministic in some places, so let's disable
-            # parallelism for now.
-            "--threads=1",
-        ]
+    pyre2_path = resources.files(__package__).joinpath("pyrefly.exe")
+    return [
+        str(pyre2_path),
+        "check",
+        "--expectations",
+        # We seem to be a bit non-deterministic in some places, so let's disable
+        # parallelism for now.
+        "--threads=1",
+        "--python-version",
+        "3.13.0",
+    ]
 
 
 def get_conformance_output(directory: str) -> Dict[str, List[Dict[str, Any]]]:
@@ -232,7 +234,8 @@ def get_conformance_output(directory: str) -> Dict[str, List[Dict[str, Any]]]:
                 for error in errors["errors"]:
                     path = error["path"]
                     del error["path"]
-                    outputs[os.path.normpath(path)].append(error)
+                    relative_normalized_path = os.path.relpath(os.path.normpath(path))
+                    outputs[relative_normalized_path].append(error)
         except Exception:
             logger.error("Failed to get conformance output\n{}\n".format(stderr))
     return outputs
@@ -241,7 +244,7 @@ def get_conformance_output(directory: str) -> Dict[str, List[Dict[str, Any]]]:
 def get_conformance_output_separate(directory: str) -> Dict[str, List[Dict[str, Any]]]:
     """
     Run minpyre on conformance test suite, parse and group the output by file
-    This function runs Pyre2 separately for each file, which is slower but more robust to failures
+    This function runs Pyrefly separately for each file, which is slower but more robust to failures
     """
     files_to_check = []
     for root, _, files in os.walk(directory):
@@ -269,7 +272,10 @@ def get_conformance_output_separate(directory: str) -> Dict[str, List[Dict[str, 
                     for error in errors["errors"]:
                         path = error["path"]
                         del error["path"]
-                        outputs[os.path.normpath(path)].append(error)
+                        relative_normalized_path = os.path.relpath(
+                            os.path.normpath(path), directory
+                        )
+                        outputs[relative_normalized_path].append(error)
             except Exception:
                 logger.error(
                     "Failed to get conformance output for {}\n{}\n".format(file, stderr)
@@ -297,7 +303,7 @@ def main() -> None:
         "--mode", "-m", choices=["update", "check", "compare"], default="update"
     )
     parser.add_argument(
-        "--separate", action="store_true", help="run Pyre2 separately for each case"
+        "--separate", action="store_true", help="run Pyrefly separately for each case"
     )
     args = parser.parse_args()
     if args.separate:

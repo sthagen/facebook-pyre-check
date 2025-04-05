@@ -17,6 +17,8 @@ import {
     type TypeCheckerValue,
 } from './PerformanceComparisonTypes';
 
+import PerformanceComparisonChartTimer from './PerformanceComparisonChartTimer';
+
 interface TypeCheckerData {
     typechecker: TypeCheckerValue;
     durationInSeconds: number;
@@ -55,10 +57,11 @@ export default function PerformanceComparisonChart({
                         <ProgressBar
                             durationInSeconds={typechecker.durationInSeconds}
                             maxDurationInSeconds={maxDuration}
+                            highlight={typechecker.typechecker === TypeChecker.PYREFLY}
                         />
                     </div>
                     <span {...stylex.props(styles.duration)}>
-                        <strong>{`${typechecker.durationInSeconds}s`}</strong>
+                        <PerformanceComparisonChartTimer targetSeconds={typechecker.durationInSeconds} />
                     </span>
                 </div>
             ))}
@@ -80,6 +83,7 @@ const styles = stylex.create({
     progressBarContainer: {
         flexGrow: 1,
         marginRight: 20,
+        paddingTop: '8px'
     },
     duration: {
         marginLeft: 'auto',

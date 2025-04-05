@@ -21,7 +21,8 @@ use crate::module::module_name::ModuleName;
 use crate::types::callable::Function;
 use crate::types::class::TArgs;
 use crate::types::qname::QName;
-use crate::types::quantified::Quantified;
+use crate::types::type_info::TypeInfo;
+use crate::types::type_var::Restriction;
 use crate::types::types::AnyStyle;
 use crate::types::types::BoundMethod;
 use crate::types::types::NeverStyle;
@@ -78,7 +79,6 @@ impl ClassInfo {
 #[derive(Debug, Clone, Default)]
 pub struct TypeDisplayContext<'a> {
     classes: SmallMap<&'a Name, ClassInfo>,
-    quantifieds: SmallMap<Quantified, &'a Name>,
 }
 
 impl<'a> TypeDisplayContext<'a> {
@@ -110,16 +110,6 @@ impl<'a> TypeDisplayContext<'a> {
                     Entry::Occupied(mut e) => e.get_mut().update(qname),
                 }
             }
-            let tparams = match t {
-                Type::ClassDef(cls) => Some(cls.tparams()),
-                Type::Forall(forall) => Some(&forall.tparams),
-                _ => None,
-            };
-            if let Some(tparams) = tparams {
-                for tparam in tparams.iter() {
-                    self.quantifieds.insert(tparam.quantified, &tparam.name);
-                }
-            }
         })
     }
 
@@ -143,13 +133,6 @@ impl<'a> TypeDisplayContext<'a> {
         match self.classes.get(&qname.id()) {
             Some(info) => info.fmt(qname, f),
             None => ClassInfo::qualified().fmt(qname, f), // we should not get here, if we do, be safe
-        }
-    }
-
-    fn fmt_quantified(&self, quantified: &Quantified, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.quantifieds.get(quantified) {
-            Some(name) => write!(f, "{name}"),
-            None => write!(f, "{quantified}"),
         }
     }
 
@@ -184,19 +167,41 @@ impl<'a> TypeDisplayContext<'a> {
                 write!(f, "]")
             }
             Type::TypeVar(t) => {
-                write!(f, "TypeVar[")?;
+                write!(f, "TypeVar(")?;
                 self.fmt_qname(t.qname(), f)?;
-                write!(f, "]")
+                if let Some(default) = t.default() {
+                    write!(f, ", default={default}")?;
+                }
+                match t.restriction() {
+                    Restriction::Unrestricted => {}
+                    Restriction::Bound(bound) => {
+                        write!(f, ", bound={bound}")?;
+                    }
+                    Restriction::Constraints(constraints) => {
+                        write!(f, ", constraints=({})", commas_iter(|| constraints.iter()))?;
+                    }
+                }
+                match t.variance() {
+                    Some(variance) => write!(f, ", {variance}")?,
+                    None => write!(f, ", infer_variance")?,
+                }
+                write!(f, ")")
             }
             Type::TypeVarTuple(t) => {
-                write!(f, "TypeVarTuple[")?;
+                write!(f, "TypeVarTuple(")?;
                 self.fmt_qname(t.qname(), f)?;
-                write!(f, "]")
+                if let Some(default) = t.default() {
+                    write!(f, ", default={default}")?;
+                }
+                write!(f, ")")
             }
             Type::ParamSpec(t) => {
-                write!(f, "ParamSpec[")?;
+                write!(f, "ParamSpec(")?;
                 self.fmt_qname(t.qname(), f)?;
-                write!(f, "]")
+                if let Some(default) = t.default() {
+                    write!(f, ", default={default}")?;
+                }
+                write!(f, ")")
             }
             Type::SelfType(cls) => {
                 write!(f, "Self@")?;
@@ -223,9 +228,9 @@ impl<'a> TypeDisplayContext<'a> {
                 write!(f, "]")
             }
             Type::ParamSpecValue(x) => {
-                write!(f, "(")?;
+                write!(f, "[")?;
                 x.fmt_with_type(f, &|t| self.display(t))?;
-                write!(f, ")")
+                write!(f, "]")
             }
             Type::BoundMethod(box BoundMethod { obj, func }) => {
                 write!(
@@ -290,16 +295,12 @@ impl<'a> TypeDisplayContext<'a> {
             ),
             Type::Module(m) => write!(f, "Module[{m}]"),
             Type::Var(var) => write!(f, "{var}"),
-            Type::Quantified(var) => self.fmt_quantified(var, f),
+            Type::Quantified(var) => write!(f, "{var}"),
             Type::Args(q) => {
-                write!(f, "Args[")?;
-                self.fmt_quantified(q, f)?;
-                write!(f, "]")
+                write!(f, "Args[{q}]")
             }
             Type::Kwargs(q) => {
-                write!(f, "Kwargs[")?;
-                self.fmt_quantified(q, f)?;
-                write!(f, "]")
+                write!(f, "Kwargs[{q}]")
             }
             Type::SpecialForm(x) => write!(f, "{x}"),
             Type::Ellipsis => write!(f, "Ellipsis"),
@@ -343,6 +344,12 @@ impl Display for Type {
     }
 }
 
+impl Display for TypeInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TypeDisplayContext::new(&[self.ty()]).fmt(self.ty(), f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -364,6 +371,7 @@ mod tests {
     use crate::types::class::ClassType;
     use crate::types::literal::Lit;
     use crate::types::quantified::Quantified;
+    use crate::types::quantified::QuantifiedInfo;
     use crate::types::quantified::QuantifiedKind;
     use crate::types::tuple::Tuple;
     use crate::types::type_var::Restriction;
@@ -391,10 +399,15 @@ mod tests {
 
     fn fake_tparam(uniques: &UniqueFactory, name: &str, kind: QuantifiedKind) -> TParamInfo {
         TParamInfo {
-            name: Name::new(name),
-            quantified: Quantified::new(uniques.fresh(), kind),
-            restriction: Restriction::Unrestricted,
-            default: None,
+            quantified: Quantified::new(
+                uniques.fresh(),
+                QuantifiedInfo {
+                    name: Name::new(name),
+                    kind,
+                    restriction: Restriction::Unrestricted,
+                    default: None,
+                },
+            ),
             variance: Some(Variance::Invariant),
         }
     }
@@ -481,11 +494,11 @@ mod tests {
 
         assert_eq!(
             Type::Union(vec![t1.to_type(), t2.to_type()]).to_string(),
-            "TypeVar[bar.foo@1:2] | TypeVar[bar.foo@1:3]"
+            "TypeVar(bar.foo@1:2, invariant) | TypeVar(bar.foo@1:3, invariant)"
         );
         assert_eq!(
             Type::Union(vec![t1.to_type(), t3.to_type()]).to_string(),
-            "TypeVar[foo] | TypeVar[qux]"
+            "TypeVar(foo, invariant) | TypeVar(qux, invariant)"
         );
     }
 

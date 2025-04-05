@@ -155,10 +155,6 @@ module ReturnType = struct
     |> fun elements -> `List elements
 end
 
-let class_method_decorators = ["classmethod"; "abstractclassmethod"; "abc.abstractclassmethod"]
-
-let static_method_decorators = ["staticmethod"; "abstractstaticmethod"; "abc.abstractstaticmethod"]
-
 module CallableToDecoratorsMap = struct
   type decorators = {
     decorators: Expression.t list;
@@ -217,8 +213,9 @@ module CallableToDecoratorsMap = struct
       "click.make_pass_decorator";
       "click.decorators.pass_meta_key";
     ]
-    @ class_method_decorators
-    @ static_method_decorators
+    @ Target.class_method_decorators
+    @ Target.static_method_decorators
+    @ Recognized.ignored_decorators_for_higher_order
     |> SerializableStringSet.of_list
 
 
@@ -243,15 +240,8 @@ module CallableToDecoratorsMap = struct
 
   let collect_decorators ~callables_to_definitions_map callable =
     callable
-    |> Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map
-    >>= fun {
-              Target.DefinesSharedMemory.Define.qualifier = _;
-              define =
-                {
-                  Node.value = { Define.signature = { decorators; _ }; _ };
-                  location = define_location;
-                };
-            } ->
+    |> Target.CallablesSharedMemory.ReadOnly.get_signature callables_to_definitions_map
+    >>= fun { Target.CallablesSharedMemory.Signature.decorators; location = define_location; _ } ->
     let decorators = decorators |> List.filter ~f:filter_decorator |> List.rev in
     if List.is_empty decorators then
       None
@@ -394,103 +384,6 @@ module CallableToDecoratorsMap = struct
       Target.set_kind Target.Decorated callable
     else
       callable
-end
-
-(** Whether a method is an instance method, or a class method, or a static method. *)
-module MethodKind = struct
-  type t =
-    | Static
-    | Class
-    | Instance
-
-  module SharedMemory = struct
-    module T =
-      Hack_parallel.Std.SharedMemory.FirstClassWithKeys.Make
-        (Target.SharedMemoryKey)
-        (struct
-          type nonrec t = t
-
-          let prefix = Hack_parallel.Std.Prefix.make ()
-
-          let description = "method kinds"
-        end)
-
-    type t = T.t
-
-    module ReadOnly = T.ReadOnly
-
-    let read_only = T.read_only
-
-    let compute_method_kind ~callables_to_definitions_map target =
-      match Target.get_regular target with
-      | Target.Regular.Method { method_name = "__new__"; _ } -> Some Static
-      | Target.Regular.Method _ as target ->
-          target
-          |> Target.from_regular
-          |> Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map
-          >>| fun {
-                    Target.DefinesSharedMemory.Define.qualifier = _;
-                    define = { Node.value = define; _ };
-                  } ->
-          if List.exists class_method_decorators ~f:(Ast.Statement.Define.has_decorator define) then
-            Class
-          else if
-            List.exists static_method_decorators ~f:(Ast.Statement.Define.has_decorator define)
-          then
-            Static
-          else
-            Instance
-      | _ -> failwithf "Unexpected target: %s" (Target.show_pretty_with_kind target) ()
-
-
-    let empty = T.create
-
-    let from_targets ~scheduler ~scheduler_policy ~callables_to_definitions_map targets =
-      let shared_memory = T.create () in
-      let shared_memory_add_only = T.add_only shared_memory in
-      let empty_shared_memory = T.AddOnly.create_empty shared_memory_add_only in
-      let map =
-        List.fold ~init:empty_shared_memory ~f:(fun shared_memory target ->
-            match compute_method_kind ~callables_to_definitions_map target with
-            | Some method_kind -> T.AddOnly.add shared_memory target method_kind
-            | None -> shared_memory)
-      in
-      let is_method target =
-        match Target.get_regular target with
-        | Target.Regular.Method _ -> true
-        | _ -> false
-      in
-      let shared_memory_add_only =
-        Scheduler.map_reduce
-          scheduler
-          ~policy:scheduler_policy
-          ~initial:shared_memory_add_only
-          ~map
-          ~reduce:(fun left right ->
-            T.AddOnly.merge_same_handle_disjoint_keys ~smaller:left ~larger:right)
-          ~inputs:(List.filter targets ~f:is_method)
-          ()
-      in
-      T.from_add_only shared_memory_add_only
-
-
-    (* Return `is_class_method` and `is_static_method`. *)
-    let get_method_kind shared_memory target =
-      (* For `Override`, we just check its corresponding method. *)
-      let method_target = target |> Target.get_regular |> Target.Regular.override_to_method in
-      match
-        ( method_target |> Target.from_regular |> T.ReadOnly.get ~cache:true shared_memory,
-          method_target )
-      with
-      | None, Target.Regular.Method { method_name = "__new__"; _ } -> false, true
-      | None, _ -> false, false
-      | Some Class, _ -> true, false
-      | Some Static, _ -> false, true
-      | Some Instance, _ -> false, false
-
-
-    let cleanup = T.cleanup ~clean_old:true
-  end
 end
 
 let is_implicit_receiver ~is_static_method ~is_class_method ~explicit_receiver target =
@@ -1923,8 +1816,7 @@ struct
     let bindings = ["callable", `String (Target.external_name callable)] in
     let resolve_module_path = Option.value ~default:(fun _ -> None) resolve_module_path in
     callable
-    |> Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map
-    >>| (fun { Target.DefinesSharedMemory.Define.qualifier; _ } -> qualifier)
+    |> Target.CallablesSharedMemory.ReadOnly.get_qualifier callables_to_definitions_map
     >>= resolve_module_path
     >>| (function
           | { RepositoryPath.filename = Some filename; _ } ->
@@ -2234,7 +2126,7 @@ module CalleeKind = struct
     | Method of { is_direct_call: bool }
     | Function
 
-  let rec from_callee ~pyre_in_context callee callee_type =
+  let rec from_callee ~pyre_in_context ~callables_to_definitions_map callee callee_type =
     let pyre_api = PyrePysaEnvironment.InContext.pyre_api pyre_in_context in
     let is_super_call =
       let rec is_super callee =
@@ -2253,7 +2145,12 @@ module CalleeKind = struct
     | Type.Callable _ -> (
         match Node.value callee with
         | Expression.Name (Name.Attribute { base; _ }) ->
-            let parent_type = CallResolution.resolve_ignoring_errors ~pyre_in_context base in
+            let parent_type =
+              CallResolution.resolve_ignoring_errors
+                ~pyre_in_context
+                ~callables_to_definitions_map
+                base
+            in
             let is_class () =
               let primitive, _ = Type.split parent_type in
               Type.primitive_name primitive
@@ -2267,7 +2164,8 @@ module CalleeKind = struct
             else
               Function
         | _ -> Function)
-    | Type.Union (callee_type :: _) -> from_callee ~pyre_in_context callee callee_type
+    | Type.Union (callee_type :: _) ->
+        from_callee ~pyre_in_context ~callables_to_definitions_map callee callee_type
     | _ ->
         (* We must be dealing with a callable class. *)
         Method { is_direct_call = false }
@@ -2370,7 +2268,7 @@ let compute_indirect_targets ~pyre_in_context ~override_graph ~receiver_type imp
 
 let rec resolve_callees_from_type
     ~debug
-    ~method_kinds
+    ~callables_to_definitions_map
     ~pyre_in_context
     ~override_graph
     ?(dunder_call = false)
@@ -2411,7 +2309,9 @@ let rec resolve_callees_from_type
             List.map
               ~f:(fun target ->
                 let is_class_method, is_static_method =
-                  MethodKind.SharedMemory.get_method_kind method_kinds target
+                  Target.CallablesSharedMemory.ReadOnly.get_method_kind
+                    callables_to_definitions_map
+                    target
                 in
                 CallTarget.create_with_default_index
                   ~implicit_dunder_call:dunder_call
@@ -2430,7 +2330,9 @@ let rec resolve_callees_from_type
             | _ -> Target.create_function name
           in
           let is_class_method, is_static_method =
-            MethodKind.SharedMemory.get_method_kind method_kinds target
+            Target.CallablesSharedMemory.ReadOnly.get_method_kind
+              callables_to_definitions_map
+              target
           in
           CallCallees.create
             ~call_targets:
@@ -2454,7 +2356,7 @@ let rec resolve_callees_from_type
   | Type.Parametric { name = "BoundMethod"; arguments = [Single callable; Single receiver_type] } ->
       resolve_callees_from_type
         ~debug
-        ~method_kinds
+        ~callables_to_definitions_map
         ~pyre_in_context
         ~override_graph
         ~receiver_type
@@ -2465,7 +2367,7 @@ let rec resolve_callees_from_type
       let first_targets =
         resolve_callees_from_type
           ~debug
-          ~method_kinds
+          ~callables_to_definitions_map
           ~pyre_in_context
           ~override_graph
           ~callee_kind
@@ -2476,7 +2378,7 @@ let rec resolve_callees_from_type
       List.fold elements ~init:first_targets ~f:(fun combined_targets new_target ->
           resolve_callees_from_type
             ~debug
-            ~method_kinds
+            ~callables_to_definitions_map
             ~pyre_in_context
             ~override_graph
             ?receiver_type
@@ -2485,7 +2387,12 @@ let rec resolve_callees_from_type
             new_target
           |> CallCallees.join combined_targets)
   | Type.Parametric { name = "type"; arguments = [Single class_type] } ->
-      resolve_constructor_callee ~debug ~method_kinds ~pyre_in_context ~override_graph class_type
+      resolve_constructor_callee
+        ~debug
+        ~callables_to_definitions_map
+        ~pyre_in_context
+        ~override_graph
+        class_type
       |> CallCallees.default_to_unresolved
            ~debug
            ~message:
@@ -2530,7 +2437,9 @@ let rec resolve_callees_from_type
                   |> Target.from_regular
                 in
                 let is_class_method, is_static_method =
-                  MethodKind.SharedMemory.get_method_kind method_kinds target
+                  Target.CallablesSharedMemory.ReadOnly.get_method_kind
+                    callables_to_definitions_map
+                    target
                 in
                 CallCallees.create
                   ~call_targets:
@@ -2552,7 +2461,7 @@ let rec resolve_callees_from_type
           if not dunder_call then
             resolve_callees_from_type
               ~debug
-              ~method_kinds
+              ~callables_to_definitions_map
               ~pyre_in_context
               ~override_graph
               ~return_type
@@ -2572,17 +2481,21 @@ let rec resolve_callees_from_type
 
 and resolve_callees_from_type_external
     ~pyre_in_context
-    ~method_kinds
+    ~callables_to_definitions_map
     ~override_graph
     ~return_type
     ?(dunder_call = false)
     callee
   =
-  let callee_type = CallResolution.resolve_ignoring_errors ~pyre_in_context callee in
-  let callee_kind = CalleeKind.from_callee ~pyre_in_context callee callee_type in
+  let callee_type =
+    CallResolution.resolve_ignoring_errors ~pyre_in_context ~callables_to_definitions_map callee
+  in
+  let callee_kind =
+    CalleeKind.from_callee ~pyre_in_context ~callables_to_definitions_map callee callee_type
+  in
   resolve_callees_from_type
     ~debug:false
-    ~method_kinds
+    ~callables_to_definitions_map
     ~pyre_in_context
     ~override_graph
     ~dunder_call
@@ -2591,7 +2504,13 @@ and resolve_callees_from_type_external
     callee_type
 
 
-and resolve_constructor_callee ~debug ~method_kinds ~pyre_in_context ~override_graph class_type =
+and resolve_constructor_callee
+    ~debug
+    ~callables_to_definitions_map
+    ~pyre_in_context
+    ~override_graph
+    class_type
+  =
   let meta_type = Type.class_type class_type in
   match
     ( CallResolution.resolve_attribute_access_ignoring_untracked
@@ -2612,7 +2531,7 @@ and resolve_constructor_callee ~debug ~method_kinds ~pyre_in_context ~override_g
       let new_callees =
         resolve_callees_from_type
           ~debug
-          ~method_kinds
+          ~callables_to_definitions_map
           ~pyre_in_context
           ~override_graph
           ~receiver_type:meta_type
@@ -2625,7 +2544,7 @@ and resolve_constructor_callee ~debug ~method_kinds ~pyre_in_context ~override_g
       let init_callees =
         resolve_callees_from_type
           ~debug
-          ~method_kinds
+          ~callables_to_definitions_map
           ~pyre_in_context
           ~override_graph
           ~receiver_type:meta_type
@@ -2661,7 +2580,7 @@ and resolve_constructor_callee ~debug ~method_kinds ~pyre_in_context ~override_g
 
 let resolve_callee_from_defining_expression
     ~debug
-    ~method_kinds
+    ~callables_to_definitions_map
     ~pyre_in_context
     ~override_graph
     ~callee:{ Node.value = callee; _ }
@@ -2678,7 +2597,7 @@ let resolve_callee_from_defining_expression
       >>| fun undecorated_signature ->
       resolve_callees_from_type
         ~debug
-        ~method_kinds
+        ~callables_to_definitions_map
         ~pyre_in_context
         ~override_graph
         ~return_type
@@ -2728,7 +2647,7 @@ let resolve_callee_from_defining_expression
           Some
             (resolve_callees_from_type
                ~debug
-               ~method_kinds
+               ~callables_to_definitions_map
                ~pyre_in_context
                ~override_graph
                ~return_type
@@ -2738,14 +2657,18 @@ let resolve_callee_from_defining_expression
       | _ -> None)
 
 
-let resolve_stringify_call ~pyre_in_context expression =
+let resolve_stringify_call ~pyre_in_context ~callables_to_definitions_map expression =
   let string_callee =
     Node.create_with_default_location
       (Expression.Name (Name.Attribute { base = expression; attribute = "__str__"; special = true }))
   in
   try
     match
-      CallResolution.resolve_ignoring_errors ~pyre_in_context string_callee |> Type.callable_name
+      CallResolution.resolve_ignoring_errors
+        ~pyre_in_context
+        ~callables_to_definitions_map
+        string_callee
+      |> Type.callable_name
     with
     | Some name when Reference.equal name (Reference.create "object.__str__") ->
         (* Call resolved to object.__str__, fallback to calling __repr__ if it exists. *)
@@ -2757,7 +2680,11 @@ let resolve_stringify_call ~pyre_in_context expression =
 
 (* Rewrite certain calls for the interprocedural analysis (e.g, pysa).
  * This may or may not be sound depending on the analysis performed. *)
-let transform_special_calls ~pyre_in_context { Call.callee; arguments } =
+let transform_special_calls
+    ~pyre_in_context
+    ~callables_to_definitions_map
+    { Call.callee; arguments }
+  =
   let attribute_access base method_name =
     {
       Node.value =
@@ -2769,7 +2696,11 @@ let transform_special_calls ~pyre_in_context { Call.callee; arguments } =
   | Name (Name.Identifier "str"), [{ Call.Argument.value; _ }] ->
       (* str() takes an optional encoding and errors - if these are present, the call shouldn't be
          redirected: https://docs.python.org/3/library/stdtypes.html#str *)
-      let callee = attribute_access value (resolve_stringify_call ~pyre_in_context value) in
+      let callee =
+        attribute_access
+          value
+          (resolve_stringify_call ~pyre_in_context ~callables_to_definitions_map value)
+      in
       Some { Call.callee; arguments = [] }
   | Name (Name.Identifier "iter"), [{ Call.Argument.value; _ }] ->
       (* Only handle `iter` with a single argument here. *)
@@ -2812,8 +2743,8 @@ let transform_special_calls ~pyre_in_context { Call.callee; arguments } =
   | _ -> SpecialCallResolution.redirect ~pyre_in_context { Call.callee; arguments }
 
 
-let redirect_special_calls ~pyre_in_context call =
-  match transform_special_calls ~pyre_in_context call with
+let redirect_special_calls ~pyre_in_context ~callables_to_definitions_map call =
+  match transform_special_calls ~pyre_in_context ~callables_to_definitions_map call with
   | Some call -> call
   | None ->
       (* Rewrite certain calls using the same logic used in the type checker.
@@ -2821,7 +2752,7 @@ let redirect_special_calls ~pyre_in_context call =
       PyrePysaEnvironment.InContext.redirect_special_calls pyre_in_context call
 
 
-let redirect_expressions ~pyre_in_context ~location = function
+let redirect_expressions ~pyre_in_context ~callables_to_definitions_map ~location = function
   | Expression.BinaryOperator { BinaryOperator.operator; left; right } ->
       Expression.Call
         {
@@ -2851,7 +2782,7 @@ let redirect_expressions ~pyre_in_context ~location = function
           arguments = [{ Call.Argument.value = index; name = None }];
         }
   | Expression.Call call ->
-      let call = redirect_special_calls ~pyre_in_context call in
+      let call = redirect_special_calls ~pyre_in_context ~callables_to_definitions_map call in
       Expression.Call call
   | Expression.Slice slice -> Slice.lowered ~location slice |> Node.value
   | expression -> expression
@@ -2906,7 +2837,7 @@ let redirect_assignments = function
 
 let resolve_recognized_callees
     ~debug
-    ~method_kinds
+    ~callables_to_definitions_map
     ~pyre_in_context
     ~override_graph
     ~callee
@@ -2924,7 +2855,7 @@ let resolve_recognized_callees
     when Set.mem Recognized.allowlisted_callable_class_decorators name ->
       resolve_callee_from_defining_expression
         ~debug
-        ~method_kinds
+        ~callables_to_definitions_map
         ~pyre_in_context
         ~override_graph
         ~callee
@@ -2934,11 +2865,11 @@ let resolve_recognized_callees
     when Set.mem Recognized.allowlisted_callable_class_decorators name ->
       (* Because of the special class, we don't get a bound method & lose the self argument for
          non-classmethod LRU cache wrappers. Reconstruct self in this case. *)
-      CallResolution.resolve_ignoring_errors ~pyre_in_context base
+      CallResolution.resolve_ignoring_errors ~pyre_in_context ~callables_to_definitions_map base
       |> fun implementing_class ->
       resolve_callee_from_defining_expression
         ~debug
-        ~method_kinds
+        ~callables_to_definitions_map
         ~pyre_in_context
         ~override_graph
         ~callee
@@ -2967,13 +2898,20 @@ let resolve_recognized_callees
   >>| fun call_callees -> { call_callees with recognized_call = CallCallees.RecognizedCall.True }
 
 
-let resolve_callee_ignoring_decorators ~debug ~pyre_in_context ~override_graph ~return_type callee =
+let resolve_callee_ignoring_decorators
+    ~debug
+    ~pyre_in_context
+    ~callables_to_definitions_map
+    ~override_graph
+    ~return_type
+    callee
+  =
   let pyre_api = PyrePysaEnvironment.InContext.pyre_api pyre_in_context in
   let return_type () = ReturnType.from_annotation ~pyre_api (Lazy.force return_type) in
   let contain_class_method signatures =
     signatures
     |> List.exists ~f:(fun signature ->
-           List.exists class_method_decorators ~f:(Define.Signature.has_decorator signature))
+           List.exists Target.class_method_decorators ~f:(Define.Signature.has_decorator signature))
   in
   let log format =
     if debug then
@@ -3060,7 +2998,9 @@ let resolve_callee_ignoring_decorators ~debug ~pyre_in_context ~override_graph ~
     | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
         (* Resolve `base.attribute` by looking up the type of `base` or the types of its parent
            classes in the Method Resolution Order. *)
-        match CallResolution.resolve_ignoring_errors ~pyre_in_context base with
+        match
+          CallResolution.resolve_ignoring_errors ~pyre_in_context ~callables_to_definitions_map base
+        with
         (* The base expression is a class. *)
         | Type.Parametric { name = "type"; arguments = [Single (Type.Primitive class_name)] }
         (* The base expression is a class that has type parameters, such as `class A(Generic[T])`
@@ -3256,13 +3196,15 @@ let log ~debug format =
 
 let resolve_regular_callees
     ~debug
-    ~method_kinds
+    ~callables_to_definitions_map
     ~pyre_in_context
     ~override_graph
     ~return_type
     ~callee
   =
-  let callee_type = CallResolution.resolve_ignoring_errors ~pyre_in_context callee in
+  let callee_type =
+    CallResolution.resolve_ignoring_errors ~pyre_in_context ~callables_to_definitions_map callee
+  in
   log
     ~debug
     "Checking if `%a` is a callable, resolved type is `%a`"
@@ -3273,7 +3215,7 @@ let resolve_regular_callees
   let recognized_callees =
     resolve_recognized_callees
       ~debug
-      ~method_kinds
+      ~callables_to_definitions_map
       ~pyre_in_context
       ~override_graph
       ~callee
@@ -3287,11 +3229,13 @@ let resolve_regular_callees
     let () = log ~debug "Recognized special callee:@,`%a`" CallCallees.pp recognized_callees in
     recognized_callees
   else
-    let callee_kind = CalleeKind.from_callee ~pyre_in_context callee callee_type in
+    let callee_kind =
+      CalleeKind.from_callee ~pyre_in_context ~callables_to_definitions_map callee callee_type
+    in
     let callees_from_type =
       resolve_callees_from_type
         ~debug
-        ~method_kinds
+        ~callables_to_definitions_map
         ~pyre_in_context
         ~override_graph
         ~return_type
@@ -3304,7 +3248,13 @@ let resolve_regular_callees
       in
       callees_from_type
     else
-      resolve_callee_ignoring_decorators ~debug ~pyre_in_context ~override_graph ~return_type callee
+      resolve_callee_ignoring_decorators
+        ~debug
+        ~pyre_in_context
+        ~callables_to_definitions_map
+        ~override_graph
+        ~return_type
+        callee
       |> function
       | Result.Ok call_targets -> CallCallees.create ~call_targets ()
       | Result.Error reason ->
@@ -3496,7 +3446,6 @@ let resolve_identifier ~define ~pyre_in_context ~identifier =
 let resolve_callees
     ~debug
     ~pyre_in_context
-    ~method_kinds
     ~callables_to_definitions_map
     ~override_graph
     ~call:({ Call.callee; arguments } as call)
@@ -3518,7 +3467,7 @@ let resolve_callees
   let regular_callees =
     resolve_regular_callees
       ~debug
-      ~method_kinds
+      ~callables_to_definitions_map
       ~pyre_in_context
       ~override_graph
       ~return_type
@@ -3562,13 +3511,11 @@ let resolve_callees
         } -> (
             match regular_callees.call_targets with
             | [callee] when Target.is_function_or_method callee.target ->
-                Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map callee.target
-                >>| (fun {
-                           Target.DefinesSharedMemory.Define.define = { Node.value = define; _ };
-                           _;
-                         } ->
-                      let { Define.signature = { Define.Signature.parameters; _ }; _ } = define in
-                      Define.is_stub define
+                Target.CallablesSharedMemory.ReadOnly.get_signature
+                  callables_to_definitions_map
+                  callee.target
+                >>| (fun { Target.CallablesSharedMemory.Signature.parameters; is_stub; _ } ->
+                      is_stub
                       || not (List.exists parameters ~f:(parameter_has_annotation callable_class)))
                 |> Option.value ~default:true
             | _ -> true)
@@ -3583,7 +3530,7 @@ let resolve_callees
           ~debug
           ~pyre_in_context
           ~override_graph
-          ~method_kinds
+          ~callables_to_definitions_map
           ~return_type:(return_type_for_call ~pyre_in_context ~callee:argument)
           ~callee:argument
         |> filter_implicit_dunder_calls
@@ -3609,6 +3556,7 @@ let resolve_callees
 let resolve_attribute_access
     ~pyre_in_context
     ~debug
+    ~callables_to_definitions_map
     ~override_graph
     ~define_name
     ~attribute_targets
@@ -3617,7 +3565,9 @@ let resolve_attribute_access
     ~special
     ~setter
   =
-  let base_type_info = CallResolution.resolve_ignoring_errors ~pyre_in_context base in
+  let base_type_info =
+    CallResolution.resolve_ignoring_errors ~pyre_in_context ~callables_to_definitions_map base
+  in
 
   log
     ~debug
@@ -3724,8 +3674,7 @@ module NodeVisitorContext = struct
     override_graph: OverrideGraph.SharedMemory.ReadOnly.t option;
     missing_flow_type_analysis: MissingFlowTypeAnalysis.t option;
     attribute_targets: Target.HashSet.t;
-    method_kinds: MethodKind.SharedMemory.ReadOnly.t;
-    callables_to_definitions_map: Target.DefinesSharedMemory.ReadOnly.t;
+    callables_to_definitions_map: Target.CallablesSharedMemory.ReadOnly.t;
   }
 end
 
@@ -3749,7 +3698,6 @@ module CalleeVisitor = struct
                missing_flow_type_analysis;
                define_name;
                attribute_targets;
-               method_kinds;
                callables_to_definitions_map;
                _;
              };
@@ -3770,13 +3718,14 @@ module CalleeVisitor = struct
         callees_at_location :=
           DefineCallGraph.add_callees ~expression_identifier ~location ~callees !callees_at_location
       in
-      let value = redirect_expressions ~pyre_in_context ~location value in
+      let value =
+        redirect_expressions ~pyre_in_context ~callables_to_definitions_map ~location value
+      in
       let () =
         match value with
         | Expression.Call call ->
             resolve_callees
               ~debug
-              ~method_kinds
               ~callables_to_definitions_map
               ~pyre_in_context
               ~override_graph
@@ -3794,6 +3743,7 @@ module CalleeVisitor = struct
             resolve_attribute_access
               ~pyre_in_context
               ~debug
+              ~callables_to_definitions_map
               ~override_graph
               ~define_name
               ~attribute_targets
@@ -3812,10 +3762,11 @@ module CalleeVisitor = struct
         | Expression.ComparisonOperator comparison -> (
             match ComparisonOperator.override ~location comparison with
             | Some { Node.value = Expression.Call call; _ } ->
-                let call = redirect_special_calls ~pyre_in_context call in
+                let call =
+                  redirect_special_calls ~pyre_in_context ~callables_to_definitions_map call
+                in
                 resolve_callees
                   ~debug
-                  ~method_kinds
                   ~callables_to_definitions_map
                   ~pyre_in_context
                   ~override_graph
@@ -3851,7 +3802,12 @@ module CalleeVisitor = struct
                       =
                       let { CallCallees.call_targets; _ } =
                         let callee =
-                          let method_name = resolve_stringify_call ~pyre_in_context expression in
+                          let method_name =
+                            resolve_stringify_call
+                              ~pyre_in_context
+                              ~callables_to_definitions_map
+                              expression
+                          in
                           {
                             Node.value =
                               Expression.Name
@@ -3862,7 +3818,7 @@ module CalleeVisitor = struct
                         in
                         resolve_regular_callees
                           ~debug
-                          ~method_kinds
+                          ~callables_to_definitions_map
                           ~pyre_in_context
                           ~override_graph
                           ~return_type:(lazy Type.string)
@@ -3910,6 +3866,7 @@ module CalleeVisitor = struct
             resolve_attribute_access
               ~pyre_in_context
               ~debug
+              ~callables_to_definitions_map
               ~override_graph
               ~define_name
               ~attribute_targets
@@ -3951,6 +3908,7 @@ module CalleeVisitor = struct
             resolve_attribute_access
               ~pyre_in_context
               ~debug
+              ~callables_to_definitions_map
               ~override_graph
               ~define_name
               ~attribute_targets
@@ -4199,18 +4157,6 @@ struct
   end)
 end
 
-let formal_arguments_from_non_stub_define
-    ({ Define.signature = { Define.Signature.parameters; _ }; _ } as define)
-  =
-  if Define.is_stub define then
-    None
-  else
-    Some
-      (parameters
-      |> TaintAccessPath.normalize_parameters
-      |> List.map ~f:(fun { TaintAccessPath.NormalizedParameter.root; _ } -> root))
-
-
 (* The result of finding higher order function callees inside a callable. *)
 module HigherOrderCallGraph = struct
   type t = {
@@ -4265,12 +4211,12 @@ module HigherOrderCallGraph = struct
 
     let create_root_from_identifier identifier = TaintAccessPath.Root.Variable identifier
 
-    let initialize_from_roots ~method_kinds alist =
+    let initialize_from_roots ~callables_to_definitions_map alist =
       alist
       |> List.map ~f:(fun (root, target) ->
              (* ASTs use `TaintAccessPath.parameter_prefix` to distinguish local variables from
-                parameters, but using `formal_arguments_from_non_stub_define` does not result in
-                creating parameterized targets whose parameter names contain
+                parameters, but using parameters from the define does not result in creating
+                parameterized targets whose parameter names contain
                 `TaintAccessPath.parameter_prefix`. To be consistent, we use the former. In
                 addition, we treat formal arguments and local variables as the same variant under
                 `TaintAccessPath.Root`, so that we can look up the value bound to an `Identifier`
@@ -4284,7 +4230,9 @@ module HigherOrderCallGraph = struct
                | None -> root
              in
              let is_class_method, is_static_method =
-               MethodKind.SharedMemory.get_method_kind method_kinds target
+               Target.CallablesSharedMemory.ReadOnly.get_method_kind
+                 callables_to_definitions_map
+                 target
              in
              ( root,
                target
@@ -4301,10 +4249,12 @@ module HigherOrderCallGraph = struct
       |> of_list
 
 
-    let initialize_from_callable ~method_kinds = function
+    let initialize_from_callable ~callables_to_definitions_map = function
       | Target.Regular _ -> bottom
       | Target.Parameterized { parameters; _ } ->
-          parameters |> Target.ParameterMap.to_alist |> initialize_from_roots ~method_kinds
+          parameters
+          |> Target.ParameterMap.to_alist
+          |> initialize_from_roots ~callables_to_definitions_map
   end
 
   module MakeFixpoint (Context : sig
@@ -4323,7 +4273,7 @@ module HigherOrderCallGraph = struct
 
     val callable : Target.t option
 
-    val callables_to_definitions_map : Target.DefinesSharedMemory.ReadOnly.t
+    val callables_to_definitions_map : Target.CallablesSharedMemory.ReadOnly.t
 
     val profiler : CallGraphProfiler.t
 
@@ -4417,6 +4367,7 @@ module HigherOrderCallGraph = struct
       let returned_callables call_targets =
         call_targets
         |> List.map ~f:(fun { CallTarget.target; _ } ->
+               log "Fetching returned callables for `%a`" Target.pp_pretty target;
                match Context.get_callee_model target with
                | Some { returned_callables; _ } -> returned_callables
                | None -> CallTarget.Set.bottom)
@@ -4461,8 +4412,20 @@ module HigherOrderCallGraph = struct
 
 
       let validate_target target =
-        let exceed_depth target = Target.depth target > Context.maximum_target_depth in
-        if Target.contain_recursive_target target || exceed_depth target then None else Some target
+        let exceed_depth = Target.depth target > Context.maximum_target_depth in
+        let contain_recursive_target = Target.contain_recursive_target target in
+        if contain_recursive_target || exceed_depth then
+          let () =
+            log
+              "Invalid target: `%a` (contain_recursive_target: `%b`. exceed_depth: `%b`)"
+              Target.pp_pretty_with_kind
+              target
+              contain_recursive_target
+              exceed_depth
+          in
+          None
+        else
+          Some target
 
 
       (* Results of analyzing a certain kind of call targets (e.g., `call_targets` or
@@ -4502,23 +4465,30 @@ module HigherOrderCallGraph = struct
             ~argument:None
             ~f
         in
-        let get_define target =
+        let formal_arguments_if_non_stub target =
           if Target.is_override target || Target.is_object target then
             (* TODO(T204630385): It is possible for a target to be an `Override`, which we do not
                handle for now, or an `Object`, such as a function-typed variable that cannot be
                resolved by the original call graph building. *)
             None
           else
-            Target.DefinesSharedMemory.ReadOnly.get Context.callables_to_definitions_map target
-        in
-        let formal_arguments_if_non_stub target =
-          target
-          |> get_define
-          >>= fun {
-                    Target.DefinesSharedMemory.Define.qualifier = _;
-                    define = { Node.value = define; _ };
-                  } ->
-          formal_arguments_from_non_stub_define define
+            match
+              Target.CallablesSharedMemory.ReadOnly.get_signature
+                Context.callables_to_definitions_map
+                target
+            with
+            | None ->
+                log "Cannot find define for callable `%a`" Target.pp_pretty_with_kind target;
+                None
+            | Some { Target.CallablesSharedMemory.Signature.is_stub; parameters; _ } ->
+                if is_stub then
+                  let () = log "Callable `%a` is a stub" Target.pp_pretty_with_kind target in
+                  None
+                else
+                  Some
+                    (parameters
+                    |> TaintAccessPath.normalize_parameters
+                    |> List.map ~f:(fun { TaintAccessPath.NormalizedParameter.root; _ } -> root))
         in
         let create_parameter_target_excluding_args_kwargs (parameter_target, (_, argument_matches)) =
           match argument_matches, parameter_target with
@@ -4554,7 +4524,7 @@ module HigherOrderCallGraph = struct
               resolve_decorated_targets callee_targets)
         in
         let create_call_target = function
-          | Some ({ CallTarget.implicit_receiver; _ } as callee_target) :: parameter_targets ->
+          | Some ({ CallTarget.implicit_receiver; _ } as callee_target) :: parameter_targets -> (
               let callee_regular, closure =
                 match CallTarget.target callee_target with
                 | Target.Regular regular -> regular, Target.ParameterMap.empty
@@ -4618,20 +4588,26 @@ module HigherOrderCallGraph = struct
                     false
                 | Unresolved.False -> implicit_receiver
               in
+              let regular_call_target =
+                {
+                  callee_target with
+                  CallTarget.target = Target.Regular callee_regular;
+                  implicit_receiver;
+                }
+              in
               if Target.ParameterMap.is_empty parameters then
                 (* Treat as regular target when (1) no parameter targets exist or (2) we cannot find
                    function bodies, so that the taint analysis can still use
                    `higher_order_parameters`. *)
-                Some
-                  {
-                    callee_target with
-                    CallTarget.target = Target.Regular callee_regular;
-                    implicit_receiver;
-                  }
+                Some regular_call_target
               else
-                Target.Parameterized { regular = callee_regular; parameters }
-                |> validate_target
-                >>| fun target -> { callee_target with CallTarget.target; implicit_receiver }
+                match
+                  validate_target (Target.Parameterized { regular = callee_regular; parameters })
+                with
+                | None ->
+                    (* To avoid false negatives, still create a regular target. *)
+                    Some regular_call_target
+                | Some target -> Some { callee_target with CallTarget.target; implicit_receiver })
           | _ -> None
         in
         (* Treat an empty list as a single element list so that in each result of the cartesian
@@ -4658,17 +4634,14 @@ module HigherOrderCallGraph = struct
           track_apply_call_step FindNonParameterizedTargets (fun () ->
               non_parameterized_targets ~parameterized_targets call_targets_from_callee)
         in
+        List.iter parameterized_targets ~f:(fun { CallTarget.target; _ } ->
+            log "Created parameterized target: `%a`" Target.pp_pretty target);
         let stub_targets =
           List.filter_map call_targets_from_callee ~f:(fun { CallTarget.target; _ } ->
-              (* TODO: Improve performance since this loads the body for each callable, although the
-                 body is not used here. *)
               let is_stub =
-                target
-                |> get_define
-                >>| (fun {
-                           Target.DefinesSharedMemory.Define.define = { Node.value = define; _ };
-                           _;
-                         } -> Define.is_stub define)
+                Target.CallablesSharedMemory.ReadOnly.is_stub
+                  Context.callables_to_definitions_map
+                  target
                 |> Option.value ~default:false
               in
               if is_stub then Some target else None)
@@ -4830,23 +4803,16 @@ module HigherOrderCallGraph = struct
               |> List.rev_append parameterized_init_targets
               |> returned_callables
             in
-            (* To avoid false negatives, sometimes we allow all function-typed arguments to be
-               passed directly to the return values, especially for targets with `kind=Decorated`.
-               Example 1 is some calls might be unresolved. Example 2 is when `__init__` methods are
-               stubs. Example 3 is sometimes context managers define stubs instead of actual bodies
-               for `__call__`, where the actual bodies would return the callable that is decorated.
-               However since it is expensive to know if a class is a context manager, we use an
-               approximation below. *)
+            (* To avoid false negatives when analyzing targets with `kind=Decorated`, sometimes
+             * we allow all function-typed arguments to be passed directly to the return values.
+             * - Case 1 is when calls might be unresolved.
+             * - Case 2 is when there exists a stub `__init__` target. The stub target's summary
+             * is considered as passing through.
+             * - Case 3 is when there exists a stub call target. The stub target's summary
+             * is considered as passing through.*)
             let pass_through_arguments =
               let exist_stub_init_targets = not (List.is_empty stub_init_targets) in
-              let exist_stub_call_targets =
-                List.exists stub_call_targets ~f:(fun target ->
-                    match Target.get_regular target with
-                    | Target.Regular.Method
-                        { class_name = _; method_name = "__call__"; kind = Normal } ->
-                        true
-                    | _ -> false)
-              in
+              let exist_stub_call_targets = not (List.is_empty stub_call_targets) in
               if
                 is_decorated_target
                 && (exist_stub_init_targets
@@ -4878,7 +4844,13 @@ module HigherOrderCallGraph = struct
           State.pp
           state;
         let analyze_expression_inner () =
-          match redirect_expressions ~pyre_in_context ~location value with
+          match
+            redirect_expressions
+              ~pyre_in_context
+              ~callables_to_definitions_map:Context.callables_to_definitions_map
+              ~location
+              value
+          with
           | Expression.Await expression -> analyze_expression ~pyre_in_context ~state ~expression
           | BinaryOperator _ -> CallTarget.Set.bottom, state
           | BooleanOperator _ -> CallTarget.Set.bottom, state
@@ -5049,14 +5021,10 @@ module HigherOrderCallGraph = struct
                 match
                   regular_target
                   |> Target.from_regular
-                  |> Target.DefinesSharedMemory.ReadOnly.get Context.callables_to_definitions_map
+                  |> Target.CallablesSharedMemory.ReadOnly.get_captures
+                       Context.callables_to_definitions_map
                 with
-                | Some
-                    {
-                      Target.DefinesSharedMemory.Define.define =
-                        { Node.value = { Define.captures = _ :: _ as captures; _ }; _ };
-                      _;
-                    } ->
+                | Some captures ->
                     let parameters_roots, parameters_targets =
                       captures
                       |> List.filter_map ~f:(fun { Define.Capture.name; _ } ->
@@ -5249,7 +5217,6 @@ let call_graph_of_define
     ~override_graph
     ~attribute_targets
     ~decorators
-    ~method_kinds
     ~callables_to_definitions_map
     ~qualifier
     ~define
@@ -5275,7 +5242,6 @@ let call_graph_of_define
       debug = Ast.Statement.Define.dump define || Ast.Statement.Define.dump_call_graph define;
       override_graph;
       attribute_targets;
-      method_kinds;
       callables_to_definitions_map;
     }
   in
@@ -5328,23 +5294,21 @@ let call_graph_of_callable
     ~override_graph
     ~attribute_targets
     ~decorators
-    ~method_kinds
     ~callables_to_definitions_map
     ~callable
   =
-  match Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map callable with
-  | None -> Format.asprintf "Found no definition for `%a`" Target.pp_pretty callable |> failwith
-  | Some { Target.DefinesSharedMemory.Define.qualifier; define } ->
+  match Target.CallablesSharedMemory.ReadOnly.get_define callables_to_definitions_map callable with
+  | Some { Target.CallablesSharedMemory.DefineAndQualifier.qualifier; define } ->
       call_graph_of_define
         ~static_analysis_configuration
         ~pyre_api
         ~override_graph
         ~attribute_targets
         ~decorators
-        ~method_kinds
         ~callables_to_definitions_map
         ~qualifier
         ~define:(Node.value define)
+  | _ -> Format.asprintf "Found no definition for `%a`" Target.pp_pretty callable |> failwith
 
 
 module DecoratorDefine = struct
@@ -5382,7 +5346,6 @@ module DecoratorResolution = struct
       ?(debug = false)
       ~pyre_in_context
       ~override_graph
-      ~method_kinds
       ~callables_to_definitions_map
       ~decorators:decorators_map
       callable
@@ -5403,7 +5366,6 @@ module DecoratorResolution = struct
           override_graph;
           attribute_targets = Target.HashSet.create ();
           callables_to_definitions_map;
-          method_kinds;
         }
       in
       CalleeVisitor.visit_expression
@@ -5494,7 +5456,6 @@ module DecoratorResolution = struct
         ~scheduler
         ~scheduler_policy
         ~override_graph
-        ~method_kinds
         ~callables_to_definitions_map
         ~decorators
         callables
@@ -5507,7 +5468,6 @@ module DecoratorResolution = struct
             ~pyre_in_context
             ~override_graph:(Some (OverrideGraph.SharedMemory.read_only override_graph))
             ~callables_to_definitions_map
-            ~method_kinds
             ~decorators
             callable
         with
@@ -5542,10 +5502,11 @@ module DecoratorResolution = struct
       |> List.map ~f:(fun (callable, { DecoratorDefine.define; _ }) ->
              ( callable,
                {
-                 Target.DefinesSharedMemory.Define.qualifier = artificial_decorator_defines;
+                 Target.CallablesSharedMemory.DefineAndQualifier.qualifier =
+                   artificial_decorator_defines;
                  define = Node.create_with_default_location define;
                } ))
-      |> Target.DefinesSharedMemory.add_alist_sequential callables_to_definitions_map
+      |> Target.CallablesSharedMemory.add_alist_sequential callables_to_definitions_map
 
 
     let decorated_targets = Target.Map.keys
@@ -5667,15 +5628,14 @@ module SharedMemory = struct
         ({ Configuration.StaticAnalysis.scheduler_policies; _ } as static_analysis_configuration)
       ~pyre_api
       ~resolve_module_path
+      ~callables_to_definitions_map
       ~override_graph
       ~store_shared_memory
       ~attribute_targets
       ~decorators
       ~decorator_resolution
-      ~method_kinds
       ~skip_analysis_targets
       ~definitions
-      ~callables_to_definitions_map
       ~create_dependency_for
     =
     let attribute_targets = attribute_targets |> Target.Set.elements |> Target.HashSet.of_list in
@@ -5696,7 +5656,6 @@ module SharedMemory = struct
                   ~override_graph
                   ~attribute_targets
                   ~decorators
-                  ~method_kinds
                   ~callables_to_definitions_map
                   ~callable)
               ()

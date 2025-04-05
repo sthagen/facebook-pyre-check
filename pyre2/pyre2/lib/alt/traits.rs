@@ -29,6 +29,7 @@ use crate::binding::binding::BindingClassField;
 use crate::binding::binding::BindingClassMetadata;
 use crate::binding::binding::BindingClassSynthesizedFields;
 use crate::binding::binding::BindingExpect;
+use crate::binding::binding::BindingExport;
 use crate::binding::binding::BindingFunction;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::BindingYield;
@@ -52,6 +53,7 @@ use crate::binding::binding::NoneIfRecursive;
 use crate::error::collector::ErrorCollector;
 use crate::types::annotation::Annotation;
 use crate::types::class::Class;
+use crate::types::type_info::TypeInfo;
 use crate::types::types::Type;
 use crate::types::types::Var;
 
@@ -110,7 +112,7 @@ impl<Ans: LookupAnswer> Solve<Ans> for Key {
         answers: &AnswersSolver<Ans>,
         binding: &Binding,
         errors: &ErrorCollector,
-    ) -> Arc<Type> {
+    ) -> Arc<TypeInfo> {
         answers.solve_binding(binding, errors)
     }
 
@@ -119,17 +121,17 @@ impl<Ans: LookupAnswer> Solve<Ans> for Key {
     }
 
     fn promote_recursive(x: Self::Recursive) -> Self::Answer {
-        Type::Var(x)
+        TypeInfo::of_ty(Type::Var(x))
     }
 
     fn record_recursive(
         answers: &AnswersSolver<Ans>,
         range: TextRange,
-        answer: &Arc<Type>,
+        answer: &Arc<TypeInfo>,
         recursive: &Var,
         errors: &ErrorCollector,
     ) {
-        answers.record_recursive(range, answer, *recursive, errors);
+        answers.record_recursive(range, answer.ty().clone(), *recursive, errors);
     }
 }
 
@@ -152,14 +154,14 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyExpect {
 impl<Ans: LookupAnswer> Solve<Ans> for KeyExport {
     fn solve(
         answers: &AnswersSolver<Ans>,
-        binding: &Binding,
+        binding: &BindingExport,
         errors: &ErrorCollector,
     ) -> Arc<Type> {
-        answers.solve_binding(binding, errors)
+        Arc::new(answers.solve_binding(&binding.0, errors).arc_clone_ty())
     }
 
     fn create_recursive(answers: &AnswersSolver<Ans>, binding: &Self::Value) -> Self::Recursive {
-        answers.create_recursive(binding)
+        answers.create_recursive(&binding.0)
     }
 
     fn promote_recursive(x: Self::Recursive) -> Self::Answer {
@@ -173,7 +175,7 @@ impl<Ans: LookupAnswer> Solve<Ans> for KeyExport {
         recursive: &Var,
         errors: &ErrorCollector,
     ) {
-        answers.record_recursive(range, answer, *recursive, errors);
+        answers.record_recursive(range, answer.as_ref().clone(), *recursive, errors);
     }
 }
 

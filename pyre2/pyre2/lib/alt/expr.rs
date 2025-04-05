@@ -42,10 +42,13 @@ use crate::types::callable::Param;
 use crate::types::callable::ParamList;
 use crate::types::callable::Params;
 use crate::types::callable::Required;
+use crate::types::lit_int::LitInt;
 use crate::types::literal::Lit;
 use crate::types::param_spec::ParamSpec;
+use crate::types::quantified::QuantifiedKind;
 use crate::types::special_form::SpecialForm;
 use crate::types::tuple::Tuple;
+use crate::types::type_info::TypeInfo;
 use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
 use crate::types::type_var::Variance;
@@ -75,19 +78,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 types.push(t);
                 break;
             }
-            // If we reach the last value, we should always keep it.
-            if i != last_index && should_discard(&t) {
-                continue;
-            }
-            match t {
-                Type::Union(options) => {
-                    for option in options {
-                        if !should_discard(&option) {
-                            types.push(option);
-                        }
+            for t in t.into_unions() {
+                // If we reach the last value, we should always keep it.
+                if i == last_index || !should_discard(&t) {
+                    if i != last_index && t == self.stdlib.bool().to_type() {
+                        types.push(Lit::Bool(target).to_type());
+                    } else if i != last_index && t == self.stdlib.int().to_type() && !target {
+                        types.push(Lit::Int(LitInt::new(0)).to_type());
+                    } else if i != last_index && t == self.stdlib.str().to_type() && !target {
+                        types.push(Lit::String(String::new().into_boxed_str()).to_type());
+                    } else {
+                        types.push(t);
                     }
                 }
-                _ => types.push(t),
             }
         }
         self.unions(types)
@@ -99,7 +102,20 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         check: Option<(&Type, &dyn Fn() -> TypeCheckContext)>,
         errors: &ErrorCollector,
     ) -> Type {
-        self.expr_with_separate_check_errors(x, check.map(|(ty, tcc)| (ty, tcc, errors)), errors)
+        self.expr_type_info(x, check, errors).into_ty()
+    }
+
+    pub fn expr_type_info(
+        &self,
+        x: &Expr,
+        check: Option<(&Type, &dyn Fn() -> TypeCheckContext)>,
+        errors: &ErrorCollector,
+    ) -> TypeInfo {
+        self.expr_type_info_with_separate_check_errors(
+            x,
+            check.map(|(ty, tcc)| (ty, tcc, errors)),
+            errors,
+        )
     }
 
     pub fn expr_with_separate_check_errors(
@@ -108,12 +124,22 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         check: Option<(&Type, &dyn Fn() -> TypeCheckContext, &ErrorCollector)>,
         errors: &ErrorCollector,
     ) -> Type {
+        self.expr_type_info_with_separate_check_errors(x, check, errors)
+            .into_ty()
+    }
+
+    fn expr_type_info_with_separate_check_errors(
+        &self,
+        x: &Expr,
+        check: Option<(&Type, &dyn Fn() -> TypeCheckContext, &ErrorCollector)>,
+        errors: &ErrorCollector,
+    ) -> TypeInfo {
         match check {
             Some((want, tcc, check_errors)) if !want.is_any() => {
-                let got = self.expr_infer_with_hint(x, Some(want), errors);
-                self.check_and_return_type(want, got, x.range(), check_errors, tcc)
+                let got = self.expr_infer_type_info_with_hint(x, Some(want), errors);
+                self.check_and_return_type_info(want, got, x.range(), check_errors, tcc)
             }
-            _ => self.expr_infer(x, errors),
+            _ => self.expr_infer_type_info(x, errors),
         }
     }
 
@@ -269,10 +295,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         }
                     }
                     "default" => {
-                        default = Some(self.expr_untype(
-                            &kw.value,
-                            TypeFormContext::TypeVarConstraint,
-                            errors,
+                        default = Some((
+                            self.expr_untype(&kw.value, TypeFormContext::TypeVarDefault, errors),
+                            kw.value.range(),
                         ))
                     }
                     "covariant" => try_set_variance(kw, Some(Variance::Covariant)),
@@ -323,12 +348,23 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 "Missing `name` argument".to_owned(),
             );
         }
-
+        let restriction = restriction.unwrap_or(Restriction::Unrestricted);
+        let mut default_value = None;
+        if let Some((default_ty, default_range)) = default {
+            default_value = Some(self.validate_type_var_default(
+                &name.id,
+                QuantifiedKind::TypeVar,
+                &default_ty,
+                default_range,
+                &restriction,
+                errors,
+            ));
+        }
         TypeVar::new(
             name,
             self.module_info().dupe(),
-            restriction.unwrap_or(Restriction::Unrestricted),
-            default,
+            restriction,
+            default_value,
             variance.unwrap_or(Some(Variance::Invariant)),
         )
     }
@@ -371,7 +407,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             check_name_arg(arg);
             arg_name = true;
         }
-
+        let mut default = None;
         for kw in &x.arguments.keywords {
             match &kw.arg {
                 Some(id) => match id.id.as_str() {
@@ -388,6 +424,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             check_name_arg(&kw.value);
                             arg_name = true;
                         }
+                    }
+                    "default" => {
+                        default = Some((
+                            self.expr_untype(&kw.value, TypeFormContext::ParamSpecDefault, errors),
+                            kw.range(),
+                        ));
                     }
                     _ => {
                         self.error(
@@ -420,8 +462,18 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 "Missing `name` argument".to_owned(),
             );
         }
-
-        ParamSpec::new(name, self.module_info().dupe())
+        let mut default_value = None;
+        if let Some((default_ty, default_range)) = default {
+            default_value = Some(self.validate_type_var_default(
+                &name.id,
+                QuantifiedKind::ParamSpec,
+                &default_ty,
+                default_range,
+                &Restriction::Unrestricted,
+                errors,
+            ));
+        }
+        ParamSpec::new(name, self.module_info().dupe(), default_value)
     }
 
     pub fn typevartuple_from_call(
@@ -468,6 +520,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 "Unexpected positional argument to TypeVarTuple".to_owned(),
             );
         }
+        let mut default = None;
         for kw in &x.arguments.keywords {
             match &kw.arg {
                 Some(id) => match id.id.as_str() {
@@ -484,6 +537,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             check_name_arg(&kw.value);
                             arg_name = true;
                         }
+                    }
+                    "default" => {
+                        default = Some((
+                            self.expr_untype(
+                                &kw.value,
+                                TypeFormContext::TypeVarTupleDefault,
+                                errors,
+                            ),
+                            kw.range(),
+                        ));
                     }
                     _ => {
                         self.error(
@@ -515,11 +578,26 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 "Missing `name` argument".to_owned(),
             );
         }
-        TypeVarTuple::new(name, self.module_info().dupe())
+        let mut default_value = None;
+        if let Some((default_ty, default_range)) = default {
+            default_value = Some(self.validate_type_var_default(
+                &name.id,
+                QuantifiedKind::TypeVarTuple,
+                &default_ty,
+                default_range,
+                &Restriction::Unrestricted,
+                errors,
+            ));
+        }
+        TypeVarTuple::new(name, self.module_info().dupe(), default_value)
     }
 
     pub fn expr_infer(&self, x: &Expr, errors: &ErrorCollector) -> Type {
-        self.expr_infer_with_hint(x, None, errors)
+        self.expr_infer_type_info(x, errors).into_ty()
+    }
+
+    fn expr_infer_type_info(&self, x: &Expr, errors: &ErrorCollector) -> TypeInfo {
+        self.expr_infer_type_info_with_hint(x, None, errors)
     }
 
     pub fn check_isinstance(&self, ty_fun: &Type, x: &ExprCall, errors: &ErrorCollector) {
@@ -554,34 +632,66 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             // itself depends on a TypeVar.
             return decoratee;
         }
-        let ty_decorator = self.get_idx(decorator);
+        let ty_decorator = self.get_idx(decorator).arc_clone_ty();
         if matches!(&decoratee, Type::ClassDef(_)) {
             // TODO: don't blanket ignore class decorators.
             return decoratee;
         }
         let range = self.bindings().idx_to_key(decorator).range();
-        let call_target = self.as_call_target_or_error(
-            ty_decorator.arc_clone(),
-            CallStyle::FreeForm,
-            range,
-            errors,
-            None,
-        );
+        let call_target =
+            self.as_call_target_or_error(ty_decorator, CallStyle::FreeForm, range, errors, None);
         let arg = CallArg::Type(&decoratee, range);
         self.call_infer(call_target, &[arg], &[], range, errors, None)
     }
 
-    fn expr_infer_with_hint(&self, x: &Expr, hint: Option<&Type>, errors: &ErrorCollector) -> Type {
-        let ty = match x {
-            Expr::Name(x) => match x.id.as_str() {
-                "" => Type::any_error(), // Must already have a parse error
-                _ => self
-                    .get(&Key::Usage(ShortIdentifier::expr_name(x)))
-                    .arc_clone(),
-            },
+    /// Helper to infer element types for a list or set.
+    fn elts_infer(
+        &self,
+        elts: &[Expr],
+        elt_hint: Option<Type>,
+        errors: &ErrorCollector,
+    ) -> Vec<Type> {
+        elts.map(|x| match x {
+            Expr::Starred(ExprStarred { box value, .. }) => {
+                let hint = elt_hint
+                    .as_ref()
+                    .map(|ty| self.stdlib.iterable(ty.clone()).to_type());
+                let unpacked_ty = self.expr_infer_with_hint_promote(value, hint.as_ref(), errors);
+                if let Some(iterable_ty) = self.unwrap_iterable(&unpacked_ty) {
+                    iterable_ty
+                } else {
+                    self.error(
+                        errors,
+                        x.range(),
+                        ErrorKind::NotIterable,
+                        None,
+                        format!("Expected an iterable, got {}", unpacked_ty),
+                    )
+                }
+            }
+            _ => self.expr_infer_with_hint_promote(x, elt_hint.as_ref(), errors),
+        })
+    }
+
+    fn expr_infer_type_info_with_hint(
+        &self,
+        x: &Expr,
+        hint: Option<&Type>,
+        errors: &ErrorCollector,
+    ) -> TypeInfo {
+        let res = match x {
+            Expr::Name(x) => {
+                let ty = match x.id.as_str() {
+                    "" => Type::any_error(), // Must already have a parse error
+                    _ => self
+                        .get(&Key::Usage(ShortIdentifier::expr_name(x)))
+                        .arc_clone_ty(),
+                };
+                TypeInfo::of_ty(ty)
+            }
             Expr::Attribute(x) => {
                 let obj = self.expr_infer(&x.value, errors);
-                match (&obj, x.attr.id.as_str()) {
+                let ty = match (&obj, x.attr.id.as_str()) {
                     (Type::Literal(Lit::Enum(box (_, member, _))), "_name_" | "name") => {
                         Type::Literal(Lit::String(member.as_str().into()))
                     }
@@ -589,14 +699,40 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         raw_type.clone()
                     }
                     _ => self.attr_infer(&obj, &x.attr.id, x.range, errors, None),
-                }
+                };
+                TypeInfo::of_ty(ty)
             }
-            Expr::Named(x) => self.expr_infer_with_hint(&x.value, hint, errors),
+            Expr::Named(x) => self.expr_infer_type_info_with_hint(&x.value, hint, errors),
+            // All other expressions operate at the `Type` level only, so we avoid the overhead of
+            // wrapping and unwrapping `TypeInfo` by computing the result as a `Type` and only wrapping
+            // at the end.
+            _ => TypeInfo::of_ty(self.expr_infer_type_no_trace(x, hint, errors)),
+        };
+        self.record_type_trace(x.range(), res.ty());
+        res
+    }
+
+    /// This function should not be used directly: we want every expression to record a type trace,
+    /// and that is handled in expr_infer_type_info_with_hint. This function should *only* be called
+    /// via expr_infer_type_info_with_hint.
+    fn expr_infer_type_no_trace(
+        &self,
+        x: &Expr,
+        hint: Option<&Type>,
+        errors: &ErrorCollector,
+    ) -> Type {
+        match x {
+            Expr::Name(..) | Expr::Attribute(..) | Expr::Named(..) => {
+                // These cases are required to preserve attribute narrowing information. But anyone calling
+                // this function only needs the Type, so we can just pull it out.
+                self.expr_infer_type_info_with_hint(x, hint, errors)
+                    .into_ty()
+            }
             Expr::If(x) => {
                 // TODO: Support type narrowing
                 let condition_type = self.expr_infer(&x.test, errors);
-                let body_type = self.expr_infer_with_hint(&x.body, hint, errors);
-                let orelse_type = self.expr_infer_with_hint(&x.orelse, hint, errors);
+                let body_type = self.expr_infer_type_no_trace(&x.body, hint, errors);
+                let orelse_type = self.expr_infer_type_no_trace(&x.orelse, hint, errors);
                 match condition_type.as_bool() {
                     Some(true) => body_type,
                     Some(false) => orelse_type,
@@ -623,7 +759,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     )
                 });
                 let params = Params::List(ParamList::new(params));
-                let ret = self.expr_infer_with_hint(&lambda.body, return_hint.as_ref(), errors);
+                let ret = self.expr_infer_type_no_trace(&lambda.body, return_hint.as_ref(), errors);
                 Type::Callable(Box::new(Callable { params, ret }))
             }
             Expr::Tuple(x) => {
@@ -687,7 +823,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             }
                         }
                         _ => {
-                            let ty = self.expr_infer_with_hint(
+                            let ty = self.expr_infer_type_no_trace(
                                 elt,
                                 if unbounded.is_empty() {
                                     hint_ts.get(hint_ts_idx).or(default_hint)
@@ -738,27 +874,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     let elem_ty = self.solver().fresh_contained(self.uniques).to_type();
                     self.stdlib.list(elem_ty).to_type()
                 } else {
-                    let elem_tys = x.elts.map(|x| match x {
-                        Expr::Starred(ExprStarred { box value, .. }) => {
-                            let hint = elt_hint
-                                .as_ref()
-                                .map(|ty| self.stdlib.iterable(ty.clone()).to_type());
-                            let unpacked_ty =
-                                self.expr_infer_with_hint_promote(value, hint.as_ref(), errors);
-                            if let Some(iterable_ty) = self.unwrap_iterable(&unpacked_ty) {
-                                iterable_ty
-                            } else {
-                                self.error(
-                                    errors,
-                                    x.range(),
-                                    ErrorKind::NotIterable,
-                                    None,
-                                    format!("Expected an iterable, got {}", unpacked_ty),
-                                )
-                            }
-                        }
-                        _ => self.expr_infer_with_hint_promote(x, elt_hint.as_ref(), errors),
-                    });
+                    let elem_tys = self.elts_infer(&x.elts, elt_hint, errors);
                     self.stdlib.list(self.unions(elem_tys)).to_type()
                 }
             }
@@ -830,9 +946,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         .unwrap_or_else(|| self.solver().fresh_contained(self.uniques).to_type());
                     self.stdlib.set(elem_ty).to_type()
                 } else {
-                    let elem_tys = x
-                        .elts
-                        .map(|x| self.expr_infer_with_hint_promote(x, elem_hint.as_ref(), errors));
+                    let elem_tys = self.elts_infer(&x.elts, elem_hint, errors);
                     self.stdlib.set(self.unions(elem_tys)).to_type()
                 }
             }
@@ -861,7 +975,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Expr::Generator(x) => {
                 let yield_hint = hint.and_then(|ty| self.decompose_generator_yield(ty));
                 self.ifs_infer(&x.generators, errors);
-                let yield_ty = self.expr_infer_with_hint(&x.elt, yield_hint.as_ref(), errors);
+                let yield_ty = self
+                    .expr_infer_type_info_with_hint(&x.elt, yield_hint.as_ref(), errors)
+                    .into_ty();
                 self.stdlib
                     .generator(yield_ty, Type::None, Type::None)
                     .to_type()
@@ -886,7 +1002,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 let ty_fun = self.expr_infer(&x.func, errors);
                 if matches!(&ty_fun, Type::ClassDef(cls) if cls.has_qname("builtins", "super")) {
                     if is_special_name(&x.func, "super") {
-                        self.get(&Key::SuperInstance(x.range)).arc_clone()
+                        self.get(&Key::SuperInstance(x.range)).arc_clone_ty()
                     } else {
                         // Because we have to construct a binding for super in order to fill in
                         // implicit arguments, we can't handle things like local aliases to super.
@@ -1181,9 +1297,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 None,
                 "IPython escapes are not supported".to_owned(),
             ),
-        };
-        self.record_type_trace(x.range(), &ty);
-        ty
+        }
     }
 
     fn expr_infer_with_hint_promote(
@@ -1192,7 +1306,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         hint: Option<&Type>,
         errors: &ErrorCollector,
     ) -> Type {
-        let ty = self.expr_infer_with_hint(x, hint, errors);
+        let ty = self
+            .expr_infer_type_info_with_hint(x, hint, errors)
+            .into_ty();
         if let Some(want) = hint
             && self.solver().is_subset_eq(&ty, want, self.type_order())
         {

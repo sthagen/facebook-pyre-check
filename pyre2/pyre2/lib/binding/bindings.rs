@@ -38,6 +38,7 @@ use vec1::Vec1;
 use crate::binding::binding::AnnotationTarget;
 use crate::binding::binding::Binding;
 use crate::binding::binding::BindingAnnotation;
+use crate::binding::binding::BindingExport;
 use crate::binding::binding::BindingLegacyTypeParam;
 use crate::binding::binding::BindingYield;
 use crate::binding::binding::BindingYieldFrom;
@@ -50,6 +51,7 @@ use crate::binding::binding::KeyLegacyTypeParam;
 use crate::binding::binding::KeyYield;
 use crate::binding::binding::KeyYieldFrom;
 use crate::binding::binding::Keyed;
+use crate::binding::binding::TypeParameter;
 use crate::binding::narrow::NarrowOps;
 use crate::binding::scope::Flow;
 use crate::binding::scope::FlowInfo;
@@ -76,6 +78,7 @@ use crate::module::module_info::ModuleInfo;
 use crate::module::module_name::ModuleName;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::solver::solver::Solver;
+use crate::state::loader::FindError;
 use crate::table;
 use crate::table_for_each;
 use crate::table_try_for_each;
@@ -346,7 +349,7 @@ impl Bindings {
                 continue;
             }
             let info = last_scope.flow.info.get_hashed(k);
-            let val = match info {
+            let binding = match info {
                 Some(FlowInfo { key, .. }) => {
                     if let Some(ann) = static_info.annot {
                         Binding::AnnotatedType(ann, Box::new(Binding::Forward(*key)))
@@ -367,7 +370,9 @@ impl Bindings {
                 }
             };
             if exported.contains_key_hashed(k) {
-                builder.table.insert(KeyExport(k.into_key().clone()), val);
+                builder
+                    .table
+                    .insert(KeyExport(k.into_key().clone()), BindingExport(binding));
             }
         }
         Self(Arc::new(BindingsInner {
@@ -518,13 +523,14 @@ impl<'a> BindingsBuilder<'a> {
                     );
                 }
             }
-            Err(err) => {
+            Err(FindError::NotFound(err)) => {
                 self.error(
                     TextRange::default(),
-                    err.display(builtins_module),
+                    FindError::display(err, builtins_module),
                     ErrorKind::InternalError,
                 );
             }
+            Err(FindError::Ignored) => (),
         }
     }
 
@@ -777,29 +783,68 @@ impl<'a> BindingsBuilder<'a> {
         info.annot
     }
 
+    pub fn handle_type_param_constraint(&mut self, x: &mut Expr) -> Idx<Key> {
+        self.ensure_type(x, &mut None);
+        self.table
+            .insert(Key::Anon(x.range()), Binding::Expr(None, x.clone()))
+    }
+
     pub fn type_params(&mut self, x: &mut TypeParams) {
         for x in x.type_params.iter_mut() {
+            let name = x.name().clone();
+            let mut default = None;
+            let mut bound_info = None;
+            let mut constraint_info = None;
             let kind = match x {
-                TypeParam::TypeVar(x) => {
-                    if let Some(bound) = &mut x.bound {
-                        self.ensure_type(bound, &mut None);
+                TypeParam::TypeVar(tv) => {
+                    if let Some(box bound) = &mut tv.bound {
+                        if let Expr::Tuple(tuple) = bound {
+                            let mut constraints = Vec::new();
+                            for constraint in &mut tuple.elts {
+                                let idx = self.handle_type_param_constraint(constraint);
+                                constraints.push(idx);
+                            }
+                            constraint_info = Some((constraints, bound.range()))
+                        } else {
+                            let idx = self.handle_type_param_constraint(bound);
+                            bound_info = Some((idx, bound.range()));
+                        }
                     }
-                    if let Some(default) = &mut x.default {
-                        self.ensure_type(default, &mut None);
+                    if let Some(box default_expr) = &mut tv.default {
+                        self.ensure_type(default_expr, &mut None);
+                        default = Some(default_expr);
                     }
                     QuantifiedKind::TypeVar
                 }
-                TypeParam::ParamSpec(_) => QuantifiedKind::ParamSpec,
-                TypeParam::TypeVarTuple(_) => QuantifiedKind::TypeVarTuple,
+                TypeParam::ParamSpec(x) => {
+                    if let Some(box default_expr) = &mut x.default {
+                        self.ensure_type(default_expr, &mut None);
+                        default = Some(default_expr);
+                    }
+                    QuantifiedKind::ParamSpec
+                }
+                TypeParam::TypeVarTuple(x) => {
+                    if let Some(box default_expr) = &mut x.default {
+                        self.ensure_type(default_expr, &mut None);
+                        default = Some(default_expr);
+                    }
+                    QuantifiedKind::TypeVarTuple
+                }
             };
-            let name = x.name();
             self.scopes
                 .current_mut()
                 .stat
                 .add(name.id.clone(), name.range, None);
             self.bind_definition(
-                name,
-                Binding::TypeParameter(self.uniques.fresh(), kind),
+                &name,
+                Binding::TypeParameter(Box::new(TypeParameter {
+                    name: name.id.clone(),
+                    unique: self.uniques.fresh(),
+                    kind,
+                    default: default.cloned(),
+                    bound: bound_info,
+                    constraints: constraint_info,
+                })),
                 None,
             );
         }

@@ -12,21 +12,35 @@ use parse_display::Display;
 use pyrefly_derive::TypeEq;
 use pyrefly_derive::Visit;
 use pyrefly_derive::VisitMut;
+use ruff_python_ast::name::Name;
 
+use crate::alt::solve::TypeFormContext;
+use crate::error::kind::ErrorKind;
 use crate::types::callable::ParamList;
 use crate::types::class::ClassType;
 use crate::types::stdlib::Stdlib;
+use crate::types::type_var::Restriction;
 use crate::types::types::Type;
 use crate::util::uniques::Unique;
 use crate::util::uniques::UniqueFactory;
 
 #[derive(
-    Debug, Clone, Copy, Visit, VisitMut, TypeEq, PartialEq, Eq, PartialOrd, Ord, Hash
+    Debug, Clone, PartialEq, Eq, TypeEq, Hash, Visit, Ord, PartialOrd, VisitMut
+)]
+pub struct QuantifiedInfo {
+    pub name: Name,
+    pub kind: QuantifiedKind,
+    pub default: Option<Type>,
+    pub restriction: Restriction,
+}
+
+#[derive(
+    Debug, Clone, Visit, VisitMut, TypeEq, PartialEq, Eq, Ord, PartialOrd, Hash
 )]
 pub struct Quantified {
     /// Unique identifier
     unique: Unique,
-    kind: QuantifiedKind,
+    info: Box<QuantifiedInfo>,
 }
 
 #[derive(
@@ -46,33 +60,81 @@ impl QuantifiedKind {
             QuantifiedKind::TypeVarTuple => Type::any_tuple(),
         }
     }
+
+    pub fn error_kind(self) -> ErrorKind {
+        match self {
+            QuantifiedKind::TypeVar => ErrorKind::InvalidTypeVar,
+            QuantifiedKind::ParamSpec => ErrorKind::InvalidParamSpec,
+            QuantifiedKind::TypeVarTuple => ErrorKind::InvalidTypeVarTuple,
+        }
+    }
+
+    pub fn type_form_context_for_default(self) -> TypeFormContext {
+        match self {
+            QuantifiedKind::TypeVar => TypeFormContext::TypeVarDefault,
+            QuantifiedKind::ParamSpec => TypeFormContext::ParamSpecDefault,
+            QuantifiedKind::TypeVarTuple => TypeFormContext::TypeVarTupleDefault,
+        }
+    }
 }
 
 impl Display for Quantified {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
-            QuantifiedKind::TypeVar => write!(f, "?_TypeVar"),
-            QuantifiedKind::ParamSpec => write!(f, "?_ParamSpec"),
-            QuantifiedKind::TypeVarTuple => write!(f, "?_TypeVarTuple"),
+        match self.info.kind {
+            QuantifiedKind::TypeVar => write!(f, "TypeVar[{}]", self.info.name),
+            QuantifiedKind::ParamSpec => write!(f, "ParamSpec[{}]", self.info.name),
+            QuantifiedKind::TypeVarTuple => write!(f, "TypeVarTuple[{}]", self.info.name),
         }
     }
 }
 
 impl Quantified {
-    pub fn new(unique: Unique, kind: QuantifiedKind) -> Self {
-        Quantified { unique, kind }
+    pub fn new(unique: Unique, info: QuantifiedInfo) -> Self {
+        Quantified {
+            unique,
+            info: Box::new(info),
+        }
     }
 
-    pub fn type_var(uniques: &UniqueFactory) -> Self {
-        Quantified::new(uniques.fresh(), QuantifiedKind::TypeVar)
+    pub fn type_var(
+        name: Name,
+        uniques: &UniqueFactory,
+        default: Option<Type>,
+        restriction: Restriction,
+    ) -> Self {
+        Self::new(
+            uniques.fresh(),
+            QuantifiedInfo {
+                name,
+                kind: QuantifiedKind::TypeVar,
+                restriction,
+                default,
+            },
+        )
     }
 
-    pub fn param_spec(uniques: &UniqueFactory) -> Self {
-        Quantified::new(uniques.fresh(), QuantifiedKind::ParamSpec)
+    pub fn param_spec(name: Name, uniques: &UniqueFactory, default: Option<Type>) -> Self {
+        Self::new(
+            uniques.fresh(),
+            QuantifiedInfo {
+                name,
+                kind: QuantifiedKind::ParamSpec,
+                restriction: Restriction::Unrestricted,
+                default,
+            },
+        )
     }
 
-    pub fn type_var_tuple(uniques: &UniqueFactory) -> Self {
-        Quantified::new(uniques.fresh(), QuantifiedKind::TypeVarTuple)
+    pub fn type_var_tuple(name: Name, uniques: &UniqueFactory, default: Option<Type>) -> Self {
+        Self::new(
+            uniques.fresh(),
+            QuantifiedInfo {
+                name,
+                kind: QuantifiedKind::TypeVarTuple,
+                restriction: Restriction::Unrestricted,
+                default,
+            },
+        )
     }
 
     pub fn to_type(self) -> Type {
@@ -80,27 +142,53 @@ impl Quantified {
     }
 
     pub fn as_value(&self, stdlib: &Stdlib) -> ClassType {
-        match self.kind {
+        match self.info.kind {
             QuantifiedKind::TypeVar => stdlib.type_var(),
             QuantifiedKind::ParamSpec => stdlib.param_spec(),
             QuantifiedKind::TypeVarTuple => stdlib.type_var_tuple(),
         }
     }
 
+    pub fn name(&self) -> &Name {
+        &self.info.name
+    }
+
     pub fn kind(&self) -> QuantifiedKind {
-        self.kind
+        self.info.kind
+    }
+
+    pub fn default(&self) -> Option<&Type> {
+        self.info.default.as_ref()
+    }
+
+    /// Ensure this Quantified has a default.
+    pub fn ensure_default(&mut self) -> bool {
+        if self.info.default.is_none() {
+            self.info.default = Some(Type::any_error());
+            false
+        } else {
+            true
+        }
+    }
+
+    pub fn restriction(&self) -> &Restriction {
+        &self.info.restriction
+    }
+
+    pub fn is_type_var(&self) -> bool {
+        matches!(self.info.kind, QuantifiedKind::TypeVar)
     }
 
     pub fn is_param_spec(&self) -> bool {
-        matches!(self.kind, QuantifiedKind::ParamSpec)
+        matches!(self.info.kind, QuantifiedKind::ParamSpec)
     }
 
     pub fn is_type_var_tuple(&self) -> bool {
-        matches!(self.kind, QuantifiedKind::TypeVarTuple)
+        matches!(self.info.kind, QuantifiedKind::TypeVarTuple)
     }
 
     pub fn as_gradual_type(&self) -> Type {
         // TODO(stroxler): Look into what it would take to do better when there's an upper-bound on a TypeVar.
-        self.kind.empty_value()
+        self.info.kind.empty_value()
     }
 }

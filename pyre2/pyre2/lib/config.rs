@@ -10,11 +10,20 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::LazyLock;
+use std::sync::Mutex;
 
+use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::Context;
 use itertools::Itertools;
+use path_absolutize::Absolutize;
 use serde::Deserialize;
+use starlark_map::small_map::SmallMap;
 use toml::Table;
+#[cfg(not(target_arch = "wasm32"))]
+use which::which;
 
 use crate::error::kind::ErrorKind;
 use crate::globs::Globs;
@@ -25,9 +34,18 @@ use crate::module::module_path::ModulePath;
 
 static PYPROJECT_FILE_NAME: &str = "pyproject.toml";
 
+static INTERPRETER_ENV_REGISTRY: LazyLock<Mutex<SmallMap<PathBuf, Option<PythonEnvironment>>>> =
+    LazyLock::new(|| Mutex::new(SmallMap::new()));
+
 pub fn set_if_some<T: Clone>(config_field: &mut T, value: Option<&T>) {
     if let Some(value) = value {
         *config_field = value.clone();
+    }
+}
+
+pub fn set_option_if_some<T: Clone>(config_field: &mut Option<T>, value: Option<&T>) {
+    if value.is_some() {
+        *config_field = value.cloned();
     }
 }
 
@@ -78,7 +96,6 @@ impl ErrorConfigs {
 
     /// Gets a reference to the `ErrorConfig` for the given path, or returns a reference to
     /// the 'default' error config if none could be found.
-    #[allow(unused)]
     pub fn get(&self, path: &ModulePath) -> &ErrorConfig {
         self.overrides.get(path).unwrap_or(&self.default_config)
     }
@@ -98,6 +115,131 @@ impl PartialEq for ExtraConfigs {
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Clone)]
+pub struct PythonEnvironment {
+    #[serde(default)]
+    pub python_platform: Option<String>,
+
+    #[serde(default)]
+    pub python_version: Option<PythonVersion>,
+
+    #[serde(default)]
+    pub site_package_path: Option<Vec<PathBuf>>,
+}
+
+impl PythonEnvironment {
+    const DEFAULT_INTERPRETERS: [&'static str; 2] = ["python3", "python"];
+
+    pub fn new(
+        python_platform: String,
+        python_version: PythonVersion,
+        site_package_path: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            python_platform: Some(python_platform),
+            python_version: Some(python_version),
+            site_package_path: Some(site_package_path),
+        }
+    }
+
+    fn get_env_from_interpreter(interpreter: &Path) -> anyhow::Result<PythonEnvironment> {
+        let script = "\
+import json, site, sys
+platform = sys.platform
+v = sys.version_info
+version = '{}.{}.{}'.format(v.major, v.minor, v.micro)
+packages = site.getsitepackages()
+print(json.dumps({'python_platform': platform, 'python_version': version, 'site_package_path': packages}))
+        ";
+
+        let mut command = Command::new(interpreter);
+        command.arg("-c");
+        command.arg(script);
+
+        let python_info = command.output()?;
+
+        let stdout = String::from_utf8(python_info.stdout).with_context(|| {
+            format!(
+                "while parsing Python interpreter (`{}`) stdout for environment configuration",
+                interpreter.display()
+            )
+        })?;
+        if !python_info.status.success() {
+            let stderr = String::from_utf8(python_info.stderr)
+                .unwrap_or("<Failed to parse STDOUT from UTF-8 string>".to_owned());
+            return Err(anyhow::anyhow!(
+                "Unable to query interpreter {} for environment info:\nSTDOUT: {}\nSTDERR: {}",
+                interpreter.display(),
+                stdout,
+                stderr
+            ));
+        }
+
+        let deserialized: PythonEnvironment = serde_json::from_str(&stdout)?;
+
+        deserialized.python_platform.as_ref().ok_or(anyhow!(
+            "Expected `python_platform` from Python interpreter query to be non-empty"
+        ))?;
+        deserialized.python_version.as_ref().ok_or(anyhow!(
+            "Expected `python_version` from Python interpreter query to be non-empty"
+        ))?;
+        deserialized.site_package_path.as_ref().ok_or(anyhow!(
+            "Expected `site_package_path` from Python interpreter query to be non-empty"
+        ))?;
+
+        Ok(deserialized)
+    }
+
+    pub fn get_default_interpreter() -> Option<PathBuf> {
+        // disable query with `which` on wasm
+        #[cfg(not(target_arch = "wasm32"))]
+        for interpreter in Self::DEFAULT_INTERPRETERS {
+            if let Ok(interpreter_path) = which(interpreter) {
+                return Some(interpreter_path);
+            }
+        }
+        None
+    }
+
+    pub fn python_platform(&self) -> &str {
+        self.python_platform
+            .as_deref()
+            .unwrap_or(DEFAULT_PYTHON_PLATFORM)
+    }
+
+    pub fn python_version(&self) -> PythonVersion {
+        self.python_version.unwrap_or_default()
+    }
+
+    pub fn site_package_path(&self) -> &[PathBuf] {
+        self.site_package_path.as_deref().unwrap_or_default()
+    }
+
+    pub fn get_interpreter_env(interpreter: &Path) -> PythonEnvironment {
+        LazyLock::force(&INTERPRETER_ENV_REGISTRY)
+            .lock().unwrap()
+        .entry(interpreter.to_path_buf()).or_insert_with(move || {
+            Self::get_env_from_interpreter(interpreter).inspect_err(|e| {
+                tracing::error!("Failed to query interpreter, falling back to default Python environment settings\n{}", e);
+            }).ok()
+        }).clone().unwrap_or_default()
+    }
+
+    pub fn get_runtime_metadata(&self) -> RuntimeMetadata {
+        RuntimeMetadata::new(self.python_version(), self.python_platform().to_owned())
+    }
+}
+
+impl Default for PythonEnvironment {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_PYTHON_PLATFORM.to_owned(),
+            PythonVersion::default(),
+            Vec::new(),
+        )
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Deserialize, Clone)]
 pub struct ConfigFile {
     /// Files that should be counted as sources (e.g. user-space code).
     /// NOTE: this is never replaced with CLI args in this config, but may be overridden by CLI args where used.
@@ -112,26 +254,23 @@ pub struct ConfigFile {
 
     /// corresponds to --search-path in Args, the list of directories where imports are
     /// found (including type checked files).
-    // TODO(connernilsen): set this to config directory when config is found
     #[serde(default = "ConfigFile::default_search_path")]
     pub search_path: Vec<PathBuf>,
 
-    /// The default Python platform to use, likely `linux`
-    // TODO(connernilsen): use python_executable if not set
-    #[serde(default = "ConfigFile::default_python_platform")]
-    pub python_platform: String,
+    // TODO(connernilsen): make this mutually exclusive with venv/conda env
+    #[serde(default = "PythonEnvironment::get_default_interpreter")]
+    pub python_interpreter: Option<PathBuf>,
 
-    /// The default Python version to use, likely `3.13.0`
-    // TODO(connernilsen): use python_executable if not set
-    #[serde(default)]
-    pub python_version: PythonVersion,
-
-    // TODO(connernilsen): use python_executable if not set
-    #[serde(default)]
-    pub site_package_path: Vec<PathBuf>,
+    #[serde(flatten)]
+    pub python_environment: PythonEnvironment,
 
     #[serde(default)]
     pub errors: ErrorConfig,
+
+    /// String-prefix-matched names of modules from which import errors should be ignored
+    /// and the module should always be replaced with `typing.Any`
+    #[serde(default)]
+    pub replace_imports_with_any: Vec<String>,
 
     /// Any unknown config items
     #[serde(default, flatten)]
@@ -142,13 +281,17 @@ impl Default for ConfigFile {
     fn default() -> ConfigFile {
         ConfigFile {
             search_path: Self::default_search_path(),
-            python_platform: Self::default_python_platform(),
-            python_version: PythonVersion::default(),
-            site_package_path: Vec::new(),
+            python_environment: PythonEnvironment {
+                python_platform: None,
+                python_version: None,
+                site_package_path: None,
+            },
             project_includes: Self::default_project_includes(),
             project_excludes: Self::default_project_excludes(),
+            python_interpreter: PythonEnvironment::get_default_interpreter(),
             errors: ErrorConfig::default(),
             extras: Self::default_extras(),
+            replace_imports_with_any: Vec::new(),
         }
     }
 }
@@ -166,10 +309,6 @@ impl ConfigFile {
         ])
     }
 
-    pub fn default_python_platform() -> String {
-        DEFAULT_PYTHON_PLATFORM.to_owned()
-    }
-
     pub fn default_search_path() -> Vec<PathBuf> {
         vec![PathBuf::from("")]
     }
@@ -178,12 +317,52 @@ impl ConfigFile {
         ExtraConfigs(Table::new())
     }
 
+    pub fn python_version(&self) -> PythonVersion {
+        self.python_environment.python_version()
+    }
+
+    pub fn python_platform(&self) -> &str {
+        self.python_environment.python_platform()
+    }
+
+    pub fn site_package_path(&self) -> &[PathBuf] {
+        self.python_environment.site_package_path()
+    }
+
     pub fn get_runtime_metadata(&self) -> RuntimeMetadata {
-        RuntimeMetadata::new(self.python_version, self.python_platform.clone())
+        self.python_environment.get_runtime_metadata()
     }
 
     pub fn default_error_config() -> ErrorConfig {
         ErrorConfig::default()
+    }
+
+    pub fn configure(&mut self) {
+        let env = &mut self.python_environment;
+
+        let env_has_empty = env.python_version.is_none()
+            || env.python_platform.is_none()
+            || env.site_package_path.is_none();
+
+        if env_has_empty && let Some(interpreter) = &self.python_interpreter {
+            let system_env = PythonEnvironment::get_interpreter_env(interpreter);
+
+            if env.python_version.is_none() {
+                env.python_version = system_env.python_version;
+            }
+            if env.python_platform.is_none() {
+                env.python_platform = system_env.python_platform;
+            }
+            if env.site_package_path.is_none() {
+                env.site_package_path = system_env.site_package_path;
+            }
+        } else if env_has_empty {
+            tracing::warn!(
+                "Python environment (version, platform, or site_package_path) has value unset, \
+                but no Python interpreter could be found to query for values. Falling back to \
+                Pyrefly defaults for missing values."
+            )
+        };
     }
 
     fn rewrite_with_path_to_config(&mut self, config_root: &Path) {
@@ -197,12 +376,15 @@ impl ConfigFile {
         // push config to search path to make sure we can fall back to the config directory as an import path
         // if users forget to add it
         self.search_path.push(config_root.to_path_buf());
-        self.site_package_path
+        self.python_environment
+            .site_package_path
             .iter_mut()
-            .for_each(|site_package_path| {
-                let mut base = config_root.to_path_buf();
-                base.push(site_package_path.as_path());
-                *site_package_path = base;
+            .for_each(|v| {
+                v.iter_mut().for_each(|site_package_path| {
+                    let mut with_base = config_root.to_path_buf();
+                    with_base.push(site_package_path.as_path());
+                    *site_package_path = with_base;
+                });
             });
         self.project_excludes = self.project_excludes.clone().from_root(config_root);
     }
@@ -219,17 +401,24 @@ impl ConfigFile {
             };
             tracing::warn!("Nonexistent `{field}` found: {}", p.display());
         }
-        self.site_package_path
-            .iter()
-            .for_each(|p| warn_on_invalid(p, "site_package_path"));
+        self.python_environment
+            .site_package_path
+            .as_ref()
+            .inspect(|p| {
+                p.iter()
+                    .for_each(|p| warn_on_invalid(p, "site_package_path"))
+            });
         self.search_path
             .iter()
             .for_each(|p| warn_on_invalid(p, "search_path"));
     }
 
     pub fn from_file(config_path: &Path, error_on_extras: bool) -> anyhow::Result<ConfigFile> {
-        // TODO(connernilsen): fix return type and handle config searching
-        let config_str = fs::read_to_string(config_path)?;
+        let config_path = config_path
+            .absolutize()
+            .with_context(|| format!("Path `{}` cannot be absolutized", config_path.display()))?
+            .into_owned();
+        let config_str = fs::read_to_string(&config_path)?;
         let mut config = if config_path.file_name() == Some(OsStr::new(&PYPROJECT_FILE_NAME)) {
             Self::parse_pyproject_toml(&config_str)
         } else {
@@ -269,7 +458,6 @@ impl ConfigFile {
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
             .tool
             .and_then(|c| c.pyrefly);
-        // TODO(connernilsen): we don't want to return a default config here, we should keep searching
         Ok(maybe_config.unwrap_or_else(ConfigFile::default))
     }
 }
@@ -293,6 +481,8 @@ mod tests {
             python_platform = \"darwin\"
             python_version = \"1.2.3\"
             site_package_path = [\"venv/lib/python1.2.3/site-packages\"]
+            python_interpreter = \"python2\"
+            replace_imports_with_any = [\"fibonacci\"]
             [errors]
             assert-type = true
             bad-return = false
@@ -307,14 +497,18 @@ mod tests {
                 ]),
                 project_excludes: Globs::new(vec!["tests/untyped/**".to_owned()]),
                 search_path: vec![PathBuf::from("../..")],
-                python_platform: "darwin".to_owned(),
-                python_version: PythonVersion::new(1, 2, 3),
-                site_package_path: vec![PathBuf::from("venv/lib/python1.2.3/site-packages")],
+                python_environment: PythonEnvironment::new(
+                    "darwin".to_owned(),
+                    PythonVersion::new(1, 2, 3),
+                    vec![PathBuf::from("venv/lib/python1.2.3/site-packages")],
+                ),
+                python_interpreter: Some(PathBuf::from("python2")),
                 extras: ConfigFile::default_extras(),
                 errors: ErrorConfig::new(HashMap::from_iter([
                     (ErrorKind::AssertType, true),
                     (ErrorKind::BadReturn, false)
                 ])),
+                replace_imports_with_any: vec!["fibonacci".to_owned()],
             },
         );
     }
@@ -355,8 +549,11 @@ mod tests {
                     "./tests".to_owned(),
                     "./implementation".to_owned()
                 ]),
-                python_platform: "darwin".to_owned(),
-                python_version: PythonVersion::new(1, 2, 3),
+                python_environment: PythonEnvironment {
+                    python_platform: Some("darwin".to_owned()),
+                    python_version: Some(PythonVersion::new(1, 2, 3)),
+                    site_package_path: None,
+                },
                 ..ConfigFile::default()
             }
         );
@@ -384,7 +581,11 @@ mod tests {
         assert_eq!(
             config,
             ConfigFile {
-                python_version: PythonVersion::new(1, 2, 3),
+                python_environment: PythonEnvironment {
+                    python_version: Some(PythonVersion::new(1, 2, 3)),
+                    python_platform: None,
+                    site_package_path: None,
+                },
                 ..ConfigFile::default()
             }
         );
@@ -427,15 +628,19 @@ mod tests {
         fn with_sep(s: &str) -> String {
             s.replace("/", path::MAIN_SEPARATOR_STR)
         }
+        let mut python_environment = PythonEnvironment {
+            site_package_path: Some(vec![PathBuf::from("venv/lib/python1.2.3/site-packages")]),
+            ..PythonEnvironment::default()
+        };
         let mut config = ConfigFile {
             project_includes: Globs::new(vec!["path1/**".to_owned(), "path2/path3".to_owned()]),
             project_excludes: Globs::new(vec!["tests/untyped/**".to_owned()]),
             search_path: vec![PathBuf::from("../..")],
-            site_package_path: vec![PathBuf::from("venv/lib/python1.2.3/site-packages")],
-            python_platform: ConfigFile::default_python_platform(),
-            python_version: PythonVersion::default(),
+            python_environment: python_environment.clone(),
+            python_interpreter: PythonEnvironment::get_default_interpreter(),
             errors: ErrorConfig::default(),
             extras: ConfigFile::default_extras(),
+            replace_imports_with_any: Vec::new(),
         };
 
         let path_str = with_sep("path/to/my/config");
@@ -447,7 +652,8 @@ mod tests {
         ];
         let project_excludes_vec = vec![path_str.clone() + &with_sep("/tests/untyped/**")];
         let search_path = vec![test_path.join("../.."), test_path.clone()];
-        let site_package_path = vec![test_path.join("venv/lib/python1.2.3/site-packages")];
+        python_environment.site_package_path =
+            Some(vec![test_path.join("venv/lib/python1.2.3/site-packages")]);
 
         config.rewrite_with_path_to_config(&test_path);
 
@@ -455,7 +661,7 @@ mod tests {
             project_includes: Globs::new(project_includes_vec),
             project_excludes: Globs::new(project_excludes_vec),
             search_path,
-            site_package_path,
+            python_environment,
             ..ConfigFile::default()
         };
         assert_eq!(config, expected_config);

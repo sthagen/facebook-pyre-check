@@ -133,10 +133,11 @@ assert_type(x, Literal["a"])
 testcase!(
     test_boolean_and_simple,
     r#"
-from typing import assert_type
+from typing import assert_type, Literal
+
 def f(x: int, y: str) -> None:
     z = x and y
-    assert_type(z, int | str)
+    assert_type(z, Literal[0] | str)
     "#,
 );
 
@@ -177,6 +178,34 @@ from typing import assert_type, Literal
 x = "" and "a"
 assert_type(x, Literal[""])
     "#,
+);
+
+testcase!(
+    bug = "Should narrow",
+    test_boolean_operator_narrow,
+    r#"
+from typing import assert_type, Literal
+
+def f(x: bool, y: int):
+    assert_type(x and y, Literal[False] | int)
+
+def g(x: bool, y: Literal['a'], z: Literal['b']):
+    assert_type((x and y) or z, Literal['a', 'b'])
+
+def h(x: int, y: str, z: bool, v: float):
+    assert_type(x or y or z or v, int | float | str | Literal[True])
+    assert_type(x and y and z and v, Literal[0, "", False] | float)
+"#,
+);
+
+testcase!(
+    test_boolean_union,
+    r#"
+from typing import assert_type, Literal
+
+def f(x: int, y: str | Literal[False]):
+    assert_type(x or y, int | str | Literal[False])
+"#,
 );
 
 testcase!(

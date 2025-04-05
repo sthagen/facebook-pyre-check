@@ -950,7 +950,7 @@ let rec matches_constraint ~pyre_api ~class_hierarchy_graph ~name_captures value
       (* This is handled before matching constraints. *)
       true
   | ModelQuery.Constraint.AnyDecoratorConstraint decorator_constraint ->
-      Modelable.decorators value
+      Modelable.resolved_original_decorators value
       |> List.exists ~f:(fun decorator ->
              matches_decorator_constraint ~pyre_api ~name_captures ~decorator decorator_constraint)
   | ModelQuery.Constraint.ClassConstraint class_constraint ->
@@ -1151,7 +1151,7 @@ module type QUERY_KIND = sig
 
   val make_modelable
     :  pyre_api:PyrePysaEnvironment.ReadOnly.t ->
-    method_kinds:Interprocedural.CallGraph.MethodKind.SharedMemory.ReadOnly.t ->
+    callables_to_definitions_map:Interprocedural.Target.CallablesSharedMemory.ReadOnly.t ->
     Target.t ->
     Modelable.t
 
@@ -1270,14 +1270,14 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~verbose
       ~pyre_api
       ~class_hierarchy_graph
-      ~method_kinds
+      ~callables_to_definitions_map
       ~source_sink_filter
       ~stubs
       ~targets
       query
     =
     let fold (registry, errors) target =
-      let modelable = QueryKind.make_modelable ~pyre_api ~method_kinds target in
+      let modelable = QueryKind.make_modelable ~pyre_api ~callables_to_definitions_map target in
       match
         generate_model_from_query_on_target
           ~verbose
@@ -1302,13 +1302,13 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~verbose
       ~pyre_api
       ~class_hierarchy_graph
-      ~method_kinds
+      ~callables_to_definitions_map
       ~source_sink_filter
       ~stubs
       ~queries
       target
     =
-    let modelable = QueryKind.make_modelable ~pyre_api ~method_kinds target in
+    let modelable = QueryKind.make_modelable ~pyre_api ~callables_to_definitions_map target in
     let fold (current_models, current_errors) query =
       match
         generate_model_from_query_on_target
@@ -1341,7 +1341,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~verbose
       ~pyre_api
       ~class_hierarchy_graph
-      ~method_kinds
+      ~callables_to_definitions_map
       ~source_sink_filter
       ~stubs
       ~targets
@@ -1356,7 +1356,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
             ~verbose
             ~pyre_api
             ~class_hierarchy_graph
-            ~method_kinds
+            ~callables_to_definitions_map
             ~source_sink_filter
             ~stubs
             ~queries
@@ -1374,13 +1374,13 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~verbose
       ~pyre_api
       ~class_hierarchy_graph
-      ~method_kinds
+      ~callables_to_definitions_map
       ~initial_cache
       ~target
       ({ ModelQuery.models; name; _ } as query)
     =
     let name_captures = NameCaptures.create () in
-    let modelable = QueryKind.make_modelable ~pyre_api ~method_kinds target in
+    let modelable = QueryKind.make_modelable ~pyre_api ~callables_to_definitions_map target in
     let write_to_cache cache = function
       | ModelQuery.Model.WriteToCache { kind; name } -> (
           match Modelable.expand_format_string ~name_captures ~parameter:None modelable name with
@@ -1413,7 +1413,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~verbose
       ~pyre_api
       ~class_hierarchy_graph
-      ~method_kinds
+      ~callables_to_definitions_map
       ~targets
       write_to_cache_queries
     =
@@ -1422,13 +1422,12 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
         ~verbose
         ~pyre_api
         ~class_hierarchy_graph
+        ~callables_to_definitions_map
         ~initial_cache:cache
         ~target
         query
     in
-    let fold_query cache query =
-      List.fold targets ~init:cache ~f:(fold_target ~query ~method_kinds)
-    in
+    let fold_query cache query = List.fold targets ~init:cache ~f:(fold_target ~query) in
     List.fold write_to_cache_queries ~init:ReadWriteCache.empty ~f:fold_query
 
 
@@ -1438,7 +1437,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~scheduler
       ~scheduler_policies
       ~class_hierarchy_graph
-      ~method_kinds
+      ~callables_to_definitions_map
       ~targets
     = function
     | [] -> ReadWriteCache.empty
@@ -1448,7 +1447,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
             ~verbose
             ~pyre_api
             ~class_hierarchy_graph
-            ~method_kinds
+            ~callables_to_definitions_map
             ~targets
             write_to_cache_queries
         in
@@ -1477,7 +1476,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~verbose
       ~pyre_api
       ~class_hierarchy_graph
-      ~method_kinds
+      ~callables_to_definitions_map
       ~source_sink_filter
       ~stubs
       ~cache
@@ -1502,7 +1501,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
               ~verbose
               ~pyre_api
               ~class_hierarchy_graph
-              ~method_kinds
+              ~callables_to_definitions_map
               ~source_sink_filter
               ~stubs
               ~targets:(Target.Set.elements candidates)
@@ -1525,7 +1524,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~scheduler
       ~scheduler_policies
       ~class_hierarchy_graph
-      ~method_kinds
+      ~callables_to_definitions_map
       ~source_sink_filter
       ~stubs
       ~targets
@@ -1539,7 +1538,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
             ~verbose
             ~pyre_api
             ~class_hierarchy_graph
-            ~method_kinds
+            ~callables_to_definitions_map
             ~source_sink_filter
             ~stubs
             ~targets
@@ -1573,7 +1572,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~scheduler
       ~scheduler_policies
       ~class_hierarchy_graph
-      ~method_kinds
+      ~callables_to_definitions_map
       ~source_sink_filter
       ~stubs
       ~targets
@@ -1604,7 +1603,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           ~scheduler
           ~scheduler_policies
           ~class_hierarchy_graph
-          ~method_kinds
+          ~callables_to_definitions_map
           ~source_sink_filter
           ~stubs
           ~targets
@@ -1634,7 +1633,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           ~scheduler
           ~scheduler_policies
           ~class_hierarchy_graph
-          ~method_kinds
+          ~callables_to_definitions_map
           ~targets
           write_to_cache_queries
       in
@@ -1649,7 +1648,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           ~verbose
           ~pyre_api
           ~class_hierarchy_graph
-          ~method_kinds
+          ~callables_to_definitions_map
           ~source_sink_filter
           ~stubs
           ~cache
@@ -1948,8 +1947,8 @@ module CallableQueryExecutor = MakeQueryExecutor (struct
       | ModelQuery.Model.Global _ -> failwith "impossible case"
       | ModelQuery.Model.WriteToCache _ -> failwith "impossible case"
     in
-    let { Statement.Define.signature = { parameters; return_annotation; _ }; captures; _ } =
-      Modelable.define modelable
+    let { Target.CallablesSharedMemory.Signature.parameters; return_annotation; captures; _ } =
+      Modelable.signature modelable
     in
     let normalized_parameters = AccessPath.normalize_parameters parameters in
     List.concat_map models ~f:(apply_model ~normalized_parameters ~captures ~return_annotation)
@@ -2023,7 +2022,7 @@ module AttributeQueryExecutor = struct
 
     let schedule_identifier = Configuration.ScheduleIdentifier.AttributeModelQueries
 
-    let make_modelable ~pyre_api ~method_kinds:_ target =
+    let make_modelable ~pyre_api ~callables_to_definitions_map:_ target =
       Modelable.create_attribute ~pyre_api target
 
 
@@ -2084,7 +2083,9 @@ module GlobalVariableQueryExecutor = struct
 
     let schedule_identifier = Configuration.ScheduleIdentifier.GlobalModelQueries
 
-    let make_modelable ~pyre_api ~method_kinds:_ target = Modelable.create_global ~pyre_api target
+    let make_modelable ~pyre_api ~callables_to_definitions_map:_ target =
+      Modelable.create_global ~pyre_api target
+
 
     (* Generate taint annotations from the `models` part of a given model query. *)
     let generate_annotations_from_query_models
@@ -2126,7 +2127,7 @@ let generate_models_from_queries
     ~scheduler
     ~scheduler_policies
     ~class_hierarchy_graph
-    ~method_kinds
+    ~callables_to_definitions_map
     ~source_sink_filter
     ~verbose
     ~error_on_unexpected_models
@@ -2159,7 +2160,7 @@ let generate_models_from_queries
         ~scheduler
         ~scheduler_policies
         ~class_hierarchy_graph
-        ~method_kinds
+        ~callables_to_definitions_map
         ~source_sink_filter
         ~stubs
         ~targets:definitions_and_stubs
@@ -2179,7 +2180,7 @@ let generate_models_from_queries
         ~scheduler
         ~scheduler_policies
         ~class_hierarchy_graph
-        ~method_kinds
+        ~callables_to_definitions_map
         ~source_sink_filter
         ~stubs
         ~targets:attributes
@@ -2199,7 +2200,7 @@ let generate_models_from_queries
         ~scheduler
         ~scheduler_policies
         ~class_hierarchy_graph
-        ~method_kinds
+        ~callables_to_definitions_map
         ~source_sink_filter
         ~stubs
         ~targets:globals

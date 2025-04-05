@@ -34,6 +34,7 @@ use crate::types::class::ClassType;
 use crate::types::class::TArgs;
 use crate::types::quantified::QuantifiedKind;
 use crate::types::tuple::Tuple;
+use crate::types::type_var::Restriction;
 use crate::types::typed_dict::TypedDict;
 use crate::types::types::TParams;
 use crate::types::types::Type;
@@ -216,7 +217,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         range,
                         ErrorKind::InvalidParamSpec,
                         None,
-                        "Expected a valid ParamSpec expression".to_owned(),
+                        format!("Expected a valid ParamSpec expression, got `{arg}`"),
                     );
                     checked_targs.push(Type::Ellipsis);
                 }
@@ -231,7 +232,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             None,
                             format!(
                                 "Unpacked argument cannot be used for type parameter {}",
-                                param.name
+                                param.name()
                             ),
                         ));
                     }
@@ -259,7 +260,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                 }
                 targ_idx += 1;
-            } else if let Some(default) = &param.default {
+            } else if let Some(default) = param.default() {
                 checked_targs.push(default.clone());
             } else {
                 let only_type_var_tuples_left = tparams
@@ -280,14 +281,19 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         ),
                     );
                 }
-                let defaults = tparams
-                    .iter()
-                    .skip(param_idx)
-                    .map(|x| match x.quantified.kind() {
-                        QuantifiedKind::TypeVarTuple => Type::any_tuple(),
-                        QuantifiedKind::TypeVar => Type::any_error(),
-                        QuantifiedKind::ParamSpec => Type::Ellipsis,
-                    });
+                let defaults = tparams.iter().skip(param_idx).map(|x| {
+                    if let Some(default) = x.default() {
+                        default.clone()
+                    } else if let Restriction::Bound(bound) = x.restriction() {
+                        bound.clone()
+                    } else {
+                        match x.quantified.kind() {
+                            QuantifiedKind::TypeVarTuple => Type::any_tuple(),
+                            QuantifiedKind::TypeVar => Type::any_error(),
+                            QuantifiedKind::ParamSpec => Type::Ellipsis,
+                        }
+                    }
+                });
                 checked_targs.extend(defaults);
                 break;
             }
@@ -331,11 +337,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 tparams
                     .iter()
                     .map(|x| {
-                        if let Some(default) = &x.default {
+                        if let Some(default) = x.default() {
                             default.clone()
+                        } else if let Restriction::Bound(bound) = x.restriction() {
+                            bound.clone()
                         } else if range.is_some() {
                             Type::any_error()
                         } else {
+                            // TODO: use different defaults for ParamSpec/TypeVarTuple
                             Type::any_implicit()
                         }
                     })
@@ -397,9 +406,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
 
     /// Creates a type from the class with fresh variables for its type parameters.
     pub fn instantiate_fresh(&self, cls: &Class) -> Type {
-        let qs = cls.tparams().quantified().collect::<Vec<_>>();
-        let targs = TArgs::new(qs.map(|q| Type::Quantified(*q)));
-        let promoted_cls = Type::type_form(self.type_of_instance(cls, targs));
+        let promoted_cls = Type::type_form(self.type_of_instance(cls, cls.tparams_as_targs()));
         self.solver()
             .fresh_quantified(cls.tparams(), promoted_cls, self.uniques)
             .1

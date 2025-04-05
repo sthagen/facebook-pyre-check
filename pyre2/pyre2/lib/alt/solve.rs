@@ -56,6 +56,7 @@ use crate::binding::binding::NoneIfRecursive;
 use crate::binding::binding::RaisedException;
 use crate::binding::binding::SizeExpectation;
 use crate::binding::binding::SuperStyle;
+use crate::binding::binding::TypeParameter;
 use crate::binding::binding::UnpackedPosition;
 use crate::dunder;
 use crate::error::collector::ErrorCollector;
@@ -80,7 +81,10 @@ use crate::types::literal::Lit;
 use crate::types::module::Module;
 use crate::types::param_spec::ParamSpec;
 use crate::types::quantified::Quantified;
+use crate::types::quantified::QuantifiedInfo;
+use crate::types::quantified::QuantifiedKind;
 use crate::types::tuple::Tuple;
+use crate::types::type_info::TypeInfo;
 use crate::types::type_var::Restriction;
 use crate::types::type_var::TypeVar;
 use crate::types::type_var::Variance;
@@ -119,6 +123,9 @@ pub enum TypeFormContext {
     TupleOrCallableParam,
     /// Scoped type params for functions and classes
     TypeVarConstraint,
+    TypeVarDefault,
+    ParamSpecDefault,
+    TypeVarTupleDefault,
     /// Variable annotation outside of a class definition
     /// Is the variable assigned a value here?
     VarAnnotation(Initialized),
@@ -134,34 +141,38 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         &self,
         binding: &BindingLegacyTypeParam,
     ) -> Arc<LegacyTypeParameterLookup> {
-        match &*self.get_idx(binding.0) {
+        match self.get_idx(binding.0).ty() {
             Type::Type(box Type::TypeVar(x)) => {
-                let q = Quantified::type_var(self.uniques);
+                let q = Quantified::type_var(
+                    x.qname().id().clone(),
+                    self.uniques,
+                    x.default().cloned(),
+                    x.restriction().clone(),
+                );
                 Arc::new(LegacyTypeParameterLookup::Parameter(TParamInfo {
-                    name: x.qname().id().clone(),
                     quantified: q,
-                    restriction: x.restriction().clone(),
-                    default: x.default().cloned(),
                     variance: x.variance(),
                 }))
             }
             Type::Type(box Type::TypeVarTuple(x)) => {
-                let q = Quantified::type_var_tuple(self.uniques);
+                let q = Quantified::type_var_tuple(
+                    x.qname().id().clone(),
+                    self.uniques,
+                    x.default().cloned(),
+                );
                 Arc::new(LegacyTypeParameterLookup::Parameter(TParamInfo {
-                    name: x.qname().id().clone(),
                     quantified: q,
-                    restriction: Restriction::Unrestricted,
-                    default: None,
                     variance: Some(Variance::Invariant),
                 }))
             }
             Type::Type(box Type::ParamSpec(x)) => {
-                let q = Quantified::param_spec(self.uniques);
+                let q = Quantified::param_spec(
+                    x.qname().id().clone(),
+                    self.uniques,
+                    x.default().cloned(),
+                );
                 Arc::new(LegacyTypeParameterLookup::Parameter(TParamInfo {
-                    name: x.qname().id().clone(),
                     quantified: q,
-                    restriction: Restriction::Unrestricted,
-                    default: None,
                     variance: Some(Variance::Invariant),
                 }))
             }
@@ -211,8 +222,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 {
                     let class = &*self.get_idx(*class_key);
                     if let Some(cls) = &class.0 {
-                        let cls_type =
-                            ClassType::new(cls.dupe(), self.create_default_targs(cls, None));
+                        let cls_type = ClassType::new(cls.dupe(), cls.tparams_as_targs());
                         ty.subst_self_special_form_mut(&Type::SelfType(cls_type));
                     }
                 }
@@ -644,15 +654,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Type::TypeVar(ty_var) => {
                 let q = match seen_type_vars.entry(ty_var.dupe()) {
-                    Entry::Occupied(e) => *e.get(),
+                    Entry::Occupied(e) => e.get().clone(),
                     Entry::Vacant(e) => {
-                        let q = Quantified::type_var(self.uniques);
-                        e.insert(q);
+                        let q = Quantified::type_var(
+                            ty_var.qname().id().clone(),
+                            self.uniques,
+                            ty_var.default().cloned(),
+                            ty_var.restriction().clone(),
+                        );
+                        e.insert(q.clone());
                         tparams.push(TParamInfo {
-                            name: ty_var.qname().id().clone(),
-                            quantified: q,
-                            restriction: Restriction::Unrestricted,
-                            default: ty_var.default().cloned(),
+                            quantified: q.clone(),
                             variance: ty_var.variance(),
                         });
                         q
@@ -662,15 +674,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Type::TypeVarTuple(ty_var_tuple) => {
                 let q = match seen_type_var_tuples.entry(ty_var_tuple.dupe()) {
-                    Entry::Occupied(e) => *e.get(),
+                    Entry::Occupied(e) => e.get().clone(),
                     Entry::Vacant(e) => {
-                        let q = Quantified::type_var_tuple(self.uniques);
-                        e.insert(q);
+                        let q = Quantified::type_var_tuple(
+                            ty_var_tuple.qname().id().clone(),
+                            self.uniques,
+                            ty_var_tuple.default().cloned(),
+                        );
+                        e.insert(q.clone());
                         tparams.push(TParamInfo {
-                            name: ty_var_tuple.qname().id().clone(),
-                            quantified: q,
-                            restriction: Restriction::Unrestricted,
-                            default: None,
+                            quantified: q.clone(),
                             variance: Some(Variance::Invariant),
                         });
                         q
@@ -680,15 +693,16 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Type::ParamSpec(param_spec) => {
                 let q = match seen_param_specs.entry(param_spec.dupe()) {
-                    Entry::Occupied(e) => *e.get(),
+                    Entry::Occupied(e) => e.get().clone(),
                     Entry::Vacant(e) => {
-                        let q = Quantified::param_spec(self.uniques);
-                        e.insert(q);
+                        let q = Quantified::param_spec(
+                            param_spec.qname().id().clone(),
+                            self.uniques,
+                            param_spec.default().cloned(),
+                        );
+                        e.insert(q.clone());
                         tparams.push(TParamInfo {
-                            name: param_spec.qname().id().clone(),
-                            quantified: q,
-                            restriction: Restriction::Unrestricted,
-                            default: None,
+                            quantified: q.clone(),
                             variance: Some(Variance::Invariant),
                         });
                         q
@@ -883,7 +897,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Some(x) => {
                 fn get_quantified(t: &Type) -> Quantified {
                     match t {
-                        Type::Type(box Type::Quantified(q)) => *q,
+                        Type::Type(box Type::Quantified(q)) => q.clone(),
                         _ => unreachable!(),
                     }
                 }
@@ -904,32 +918,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         type_var_tuple_count += 1;
                     }
                     let name = raw_param.name();
-                    let restriction = match raw_param {
-                        TypeParam::TypeVar(tv) => match &tv.bound {
-                            Some(box Expr::Tuple(tup)) => {
-                                Restriction::Constraints(tup.elts.map(|e| {
-                                    self.expr_untype(e, TypeFormContext::TypeVarConstraint, errors)
-                                }))
-                            }
-                            Some(e) => Restriction::Bound(self.expr_untype(
-                                e,
-                                TypeFormContext::TypeVarConstraint,
-                                errors,
-                            )),
-                            None => Restriction::Unrestricted,
-                        },
-                        _ => Restriction::Unrestricted,
-                    };
-                    let default = raw_param
-                        .default()
-                        .map(|e| self.expr_untype(e, TypeFormContext::TypeVarConstraint, errors));
+                    let quantified =
+                        get_quantified(self.get(&Key::Definition(ShortIdentifier::new(name))).ty());
                     params.push(TParamInfo {
-                        name: name.id.clone(),
-                        quantified: get_quantified(
-                            &self.get(&Key::Definition(ShortIdentifier::new(name))),
-                        ),
-                        restriction,
-                        default,
+                        quantified,
                         variance: None,
                     });
                 }
@@ -961,7 +953,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    pub fn solve_binding(&self, binding: &Binding, errors: &ErrorCollector) -> Arc<Type> {
+    pub fn solve_binding(&self, binding: &Binding, errors: &ErrorCollector) -> Arc<TypeInfo> {
         // Special case for forward, as we don't want to re-expand the type
         if let Binding::Forward(fwd) = binding {
             return self.get_idx(*fwd);
@@ -970,15 +962,15 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         // Replace any solved recursive variables with their answers.
         // We call self.unions() to simplify cases like
         // v = @1 | int, @1 = int.
-        Arc::new(
-            match self
-                .solver()
-                .expand(self.solve_binding_inner(binding, errors))
-            {
-                Type::Union(ts) => self.unions(ts),
-                t => t,
-            },
-        )
+        let type_info = self.binding_to_type_info(binding, errors);
+        // TODO(stroxler): We'll need a different pattern here to preserve attribute narrowing.
+        // Do we also need to *expand* the attribute narrowing types? I'm honestly not sure at this stage.
+        let ty = type_info.into_ty();
+        let ty = match self.solver().expand(ty) {
+            Type::Union(ts) => self.unions(ts),
+            t => t,
+        };
+        Arc::new(TypeInfo::of_ty(ty))
     }
 
     pub fn solve_expectation(
@@ -987,6 +979,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         errors: &ErrorCollector,
     ) -> Arc<EmptyAnswer> {
         match binding {
+            BindingExpect::TypeCheckExpr(box x) => {
+                self.expr_infer(x, errors);
+            }
             BindingExpect::Delete(box x) => match x {
                 Expr::Name(_) => {
                     self.expr_infer(x, errors);
@@ -1061,7 +1056,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             },
             BindingExpect::UnpackedLength(b, range, expect) => {
-                let iterable_ty = self.solve_binding_inner(b, errors);
+                let iterable_ty = self.binding_to_type(b, errors);
                 let iterables = self.iterate(&iterable_ty, *range, errors);
                 for iterable in iterables {
                     match iterable {
@@ -1144,11 +1139,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 self.check_attr_set_with_type(
                     base,
                     &attr.attr.id,
-                    &got,
+                    got.ty(),
                     attr.range,
                     errors,
                     None,
-                    "Answers::solve_binding_inner::CheckAssignTypeToAttribute",
+                    "Answers::solve_expectation::CheckAssignTypeToAttribute",
                 );
             }
             BindingExpect::CheckAssignExprToAttribute(box (attr, value)) => {
@@ -1160,7 +1155,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     attr.range,
                     errors,
                     None,
-                    "Answers::solve_binding_inner::CheckAssignExprToAttribute",
+                    "Answers::solve_expectation::CheckAssignExprToAttribute",
                 );
             }
         }
@@ -1196,11 +1191,11 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let field = match &self.get_idx(field.class).0 {
             None => ClassField::recursive(),
             Some(class) => {
-                let value_ty = self.solve_binding(&field.value, errors);
+                let value = self.solve_binding(&field.value, errors);
                 let annotation = field.annotation.map(|a| self.get_idx(a));
                 self.calculate_class_field(
                     &field.name,
-                    value_ty.as_ref(),
+                    value.ty(),
                     annotation.as_deref().map(|annot| &annot.annotation),
                     &field.initial_value,
                     class,
@@ -1257,7 +1252,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     ) -> Type {
         match style {
             SuperStyle::ExplicitArgs(cls_binding, obj_binding) => {
-                match &*self.get_idx(*cls_binding) {
+                match self.get_idx(*cls_binding).ty() {
                     Type::Any(style) => style.propagate(),
                     cls_type @ Type::ClassDef(cls) => {
                         let make_super_instance = |obj_cls, super_obj: &dyn Fn() -> SuperObj| {
@@ -1280,7 +1275,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 }
                             )
                         };
-                        match &*self.get_idx(*obj_binding) {
+                        match self.get_idx(*obj_binding).ty() {
                             Type::Any(style) => style.propagate(),
                             Type::ClassType(obj_cls) => make_super_instance(obj_cls, &|| SuperObj::Instance(obj_cls.clone())),
                             Type::Type(box Type::ClassType(obj_cls)) => make_super_instance(obj_cls, &|| SuperObj::Class(obj_cls.class_object().dupe())),
@@ -1354,8 +1349,126 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
     }
 
-    fn solve_binding_inner(&self, binding: &Binding, errors: &ErrorCollector) -> Type {
+    pub fn validate_type_var_default(
+        &self,
+        name: &Name,
+        kind: QuantifiedKind,
+        default: &Type,
+        range: TextRange,
+        restriction: &Restriction,
+        errors: &ErrorCollector,
+    ) -> Type {
+        if *default == Type::any_error() {
+            return default.clone();
+        }
+        match restriction {
+            // Default must be a subtype of the upper bound
+            Restriction::Bound(bound_ty) => {
+                if !self
+                    .solver()
+                    .is_subset_eq(default, bound_ty, self.type_order())
+                {
+                    self.error(
+                        errors,
+                        range,
+                        kind.error_kind(),
+                        None,
+                        format!(
+                            "Expected default `{}` of `{}` to be assignable to the upper bound of `{}`",
+                            default,
+                            name,
+                            bound_ty,
+                        ),
+                    );
+                    return Type::any_error();
+                }
+            }
+            Restriction::Constraints(constraints) => {
+                // Default must exactly match one of the constraints
+                if !constraints.iter().any(|c| {
+                    self.solver().is_subset_eq(c, default, self.type_order())
+                        && self.solver().is_subset_eq(default, c, self.type_order())
+                }) {
+                    let formatted_constraints = constraints
+                        .iter()
+                        .map(|x| format!("`{}`", x))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.error(
+                        errors,
+                        range,
+                        kind.error_kind(),
+                        None,
+                        format!(
+                            "Expected default `{}` of `{}` to be one of the following constraints: {}",
+                            default,
+                            name,
+                            formatted_constraints,
+                        ),
+                    );
+                    return Type::any_error();
+                }
+            }
+            Restriction::Unrestricted => {}
+        };
+        match kind {
+            QuantifiedKind::ParamSpec => {
+                if default.is_kind_param_spec() {
+                    default.clone()
+                } else {
+                    self.error(
+                        errors,
+                        range,
+                        ErrorKind::InvalidParamSpec,
+                        None,
+                        format!("Default for ParamSpec must be a parameter list, `...`, or another ParamSpec, got `{}`", default),
+                    );
+                    Type::any_error()
+                }
+            }
+            QuantifiedKind::TypeVarTuple => {
+                if default.is_kind_type_var_tuple() {
+                    default.clone()
+                } else if let Type::Unpack(box inner @ Type::Tuple(_)) = default {
+                    inner.clone()
+                } else {
+                    self.error(
+                        errors,
+                        range,
+                        ErrorKind::InvalidTypeVarTuple,
+                        None,
+                        format!("Default for TypeVarTuple must be an unpacked tuple form or another TypeVarTuple, got `{}`", default),
+                    );
+                    Type::any_error()
+                }
+            }
+            QuantifiedKind::TypeVar => {
+                if default.is_kind_param_spec() || default.is_kind_type_var_tuple() {
+                    self.error(
+                        errors,
+                        range,
+                        ErrorKind::InvalidTypeVar,
+                        None,
+                        format!(
+                            "Default for TypeVar may not be a TypeVarTuple or ParamSpec, got `{}`",
+                            default
+                        ),
+                    );
+                    Type::any_error()
+                } else {
+                    default.clone()
+                }
+            }
+        }
+    }
+
+    fn binding_to_type_info(&self, binding: &Binding, errors: &ErrorCollector) -> TypeInfo {
         match binding {
+            Binding::Forward(k) => self.get_idx(*k).arc_clone(),
+            Binding::Narrow(k, op, range) => {
+                // TODO(stroxler): propagate attribute narrows here
+                TypeInfo::of_ty(self.narrow(self.get_idx(*k).ty(), op, *range, errors))
+            }
             Binding::Expr(ann, e) => match ann {
                 Some(k) => {
                     let annot = self.get_idx(*k);
@@ -1373,10 +1486,184 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             "Assignment target is marked final".to_owned(),
                         );
                     }
-                    self.expr(e, annot.ty().map(|t| (t, tcc)), errors)
+                    // TODO(stroxler): propagate attribute narrows here
+                    TypeInfo::of_ty(self.expr(e, annot.ty().map(|t| (t, tcc)), errors))
                 }
-                None => self.expr(e, None, errors),
+                None => {
+                    // TODO(stroxler): propagate attribute narrows here
+                    TypeInfo::of_ty(self.expr(e, None, errors))
+                }
             },
+            _ => {
+                // All other Bindings model `Type` level operations where we do not
+                // propagate any attribute narrows.
+                // TODO(stroxler): A number of other cases need to be handled eventually
+                TypeInfo::of_ty(self.binding_to_type(binding, errors))
+            }
+        }
+    }
+
+    fn binding_to_type(&self, binding: &Binding, errors: &ErrorCollector) -> Type {
+        match binding {
+            Binding::Forward(..) | Binding::Expr(..) | Binding::Narrow(..) => {
+                // These forms require propagating attribute narrowing information, so they
+                // are handled in `binding_to_type_info`
+                self.binding_to_type_info(binding, errors).into_ty()
+            }
+            Binding::Phi(ks, default) => {
+                // We force the default first so that if we hit a recursive case it is already available
+                let default_val = default.map(|x| self.get_idx(x));
+
+                let get_idx = |k: Idx<Key>| {
+                    if Some(k) == *default {
+                        // Just optimise looking up Idx twice
+                        default_val.dupe().unwrap()
+                    } else {
+                        self.get_idx(k)
+                    }
+                };
+
+                if ks.len() == 1 {
+                    get_idx(*ks.first().unwrap()).arc_clone_ty()
+                } else {
+                    let ts = ks
+                        .iter()
+                        .filter_map(|k| {
+                            let t: Arc<TypeInfo> = get_idx(*k);
+                            // Filter out all `@overload`-decorated types except the one that
+                            // accumulates all signatures into a Type::Overload.
+                            if matches!(t.ty(), Type::Overload(_)) || !t.ty().is_overload() {
+                                Some(t.arc_clone_ty())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    self.unions(ts)
+                }
+            }
+            Binding::PatternMatchMapping(mapping_key, binding_key) => {
+                // TODO: check that value is a mapping
+                // TODO: check against duplicate keys (optional)
+                let key_ty = self.expr_infer(mapping_key, errors);
+                let binding = self.get_idx(*binding_key);
+                let arg = CallArg::Type(&key_ty, mapping_key.range());
+                self.call_method_or_error(
+                    binding.ty(),
+                    &dunder::GETITEM,
+                    mapping_key.range(),
+                    &[arg],
+                    &[],
+                    errors,
+                    None,
+                )
+            }
+            Binding::PatternMatchClassPositional(_, idx, key, range) => {
+                // TODO: check that value matches class
+                // TODO: check against duplicate keys (optional)
+                let binding = self.get_idx(*key);
+                let context = || ErrorContext::MatchPositional(binding.ty().clone());
+                let match_args = self.attr_infer(
+                    binding.ty(),
+                    &dunder::MATCH_ARGS,
+                    *range,
+                    errors,
+                    Some(&context),
+                );
+                match match_args {
+                    Type::Tuple(Tuple::Concrete(ts)) => {
+                        if *idx < ts.len() {
+                            if let Some(Type::Literal(Lit::String(box attr_name))) = ts.get(*idx) {
+                                self.attr_infer(
+                                    binding.ty(),
+                                    &Name::new(attr_name),
+                                    *range,
+                                    errors,
+                                    Some(&context),
+                                )
+                            } else {
+                                self.error(
+                                    errors,
+                                    *range,
+                                    ErrorKind::MatchError,
+                                    Some(&context),
+                                    format!(
+                                        "Expected literal string in `__match_args__`, got {}",
+                                        ts[*idx]
+                                    ),
+                                )
+                            }
+                        } else {
+                            self.error(
+                                errors,
+                                *range,
+                                ErrorKind::MatchError,
+                                Some(&context),
+                                format!("Index {idx} out of range for `__match_args__`"),
+                            )
+                        }
+                    }
+                    Type::Any(AnyStyle::Error) => match_args,
+                    _ => self.error(
+                        errors,
+                        *range,
+                        ErrorKind::MatchError,
+                        Some(&context),
+                        format!(
+                            "Expected concrete tuple for `__match_args__`, got {}",
+                            match_args
+                        ),
+                    ),
+                }
+            }
+            Binding::PatternMatchClassKeyword(_, attr, key) => {
+                // TODO: check that value matches class
+                // TODO: check against duplicate keys (optional)
+                let binding = self.get_idx(*key);
+                self.attr_infer(binding.ty(), &attr.id, attr.range, errors, None)
+            }
+            Binding::NameAssign(name, annot_key, expr) => {
+                let (has_type_alias_qualifier, ty) = match annot_key.as_ref() {
+                    Some((style, k)) => {
+                        let annot = self.get_idx(*k);
+                        let tcc: &dyn Fn() -> TypeCheckContext = &|| {
+                            TypeCheckContext::of_kind(match style {
+                                AnnotationStyle::Direct => TypeCheckKind::AnnAssign,
+                                AnnotationStyle::Forwarded => {
+                                    TypeCheckKind::AnnotatedName(name.clone())
+                                }
+                            })
+                        };
+                        if annot.annotation.is_final() && *style == AnnotationStyle::Forwarded {
+                            self.error(
+                                errors,
+                                expr.range(),
+                                ErrorKind::BadAssignment,
+                                None,
+                                format!("`{}` is marked final", name),
+                            );
+                        }
+                        let hint = annot.ty().map(|t| (t, tcc));
+                        (
+                            Some(annot.annotation.qualifiers.contains(&Qualifier::TypeAlias)),
+                            self.expr(expr, hint, errors),
+                        )
+                    }
+                    None => (None, self.expr(expr, None, errors)),
+                };
+                match (has_type_alias_qualifier, &ty) {
+                    (Some(true), _) => {
+                        self.as_type_alias(name, TypeAliasStyle::LegacyExplicit, ty, expr, errors)
+                    }
+                    // TODO(stroxler, rechen): Do we want to include Type::ClassDef(_)
+                    // when there is no annotation, so that `mylist = list` is treated
+                    // like a value assignment rather than a type alias?
+                    (None, Type::Type(_)) => {
+                        self.as_type_alias(name, TypeAliasStyle::LegacyImplicit, ty, expr, errors)
+                    }
+                    _ => ty,
+                }
+            }
             Binding::TypeVar(ann, name, x) => {
                 let ty = Type::type_form(self.typevar_from_call(name.clone(), x, errors).to_type());
                 if let Some(k) = ann
@@ -1461,7 +1748,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         if let Some((_, _, return_ty)) = self.decompose_generator(&ty) {
                             self.check_type(
                                 &return_ty,
-                                implicit_return.as_ref(),
+                                implicit_return.ty(),
                                 *range,
                                 errors,
                                 &|| {
@@ -1482,7 +1769,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                             );
                         }
                     } else {
-                        self.check_type(&ty, implicit_return.as_ref(), *range, errors, &|| {
+                        self.check_type(&ty, implicit_return.ty(), *range, errors, &|| {
                             TypeCheckContext::of_kind(TypeCheckKind::ImplicitFunctionReturn(
                                 !x.returns.is_empty(),
                             ))
@@ -1490,17 +1777,17 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     ty
                 } else {
-                    let returns = x.returns.iter().map(|k| self.get_idx(*k).arc_clone());
+                    let returns = x.returns.iter().map(|k| self.get_idx(*k).arc_clone_ty());
                     // TODO: It should always be a no-op to include a `Type::Never` in unions, but
                     // `simple::test_solver_variables` fails if we do, because `solver::unions` does
                     // `is_subset_eq` to force free variables, causing them to be equated to
                     // `Type::Never` instead of becoming `Type::Any`.
-                    let return_ty = if implicit_return.is_never() {
+                    let return_ty = if implicit_return.ty().is_never() {
                         self.unions(returns.collect())
                     } else {
                         self.unions(
                             returns
-                                .chain(iter::once(implicit_return.arc_clone()))
+                                .chain(iter::once(implicit_return.arc_clone_ty()))
                                 .collect(),
                         )
                     };
@@ -1590,10 +1877,10 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         xs.iter().all(|(last, k)| {
                             let e = self.get_idx(*k);
                             match last {
-                                LastStmt::Expr => e.is_never(),
+                                LastStmt::Expr => e.ty().is_never(),
                                 LastStmt::With(kind) => {
                                     let res = self.context_value_exit(
-                                        &e,
+                                        e.ty(),
                                         *kind,
                                         TextRange::default(),
                                         &ErrorCollector::new(
@@ -1733,7 +2020,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             }
             Binding::ContextValue(ann, e, range, kind) => {
                 let context_manager = self.get_idx(*e);
-                let context_value = self.context_value(&context_manager, *kind, *range, errors);
+                let context_value = self.context_value(context_manager.ty(), *kind, *range, errors);
                 let ty = ann.map(|k| self.get_idx(k));
                 match ty.as_ref().and_then(|x| x.ty().map(|t| (t, &x.target))) {
                     Some((ty, target)) => {
@@ -1747,7 +2034,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             Binding::SubscriptValue(box b, x) => {
                 let base = self.expr_infer(&x.value, errors);
                 let slice_ty = self.expr_infer(&x.slice, errors);
-                let value_ty = self.solve_binding_inner(b, errors);
+                let value_ty = self.binding_to_type(b, errors);
                 match (&base, &slice_ty) {
                     (Type::TypedDict(typed_dict), Type::Literal(Lit::String(field_name))) => {
                         if let Some(field) =
@@ -1810,7 +2097,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
             }
             Binding::UnpackedValue(b, range, pos) => {
-                let iterables = self.iterate(&self.solve_binding_inner(b, errors), *range, errors);
+                let iterables = self.iterate(&self.binding_to_type(b, errors), *range, errors);
                 let mut values = Vec::new();
                 for iterable in iterables {
                     values.push(match iterable {
@@ -1871,53 +2158,87 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     ty
                 }
             },
-            Binding::Forward(k) => self.get_idx(*k).arc_clone(),
-            Binding::Phi(ks, default) => {
-                // We force the default first so that if we hit a recursive case it is already available
-                let default_val = default.map(|x| self.get_idx(x));
-
-                let get_idx = |k: Idx<Key>| {
-                    if Some(k) == *default {
-                        // Just optimise looking up Idx twice
-                        default_val.dupe().unwrap()
-                    } else {
-                        self.get_idx(k)
-                    }
-                };
-
-                if ks.len() == 1 {
-                    get_idx(*ks.first().unwrap()).arc_clone()
-                } else {
-                    let ts = ks
-                        .iter()
-                        .filter_map(|k| {
-                            let t: Arc<Type> = get_idx(*k);
-                            // Filter out all `@overload`-decorated types except the one that
-                            // accumulates all signatures into a Type::Overload.
-                            if matches!(*t, Type::Overload(_)) || !t.is_overload() {
-                                Some(t.arc_clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    self.unions(ts)
-                }
-            }
-            Binding::Narrow(k, op, range) => self.narrow(&self.get_idx(*k), op, *range, errors),
             Binding::AnnotatedType(ann, val) => match &self.get_idx(*ann).ty() {
                 Some(ty) => (*ty).clone(),
-                None => self.solve_binding_inner(val, errors),
+                None => self.binding_to_type(val, errors),
             },
             Binding::Type(x) => x.clone(),
             Binding::StrType => self.stdlib.str().to_type(),
-            Binding::TypeParameter(unique, kind) => {
-                Type::type_form(Quantified::new(*unique, *kind).to_type())
+            Binding::TypeParameter(box TypeParameter {
+                name,
+                unique,
+                kind,
+                bound,
+                default,
+                constraints,
+            }) => {
+                let restriction = if let Some((bound_idx, bound_range)) = bound {
+                    let bound_ty = self.untype(
+                        self.get_idx(*bound_idx).arc_clone_ty(),
+                        *bound_range,
+                        errors,
+                    );
+                    Restriction::Bound(bound_ty)
+                } else if let Some((constraint_idxs, constraint_range)) = constraints {
+                    if constraint_idxs.len() < 2 {
+                        self.error(
+                            errors,
+                            *constraint_range,
+                            ErrorKind::InvalidTypeVar,
+                            None,
+                            format!(
+                                "Expected at least 2 constraints in TypeVar `{}`, got {}",
+                                name,
+                                constraint_idxs.len(),
+                            ),
+                        );
+                        Restriction::Unrestricted
+                    } else {
+                        let constraint_tys = constraint_idxs.map(|idx| {
+                            self.untype(
+                                self.get_idx(*idx).arc_clone_ty(),
+                                *constraint_range,
+                                errors,
+                            )
+                        });
+                        Restriction::Constraints(constraint_tys)
+                    }
+                } else {
+                    Restriction::Unrestricted
+                };
+                let mut default_ty = None;
+                if let Some(default_expr) = default {
+                    let default = self.expr_untype(
+                        default_expr,
+                        kind.type_form_context_for_default(),
+                        errors,
+                    );
+                    default_ty = Some(self.validate_type_var_default(
+                        name,
+                        *kind,
+                        &default,
+                        default_expr.range(),
+                        &restriction,
+                        errors,
+                    ));
+                }
+                Type::type_form(
+                    Quantified::new(
+                        *unique,
+                        QuantifiedInfo {
+                            name: name.clone(),
+                            kind: *kind,
+                            default: default_ty,
+                            restriction,
+                        },
+                    )
+                    .to_type(),
+                )
             }
             Binding::Module(m, path, prev) => {
                 let prev = prev
                     .as_ref()
-                    .and_then(|x| self.get_idx(*x).as_module().cloned());
+                    .and_then(|x| self.get_idx(*x).ty().as_module().cloned());
                 match prev {
                     Some(prev) if prev.path() == path => prev.add_module(*m).to_type(),
                     _ => {
@@ -1950,51 +2271,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                                 ),
                             );
                         }
-                        Type::type_form(p.quantified.to_type())
+                        Type::type_form(p.quantified.clone().to_type())
                     }
                     LegacyTypeParameterLookup::NotParameter(ty) => ty.clone(),
-                }
-            }
-            Binding::NameAssign(name, annot_key, expr) => {
-                let (has_type_alias_qualifier, ty) = match annot_key.as_ref() {
-                    Some((style, k)) => {
-                        let annot = self.get_idx(*k);
-                        let tcc: &dyn Fn() -> TypeCheckContext = &|| {
-                            TypeCheckContext::of_kind(match style {
-                                AnnotationStyle::Direct => TypeCheckKind::AnnAssign,
-                                AnnotationStyle::Forwarded => {
-                                    TypeCheckKind::AnnotatedName(name.clone())
-                                }
-                            })
-                        };
-                        if annot.annotation.is_final() && *style == AnnotationStyle::Forwarded {
-                            self.error(
-                                errors,
-                                expr.range(),
-                                ErrorKind::BadAssignment,
-                                None,
-                                format!("`{}` is marked final", name),
-                            );
-                        }
-                        let hint = annot.ty().map(|t| (t, tcc));
-                        (
-                            Some(annot.annotation.qualifiers.contains(&Qualifier::TypeAlias)),
-                            self.expr(expr, hint, errors),
-                        )
-                    }
-                    None => (None, self.expr(expr, None, errors)),
-                };
-                match (has_type_alias_qualifier, &ty) {
-                    (Some(true), _) => {
-                        self.as_type_alias(name, TypeAliasStyle::LegacyExplicit, ty, expr, errors)
-                    }
-                    // TODO(stroxler, rechen): Do we want to include Type::ClassDef(_)
-                    // when there is no annotation, so that `mylist = list` is treated
-                    // like a value assignment rather than a type alias?
-                    (None, Type::Type(_)) => {
-                        self.as_type_alias(name, TypeAliasStyle::LegacyImplicit, ty, expr, errors)
-                    }
-                    _ => ty,
                 }
             }
             Binding::ScopedTypeAlias(name, params, expr) => {
@@ -2018,86 +2297,6 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                     }
                     _ => ta,
                 }
-            }
-            Binding::PatternMatchMapping(mapping_key, binding_key) => {
-                // TODO: check that value is a mapping
-                // TODO: check against duplicate keys (optional)
-                let key_ty = self.expr_infer(mapping_key, errors);
-                let binding_ty = self.get_idx(*binding_key).arc_clone();
-                let arg = CallArg::Type(&key_ty, mapping_key.range());
-                self.call_method_or_error(
-                    &binding_ty,
-                    &dunder::GETITEM,
-                    mapping_key.range(),
-                    &[arg],
-                    &[],
-                    errors,
-                    None,
-                )
-            }
-            Binding::PatternMatchClassPositional(_, idx, key, range) => {
-                // TODO: check that value matches class
-                // TODO: check against duplicate keys (optional)
-                let binding_ty = self.get_idx(*key).arc_clone();
-                let context = || ErrorContext::MatchPositional(binding_ty.clone());
-                let match_args = self.attr_infer(
-                    &binding_ty,
-                    &dunder::MATCH_ARGS,
-                    *range,
-                    errors,
-                    Some(&context),
-                );
-                match match_args {
-                    Type::Tuple(Tuple::Concrete(ts)) => {
-                        if *idx < ts.len() {
-                            if let Some(Type::Literal(Lit::String(box attr_name))) = ts.get(*idx) {
-                                self.attr_infer(
-                                    &binding_ty,
-                                    &Name::new(attr_name),
-                                    *range,
-                                    errors,
-                                    Some(&context),
-                                )
-                            } else {
-                                self.error(
-                                    errors,
-                                    *range,
-                                    ErrorKind::MatchError,
-                                    Some(&context),
-                                    format!(
-                                        "Expected literal string in `__match_args__`, got {}",
-                                        ts[*idx]
-                                    ),
-                                )
-                            }
-                        } else {
-                            self.error(
-                                errors,
-                                *range,
-                                ErrorKind::MatchError,
-                                Some(&context),
-                                format!("Index {idx} out of range for `__match_args__`"),
-                            )
-                        }
-                    }
-                    Type::Any(AnyStyle::Error) => match_args,
-                    _ => self.error(
-                        errors,
-                        *range,
-                        ErrorKind::MatchError,
-                        Some(&context),
-                        format!(
-                            "Expected concrete tuple for `__match_args__`, got {}",
-                            match_args
-                        ),
-                    ),
-                }
-            }
-            Binding::PatternMatchClassKeyword(_, attr, key) => {
-                // TODO: check that value matches class
-                // TODO: check against duplicate keys (optional)
-                let binding_ty = self.get_idx(*key).arc_clone();
-                self.attr_infer(&binding_ty, &attr.id, attr.range, errors, None)
             }
             Binding::Decorator(expr) => self.expr_infer(expr, errors),
             Binding::LambdaParameter(var) => var.to_type(),
@@ -2352,7 +2551,12 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         errors: &ErrorCollector,
     ) -> Type {
         let result = match x {
-            Expr::List(x) if type_form_context == TypeFormContext::TypeArgument => {
+            Expr::List(x)
+                if matches!(
+                    type_form_context,
+                    TypeFormContext::TypeArgument | TypeFormContext::ParamSpecDefault
+                ) =>
+            {
                 let elts: Vec<Param> = x
                     .elts
                     .iter()
@@ -2407,6 +2611,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 | TypeFormContext::TypeArgument
                 | TypeFormContext::TupleOrCallableParam
                 | TypeFormContext::GenericBase
+                | TypeFormContext::TypeVarTupleDefault
         ) && matches!(result, Type::Unpack(_))
         {
             return self.error(
@@ -2419,7 +2624,9 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }
         if !matches!(
             type_form_context,
-            TypeFormContext::TypeArgument | TypeFormContext::GenericBase
+            TypeFormContext::TypeArgument
+                | TypeFormContext::GenericBase
+                | TypeFormContext::ParamSpecDefault
         ) && matches!(
             result,
             Type::Concatenate(_, _) | Type::ParamSpecValue(_) | Type::ParamSpec(_)
@@ -2443,7 +2650,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 format!("Expected a type argument for `{}`", special_form),
             );
         }
-        if let Type::Quantified(quantified) = result {
+        if let Type::Quantified(quantified) = &result {
             if quantified.is_param_spec()
                 && !matches!(
                     type_form_context,

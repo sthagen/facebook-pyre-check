@@ -179,7 +179,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
             None
         } else {
             defining_cls.as_ref().map(|cls| {
-                let cls_type = ClassType::new(cls.dupe(), self.create_default_targs(cls, None));
+                let cls_type = ClassType::new(cls.dupe(), cls.tparams_as_targs());
                 Type::SelfType(cls_type)
             })
         };
@@ -195,8 +195,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let decorators = decorators
             .iter()
             .filter(|k| {
-                let decorator_ty = self.get_idx(**k);
-                match decorator_ty.callee_kind() {
+                let decorator = self.get_idx(**k);
+                match decorator.ty().callee_kind() {
                     Some(CalleeKind::Function(FunctionKind::Overload)) => {
                         is_overload = true;
                         false
@@ -217,7 +217,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         // When the `setter` attribute is accessed on a property, we return the
                         // getter with its kind set to FunctionKind::PropertySetter. See
                         // AnswersSolver::lookup_attr_from_attribute_base for details.
-                        is_property_setter_with_getter = Some(decorator_ty.arc_clone());
+                        is_property_setter_with_getter = Some(decorator.arc_clone_ty());
                         false
                     }
                     Some(CalleeKind::Class(ClassKind::EnumMember)) => {
@@ -280,8 +280,8 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         }));
         params.extend(def.parameters.vararg.iter().map(|x| {
             let ty = get_param_ty(&x.name);
-            if let Type::Args(q) = ty {
-                paramspec_args = Some(q);
+            if let Type::Args(q) = &ty {
+                paramspec_args = Some(q.clone());
             }
             Param::VarArg(Some(x.name.id.clone()), ty)
         }));
@@ -317,14 +317,14 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 }
                 Either::Right(var) => self.solver().force_var(var),
             };
-            if let Type::Kwargs(q) = ty {
-                paramspec_kwargs = Some(q);
+            if let Type::Kwargs(q) = &ty {
+                paramspec_kwargs = Some(q.clone());
             }
             Param::Kwargs(ty)
         }));
         let ret = self
             .get(&Key::ReturnType(ShortIdentifier::new(&def.name)))
-            .arc_clone();
+            .arc_clone_ty();
 
         let ret = if def.is_async && !self.is_async_generator(&ret) {
             self.stdlib
@@ -374,7 +374,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                 })
                 .collect();
         }
-        let callable = if let Some(q) = paramspec_args
+        let callable = if let Some(q) = &paramspec_args
             && paramspec_args == paramspec_kwargs
         {
             Callable::concatenate(
@@ -386,7 +386,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
                         _ => None,
                     })
                     .collect(),
-                Type::Quantified(q),
+                Type::Quantified(q.clone()),
                 ret,
             )
         } else {

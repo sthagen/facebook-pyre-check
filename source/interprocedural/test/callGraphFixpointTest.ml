@@ -50,7 +50,7 @@ let assert_higher_order_call_graph_fixpoint
     Interprocedural.FetchCallables.get initial_callables ~definitions:true ~stubs:true
   in
   let callables_to_definitions_map =
-    Interprocedural.Target.DefinesSharedMemory.from_callables
+    Interprocedural.Target.CallablesSharedMemory.from_callables
       ~scheduler
       ~scheduler_policy
       ~pyre_api
@@ -59,18 +59,10 @@ let assert_higher_order_call_graph_fixpoint
   let decorators =
     CallGraph.CallableToDecoratorsMap.SharedMemory.create
       ~callables_to_definitions_map:
-        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+        (Interprocedural.Target.CallablesSharedMemory.read_only callables_to_definitions_map)
       ~scheduler
       ~scheduler_policy
       definitions
-  in
-  let method_kinds =
-    CallGraph.MethodKind.SharedMemory.from_targets
-      ~scheduler
-      ~scheduler_policy
-      ~callables_to_definitions_map:
-        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
-      definitions_and_stubs
   in
   let decorator_resolution =
     CallGraph.DecoratorResolution.Results.resolve_batch_exn
@@ -79,10 +71,9 @@ let assert_higher_order_call_graph_fixpoint
       ~scheduler
       ~scheduler_policy
       ~override_graph:override_graph_shared_memory
-      ~method_kinds:(CallGraph.MethodKind.SharedMemory.read_only method_kinds)
       ~decorators:(CallGraph.CallableToDecoratorsMap.SharedMemory.read_only decorators)
       ~callables_to_definitions_map:
-        (Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+        (Target.CallablesSharedMemory.read_only callables_to_definitions_map)
       definitions
   in
   let ({ SharedMemory.whole_program_call_graph; define_call_graphs } as call_graph) =
@@ -96,11 +87,10 @@ let assert_higher_order_call_graph_fixpoint
       ~attribute_targets:Target.Set.empty
       ~decorators:(CallGraph.CallableToDecoratorsMap.SharedMemory.read_only decorators)
       ~decorator_resolution
-      ~method_kinds:(CallGraph.MethodKind.SharedMemory.read_only method_kinds)
       ~skip_analysis_targets
       ~definitions
       ~callables_to_definitions_map:
-        (Interprocedural.Target.DefinesSharedMemory.read_only callables_to_definitions_map)
+        (Interprocedural.Target.CallablesSharedMemory.read_only callables_to_definitions_map)
       ~create_dependency_for:Interprocedural.CallGraph.AllTargetsUseCase.CallGraphDependency
   in
   let dependency_graph =
@@ -126,7 +116,6 @@ let assert_higher_order_call_graph_fixpoint
       ~decorator_resolution
       ~decorators:
         (Interprocedural.CallGraph.CallableToDecoratorsMap.SharedMemory.read_only decorators)
-      ~method_kinds:(CallGraph.MethodKind.SharedMemory.read_only method_kinds)
       ~callables_to_definitions_map
   in
   List.iter expected ~f:(fun { Expected.callable; call_graph; returned_callables } ->
@@ -155,7 +144,7 @@ let assert_higher_order_call_graph_fixpoint
   OverrideGraph.SharedMemory.cleanup override_graph_shared_memory;
   SharedMemory.cleanup define_call_graphs;
   CallGraphFixpoint.cleanup ~keep_models:false fixpoint_state.CallGraphFixpoint.fixpoint;
-  CallGraph.MethodKind.SharedMemory.cleanup method_kinds;
+  Target.CallablesSharedMemory.cleanup callables_to_definitions_map;
   ()
 
 
@@ -1919,196 +1908,31 @@ let test_higher_order_call_graph_fixpoint =
       @@ assert_higher_order_call_graph_fixpoint
            ~source:
              {|
-     class Base:
-       def __enter__(self):
-         return self
-       def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
-         return False
-       def __call__(self, func):
-         def inner(*args, **kwds):
-           func(*args, **kwds)
-         return inner
-     base = Base()
-     @base  # Test custom context manager
-     def contextmanager(x):
-       print(x)
-     class Subclass(Base):
-       def __init__(self, name):
-         self.name = name
-     subclass = Subclass("123")
-     @subclass  # Test subclass and decorator factory
-     def contextmanager_subclass(x):
-       print(x)
+     def decorator():
+       ...
+     def foo():
+       return
+     @decorator  # Test stub call targets in decorated targets
+     def bar():
+       return foo
   |}
            ~expected:
              [
                {
                  Expected.callable =
-                   Target.Regular.Function { name = "test.contextmanager"; kind = Decorated }
+                   Target.Regular.Function { name = "test.bar"; kind = Decorated }
                    |> Target.from_regular;
                  call_graph =
                    [
-                     ( "12:1-12:5",
+                     ( "6:1-6:10",
                        LocationCallees.Singleton
                          (ExpressionCallees.from_call
                             (CallCallees.create
                                ~call_targets:
-                                 [
-                                   CallTarget.create
-                                     ~implicit_receiver:true
-                                     ~implicit_dunder_call:true
-                                     ~receiver_class:"test.Base"
-                                     (create_parameterized_target
-                                        ~regular:
-                                          (Target.Regular.Method
-                                             {
-                                               class_name = "test.Base";
-                                               method_name = "__call__";
-                                               kind = Normal;
-                                             })
-                                        ~parameters:
-                                          [
-                                            ( create_positional_parameter 1 "func",
-                                              Target.Regular.Function
-                                                { name = "test.contextmanager"; kind = Normal }
-                                              |> Target.from_regular );
-                                          ]);
-                                 ]
-                               ())) );
-                     ( "13:0-14:10",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_attribute_access
-                            (AttributeAccessCallees.create
-                               ~callable_targets:
                                  [
                                    CallTarget.create_regular
                                      (Target.Regular.Function
-                                        { name = "test.contextmanager"; kind = Normal });
-                                 ]
-                               ())) );
-                   ];
-                 returned_callables =
-                   [
-                     CallTarget.create
-                       (create_parameterized_target
-                          ~regular:
-                            (Target.Regular.Function
-                               { name = "test.Base.__call__.inner"; kind = Normal })
-                          ~parameters:
-                            [
-                              ( AccessPath.Root.Variable "$parameter$func",
-                                Target.Regular.Function
-                                  { name = "test.contextmanager"; kind = Normal }
-                                |> Target.from_regular );
-                            ]);
-                   ];
-               };
-               {
-                 Expected.callable =
-                   Target.Regular.Function
-                     { name = "test.contextmanager_subclass"; kind = Decorated }
-                   |> Target.from_regular;
-                 call_graph =
-                   [
-                     ( "19:1-19:9",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_call
-                            (CallCallees.create
-                               ~call_targets:
-                                 [
-                                   CallTarget.create
-                                     ~implicit_receiver:true
-                                     ~implicit_dunder_call:true
-                                     ~receiver_class:"test.Subclass"
-                                     (create_parameterized_target
-                                        ~regular:
-                                          (Target.Regular.Method
-                                             {
-                                               class_name = "test.Base";
-                                               method_name = "__call__";
-                                               kind = Normal;
-                                             })
-                                        ~parameters:
-                                          [
-                                            ( create_positional_parameter 1 "func",
-                                              Target.Regular.Function
-                                                {
-                                                  name = "test.contextmanager_subclass";
-                                                  kind = Normal;
-                                                }
-                                              |> Target.from_regular );
-                                          ]);
-                                 ]
-                               ())) );
-                     ( "20:0-21:10",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_attribute_access
-                            (AttributeAccessCallees.create
-                               ~callable_targets:
-                                 [
-                                   CallTarget.create_regular
-                                     (Target.Regular.Function
-                                        { name = "test.contextmanager_subclass"; kind = Normal });
-                                 ]
-                               ())) );
-                   ];
-                 returned_callables =
-                   [
-                     CallTarget.create
-                       (create_parameterized_target
-                          ~regular:
-                            (Target.Regular.Function
-                               { name = "test.Base.__call__.inner"; kind = Normal })
-                          ~parameters:
-                            [
-                              ( AccessPath.Root.Variable "$parameter$func",
-                                Target.Regular.Function
-                                  { name = "test.contextmanager_subclass"; kind = Normal }
-                                |> Target.from_regular );
-                            ]);
-                   ];
-               };
-             ]
-           ();
-      labeled_test_case __FUNCTION__ __LINE__
-      @@ assert_higher_order_call_graph_fixpoint
-           ~source:
-             {|
-     class Base:
-       def __call__(self, func):
-         ...  # Test when `__call__` is a stub
-     class Subclass(Base):
-       def __init__(self, name):
-         self.name = name
-     subclass = Subclass("123")
-     @subclass
-     def stub_contextmanager(x):
-       print(x)
-  |}
-           ~expected:
-             [
-               {
-                 Expected.callable =
-                   Target.Regular.Function { name = "test.stub_contextmanager"; kind = Decorated }
-                   |> Target.from_regular;
-                 call_graph =
-                   [
-                     ( "9:1-9:9",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_call
-                            (CallCallees.create
-                               ~call_targets:
-                                 [
-                                   CallTarget.create_regular
-                                     ~implicit_receiver:true
-                                     ~implicit_dunder_call:true
-                                     ~receiver_class:"test.Subclass"
-                                     (Target.Regular.Method
-                                        {
-                                          class_name = "test.Base";
-                                          method_name = "__call__";
-                                          kind = Normal;
-                                        });
+                                        { name = "test.decorator"; kind = Normal });
                                  ]
                                ~higher_order_parameters:
                                  (HigherOrderParameterMap.from_list
@@ -2119,257 +1943,28 @@ let test_higher_order_call_graph_fixpoint =
                                           [
                                             CallTarget.create_regular
                                               (Target.Regular.Function
-                                                 {
-                                                   name = "test.stub_contextmanager";
-                                                   kind = Normal;
-                                                 });
+                                                 { name = "test.bar"; kind = Normal });
                                           ];
                                         unresolved = CallGraph.Unresolved.False;
                                       };
                                     ])
                                ())) );
-                     ( "10:0-11:10",
+                     ( "7:0-8:12",
                        LocationCallees.Singleton
                          (ExpressionCallees.from_attribute_access
                             (AttributeAccessCallees.create
                                ~callable_targets:
                                  [
                                    CallTarget.create_regular
-                                     (Target.Regular.Function
-                                        { name = "test.stub_contextmanager"; kind = Normal });
-                                 ]
-                               ())) );
-                   ];
-                 returned_callables = [];
-               };
-             ]
-           ();
-      labeled_test_case __FUNCTION__ __LINE__
-      @@ assert_higher_order_call_graph_fixpoint
-           ~source:
-             {|
-     class Base:
-       def __enter__(self):
-         return self
-       def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
-         return False
-       def __call__(self, func):
-         def inner(*args, **kwds):
-           func(*args, **kwds)
-         return inner
-     base = Base()
-     @base  # Test custom context manager
-     def contextmanager(x):
-       print(x)
-     class Subclass(Base):
-       def __init__(self, name):
-         self.name = name
-     subclass = Subclass("123")
-     @subclass  # Test subclass and decorator factory
-     def contextmanager_subclass(x):
-       print(x)
-  |}
-           ~expected:
-             [
-               {
-                 Expected.callable =
-                   Target.Regular.Function { name = "test.contextmanager"; kind = Decorated }
-                   |> Target.from_regular;
-                 call_graph =
-                   [
-                     ( "12:1-12:5",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_call
-                            (CallCallees.create
-                               ~call_targets:
-                                 [
-                                   CallTarget.create
-                                     ~implicit_receiver:true
-                                     ~implicit_dunder_call:true
-                                     ~receiver_class:"test.Base"
-                                     (create_parameterized_target
-                                        ~regular:
-                                          (Target.Regular.Method
-                                             {
-                                               class_name = "test.Base";
-                                               method_name = "__call__";
-                                               kind = Normal;
-                                             })
-                                        ~parameters:
-                                          [
-                                            ( create_positional_parameter 1 "func",
-                                              Target.Regular.Function
-                                                { name = "test.contextmanager"; kind = Normal }
-                                              |> Target.from_regular );
-                                          ]);
-                                 ]
-                               ())) );
-                     ( "13:0-14:10",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_attribute_access
-                            (AttributeAccessCallees.create
-                               ~callable_targets:
-                                 [
-                                   CallTarget.create_regular
-                                     (Target.Regular.Function
-                                        { name = "test.contextmanager"; kind = Normal });
+                                     (Target.Regular.Function { name = "test.bar"; kind = Normal });
                                  ]
                                ())) );
                    ];
                  returned_callables =
                    [
-                     CallTarget.create
-                       (create_parameterized_target
-                          ~regular:
-                            (Target.Regular.Function
-                               { name = "test.Base.__call__.inner"; kind = Normal })
-                          ~parameters:
-                            [
-                              ( AccessPath.Root.Variable "$parameter$func",
-                                Target.Regular.Function
-                                  { name = "test.contextmanager"; kind = Normal }
-                                |> Target.from_regular );
-                            ]);
+                     CallTarget.create_regular
+                       (Target.Regular.Function { name = "test.bar"; kind = Normal });
                    ];
-               };
-               {
-                 Expected.callable =
-                   Target.Regular.Function
-                     { name = "test.contextmanager_subclass"; kind = Decorated }
-                   |> Target.from_regular;
-                 call_graph =
-                   [
-                     ( "19:1-19:9",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_call
-                            (CallCallees.create
-                               ~call_targets:
-                                 [
-                                   CallTarget.create
-                                     ~implicit_receiver:true
-                                     ~implicit_dunder_call:true
-                                     ~receiver_class:"test.Subclass"
-                                     (create_parameterized_target
-                                        ~regular:
-                                          (Target.Regular.Method
-                                             {
-                                               class_name = "test.Base";
-                                               method_name = "__call__";
-                                               kind = Normal;
-                                             })
-                                        ~parameters:
-                                          [
-                                            ( create_positional_parameter 1 "func",
-                                              Target.Regular.Function
-                                                {
-                                                  name = "test.contextmanager_subclass";
-                                                  kind = Normal;
-                                                }
-                                              |> Target.from_regular );
-                                          ]);
-                                 ]
-                               ())) );
-                     ( "20:0-21:10",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_attribute_access
-                            (AttributeAccessCallees.create
-                               ~callable_targets:
-                                 [
-                                   CallTarget.create_regular
-                                     (Target.Regular.Function
-                                        { name = "test.contextmanager_subclass"; kind = Normal });
-                                 ]
-                               ())) );
-                   ];
-                 returned_callables =
-                   [
-                     CallTarget.create
-                       (create_parameterized_target
-                          ~regular:
-                            (Target.Regular.Function
-                               { name = "test.Base.__call__.inner"; kind = Normal })
-                          ~parameters:
-                            [
-                              ( AccessPath.Root.Variable "$parameter$func",
-                                Target.Regular.Function
-                                  { name = "test.contextmanager_subclass"; kind = Normal }
-                                |> Target.from_regular );
-                            ]);
-                   ];
-               };
-             ]
-           ();
-      labeled_test_case __FUNCTION__ __LINE__
-      @@ assert_higher_order_call_graph_fixpoint
-           ~source:
-             {|
-     class Base:
-       def __call__(self, func):
-         ...  # Test when `__call__` is a stub
-     class Subclass(Base):
-       def __init__(self, name):
-         self.name = name
-     subclass = Subclass("123")
-     @subclass
-     def stub_contextmanager(x):
-       print(x)
-  |}
-           ~expected:
-             [
-               {
-                 Expected.callable =
-                   Target.Regular.Function { name = "test.stub_contextmanager"; kind = Decorated }
-                   |> Target.from_regular;
-                 call_graph =
-                   [
-                     ( "9:1-9:9",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_call
-                            (CallCallees.create
-                               ~call_targets:
-                                 [
-                                   CallTarget.create_regular
-                                     ~implicit_receiver:true
-                                     ~implicit_dunder_call:true
-                                     ~receiver_class:"test.Subclass"
-                                     (Target.Regular.Method
-                                        {
-                                          class_name = "test.Base";
-                                          method_name = "__call__";
-                                          kind = Normal;
-                                        });
-                                 ]
-                               ~higher_order_parameters:
-                                 (HigherOrderParameterMap.from_list
-                                    [
-                                      {
-                                        index = 0;
-                                        call_targets =
-                                          [
-                                            CallTarget.create_regular
-                                              (Target.Regular.Function
-                                                 {
-                                                   name = "test.stub_contextmanager";
-                                                   kind = Normal;
-                                                 });
-                                          ];
-                                        unresolved = CallGraph.Unresolved.False;
-                                      };
-                                    ])
-                               ())) );
-                     ( "10:0-11:10",
-                       LocationCallees.Singleton
-                         (ExpressionCallees.from_attribute_access
-                            (AttributeAccessCallees.create
-                               ~callable_targets:
-                                 [
-                                   CallTarget.create_regular
-                                     (Target.Regular.Function
-                                        { name = "test.stub_contextmanager"; kind = Normal });
-                                 ]
-                               ())) );
-                   ];
-                 returned_callables = [];
                };
              ]
            ();

@@ -55,6 +55,7 @@ use crate::types::class::ClassFieldProperties;
 use crate::types::class::ClassIndex;
 use crate::types::equality::TypeEq;
 use crate::types::quantified::QuantifiedKind;
+use crate::types::type_info::TypeInfo;
 use crate::types::types::Type;
 use crate::types::types::Var;
 use crate::util::display::commas_iter;
@@ -96,7 +97,7 @@ pub trait Keyed: Hash + Eq + Clone + DisplayWith<ModuleInfo> + Debug + Ranged + 
 
 impl Keyed for Key {
     type Value = Binding;
-    type Answer = Type;
+    type Answer = TypeInfo;
 }
 impl Keyed for KeyExpect {
     type Value = BindingExpect;
@@ -118,7 +119,7 @@ impl Keyed for KeyClassSynthesizedFields {
 }
 impl Keyed for KeyExport {
     const EXPORTED: bool = true;
-    type Value = Binding;
+    type Value = BindingExport;
     type Answer = Type;
 }
 impl Keyed for KeyFunction {
@@ -165,7 +166,6 @@ pub enum Key {
     /// I am a use in this module at this location.
     Usage(ShortIdentifier),
     /// I am an expression that does not have a simple name but needs its type inferred.
-    /// For example, an attribute access.
     Anon(TextRange),
     /// I am an expression that appears in a statement. The range for this key is the range of the expr itself, which is different than the range of the stmt expr.
     StmtExpr(TextRange),
@@ -254,6 +254,8 @@ impl DisplayWith<ModuleInfo> for KeyExpect {
 
 #[derive(Clone, Debug)]
 pub enum BindingExpect {
+    /// An expression where we need to check for type errors, but don't need the result type.
+    TypeCheckExpr(Box<Expr>),
     /// The expected number of values in an unpacked iterable expression.
     UnpackedLength(Box<Binding>, TextRange, SizeExpectation),
     /// An exception and its cause from a raise statement.
@@ -274,6 +276,9 @@ impl DisplayWith<Bindings> for BindingExpect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
         let m = ctx.module_info();
         match self {
+            Self::TypeCheckExpr(box x) => {
+                write!(f, "type check expr {}", m.display(x))
+            }
             Self::Delete(box x) => {
                 write!(f, "del {}", m.display(x))
             }
@@ -671,6 +676,16 @@ pub enum AnnotationStyle {
 }
 
 #[derive(Clone, Debug)]
+pub struct TypeParameter {
+    pub name: Name,
+    pub unique: Unique,
+    pub kind: QuantifiedKind,
+    pub bound: Option<(Idx<Key>, TextRange)>,
+    pub default: Option<Expr>,
+    pub constraints: Option<(Vec<Idx<Key>>, TextRange)>,
+}
+
+#[derive(Clone, Debug)]
 pub enum Binding {
     /// An expression, optionally with a Key saying what the type must be.
     /// The Key must be a type of types, e.g. `Type::Type`.
@@ -710,9 +725,13 @@ pub enum Binding {
     /// The str type.
     StrType,
     /// A type parameter.
-    TypeParameter(Unique, QuantifiedKind),
-    /// The type of a function. Stores an optional reference to the predecessor of this function.
-    /// If the function is defined in a class scope, stores a reference to the class metadata.
+    TypeParameter(Box<TypeParameter>),
+    /// The type of a function. The fields are:
+    /// - A reference to the KeyFunction that point to the def
+    /// - An optional reference to any previous function in the same flow by the same name;
+    ///   this is needed to fold `@overload` decorated defs into a single type.
+    /// - An optional reference to class metadata, which will be non-None when the function
+    ///   is defined within a class scope.
     Function(
         Idx<KeyFunction>,
         Option<Idx<Key>>,
@@ -794,9 +813,9 @@ impl DisplayWith<Bindings> for Binding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
         let m = ctx.module_info();
         match self {
-            Self::Expr(None, x) => write!(f, "{}", m.display(x)),
+            Self::Expr(None, x) => write!(f, "expr {}", m.display(x)),
             Self::Expr(Some(k), x) => {
-                write!(f, "{}: {}", ctx.display(*k), m.display(x))
+                write!(f, "expr {}: {}", ctx.display(*k), m.display(x))
             }
             Self::TypeVar(_, name, x) => {
                 write!(f, "typevar {} = {}", name, m.display(x))
@@ -868,7 +887,9 @@ impl DisplayWith<Bindings> for Binding {
             Self::AugAssign(_, s) => write!(f, "augmented_assign {:?}", s),
             Self::Type(t) => write!(f, "type {t}"),
             Self::StrType => write!(f, "strtype"),
-            Self::TypeParameter(unique, kind) => write!(f, "type_parameter({unique}, {kind})"),
+            Self::TypeParameter(box TypeParameter { unique, kind, .. }) => {
+                write!(f, "type_parameter({unique}, {kind})")
+            }
             Self::CheckLegacyTypeParam(k, _) => {
                 write!(f, "check_legacy_type_param {}", ctx.display(*k))
             }
@@ -969,6 +990,15 @@ impl DisplayWith<Bindings> for Binding {
             Self::SuperInstance(SuperStyle::ImplicitArgs(_, _), _range) => write!(f, "super()"),
             Self::SuperInstance(SuperStyle::Any, _range) => write!(f, "super(Any, Any)"),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BindingExport(pub Binding);
+
+impl DisplayWith<Bindings> for BindingExport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>, ctx: &Bindings) -> fmt::Result {
+        DisplayWith::fmt(&self.0, f, ctx)
     }
 }
 

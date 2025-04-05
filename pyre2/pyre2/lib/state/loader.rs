@@ -20,23 +20,28 @@ use crate::util::display::commas_iter;
 use crate::util::locked_map::LockedMap;
 
 #[derive(Debug, Clone, Dupe)]
-pub struct FindError(Arc<anyhow::Error>);
+pub enum FindError {
+    /// This module could not be found, and we should emit an error
+    NotFound(Arc<anyhow::Error>),
+    /// This import could not be found, but the user configured it to be ignored
+    Ignored,
+}
 
 impl FindError {
-    pub fn new(err: anyhow::Error) -> Self {
-        Self(Arc::new(err))
+    pub fn not_found(err: anyhow::Error) -> Self {
+        Self::NotFound(Arc::new(err))
     }
 
     pub fn search_path(search_roots: &[PathBuf], site_package_path: &[PathBuf]) -> FindError {
-        Self::new(anyhow!(
+        Self::not_found(anyhow!(
             "looked at search roots ({}) and site package path ({})",
             commas_iter(|| search_roots.iter().map(|x| x.display())),
             commas_iter(|| site_package_path.iter().map(|x| x.display())),
         ))
     }
 
-    pub fn display(&self, module: ModuleName) -> String {
-        format!("Could not find import of `{module}`, {:#}", self.0)
+    pub fn display(err: Arc<anyhow::Error>, module: ModuleName) -> String {
+        format!("Could not find import of `{module}`, {:#}", err)
     }
 }
 

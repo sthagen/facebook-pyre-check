@@ -41,6 +41,7 @@ use crate::graph::index::Idx;
 use crate::module::module_name::ModuleName;
 use crate::module::short_identifier::ShortIdentifier;
 use crate::ruff::ast::Ast;
+use crate::state::loader::FindError;
 use crate::types::alias::resolve_typeshed_alias;
 use crate::types::special_form::SpecialForm;
 use crate::types::types::Type;
@@ -104,8 +105,24 @@ impl<'a> BindingsBuilder<'a> {
         })
     }
 
-    fn assign_param_spec(&mut self, name: &ExprName, call: &mut ExprCall) {
+    fn ensure_type_var_tuple_and_param_spec_args(&mut self, call: &mut ExprCall) {
         self.ensure_expr(&mut call.func);
+        for arg in call.arguments.args.iter_mut() {
+            self.ensure_expr(arg);
+        }
+        for kw in call.arguments.keywords.iter_mut() {
+            if let Some(id) = &kw.arg
+                && id.id == "default"
+            {
+                self.ensure_type(&mut kw.value, &mut None);
+            } else {
+                self.ensure_expr(&mut kw.value);
+            }
+        }
+    }
+
+    fn assign_param_spec(&mut self, name: &ExprName, call: &mut ExprCall) {
+        self.ensure_type_var_tuple_and_param_spec_args(call);
         self.bind_assign(name, |ann| {
             Binding::ParamSpec(
                 ann,
@@ -116,7 +133,7 @@ impl<'a> BindingsBuilder<'a> {
     }
 
     fn assign_type_var_tuple(&mut self, name: &ExprName, call: &mut ExprCall) {
-        self.ensure_expr(&mut call.func);
+        self.ensure_type_var_tuple_and_param_spec_args(call);
         self.bind_assign(name, |ann| {
             Binding::TypeVarTuple(
                 ann,
@@ -707,15 +724,21 @@ impl<'a> BindingsBuilder<'a> {
                     .insert(Key::Anon(x.test.range()), Binding::Expr(None, *x.test));
                 if let Some(mut msg_expr) = x.msg {
                     self.ensure_expr(&mut msg_expr);
-                    self.table
-                        .insert(Key::Anon(msg_expr.range()), Binding::Expr(None, *msg_expr));
+                    self.table.insert(
+                        KeyExpect(msg_expr.range()),
+                        BindingExpect::TypeCheckExpr(Box::new(*msg_expr)),
+                    );
                 };
             }
             Stmt::Import(x) => {
                 for x in x.names {
                     let m = ModuleName::from_name(&x.name.id);
-                    if let Err(err) = self.lookup.get(m) {
-                        self.error(x.range, err.display(m), ErrorKind::MissingModuleAttribute);
+                    if let Err(FindError::NotFound(err)) = self.lookup.get(m) {
+                        self.error(
+                            x.range,
+                            FindError::display(err, m),
+                            ErrorKind::MissingModuleAttribute,
+                        );
                     }
                     match x.asname {
                         Some(asname) => {
@@ -820,10 +843,15 @@ impl<'a> BindingsBuilder<'a> {
                                 }
                             }
                         }
-                        Err(err) => {
-                            self.error(x.range, err.display(m), ErrorKind::MissingModuleAttribute);
+                        Err(FindError::NotFound(err)) => {
+                            self.error(
+                                x.range,
+                                FindError::display(err, m),
+                                ErrorKind::MissingModuleAttribute,
+                            );
                             self.bind_unimportable_names(&x);
                         }
+                        Err(FindError::Ignored) => self.bind_unimportable_names(&x),
                     }
                 } else {
                     self.error(

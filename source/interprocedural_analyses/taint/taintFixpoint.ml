@@ -31,7 +31,7 @@ module Context = struct
     global_constants: Interprocedural.GlobalConstants.SharedMemory.ReadOnly.t;
     (* Whether decorators are inlined during pre-processing. *)
     decorator_inlined: bool;
-    callables_to_definitions_map: Interprocedural.Target.DefinesSharedMemory.ReadOnly.t;
+    callables_to_definitions_map: Interprocedural.Target.CallablesSharedMemory.ReadOnly.t;
   }
 end
 
@@ -114,6 +114,7 @@ module Analysis = struct
       ~taint_configuration
       ~string_combine_partial_sink_tree
       ~pyre_api
+      ~callables_to_definitions_map
       ~class_interval_graph
       ~global_constants
       ~get_define_call_graph
@@ -151,6 +152,7 @@ module Analysis = struct
             ~taint_configuration
             ~string_combine_partial_sink_tree
             ~pyre_api
+            ~callables_to_definitions_map
             ~class_interval_graph
             ~global_constants
             ~qualifier
@@ -169,6 +171,7 @@ module Analysis = struct
             ~taint_configuration
             ~string_combine_partial_sink_tree
             ~pyre_api
+            ~callables_to_definitions_map
             ~class_interval_graph
             ~global_constants
             ~qualifier
@@ -225,13 +228,14 @@ module Analysis = struct
       Log.log ~section:`Interprocedural "Analyzing %a" Interprocedural.Target.pp_pretty callable
     in
     let {
-      Interprocedural.Target.DefinesSharedMemory.Define.qualifier;
+      Interprocedural.Target.CallablesSharedMemory.DefineAndQualifier.qualifier;
       define = { Ast.Node.value = { Ast.Statement.Define.signature = { name; _ }; _ }; _ } as define;
     }
       =
       callable
       |> Interprocedural.Target.strip_parameters
-      |> Interprocedural.Target.DefinesSharedMemory.ReadOnly.get callables_to_definitions_map
+      |> Interprocedural.Target.CallablesSharedMemory.ReadOnly.get_define
+           callables_to_definitions_map
       |> Option.value_exn
     in
     let define_qualifier = Ast.Reference.delocalize name in
@@ -260,6 +264,7 @@ module Analysis = struct
       analyze_define_with_sanitizers_and_modes
         ~taint_configuration
         ~string_combine_partial_sink_tree
+        ~callables_to_definitions_map
         ~pyre_api
         ~class_interval_graph
         ~global_constants

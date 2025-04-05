@@ -48,19 +48,18 @@ Ts = TypeVarTuple('Ts')
 );
 
 testcase!(
-    bug = "C2 shouldn't give an error here",
     test_type_var_tuple_class_field_and_constructor,
     r#"
 class C1[T]:
-    x: tuple[T]
-    def __init__(self, x: tuple[T]) -> None:
+    x: tuple[T, ...]
+    def __init__(self, x: tuple[T, ...]) -> None:
         self.x = x
-        self.y: T = x
+        self.y: T = x  # E: `tuple[TypeVar[T], ...]` is not assignable to attribute `y` with type `TypeVar[T]`
 class C2[*Ts]:
     x: tuple[*Ts]
     def __init__(self, x: tuple[*Ts]) -> None:
-        self.x = x  # E: `?_TypeVarTuple` is not assignable to attribute `x` with type `Unknown`
-        self.y: tuple[*Ts] = x  # E: `?_TypeVarTuple` is not assignable to attribute `y` with type `Unknown`
+        self.x = x
+        self.y: tuple[*Ts] = x
 "#,
 );
 
@@ -111,7 +110,6 @@ assert_type(test((1, 2, 3)), tuple[int, int, int])
 "#,
 );
 
-// TODO: improve display of type var tuples
 testcase!(
     test_type_var_tuple_subtype,
     r#"
@@ -123,6 +121,6 @@ def helper(x: A[int, str]): ...
 def test[*Ts](x: A[int, str], y: A[str, str, str], z: A[*Ts]):
     helper(x)
     helper(y)  # E: Argument `A[tuple[str, str, str]]` is not assignable to parameter `x` with type `A[tuple[int, str]]`
-    helper(z)  # E: Argument `A[?_TypeVarTuple]` is not assignable to parameter `x` with type `A[tuple[int, str]]`
+    helper(z)  # E: Argument `A[TypeVarTuple[Ts]]` is not assignable to parameter `x` with type `A[tuple[int, str]]`
 "#,
 );

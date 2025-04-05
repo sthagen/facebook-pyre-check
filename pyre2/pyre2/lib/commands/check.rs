@@ -27,6 +27,7 @@ use crate::clap_env;
 use crate::commands::suppress;
 use crate::commands::util::module_from_path;
 use crate::config::set_if_some;
+use crate::config::set_option_if_some;
 use crate::config::ConfigFile;
 use crate::config::ErrorConfig;
 use crate::config::ErrorConfigs;
@@ -87,6 +88,10 @@ pub struct Args {
     python_platform: Option<String>,
     #[clap(long, env = clap_env("SITE_PACKAGE_PATH"))]
     site_package_path: Option<Vec<PathBuf>>,
+    /// The Python executable that will be queried for Python version, platform, or site package path info
+    /// if the values are missing
+    #[clap(long, env = clap_env("PYTHON_INTERPRETER"))]
+    python_interpreter: Option<PathBuf>,
     /// Produce debugging information about the type checking process.
     #[clap(long, env = clap_env("DEBUG_INFO"))]
     debug_info: Option<PathBuf>,
@@ -129,6 +134,7 @@ pub struct Args {
 struct LoaderInputs {
     search_path: Vec<PathBuf>,
     site_package_path: Vec<PathBuf>,
+    replace_imports_with_any: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,9 +144,16 @@ struct CheckLoader {
 
 impl Loader for CheckLoader {
     fn find_import(&self, module: ModuleName) -> Result<ModulePath, FindError> {
-        if let Some(path) = find_module(module, &self.loader_inputs.search_path) {
+        if self
+            .loader_inputs
+            .replace_imports_with_any
+            .iter()
+            .any(|i| module.as_str().starts_with(i))
+        {
+            Err(FindError::Ignored)
+        } else if let Some(path) = find_module(module, &self.loader_inputs.search_path) {
             Ok(path)
-        } else if let Some(path) = typeshed().map_err(FindError::new)?.find(module) {
+        } else if let Some(path) = typeshed().map_err(FindError::not_found)?.find(module) {
             Ok(path)
         } else if let Some(path) = find_module(module, &self.loader_inputs.site_package_path) {
             Ok(path)
@@ -229,7 +242,8 @@ impl Handles {
     fn get_or_register_loader(&mut self, config: &ConfigFile) -> LoaderId {
         let key = LoaderInputs {
             search_path: config.search_path.clone(),
-            site_package_path: config.site_package_path.clone(),
+            site_package_path: config.site_package_path().to_owned(),
+            replace_imports_with_any: config.replace_imports_with_any.clone(),
         };
         if let Some(loader) = self.loader_factory.get_mut(&key) {
             loader.dupe()
@@ -380,13 +394,24 @@ impl Args {
     }
 
     fn override_config(&self, config: &mut ConfigFile) {
-        set_if_some(&mut config.python_platform, self.python_platform.as_ref());
-        set_if_some(&mut config.python_version, self.python_version.as_ref());
+        set_option_if_some(
+            &mut config.python_environment.python_platform,
+            self.python_platform.as_ref(),
+        );
+        set_option_if_some(
+            &mut config.python_environment.python_version,
+            self.python_version.as_ref(),
+        );
         set_if_some(&mut config.search_path, self.search_path.as_ref());
-        set_if_some(
-            &mut config.site_package_path,
+        set_option_if_some(
+            &mut config.python_environment.site_package_path,
             self.site_package_path.as_ref(),
         );
+        set_option_if_some(
+            &mut config.python_interpreter,
+            self.python_interpreter.as_ref(),
+        );
+        config.configure();
     }
 
     fn overriding_config_finder<'a>(

@@ -10,11 +10,11 @@
 import * as React from 'react';
 import * as stylex from '@stylexjs/stylex';
 import clsx from 'clsx';
-import featureDecorationStyles from './featureDecorationsStyles.module.css';
-
+import typography from './typography';
 interface LandingPageSectionProps {
-  title: string;
+  title?: string;
   child: React.ReactNode;
+  id?: string;
   isFirstSection?: boolean;
   isLastSection?: boolean;
   hasBrownBackground?: boolean;
@@ -23,6 +23,7 @@ interface LandingPageSectionProps {
 export default function LandingPageSection({
   title,
   child,
+  id = '',
   isFirstSection = false,
   isLastSection = false,
   hasBrownBackground = false,
@@ -32,6 +33,7 @@ export default function LandingPageSection({
     : 'var(--color-text)';
   return (
     <section
+      id={id}
       {...stylex.props(
         styles.section,
         isLastSection ? styles.lastSection : null,
@@ -40,10 +42,6 @@ export default function LandingPageSection({
       {/* Rise decoration (for all except first section) */}
       {!isFirstSection && (
         <div
-          className={clsx(
-            featureDecorationStyles.featureDecoration,
-            featureDecorationStyles.featureDecorationRise,
-          )}
           style={{
             color: backgroundColor,
           }}
@@ -53,23 +51,20 @@ export default function LandingPageSection({
       {/* Drop decoration (for all sections) */}
       {!isLastSection && (
         <div
-          className={clsx(
-            featureDecorationStyles.featureDecoration,
-            featureDecorationStyles.featureDecorationDrop,
-          )}
           style={{
             color: backgroundColor,
           }}
         />
       )}
       <div className="container">
-        <h2
+        {title != null ? <h2
           {...stylex.props(
             styles.sectionTitle,
+            typography.h2,
             hasBrownBackground ? { color: 'var(--color-text)' } : null,
           )}>
           {title}
-        </h2>
+        </h2> : <></>}
         {child}
       </div>
     </section>
@@ -86,7 +81,6 @@ const styles = stylex.create({
     paddingBottom: 30,
   },
   sectionTitle: {
-    fontSize: '3rem',
     marginTop: '2rem',
   },
 });

@@ -48,6 +48,7 @@ use crate::types::class::Class;
 use crate::types::equality::TypeEq;
 use crate::types::equality::TypeEqCtx;
 use crate::types::stdlib::Stdlib;
+use crate::types::type_info::TypeInfo;
 use crate::types::types::AnyStyle;
 use crate::types::types::NeverStyle;
 use crate::types::types::Type;
@@ -590,7 +591,7 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
         let t = if let Binding::Phi(_, Some(default)) = binding {
             self.get_calculation(*default)
                 .get()
-                .map(|t| t.arc_clone().promote_literals(self.stdlib))
+                .map(|t| t.arc_clone_ty().promote_literals(self.stdlib))
         } else {
             None
         };
@@ -600,22 +601,33 @@ impl<'a, Ans: LookupAnswer> AnswersSolver<'a, Ans> {
     pub fn record_recursive(
         &self,
         loc: TextRange,
-        answer: &Arc<Type>,
+        answer: Type,
         recursive: Var,
         errors: &ErrorCollector,
     ) {
-        self.solver().record_recursive(
-            recursive,
-            (**answer).clone(),
-            self.type_order(),
-            errors,
-            loc,
-        );
+        self.solver()
+            .record_recursive(recursive, answer, self.type_order(), errors, loc);
     }
 
     pub fn record_type_trace(&self, loc: TextRange, ty: &Type) {
         if let Some(trace) = &self.current.trace {
             trace.lock().types.insert(loc, Arc::new(ty.clone()));
+        }
+    }
+
+    /// Check if `want` matches `got` returning `want` if the check fails.
+    pub fn check_and_return_type_info(
+        &self,
+        want: &Type,
+        got: TypeInfo,
+        loc: TextRange,
+        errors: &ErrorCollector,
+        tcc: &dyn Fn() -> TypeCheckContext,
+    ) -> TypeInfo {
+        if self.check_type(want, got.ty(), loc, errors, tcc) {
+            got
+        } else {
+            got.with_ty(want.clone())
         }
     }
 

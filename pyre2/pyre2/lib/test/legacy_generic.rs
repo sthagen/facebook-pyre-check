@@ -474,20 +474,6 @@ testcase!(
     r#"
 from typing import TypeVar
 T: int = 0
-T = TypeVar('T')  # E: `type[TypeVar[T]]` is not assignable to variable `T` with type `int`
+T = TypeVar('T')  # E: `type[TypeVar(T, invariant)]` is not assignable to variable `T` with type `int`
     "#,
-);
-
-testcase!(
-    bug = "Should use the bound to check it is safe",
-    test_typevar_bound,
-    r#"
-from typing import Callable, TypeVar
-
-T = TypeVar('T', bound=Callable[[int], int])
-
-def func(a: T, b: int) -> T:
-    print(a(b))  # E: Expected a callable
-    return a
-"#,
 );

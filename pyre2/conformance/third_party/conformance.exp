@@ -54,8 +54,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Expected a valid ParamSpec expression",
-      "description": "Expected a valid ParamSpec expression",
+      "concise_description": "Expected a valid ParamSpec expression, got `int`",
+      "description": "Expected a valid ParamSpec expression, got `int`",
       "line": 71,
       "name": "invalid-param-spec",
       "stop_column": 33,
@@ -306,8 +306,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "Expected a valid ParamSpec expression",
-      "description": "Expected a valid ParamSpec expression",
+      "concise_description": "Expected a valid ParamSpec expression, got `int`",
+      "description": "Expected a valid ParamSpec expression, got `int`",
       "line": 80,
       "name": "invalid-param-spec",
       "stop_column": 33,
@@ -570,8 +570,8 @@
     {
       "code": -2,
       "column": 26,
-      "concise_description": "`|` is not supported between `Literal['GenericTypeAlias1[T1]']` and `type[TypeVar[T1]]`\n  TODO: Expr::binop_infer attribute base undefined for type: type[TypeVar[T1]] (trying to access __ror__)",
-      "description": "`|` is not supported between `Literal['GenericTypeAlias1[T1]']` and `type[TypeVar[T1]]`\n  TODO: Expr::binop_infer attribute base undefined for type: type[TypeVar[T1]] (trying to access __ror__)",
+      "concise_description": "`|` is not supported between `Literal['GenericTypeAlias1[T1]']` and `type[TypeVar(T1, constraints=(str, int), invariant)]`\n  TODO: Expr::binop_infer attribute base undefined for type: type[TypeVar(T1, constraints=(str, int), invariant)] (trying to access __ror__)",
+      "description": "`|` is not supported between `Literal['GenericTypeAlias1[T1]']` and `type[TypeVar(T1, constraints=(str, int), invariant)]`\n  TODO: Expr::binop_infer attribute base undefined for type: type[TypeVar(T1, constraints=(str, int), invariant)] (trying to access __ror__)",
       "line": 58,
       "name": "internal-error",
       "stop_column": 54,
@@ -610,8 +610,8 @@
     {
       "code": -2,
       "column": 26,
-      "concise_description": "`|` is not supported between `Literal['GenericTypeAlias2[T1, T2]']` and `type[TypeVar[T1]]`\n  TODO: Expr::binop_infer attribute base undefined for type: type[TypeVar[T1]] (trying to access __ror__)",
-      "description": "`|` is not supported between `Literal['GenericTypeAlias2[T1, T2]']` and `type[TypeVar[T1]]`\n  TODO: Expr::binop_infer attribute base undefined for type: type[TypeVar[T1]] (trying to access __ror__)",
+      "concise_description": "`|` is not supported between `Literal['GenericTypeAlias2[T1, T2]']` and `type[TypeVar(T1, constraints=(str, int), invariant)]`\n  TODO: Expr::binop_infer attribute base undefined for type: type[TypeVar(T1, constraints=(str, int), invariant)] (trying to access __ror__)",
+      "description": "`|` is not supported between `Literal['GenericTypeAlias2[T1, T2]']` and `type[TypeVar(T1, constraints=(str, int), invariant)]`\n  TODO: Expr::binop_infer attribute base undefined for type: type[TypeVar(T1, constraints=(str, int), invariant)] (trying to access __ror__)",
       "line": 65,
       "name": "internal-error",
       "stop_column": 58,
@@ -864,8 +864,8 @@
     {
       "code": -2,
       "column": 63,
-      "concise_description": "Argument `tuple[type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
-      "description": "Argument `tuple[type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "concise_description": "Argument `tuple[type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "description": "Argument `tuple[type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
       "line": 17,
       "name": "bad-argument-type",
       "stop_column": 67,
@@ -874,8 +874,8 @@
     {
       "code": -2,
       "column": 73,
-      "concise_description": "Argument `tuple[type[TypeVar[S]], type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
-      "description": "Argument `tuple[type[TypeVar[S]], type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "concise_description": "Argument `tuple[type[TypeVar(S, invariant)], type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "description": "Argument `tuple[type[TypeVar(S, invariant)], type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
       "line": 18,
       "name": "bad-argument-type",
       "stop_column": 79,
@@ -884,8 +884,8 @@
     {
       "code": -2,
       "column": 79,
-      "concise_description": "Argument `tuple[type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
-      "description": "Argument `tuple[type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "concise_description": "Argument `tuple[type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "description": "Argument `tuple[type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
       "line": 19,
       "name": "bad-argument-type",
       "stop_column": 83,
@@ -894,8 +894,8 @@
     {
       "code": -2,
       "column": 17,
-      "concise_description": "Argument `tuple[type[TypeVar[S]], type[TypeVar[TStr]], type[ParamSpec[P]], type[TypeVarTuple[Ts]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
-      "description": "Argument `tuple[type[TypeVar[S]], type[TypeVar[TStr]], type[ParamSpec[P]], type[TypeVarTuple[Ts]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "concise_description": "Argument `tuple[type[TypeVar(S, invariant)], type[TypeVar(TStr, bound=str, invariant)], type[ParamSpec(P)], type[TypeVarTuple(Ts)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "description": "Argument `tuple[type[TypeVar(S, invariant)], type[TypeVar(TStr, bound=str, invariant)], type[ParamSpec(P)], type[TypeVarTuple(Ts)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
       "line": 23,
       "name": "bad-argument-type",
       "stop_column": 33,
@@ -984,8 +984,8 @@
     {
       "code": -2,
       "column": 61,
-      "concise_description": "Argument `tuple[type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
-      "description": "Argument `tuple[type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "concise_description": "Argument `tuple[type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "description": "Argument `tuple[type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
       "line": 43,
       "name": "bad-argument-type",
       "stop_column": 65,
@@ -994,8 +994,8 @@
     {
       "code": -2,
       "column": 57,
-      "concise_description": "Argument `tuple[type[TypeVar[S]], type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
-      "description": "Argument `tuple[type[TypeVar[S]], type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "concise_description": "Argument `tuple[type[TypeVar(S, invariant)], type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "description": "Argument `tuple[type[TypeVar(S, invariant)], type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
       "line": 45,
       "name": "bad-argument-type",
       "stop_column": 65,
@@ -1004,8 +1004,8 @@
     {
       "code": -2,
       "column": 72,
-      "concise_description": "Argument `tuple[type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
-      "description": "Argument `tuple[type[TypeVar[T]]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "concise_description": "Argument `tuple[type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
+      "description": "Argument `tuple[type[TypeVar(T, invariant)]]` is not assignable to parameter `type_params` with type `tuple[ParamSpec | TypeVar | TypeVarTuple, ...]` in function `typing.TypeAliasType.__new__`",
       "line": 47,
       "name": "bad-argument-type",
       "stop_column": 76,
@@ -1016,8 +1016,8 @@
     {
       "code": -2,
       "column": 16,
-      "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[A_Alias_2, LegacyExplicitTypeAlias[A_Alias_1, type[ClassA[TypeVar[T_co]]]]]",
-      "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[A_Alias_2, LegacyExplicitTypeAlias[A_Alias_1, type[ClassA[TypeVar[T_co]]]]]",
+      "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[A_Alias_2, LegacyExplicitTypeAlias[A_Alias_1, type[ClassA[TypeVar(T_co, covariant)]]]]",
+      "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[A_Alias_2, LegacyExplicitTypeAlias[A_Alias_1, type[ClassA[TypeVar(T_co, covariant)]]]]",
       "line": 32,
       "name": "bad-specialization",
       "stop_column": 31,
@@ -1353,8 +1353,8 @@
     {
       "code": -2,
       "column": 16,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T]]",
+      "description": "Expected a callable, got type[TypeVar[T]]",
       "line": 19,
       "name": "not-callable",
       "stop_column": 19,
@@ -1363,8 +1363,8 @@
     {
       "code": -2,
       "column": 16,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T]]",
+      "description": "Expected a callable, got type[TypeVar[T]]",
       "line": 23,
       "name": "not-callable",
       "stop_column": 19,
@@ -2363,8 +2363,8 @@
     {
       "code": -2,
       "column": 29,
-      "concise_description": "`ProtocolWithP[?_ParamSpec]` is not assignable to `(ParamSpec(?_ParamSpec)) -> None`",
-      "description": "`ProtocolWithP[?_ParamSpec]` is not assignable to `(ParamSpec(?_ParamSpec)) -> None`",
+      "concise_description": "`ProtocolWithP[ParamSpec[P]]` is not assignable to `(ParamSpec(ParamSpec[P])) -> None`",
+      "description": "`ProtocolWithP[ParamSpec[P]]` is not assignable to `(ParamSpec(ParamSpec[P])) -> None`",
       "line": 213,
       "name": "bad-assignment",
       "stop_column": 34,
@@ -2373,8 +2373,8 @@
     {
       "code": -2,
       "column": 28,
-      "concise_description": "`(ParamSpec(?_ParamSpec)) -> None` is not assignable to `ProtocolWithP[?_ParamSpec]`",
-      "description": "`(ParamSpec(?_ParamSpec)) -> None` is not assignable to `ProtocolWithP[?_ParamSpec]`",
+      "concise_description": "`(ParamSpec(ParamSpec[P])) -> None` is not assignable to `ProtocolWithP[ParamSpec[P]]`",
+      "description": "`(ParamSpec(ParamSpec[P])) -> None` is not assignable to `ProtocolWithP[ParamSpec[P]]`",
       "line": 214,
       "name": "bad-assignment",
       "stop_column": 30,
@@ -2925,8 +2925,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T]]",
+      "description": "Expected a callable, got type[TypeVar[T]]",
       "line": 63,
       "name": "not-callable",
       "stop_column": 8,
@@ -2935,8 +2935,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T]]",
+      "description": "Expected a callable, got type[TypeVar[T]]",
       "line": 64,
       "name": "not-callable",
       "stop_column": 8,
@@ -2945,8 +2945,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T1]]",
+      "description": "Expected a callable, got type[TypeVar[T1]]",
       "line": 71,
       "name": "not-callable",
       "stop_column": 8,
@@ -2955,8 +2955,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T1]]",
+      "description": "Expected a callable, got type[TypeVar[T1]]",
       "line": 72,
       "name": "not-callable",
       "stop_column": 8,
@@ -2965,8 +2965,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T2]]",
+      "description": "Expected a callable, got type[TypeVar[T2]]",
       "line": 79,
       "name": "not-callable",
       "stop_column": 8,
@@ -2975,8 +2975,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T2]]",
+      "description": "Expected a callable, got type[TypeVar[T2]]",
       "line": 80,
       "name": "not-callable",
       "stop_column": 8,
@@ -2985,8 +2985,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T2]]",
+      "description": "Expected a callable, got type[TypeVar[T2]]",
       "line": 81,
       "name": "not-callable",
       "stop_column": 8,
@@ -2995,8 +2995,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T2]]",
+      "description": "Expected a callable, got type[TypeVar[T2]]",
       "line": 82,
       "name": "not-callable",
       "stop_column": 8,
@@ -3820,8 +3820,8 @@
     {
       "code": -2,
       "column": 39,
-      "concise_description": "Argument `tuple[Forall[S, T, (*, converter: (S) -> T, default: S | None, default_factory: (() -> S) | None) -> T]]` is not assignable to parameter `field_specifiers` with type `tuple[((...) -> Any) | type[Any], ...]` in function `typing.dataclass_transform`",
-      "description": "Argument `tuple[Forall[S, T, (*, converter: (S) -> T, default: S | None, default_factory: (() -> S) | None) -> T]]` is not assignable to parameter `field_specifiers` with type `tuple[((...) -> Any) | type[Any], ...]` in function `typing.dataclass_transform`",
+      "concise_description": "Argument `tuple[Forall[S, T, (*, converter: (TypeVar[S]) -> TypeVar[T], default: TypeVar[S] | None, default_factory: (() -> TypeVar[S]) | None) -> TypeVar[T]]]` is not assignable to parameter `field_specifiers` with type `tuple[((...) -> Any) | type[Any], ...]` in function `typing.dataclass_transform`",
+      "description": "Argument `tuple[Forall[S, T, (*, converter: (TypeVar[S]) -> TypeVar[T], default: TypeVar[S] | None, default_factory: (() -> TypeVar[S]) | None) -> TypeVar[T]]]` is not assignable to parameter `field_specifiers` with type `tuple[((...) -> Any) | type[Any], ...]` in function `typing.dataclass_transform`",
       "line": 29,
       "name": "bad-argument-type",
       "stop_column": 53,
@@ -5202,8 +5202,8 @@
     {
       "code": -2,
       "column": 12,
-      "concise_description": "`+` is not supported between `?_TypeVar` and `?_TypeVar`\n  TODO: Expr::binop_infer attribute base undefined for type: ?_TypeVar (trying to access __add__)",
-      "description": "`+` is not supported between `?_TypeVar` and `?_TypeVar`\n  TODO: Expr::binop_infer attribute base undefined for type: ?_TypeVar (trying to access __add__)",
+      "concise_description": "`+` is not supported between `TypeVar[AnyStr]` and `TypeVar[AnyStr]`\n  TODO: Expr::binop_infer attribute base undefined for type: TypeVar[AnyStr] (trying to access __add__)",
+      "description": "`+` is not supported between `TypeVar[AnyStr]` and `TypeVar[AnyStr]`\n  TODO: Expr::binop_infer attribute base undefined for type: TypeVar[AnyStr] (trying to access __add__)",
       "line": 34,
       "name": "internal-error",
       "stop_column": 17,
@@ -5212,8 +5212,8 @@
     {
       "code": -2,
       "column": 12,
-      "concise_description": "`+` is not supported between `?_TypeVar` and `?_TypeVar`\n  TODO: Expr::binop_infer attribute base undefined for type: ?_TypeVar (trying to access __radd__)",
-      "description": "`+` is not supported between `?_TypeVar` and `?_TypeVar`\n  TODO: Expr::binop_infer attribute base undefined for type: ?_TypeVar (trying to access __radd__)",
+      "concise_description": "`+` is not supported between `TypeVar[AnyStr]` and `TypeVar[AnyStr]`\n  TODO: Expr::binop_infer attribute base undefined for type: TypeVar[AnyStr] (trying to access __radd__)",
+      "description": "`+` is not supported between `TypeVar[AnyStr]` and `TypeVar[AnyStr]`\n  TODO: Expr::binop_infer attribute base undefined for type: TypeVar[AnyStr] (trying to access __radd__)",
       "line": 34,
       "name": "internal-error",
       "stop_column": 17,
@@ -5323,66 +5323,6 @@
     },
     {
       "code": -2,
-      "column": 34,
-      "concise_description": "Unexpected keyword argument `default` to ParamSpec",
-      "description": "Unexpected keyword argument `default` to ParamSpec",
-      "line": 73,
-      "name": "invalid-param-spec",
-      "stop_column": 52,
-      "stop_line": 73
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(type[Class_ParamSpec[Any]], type[Class_ParamSpec[(str, int)]]) failed",
-      "description": "assert_type(type[Class_ParamSpec[Any]], type[Class_ParamSpec[(str, int)]]) failed",
-      "line": 79,
-      "name": "assert-type",
-      "stop_column": 62,
-      "stop_line": 79
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(Class_ParamSpec[(*Any, **Any)], Class_ParamSpec[(str, int)]) failed",
-      "description": "assert_type(Class_ParamSpec[(*Any, **Any)], Class_ParamSpec[(str, int)]) failed",
-      "line": 80,
-      "name": "assert-type",
-      "stop_column": 58,
-      "stop_line": 80
-    },
-    {
-      "code": -2,
-      "column": 39,
-      "concise_description": "Unexpected keyword argument `default` to TypeVarTuple",
-      "description": "Unexpected keyword argument `default` to TypeVarTuple",
-      "line": 88,
-      "name": "invalid-type-var-tuple",
-      "stop_column": 70,
-      "stop_line": 88
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(type[Class_TypeVarTuple[Any]], type[Class_TypeVarTuple[tuple[str, int]]]) failed",
-      "description": "assert_type(type[Class_TypeVarTuple[Any]], type[Class_TypeVarTuple[tuple[str, int]]]) failed",
-      "line": 94,
-      "name": "assert-type",
-      "stop_column": 76,
-      "stop_line": 94
-    },
-    {
-      "code": -2,
-      "column": 1,
-      "concise_description": "assert_type(Class_TypeVarTuple[tuple[Any, ...]], Class_TypeVarTuple[tuple[str, int]]) failed",
-      "description": "assert_type(Class_TypeVarTuple[tuple[Any, ...]], Class_TypeVarTuple[tuple[str, int]]) failed",
-      "line": 95,
-      "name": "assert-type",
-      "stop_column": 64,
-      "stop_line": 95
-    },
-    {
-      "code": -2,
       "column": 1,
       "concise_description": "assert_type(Any, int) failed",
       "description": "assert_type(Any, int) failed",
@@ -5413,13 +5353,13 @@
     },
     {
       "code": -2,
-      "column": 20,
-      "concise_description": "Unexpected keyword argument `default` to ParamSpec",
-      "description": "Unexpected keyword argument `default` to ParamSpec",
-      "line": 145,
-      "name": "invalid-param-spec",
-      "stop_column": 41,
-      "stop_line": 145
+      "column": 7,
+      "concise_description": "A type parameter without a default cannot follow one with a default",
+      "description": "A type parameter without a default cannot follow one with a default",
+      "line": 148,
+      "name": "invalid-type-var",
+      "stop_column": 11,
+      "stop_line": 148
     },
     {
       "code": -2,
@@ -5434,8 +5374,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[Foo6[Ellipsis, tuple[str]]], type[Foo6[Ellipsis, tuple[str, (float, bool)]]]) failed",
-      "description": "assert_type(type[Foo6[Ellipsis, tuple[str]]], type[Foo6[Ellipsis, tuple[str, (float, bool)]]]) failed",
+      "concise_description": "assert_type(type[Foo6[Ellipsis, tuple[str]]], type[Foo6[Ellipsis, tuple[str, [float, bool]]]]) failed",
+      "description": "assert_type(type[Foo6[Ellipsis, tuple[str]]], type[Foo6[Ellipsis, tuple[str, [float, bool]]]]) failed",
       "line": 151,
       "name": "assert-type",
       "stop_column": 65,
@@ -5444,8 +5384,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Expected a valid ParamSpec expression",
-      "description": "Expected a valid ParamSpec expression",
+      "concise_description": "Expected a valid ParamSpec expression, got `int`",
+      "description": "Expected a valid ParamSpec expression, got `int`",
       "line": 151,
       "name": "invalid-param-spec",
       "stop_column": 27,
@@ -5454,8 +5394,8 @@
     {
       "code": -2,
       "column": 34,
-      "concise_description": "Expected a valid ParamSpec expression",
-      "description": "Expected a valid ParamSpec expression",
+      "concise_description": "Expected a valid ParamSpec expression, got `int`",
+      "description": "Expected a valid ParamSpec expression, got `int`",
       "line": 151,
       "name": "invalid-param-spec",
       "stop_column": 63,
@@ -5464,8 +5404,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Expected a valid ParamSpec expression",
-      "description": "Expected a valid ParamSpec expression",
+      "concise_description": "Expected a valid ParamSpec expression, got `int`",
+      "description": "Expected a valid ParamSpec expression, got `int`",
       "line": 152,
       "name": "invalid-param-spec",
       "stop_column": 36,
@@ -5474,8 +5414,8 @@
     {
       "code": -2,
       "column": 43,
-      "concise_description": "Expected a valid ParamSpec expression",
-      "description": "Expected a valid ParamSpec expression",
+      "concise_description": "Expected a valid ParamSpec expression, got `int`",
+      "description": "Expected a valid ParamSpec expression, got `int`",
       "line": 152,
       "name": "invalid-param-spec",
       "stop_column": 66,
@@ -5484,11 +5424,21 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type((Self) -> Self, (Foo7[int]) -> Foo7[int]) failed",
-      "description": "assert_type((Self) -> Self, (Foo7[int]) -> Foo7[int]) failed",
+      "concise_description": "assert_type(Any, (Foo7[int]) -> Foo7[int]) failed",
+      "description": "assert_type(Any, (Foo7[int]) -> Foo7[int]) failed",
       "line": 166,
       "name": "assert-type",
       "stop_column": 57,
+      "stop_line": 166
+    },
+    {
+      "code": -2,
+      "column": 13,
+      "concise_description": "Generic attribute `meth` of class `Foo7` is not visible on the class",
+      "description": "Generic attribute `meth` of class `Foo7` is not visible on the class",
+      "line": 166,
+      "name": "missing-attribute",
+      "stop_column": 22,
       "stop_line": 166
     },
     {
@@ -5516,8 +5466,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[slice[int, TypeVar[StartT], int | None]], type[slice[int, int, int | None]]) failed",
-      "description": "assert_type(type[slice[int, TypeVar[StartT], int | None]], type[slice[int, int, int | None]]) failed",
+      "concise_description": "assert_type(type[slice[int, TypeVar(StartT, default=int, invariant), int | None]], type[slice[int, int, int | None]]) failed",
+      "description": "assert_type(type[slice[int, TypeVar(StartT, default=int, invariant), int | None]], type[slice[int, int, int | None]]) failed",
       "line": 23,
       "name": "assert-type",
       "stop_column": 54,
@@ -5526,8 +5476,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(slice[int, TypeVar[StartT], int | None], slice[int, int, int | None]) failed",
-      "description": "assert_type(slice[int, TypeVar[StartT], int | None], slice[int, int, int | None]) failed",
+      "concise_description": "assert_type(slice[int, TypeVar(StartT, default=int, invariant), int | None], slice[int, int, int | None]) failed",
+      "description": "assert_type(slice[int, TypeVar(StartT, default=int, invariant), int | None], slice[int, int, int | None]) failed",
       "line": 24,
       "name": "assert-type",
       "stop_column": 50,
@@ -5536,8 +5486,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(slice[str, TypeVar[StartT], int | None], slice[str, str, int | None]) failed",
-      "description": "assert_type(slice[str, TypeVar[StartT], int | None], slice[str, str, int | None]) failed",
+      "concise_description": "assert_type(slice[str, TypeVar(StartT, default=int, invariant), int | None], slice[str, str, int | None]) failed",
+      "description": "assert_type(slice[str, TypeVar(StartT, default=int, invariant), int | None], slice[str, str, int | None]) failed",
       "line": 25,
       "name": "assert-type",
       "stop_column": 55,
@@ -5546,8 +5496,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "Argument `Literal['']` is not assignable to parameter `b` with type `TypeVar[DefaultStrT]` in function `Foo.__init__`",
-      "description": "Argument `Literal['']` is not assignable to parameter `b` with type `TypeVar[DefaultStrT]` in function `Foo.__init__`",
+      "concise_description": "Argument `Literal['']` is not assignable to parameter `b` with type `TypeVar(DefaultStrT, default=str, invariant)` in function `Foo.__init__`",
+      "description": "Argument `Literal['']` is not assignable to parameter `b` with type `TypeVar(DefaultStrT, default=str, invariant)` in function `Foo.__init__`",
       "line": 36,
       "name": "bad-argument-type",
       "stop_column": 15,
@@ -5566,8 +5516,8 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "Argument `Literal[1]` is not assignable to parameter `b` with type `TypeVar[DefaultStrT]` in function `Foo.__init__`",
-      "description": "Argument `Literal[1]` is not assignable to parameter `b` with type `TypeVar[DefaultStrT]` in function `Foo.__init__`",
+      "concise_description": "Argument `Literal[1]` is not assignable to parameter `b` with type `TypeVar(DefaultStrT, default=str, invariant)` in function `Foo.__init__`",
+      "description": "Argument `Literal[1]` is not assignable to parameter `b` with type `TypeVar(DefaultStrT, default=str, invariant)` in function `Foo.__init__`",
       "line": 37,
       "name": "bad-argument-type",
       "stop_column": 15,
@@ -5576,8 +5526,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[Bar[Any, list[TypeVar[Z1]]]], type[Bar[Any, list[Any]]]) failed",
-      "description": "assert_type(type[Bar[Any, list[TypeVar[Z1]]]], type[Bar[Any, list[Any]]]) failed",
+      "concise_description": "assert_type(type[Bar[Any, list[TypeVar(Z1, invariant)]]], type[Bar[Any, list[Any]]]) failed",
+      "description": "assert_type(type[Bar[Any, list[TypeVar(Z1, invariant)]]], type[Bar[Any, list[Any]]]) failed",
       "line": 94,
       "name": "assert-type",
       "stop_column": 44,
@@ -5586,8 +5536,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(type[Bar[int, list[TypeVar[Z1]]]], type[Bar[int, list[int]]]) failed",
-      "description": "assert_type(type[Bar[int, list[TypeVar[Z1]]]], type[Bar[int, list[int]]]) failed",
+      "concise_description": "assert_type(type[Bar[int, list[TypeVar(Z1, invariant)]]], type[Bar[int, list[int]]]) failed",
+      "description": "assert_type(type[Bar[int, list[TypeVar(Z1, invariant)]]], type[Bar[int, list[int]]]) failed",
       "line": 95,
       "name": "assert-type",
       "stop_column": 49,
@@ -5596,8 +5546,8 @@
     {
       "code": -2,
       "column": 1,
-      "concise_description": "assert_type(Bar[int, list[TypeVar[Z1]]], Bar[int, list[int]]) failed",
-      "description": "assert_type(Bar[int, list[TypeVar[Z1]]], Bar[int, list[int]]) failed",
+      "concise_description": "assert_type(Bar[int, list[TypeVar(Z1, invariant)]], Bar[int, list[int]]) failed",
+      "description": "assert_type(Bar[int, list[TypeVar(Z1, invariant)]], Bar[int, list[int]]) failed",
       "line": 96,
       "name": "assert-type",
       "stop_column": 50,
@@ -5660,8 +5610,8 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "Concatenate[int, ?_ParamSpec] is not allowed in this context.",
-      "description": "Concatenate[int, ?_ParamSpec] is not allowed in this context.",
+      "concise_description": "Concatenate[int, ParamSpec[P]] is not allowed in this context.",
+      "description": "Concatenate[int, ParamSpec[P]] is not allowed in this context.",
       "line": 27,
       "name": "invalid-annotation",
       "stop_column": 33,
@@ -6036,8 +5986,8 @@
     {
       "code": -2,
       "column": 15,
-      "concise_description": "Expected a valid ParamSpec expression",
-      "description": "Expected a valid ParamSpec expression",
+      "concise_description": "Expected a valid ParamSpec expression, got `int`",
+      "description": "Expected a valid ParamSpec expression, got `int`",
       "line": 44,
       "name": "invalid-param-spec",
       "stop_column": 31,
@@ -6118,8 +6068,8 @@
     {
       "code": -2,
       "column": 24,
-      "concise_description": "`type[list[?_TypeVar]]` is not assignable to `TypeAlias`",
-      "description": "`type[list[?_TypeVar]]` is not assignable to `TypeAlias`",
+      "concise_description": "`type[list[TypeVar[T]]]` is not assignable to `TypeAlias`",
+      "description": "`type[list[TypeVar[T]]]` is not assignable to `TypeAlias`",
       "line": 87,
       "name": "bad-assignment",
       "stop_column": 31,
@@ -6352,8 +6302,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "assert_type(type[?_TypeVar], TypeVar) failed",
-      "description": "assert_type(type[?_TypeVar], TypeVar) failed",
+      "concise_description": "assert_type(type[TypeVar[T]], TypeVar) failed",
+      "description": "assert_type(type[TypeVar[T]], TypeVar) failed",
       "line": 14,
       "name": "assert-type",
       "stop_column": 28,
@@ -6362,8 +6312,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "assert_type(type[?_TypeVarTuple], TypeVarTuple) failed",
-      "description": "assert_type(type[?_TypeVarTuple], TypeVarTuple) failed",
+      "concise_description": "assert_type(type[TypeVarTuple[Ts]], TypeVarTuple) failed",
+      "description": "assert_type(type[TypeVarTuple[Ts]], TypeVarTuple) failed",
       "line": 15,
       "name": "assert-type",
       "stop_column": 34,
@@ -6372,8 +6322,8 @@
     {
       "code": -2,
       "column": 5,
-      "concise_description": "assert_type(type[?_ParamSpec], ParamSpec) failed",
-      "description": "assert_type(type[?_ParamSpec], ParamSpec) failed",
+      "concise_description": "assert_type(type[ParamSpec[P]], ParamSpec) failed",
+      "description": "assert_type(type[ParamSpec[P]], ParamSpec) failed",
       "line": 16,
       "name": "assert-type",
       "stop_column": 30,
@@ -6402,18 +6352,8 @@
     {
       "code": -2,
       "column": 9,
-      "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access capitalize)",
-      "description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access capitalize)",
-      "line": 33,
-      "name": "missing-attribute",
-      "stop_column": 21,
-      "stop_line": 33
-    },
-    {
-      "code": -2,
-      "column": 9,
-      "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access is_integer)",
-      "description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access is_integer)",
+      "concise_description": "Object of class `str` has no attribute `is_integer`",
+      "description": "Object of class `str` has no attribute `is_integer`",
       "line": 34,
       "name": "missing-attribute",
       "stop_column": 21,
@@ -6432,6 +6372,26 @@
     {
       "code": -2,
       "column": 17,
+      "concise_description": "Expected at least 2 constraints in TypeVar `T`, got 0",
+      "description": "Expected at least 2 constraints in TypeVar `T`, got 0",
+      "line": 62,
+      "name": "invalid-type-var",
+      "stop_column": 19,
+      "stop_line": 62
+    },
+    {
+      "code": -2,
+      "column": 17,
+      "concise_description": "Expected at least 2 constraints in TypeVar `T`, got 1",
+      "description": "Expected at least 2 constraints in TypeVar `T`, got 1",
+      "line": 66,
+      "name": "invalid-type-var",
+      "stop_column": 23,
+      "stop_line": 66
+    },
+    {
+      "code": -2,
+      "column": 17,
       "concise_description": "Expected a type form, got instance of `tuple[type[bytes], type[str]]`",
       "description": "Expected a type form, got instance of `tuple[type[bytes], type[str]]`",
       "line": 73,
@@ -6441,12 +6401,12 @@
     },
     {
       "code": -2,
-      "column": 18,
+      "column": 17,
       "concise_description": "Expected a type form, got instance of `Literal[3]`",
       "description": "Expected a type form, got instance of `Literal[3]`",
       "line": 77,
       "name": "not-a-type",
-      "stop_column": 19,
+      "stop_column": 27,
       "stop_line": 77
     },
     {
@@ -6766,8 +6726,8 @@
     {
       "code": -2,
       "column": 13,
-      "concise_description": "assert_type(type[?_TypeVar], TypeVar) failed",
-      "description": "assert_type(type[?_TypeVar], TypeVar) failed",
+      "concise_description": "assert_type(type[TypeVar[T]], TypeVar) failed",
+      "description": "assert_type(type[TypeVar[T]], TypeVar) failed",
       "line": 116,
       "name": "assert-type",
       "stop_column": 36,
@@ -6939,26 +6899,6 @@
     }
   ],
   "generics_typevartuple_basic.py": [
-    {
-      "code": -2,
-      "column": 38,
-      "concise_description": "`?_TypeVarTuple` is not assignable to attribute `_shape` with type `Unknown`",
-      "description": "`?_TypeVarTuple` is not assignable to attribute `_shape` with type `Unknown`",
-      "line": 25,
-      "name": "bad-assignment",
-      "stop_column": 43,
-      "stop_line": 25
-    },
-    {
-      "code": -2,
-      "column": 16,
-      "concise_description": "Returned type `Unknown` is not assignable to declared return type `?_TypeVarTuple`",
-      "description": "Returned type `Unknown` is not assignable to declared return type `?_TypeVarTuple`",
-      "line": 28,
-      "name": "bad-return",
-      "stop_column": 27,
-      "stop_line": 28
-    },
     {
       "code": -2,
       "column": 34,
@@ -7136,8 +7076,8 @@
     {
       "code": -2,
       "column": 12,
-      "concise_description": "Returned type `tuple[*tuple[@_, ...], Unknown]` is not assignable to declared return type `tuple[*?_TypeVarTuple, ?_TypeVar]`",
-      "description": "Returned type `tuple[*tuple[@_, ...], Unknown]` is not assignable to declared return type `tuple[*?_TypeVarTuple, ?_TypeVar]`",
+      "concise_description": "Returned type `tuple[*tuple[@_, ...], Unknown]` is not assignable to declared return type `tuple[*TypeVarTuple[Ts], TypeVar[T]]`",
+      "description": "Returned type `tuple[*tuple[@_, ...], Unknown]` is not assignable to declared return type `tuple[*TypeVarTuple[Ts], TypeVar[T]]`",
       "line": 56,
       "name": "bad-return",
       "stop_column": 30,
@@ -7146,8 +7086,8 @@
     {
       "code": -2,
       "column": 14,
-      "concise_description": "Cannot index into `tuple[?_TypeVar, *?_TypeVarTuple]`\n  No matching overload found for function `tuple.__getitem__`, reporting errors for closest overload: `(SupportsIndex) -> Unknown`",
-      "description": "Cannot index into `tuple[?_TypeVar, *?_TypeVarTuple]`\n  No matching overload found for function `tuple.__getitem__`, reporting errors for closest overload: `(SupportsIndex) -> Unknown`",
+      "concise_description": "Cannot index into `tuple[TypeVar[T], *TypeVarTuple[Ts]]`\n  No matching overload found for function `tuple.__getitem__`, reporting errors for closest overload: `(SupportsIndex) -> Unknown`",
+      "description": "Cannot index into `tuple[TypeVar[T], *TypeVarTuple[Ts]]`\n  No matching overload found for function `tuple.__getitem__`, reporting errors for closest overload: `(SupportsIndex) -> Unknown`",
       "line": 56,
       "name": "no-matching-overload",
       "stop_column": 21,
@@ -7310,26 +7250,6 @@
     }
   ],
   "generics_upper_bound.py": [
-    {
-      "code": -2,
-      "column": 12,
-      "concise_description": "Argument `?_TypeVar` is not assignable to parameter with type `Sized` in function `len`",
-      "description": "Argument `?_TypeVar` is not assignable to parameter with type `Sized` in function `len`",
-      "line": 31,
-      "name": "bad-argument-type",
-      "stop_column": 13,
-      "stop_line": 31
-    },
-    {
-      "code": -2,
-      "column": 21,
-      "concise_description": "Argument `?_TypeVar` is not assignable to parameter with type `Sized` in function `len`",
-      "description": "Argument `?_TypeVar` is not assignable to parameter with type `Sized` in function `len`",
-      "line": 31,
-      "name": "bad-argument-type",
-      "stop_column": 22,
-      "stop_line": 31
-    },
     {
       "code": -2,
       "column": 1,
@@ -7974,8 +7894,8 @@
     {
       "code": -2,
       "column": 16,
-      "concise_description": "Invalid type inside literal, `TypeVar[T]`",
-      "description": "Invalid type inside literal, `TypeVar[T]`",
+      "concise_description": "Invalid type inside literal, `TypeVar(T, invariant)`",
+      "description": "Invalid type inside literal, `TypeVar(T, invariant)`",
       "line": 50,
       "name": "invalid-literal",
       "stop_column": 17,
@@ -8898,11 +8818,11 @@
     {
       "code": -2,
       "column": 12,
-      "concise_description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access get_parent)",
-      "description": "TODO: Expr::attr_infer attribute base undefined for type: ?_TypeVar (trying to access get_parent)",
+      "concise_description": "Returned type `HasParent` is not assignable to declared return type `TypeVar[GenericHasParent]`",
+      "description": "Returned type `HasParent` is not assignable to declared return type `TypeVar[GenericHasParent]`",
       "line": 87,
-      "name": "missing-attribute",
-      "stop_column": 24,
+      "name": "bad-return",
+      "stop_column": 26,
       "stop_line": 87
     },
     {
@@ -9292,8 +9212,8 @@
     {
       "code": -2,
       "column": 12,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[T]]",
+      "description": "Expected a callable, got type[TypeVar[T]]",
       "line": 81,
       "name": "not-callable",
       "stop_column": 13,
@@ -9609,8 +9529,8 @@
     {
       "code": -2,
       "column": 12,
-      "concise_description": "Returned type `ClassC[Never]` is not assignable to declared return type `ClassC[?_TypeVar]`",
-      "description": "Returned type `ClassC[Never]` is not assignable to declared return type `ClassC[?_TypeVar]`",
+      "concise_description": "Returned type `ClassC[Never]` is not assignable to declared return type `ClassC[TypeVar[U]]`",
+      "description": "Returned type `ClassC[Never]` is not assignable to declared return type `ClassC[TypeVar[U]]`",
       "line": 105,
       "name": "bad-return",
       "stop_column": 27,
@@ -9641,26 +9561,6 @@
     {
       "code": -2,
       "column": 7,
-      "concise_description": "Argument `type[NoneType]` is not assignable to parameter `val1` with type `type[None]` in function `func2`",
-      "description": "Argument `type[NoneType]` is not assignable to parameter `val1` with type `type[None]` in function `func2`",
-      "line": 39,
-      "name": "bad-argument-type",
-      "stop_column": 21,
-      "stop_line": 39
-    },
-    {
-      "code": -2,
-      "column": 7,
-      "concise_description": "Argument `type` is not assignable to parameter `val1` with type `type[None]` in function `func2`",
-      "description": "Argument `type` is not assignable to parameter `val1` with type `type[None]` in function `func2`",
-      "line": 40,
-      "name": "bad-argument-type",
-      "stop_column": 17,
-      "stop_line": 40
-    },
-    {
-      "code": -2,
-      "column": 7,
       "concise_description": "Argument `None` is not assignable to parameter `val1` with type `type[None]` in function `func2`",
       "description": "Argument `None` is not assignable to parameter `val1` with type `type[None]` in function `func2`",
       "line": 41,
@@ -9685,8 +9585,8 @@
     {
       "code": -2,
       "column": 12,
-      "concise_description": "Expected a callable, got type[?_TypeVar]",
-      "description": "Expected a callable, got type[?_TypeVar]",
+      "concise_description": "Expected a callable, got type[TypeVar[U]]",
+      "description": "Expected a callable, got type[TypeVar[U]]",
       "line": 39,
       "name": "not-callable",
       "stop_column": 22,
@@ -9885,8 +9785,8 @@
     {
       "code": -2,
       "column": 16,
-      "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA7, type[type[TypeVar[T]]]]",
-      "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA7, type[type[TypeVar[T]]]]",
+      "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA7, type[type[TypeVar(T, invariant)]]]",
+      "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA7, type[type[TypeVar(T, invariant)]]]",
       "line": 152,
       "name": "bad-specialization",
       "stop_column": 22,
@@ -9895,8 +9795,8 @@
     {
       "code": -2,
       "column": 16,
-      "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA8, type[type[TypeVar[T]]]]",
-      "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA8, type[type[TypeVar[T]]]]",
+      "concise_description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA8, type[type[TypeVar(T, invariant)]]]",
+      "description": "Can't apply arguments to non-class, got LegacyExplicitTypeAlias[TA8, type[type[TypeVar(T, invariant)]]]",
       "line": 156,
       "name": "bad-specialization",
       "stop_column": 22,
@@ -9921,56 +9821,6 @@
       "name": "assert-type",
       "stop_column": 30,
       "stop_line": 161
-    },
-    {
-      "code": -2,
-      "column": 30,
-      "concise_description": "`type` is not assignable to `(...) -> Any`",
-      "description": "`type` is not assignable to `(...) -> Any`",
-      "line": 165,
-      "name": "bad-assignment",
-      "stop_column": 31,
-      "stop_line": 165
-    },
-    {
-      "code": -2,
-      "column": 37,
-      "concise_description": "`type` is not assignable to `(int, int) -> int`",
-      "description": "`type` is not assignable to `(int, int) -> int`",
-      "line": 166,
-      "name": "bad-assignment",
-      "stop_column": 38,
-      "stop_line": 166
-    },
-    {
-      "code": -2,
-      "column": 21,
-      "concise_description": "`type` is not assignable to `type[int]`",
-      "description": "`type` is not assignable to `type[int]`",
-      "line": 169,
-      "name": "bad-assignment",
-      "stop_column": 22,
-      "stop_line": 169
-    },
-    {
-      "code": -2,
-      "column": 21,
-      "concise_description": "`type` is not assignable to `type[Any]`",
-      "description": "`type` is not assignable to `type[Any]`",
-      "line": 170,
-      "name": "bad-assignment",
-      "stop_column": 22,
-      "stop_line": 170
-    },
-    {
-      "code": -2,
-      "column": 16,
-      "concise_description": "Returned type `type` is not assignable to declared return type `type[?_TypeVar]`",
-      "description": "Returned type `type` is not assignable to declared return type `type[?_TypeVar]`",
-      "line": 175,
-      "name": "bad-return",
-      "stop_column": 17,
-      "stop_line": 175
     }
   ],
   "tuples_type_compat.py": [

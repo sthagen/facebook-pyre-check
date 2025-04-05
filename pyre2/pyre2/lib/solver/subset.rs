@@ -28,6 +28,7 @@ use crate::types::class::TArgs;
 use crate::types::quantified::QuantifiedKind;
 use crate::types::simplify::unions;
 use crate::types::tuple::Tuple;
+use crate::types::type_var::Restriction;
 use crate::types::type_var::Variance;
 use crate::types::types::Forall;
 use crate::types::types::Forallable;
@@ -907,6 +908,17 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             (Type::Type(_), _) => {
                 self.is_subset_eq(&self.type_order.stdlib().builtins_type().to_type(), want)
             }
+            (
+                Type::ClassType(class),
+                Type::Type(_)
+                | Type::ClassDef(_)
+                | Type::BoundMethod(_)
+                | Type::Callable(_)
+                | Type::Function(_),
+            ) if *class == self.type_order.stdlib().builtins_type() => {
+                // Unparameterized `type` is equivalent to `type[Any]`
+                true
+            }
             (Type::TypeGuard(l), Type::TypeGuard(u)) => {
                 // TypeGuard is covariant
                 self.is_subset_eq(l, u)
@@ -936,6 +948,9 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             (Type::None, _) => {
                 self.is_subset_eq(&self.type_order.stdlib().none_type().to_type(), want)
             }
+            (_, Type::None) => {
+                self.is_subset_eq(got, &self.type_order.stdlib().none_type().to_type())
+            }
             (Type::Forall(_), _) => {
                 // TODO: Probably need to do some kind of substitution here
                 false
@@ -943,6 +958,21 @@ impl<'a, Ans: LookupAnswer> Subset<'a, Ans> {
             (Type::TypeAlias(ta), _) => {
                 self.is_subset_eq_impl(&ta.as_value(self.type_order.stdlib()), want)
             }
+            (Type::Quantified(q), t2) => match q.restriction() {
+                Restriction::Bound(bound) => self.is_subset_eq(bound, t2),
+                Restriction::Constraints(constraints) => constraints
+                    .iter()
+                    .all(|constraint| self.is_subset_eq(constraint, t2)),
+                Restriction::Unrestricted => self.is_subset_eq_impl(
+                    &self
+                        .type_order
+                        .stdlib()
+                        .object_class_type()
+                        .clone()
+                        .to_type(),
+                    want,
+                ),
+            },
             _ => false,
         }
     }
