@@ -1535,13 +1535,7 @@ let test_higher_order_call_graph_fixpoint =
                                      ()) );
                             ]) );
                    ];
-                 returned_callables =
-                   [
-                     CallTarget.create_regular
-                       ~implicit_receiver:true
-                       (Target.Regular.Method
-                          { class_name = "test.A"; method_name = "name"; kind = Normal });
-                   ];
+                 returned_callables = [];
                };
                {
                  Expected.callable =
@@ -1567,14 +1561,7 @@ let test_higher_order_call_graph_fixpoint =
                                ~is_attribute:false
                                ())) );
                    ];
-                 returned_callables =
-                   [
-                     CallTarget.create_regular
-                       ~implicit_receiver:true
-                       (* TODO: This should be `test.foo`. *)
-                       (Target.Regular.Method
-                          { class_name = "test.A"; method_name = "name"; kind = Normal });
-                   ];
+                 returned_callables = [ (* TODO(T222400916): This should be `test.foo`. *) ];
                };
              ]
            ();
@@ -1632,13 +1619,7 @@ let test_higher_order_call_graph_fixpoint =
                                      ()) );
                             ]) );
                    ];
-                 returned_callables =
-                   [
-                     CallTarget.create_regular
-                       ~implicit_receiver:true
-                       (Target.Regular.Method
-                          { class_name = "test.A"; method_name = "name"; kind = Normal });
-                   ];
+                 returned_callables = [ (* TODO(T222400916): This should be `test.foo`. *) ];
                };
                {
                  Expected.callable =
@@ -1664,14 +1645,7 @@ let test_higher_order_call_graph_fixpoint =
                                ~is_attribute:false
                                ())) );
                    ];
-                 returned_callables =
-                   [
-                     CallTarget.create_regular
-                       ~implicit_receiver:true
-                       (* TODO: This should be `test.foo`. *)
-                       (Target.Regular.Method
-                          { class_name = "test.A"; method_name = "name"; kind = Normal });
-                   ];
+                 returned_callables = [ (* TODO(T222400916): This should be `test.foo`. *) ];
                };
              ]
            ();
@@ -1969,6 +1943,61 @@ let test_higher_order_call_graph_fixpoint =
                      CallTarget.create_regular
                        (Target.Regular.Function { name = "test.bar"; kind = Normal });
                    ];
+               };
+             ]
+           ();
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_higher_order_call_graph_fixpoint
+           ~source:
+             {|
+     class A():
+       @property
+       def foo(self) -> int:
+         return 0
+     def bar(f):
+       return
+     def main(a: A):
+       x = a.foo  # Test not propagating property targets
+       return bar(x)
+  |}
+           ~expected:
+             [
+               {
+                 Expected.callable =
+                   Target.Regular.Function { name = "test.main"; kind = Normal }
+                   |> Target.from_regular;
+                 call_graph =
+                   [
+                     ( "10:9-10:15",
+                       LocationCallees.Singleton
+                         (ExpressionCallees.from_call
+                            (CallCallees.create
+                               ~call_targets:
+                                 [
+                                   CallTarget.create_regular
+                                     (Target.Regular.Function { name = "test.bar"; kind = Normal });
+                                 ]
+                               ())) );
+                     ( "9:6-9:11",
+                       LocationCallees.Singleton
+                         (ExpressionCallees.from_attribute_access
+                            (AttributeAccessCallees.create
+                               ~property_targets:
+                                 [
+                                   CallTarget.create_regular
+                                     ~implicit_receiver:true
+                                     ~return_type:(Some ReturnType.integer)
+                                     (Target.Regular.Method
+                                        {
+                                          class_name = "test.A";
+                                          method_name = "foo";
+                                          kind = Normal;
+                                        });
+                                 ]
+                               ~is_attribute:false
+                               ())) );
+                   ];
+                 returned_callables = [];
                };
              ]
            ();
