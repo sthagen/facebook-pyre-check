@@ -2827,6 +2827,18 @@ let redirect_special_calls ~pyre_in_context ~callables_to_definitions_map ~locat
 
 
 let redirect_expressions ~pyre_in_context ~callables_to_definitions_map ~location = function
+  | Expression.BinaryOperator ({ left; _ } as operator) ->
+      let call =
+        BinaryOperator.lower_to_call ~location ~callee_location:left.Node.location operator
+      in
+      Expression.Call call
+  | Expression.ComparisonOperator ({ left; _ } as comparison) as expression -> (
+      match
+        ComparisonOperator.lower_to_expression ~location ~callee_location:left.location comparison
+      with
+      | Some { Node.value = call; _ } -> call
+      | None -> expression)
+  | Expression.Slice slice -> Slice.lowered ~location slice |> Node.value
   | Expression.Subscript { Subscript.base; index } ->
       let origin = Some { Node.location; value = Origin.SubscriptGetItem } in
       Expression.Call
@@ -2845,21 +2857,41 @@ let redirect_expressions ~pyre_in_context ~callables_to_definitions_map ~locatio
         redirect_special_calls ~pyre_in_context ~callables_to_definitions_map ~location call
       in
       Expression.Call call
-  | Expression.Slice slice -> Slice.lowered ~location slice |> Node.value
   | expression -> expression
 
 
-let redirect_assignments = function
-  | {
-      Node.value =
-        Statement.Assign
-          {
-            Assign.target = { Node.value = Expression.Subscript { base; index }; _ };
-            value = Some value_expression;
-            _;
-          };
-      location;
+let redirect_assignments statement =
+  let statement =
+    (* Note that there are cases where we perform two consecutive redirects.
+     * For instance, for `d[j] += x` *)
+    match statement with
+    | {
+     Node.value = Statement.AugmentedAssign ({ AugmentedAssign.target; _ } as augmented_assignment);
+     location;
     } ->
+        let call =
+          AugmentedAssign.lower_to_expression
+            ~location
+            ~callee_location:target.Node.location
+            augmented_assignment
+        in
+        {
+          Node.location;
+          value = Statement.Assign { Assign.target; annotation = None; value = Some call };
+        }
+    | _ -> statement
+  in
+  match statement with
+  | {
+   Node.value =
+     Statement.Assign
+       {
+         Assign.target = { Node.value = Expression.Subscript { base; index }; _ };
+         value = Some value_expression;
+         _;
+       };
+   location;
+  } ->
       (* TODO(T187636576): For now, we translate assignments such as `d[a] = b` into
          `d.__setitem__(a, b)`. Unfortunately, this won't work for multi-target assignments such as
          `x, y[a], z = w`. In the future, we should implement proper logic to handle those. *)
@@ -3847,36 +3879,6 @@ module CalleeVisitor = struct
             >>| ExpressionCallees.from_identifier
             >>| register_targets ~expression_identifier:identifier
             |> ignore
-        | Expression.BinaryOperator ({ left; _ } as operator) ->
-            let implicit_call =
-              BinaryOperator.lower_to_call ~location ~callee_location:left.Node.location operator
-            in
-            resolve_callees ~call:implicit_call
-            |> MissingFlowTypeAnalysis.add_unknown_callee ~missing_flow_type_analysis ~expression
-            |> ExpressionCallees.from_call
-            |> register_targets ~expression_identifier:(call_identifier implicit_call)
-        | Expression.ComparisonOperator ({ left; _ } as comparison) -> (
-            match
-              ComparisonOperator.lower_to_expression
-                ~location
-                ~callee_location:left.location
-                comparison
-            with
-            | Some { Node.value = Expression.Call call; _ } ->
-                let call =
-                  redirect_special_calls
-                    ~pyre_in_context
-                    ~callables_to_definitions_map
-                    ~location
-                    call
-                in
-                resolve_callees ~call
-                |> MissingFlowTypeAnalysis.add_unknown_callee
-                     ~missing_flow_type_analysis
-                     ~expression
-                |> ExpressionCallees.from_call
-                |> register_targets ~expression_identifier:(call_identifier call)
-            | _ -> ())
         | Expression.FormatString substrings ->
             let artificial_target =
               CallTarget.create_with_default_index
@@ -4212,7 +4214,6 @@ struct
         Ast.Statement.pp
         statement;
       let statement = redirect_assignments statement in
-      let location = Node.location statement in
       match Node.value statement with
       | Statement.Assign { Assign.target; value = Some value; _ } ->
           CalleeVisitor.visit_expression
@@ -4234,46 +4235,8 @@ struct
             ~context:Context.node_visitor_context
             ~callees_at_location:Context.callees_at_location
             target
-      | Statement.AugmentedAssign ({ AugmentedAssign.target; value; _ } as assign) ->
-          CalleeVisitor.visit_expression
-            ~pyre_in_context
-            ~assignment_target:None
-            ~context:Context.node_visitor_context
-            ~callees_at_location:Context.callees_at_location
-            value;
-          CalleeVisitor.visit_expression
-            ~pyre_in_context
-            ~assignment_target:(Some { location = Node.location target })
-            ~context:Context.node_visitor_context
-            ~callees_at_location:Context.callees_at_location
-            target;
-
-          let implicit_call =
-            AugmentedAssign.lower_to_call ~location ~callee_location:target.Node.location assign
-          in
-          let { NodeVisitorContext.debug; callables_to_definitions_map; override_graph; _ } =
-            Context.node_visitor_context
-          in
-          let callees =
-            resolve_callees
-              ~debug
-              ~pyre_in_context
-              ~callables_to_definitions_map
-              ~override_graph
-              ~call:implicit_call
-            |> MissingFlowTypeAnalysis.add_unknown_callee
-                 ~missing_flow_type_analysis:Context.node_visitor_context.missing_flow_type_analysis
-                 ~expression:(Expression.Call implicit_call |> Node.create ~location)
-            |> ExpressionCallees.from_call
-          in
-          Context.callees_at_location :=
-            DefineCallGraph.add_callees
-              ~debug
-              ~expression_identifier:(call_identifier implicit_call)
-              ~location
-              ~statement_for_logging:statement
-              ~callees
-              !Context.callees_at_location
+      | Statement.AugmentedAssign _ ->
+          failwith "statement should be lowered using redirect_assignments"
       (* Control flow statements should NOT be visited, since they are lowered down during the
          control flow graph building. *)
       | Statement.If _
@@ -4433,6 +4396,8 @@ module HigherOrderCallGraph = struct
     val callables_to_definitions_map : Target.CallablesSharedMemory.ReadOnly.t
 
     val skip_analysis_targets : Target.HashSet.t
+
+    val called_when_parameter : Target.HashSet.t
 
     val profiler : CallGraphProfiler.t
 
@@ -4833,10 +4798,10 @@ module HigherOrderCallGraph = struct
             ~argument:None
             ~f
         in
-        let analyze_arguments
+        let analyze_argument
             ~higher_order_parameters
             index
-            state_so_far
+            (state_so_far, additional_higher_order_parameters)
             { Call.Argument.value = argument; _ }
           =
           let callees, new_state =
@@ -4847,18 +4812,50 @@ module HigherOrderCallGraph = struct
             | Some { HigherOrderParameter.call_targets; _ } -> call_targets
             | None -> []
           in
-          let callees =
+          let partition_called_when_parameter =
+            CallTarget.Set.fold
+              CallTarget.Set.Element
+              ~init:(CallTarget.Set.bottom, CallTarget.Set.bottom)
+              ~f:(fun call_target (called_when_parameter, not_called_when_parameter) ->
+                let is_called_when_parameter =
+                  call_target
+                  |> CallTarget.target
+                  |> Target.strip_parameters
+                  |> Core.Hash_set.mem Context.called_when_parameter
+                in
+                if is_called_when_parameter then
+                  CallTarget.Set.add call_target called_when_parameter, not_called_when_parameter
+                else
+                  called_when_parameter, CallTarget.Set.add call_target not_called_when_parameter)
+          in
+          let called_when_parameter, not_called_when_parameter =
             call_targets_from_higher_order_parameters
             |> CallTarget.Set.of_list
             |> CallTarget.Set.join callees
+            |> partition_called_when_parameter
           in
           log
-            "Finished analyzing argument `%a`: %a"
+            "Finished analyzing argument `%a` -- called_when_parameter: %a. \
+             not_called_when_parameter: %a"
             Expression.pp
             argument
             CallTarget.Set.pp
-            callees;
-          new_state, callees
+            called_when_parameter
+            CallTarget.Set.pp
+            not_called_when_parameter;
+          let additional_higher_order_parameters =
+            if CallTarget.Set.is_bottom called_when_parameter then
+              additional_higher_order_parameters
+            else
+              HigherOrderParameterMap.add
+                additional_higher_order_parameters
+                {
+                  HigherOrderParameter.call_targets = CallTarget.Set.elements called_when_parameter;
+                  index;
+                  unresolved = Unresolved.False;
+                }
+          in
+          (new_state, additional_higher_order_parameters), not_called_when_parameter
         in
         let ({
                CallCallees.call_targets = original_call_targets;
@@ -4891,9 +4888,12 @@ module HigherOrderCallGraph = struct
         let callee_return_values, state =
           analyze_expression ~pyre_in_context ~state ~expression:call.Call.callee
         in
-        let state, argument_callees =
+        let (state, additional_higher_order_parameters), argument_callees_not_called_when_parameter =
           track_apply_call_step AnalyzeArguments (fun () ->
-              List.fold_mapi arguments ~f:(analyze_arguments ~higher_order_parameters) ~init:state)
+              List.fold_mapi
+                arguments
+                ~f:(analyze_argument ~higher_order_parameters)
+                ~init:(state, HigherOrderParameterMap.empty))
         in
         let ( parameterized_call_targets,
               decorated_call_targets,
@@ -4915,7 +4915,7 @@ module HigherOrderCallGraph = struct
                  ~arguments
                  ~unresolved
                  ~override_implicit_receiver:true
-                 ~argument_callees
+                 ~argument_callees:argument_callees_not_called_when_parameter
                  ~track_apply_call_step_name:"callee_return_targets"
           in
           let {
@@ -4931,7 +4931,7 @@ module HigherOrderCallGraph = struct
               ~arguments
               ~unresolved
               ~override_implicit_receiver:false
-              ~argument_callees
+              ~argument_callees:argument_callees_not_called_when_parameter
               ~track_apply_call_step_name:"call_targets"
               original_call_targets
           in
@@ -4953,19 +4953,20 @@ module HigherOrderCallGraph = struct
             ~arguments
             ~unresolved
             ~override_implicit_receiver:false
-            ~argument_callees
+            ~argument_callees:argument_callees_not_called_when_parameter
             ~track_apply_call_step_name:"init_targets"
             original_init_targets
         in
-        (* Discard higher order parameters only if each original target is parameterized. *)
+        (* Discard higher order parameters only if each original target is parameterized, except for
+           the targets that must be treated as being called. *)
         let higher_order_parameters =
           if
             List.is_empty non_parameterized_call_targets
             && List.is_empty non_parameterized_init_targets
           then
-            HigherOrderParameterMap.empty
+            additional_higher_order_parameters
           else
-            higher_order_parameters
+            HigherOrderParameterMap.join higher_order_parameters additional_higher_order_parameters
         in
         let new_call_targets =
           parameterized_call_targets
@@ -5040,11 +5041,62 @@ module HigherOrderCallGraph = struct
                 Algorithms.fold_balanced
                   ~f:CallTarget.Set.join
                   ~init:CallTarget.Set.bottom
-                  argument_callees
+                  argument_callees_not_called_when_parameter
               else
                 CallTarget.Set.bottom
             in
             CallTarget.Set.join pass_through_arguments returned_callables_from_call, state)
+
+
+      and analyze_comprehension_generators ~pyre_in_context ~state generators =
+        let add_binding
+            (state, pyre_in_context)
+            ({ Comprehension.Generator.conditions; _ } as generator)
+          =
+          let ({ Assign.target; value; _ } as assignment) =
+            Statement.generator_assignment generator
+          in
+          let state =
+            match value with
+            | Some value -> analyze_expression ~pyre_in_context ~state ~expression:value |> snd
+            | None -> state
+          in
+          (* TODO: assign value to target *)
+          let _ = target in
+          (* Since generators create variables that Pyre sees as scoped within the generator, handle
+             them by adding the generator's bindings to the resolution. *)
+          (* Analyzing the conditions might have side effects. *)
+          let analyze_condition state condiiton =
+            analyze_expression ~pyre_in_context ~state ~expression:condiiton |> snd
+          in
+          let pyre_in_context =
+            PyrePysaEnvironment.InContext.resolve_assignment pyre_in_context assignment
+          in
+          let state = List.fold conditions ~init:state ~f:analyze_condition in
+          state, pyre_in_context
+        in
+        List.fold ~f:add_binding generators ~init:(state, pyre_in_context)
+
+
+      and analyze_dictionary_comprehension
+          ~pyre_in_context
+          ~state
+          { Comprehension.element = Dictionary.Entry.KeyValue.{ key; value }; generators; _ }
+        =
+        let state, pyre_in_context =
+          analyze_comprehension_generators ~pyre_in_context ~state generators
+        in
+        let _, state = analyze_expression ~pyre_in_context ~state ~expression:value in
+        let _, state = analyze_expression ~pyre_in_context ~state ~expression:key in
+        CallTarget.Set.bottom, state
+
+
+      and analyze_comprehension ~pyre_in_context ~state { Comprehension.element; generators; _ } =
+        let bound_state, pyre_in_context =
+          analyze_comprehension_generators ~pyre_in_context ~state generators
+        in
+        let _, state = analyze_expression ~pyre_in_context ~state:bound_state ~expression:element in
+        CallTarget.Set.bottom, state
 
 
       (* Return possible callees and the new state. *)
@@ -5070,21 +5122,49 @@ module HigherOrderCallGraph = struct
               value
           with
           | Expression.Await expression -> analyze_expression ~pyre_in_context ~state ~expression
-          | BinaryOperator { left; right; _ } ->
+          | BooleanOperator { left; right; _ } ->
               let _, state = analyze_expression ~pyre_in_context ~state ~expression:left in
               let _, state = analyze_expression ~pyre_in_context ~state ~expression:right in
               CallTarget.Set.bottom, state
-          | BooleanOperator _ -> CallTarget.Set.bottom, state
-          | ComparisonOperator _ -> CallTarget.Set.bottom, state
+          | ComparisonOperator { left; operator = _; right } ->
+              let _, state = analyze_expression ~pyre_in_context ~state ~expression:left in
+              let _, state = analyze_expression ~pyre_in_context ~state ~expression:right in
+              CallTarget.Set.bottom, state
           | Call ({ callee = _; arguments; origin = _ } as call) ->
               analyze_call ~pyre_in_context ~location ~call ~arguments ~state
           | Constant _ -> CallTarget.Set.bottom, state
-          | Dictionary _ -> CallTarget.Set.bottom, state
-          | DictionaryComprehension _ -> CallTarget.Set.bottom, state
-          | Generator _ -> CallTarget.Set.bottom, state
-          | Lambda { parameters = _; body = _ } -> CallTarget.Set.bottom, state
-          | List _ -> CallTarget.Set.bottom, state
-          | ListComprehension _ -> CallTarget.Set.bottom, state
+          | Dictionary entries ->
+              let analyze_dictionary_entry state = function
+                | Dictionary.Entry.KeyValue { key; value } ->
+                    let _, state = analyze_expression ~pyre_in_context ~state ~expression:key in
+                    let _, state = analyze_expression ~pyre_in_context ~state ~expression:value in
+                    state
+                | Splat s -> analyze_expression ~pyre_in_context ~state ~expression:s |> snd
+              in
+              let state = List.fold entries ~f:analyze_dictionary_entry ~init:state in
+              CallTarget.Set.bottom, state
+          | DictionaryComprehension comprehension ->
+              analyze_dictionary_comprehension ~pyre_in_context ~state comprehension
+          | Generator comprehension -> analyze_comprehension ~pyre_in_context ~state comprehension
+          | Lambda { parameters = _; body } ->
+              let _, state = analyze_expression ~pyre_in_context ~state ~expression:body in
+              CallTarget.Set.bottom, state
+          | List list ->
+              let analyze_list_element state expression =
+                analyze_expression ~pyre_in_context ~state ~expression |> snd
+              in
+              let state = List.fold list ~f:analyze_list_element ~init:state in
+              CallTarget.Set.bottom, state
+          | ListComprehension comprehension ->
+              analyze_comprehension ~pyre_in_context ~state comprehension
+          | Set set ->
+              let analyze_set_element state expression =
+                analyze_expression ~pyre_in_context ~state ~expression |> snd
+              in
+              let state = List.fold ~f:analyze_set_element set ~init:state in
+              CallTarget.Set.bottom, state
+          | SetComprehension comprehension ->
+              analyze_comprehension ~pyre_in_context ~state comprehension
           | Name (Name.Identifier identifier) ->
               let global_callables =
                 Context.input_define_call_graph
@@ -5172,24 +5252,61 @@ module HigherOrderCallGraph = struct
                 |> Option.value ~default:CallTarget.Set.bottom
               in
               callables, state
-          | Set _ -> CallTarget.Set.bottom, state
-          | SetComprehension _ -> CallTarget.Set.bottom, state
-          | Starred (Starred.Once _)
-          | Starred (Starred.Twice _) ->
+          | Starred (Starred.Once expression)
+          | Starred (Starred.Twice expression) ->
+              let _, state = analyze_expression ~pyre_in_context ~state ~expression in
               CallTarget.Set.bottom, state
-          | Slice _ -> CallTarget.Set.bottom, state
-          | Subscript _ -> CallTarget.Set.bottom, state
-          | FormatString _ -> CallTarget.Set.bottom, state
-          | Ternary { target = _; test = _; alternative = _ } -> CallTarget.Set.bottom, state
-          | Tuple _ -> CallTarget.Set.bottom, state
-          | UnaryOperator _ -> CallTarget.Set.bottom, state
-          | WalrusOperator { target = _; value = _ } -> CallTarget.Set.bottom, state
+          | FormatString substrings ->
+              let analyze_substring state = function
+                | Substring.Literal _ -> state
+                | Substring.Format { value; format_spec } ->
+                    (* TODO: redirect decorators in the stringify target *)
+                    let _, state = analyze_expression ~pyre_in_context ~state ~expression:value in
+                    let state =
+                      match format_spec with
+                      | Some format_spec ->
+                          analyze_expression ~pyre_in_context ~state ~expression:format_spec |> snd
+                      | None -> state
+                    in
+                    state
+              in
+              let state = List.fold substrings ~init:state ~f:analyze_substring in
+              CallTarget.Set.bottom, state
+          | Ternary { target; test; alternative } ->
+              let _, state = analyze_expression ~pyre_in_context ~state ~expression:test in
+              let value_then, state_then =
+                analyze_expression ~pyre_in_context ~state ~expression:target
+              in
+              let value_else, state_else =
+                analyze_expression ~pyre_in_context ~state ~expression:alternative
+              in
+              CallTarget.Set.join value_then value_else, join state_then state_else
+          | Tuple expressions ->
+              let analyze_tuple_element state expression =
+                analyze_expression ~pyre_in_context ~state ~expression |> snd
+              in
+              let state = List.fold ~f:analyze_tuple_element ~init:state expressions in
+              CallTarget.Set.bottom, state
+          | UnaryOperator { operand; _ } ->
+              let _, state = analyze_expression ~pyre_in_context ~state ~expression:operand in
+              CallTarget.Set.bottom, state
+          | WalrusOperator { target = _; value } ->
+              analyze_expression ~pyre_in_context ~state ~expression:value
           | Yield None -> CallTarget.Set.bottom, state
           | Yield (Some expression)
           | YieldFrom expression ->
               let callees, state = analyze_expression ~pyre_in_context ~state ~expression in
               ( callees,
                 store_callees ~weak:true ~root:TaintAccessPath.Root.LocalResult ~callees state )
+          | Slice _ ->
+              failwith "Slice nodes should always be rewritten by `CallGraph.redirect_expressions`"
+          | Subscript _ ->
+              failwith
+                "Subscripts nodes should always be rewritten by `CallGraph.redirect_expressions`"
+          | BinaryOperator _ ->
+              failwith
+                "BinaryOperator nodes should always be rewritten by \
+                 `CallGraph.redirect_expressions`"
         in
         let call_targets, state =
           CallGraphProfiler.track_expression_analysis
@@ -5210,6 +5327,7 @@ module HigherOrderCallGraph = struct
       let analyze_statement ~pyre_in_context ~state ~statement =
         log "Analyzing statement `%a` with state `%a`" Statement.pp statement State.pp state;
         let state =
+          let statement = redirect_assignments statement in
           match Node.value statement with
           | Statement.Assign { Assign.target; value = Some value; _ } -> (
               match TaintAccessPath.of_expression ~self_variable target with
@@ -5230,10 +5348,6 @@ module HigherOrderCallGraph = struct
                   let strong_update = TaintAccessPath.Path.is_empty path in
                   store_callees ~weak:(not strong_update) ~root ~callees:CallTarget.Set.bottom state
               )
-          | AugmentedAssign { AugmentedAssign.target; value; _ } ->
-              let _, state = analyze_expression ~pyre_in_context ~state ~expression:value in
-              let _, state = analyze_expression ~pyre_in_context ~state ~expression:target in
-              state
           | Assert _ -> state
           | Break
           | Class _
@@ -5318,7 +5432,11 @@ module HigherOrderCallGraph = struct
                 ~root:(name |> Reference.show |> State.create_root_from_identifier)
                 ~callees
                 state
-          | Delete _ -> state
+          | Delete expressions ->
+              let analyze_delete state expression =
+                analyze_expression ~pyre_in_context ~state ~expression |> snd
+              in
+              List.fold ~f:analyze_delete ~init:state expressions
           | Expression expression ->
               analyze_expression ~pyre_in_context ~state ~expression |> Core.snd
           | For _
@@ -5330,7 +5448,8 @@ module HigherOrderCallGraph = struct
           | Pass
           | Raise { expression = None; _ } ->
               state
-          | Raise { expression = Some _; _ } -> state
+          | Raise { expression = Some expression; _ } ->
+              analyze_expression ~pyre_in_context ~state ~expression |> snd
           | Return { expression = Some expression; _ } ->
               let callees, state = analyze_expression ~pyre_in_context ~state ~expression in
               store_callees ~weak:true ~root:TaintAccessPath.Root.LocalResult ~callees state
@@ -5340,6 +5459,8 @@ module HigherOrderCallGraph = struct
           | With _
           | While _ ->
               state
+          | Statement.AugmentedAssign _ ->
+              failwith "statement should be lowered using redirect_assignments"
         in
         log "Finished analyzing statement `%a`: `%a`" Statement.pp statement State.pp state;
         state
@@ -5377,6 +5498,7 @@ let higher_order_call_graph_of_define
     ~pyre_api
     ~callables_to_definitions_map
     ~skip_analysis_targets
+    ~called_when_parameter
     ~callable
     ~qualifier
     ~define
@@ -5408,6 +5530,8 @@ let higher_order_call_graph_of_define
     let callables_to_definitions_map = callables_to_definitions_map
 
     let skip_analysis_targets = skip_analysis_targets
+
+    let called_when_parameter = called_when_parameter
 
     let profiler = profiler
 
