@@ -103,6 +103,16 @@ and Call : sig
   val location_insensitive_compare : t -> t -> int
 end
 
+and Await : sig
+  type t = {
+    operand: Expression.t;
+    origin: Origin.t option;
+  }
+  [@@deriving equal, compare, sexp, show, hash, to_yojson]
+
+  val location_insensitive_compare : t -> t -> int
+end
+
 and ComparisonOperator : sig
   type operator =
     | Equals
@@ -408,14 +418,17 @@ and Origin : sig
     | SubscriptGetItem (* `d[a]` is turned into `d.__getitem__(a)` *)
     | ForIter (* `for e in l:` is turned into `l.__iter__().__next__()` *)
     | ForNext (* `for e in l:` is turned into `l.__iter__().__next__()` *)
+    | ForAwait (* `for e in l:` might be turned into `await l.__iter__().__next__()` *)
     | GeneratorIter (* `(e for e in l)` is turned into `l.__iter__().__next__()` *)
     | GeneratorNext (* `(e for e in l)` is turned into `l.__iter__().__next__()` *)
+    | GeneratorAwait (* `(e for e in l)` might be turned into `await l.__iter__().__next__()` *)
     | With (* `with e1 as e2` is turned into `e2 = e1.__enter__()` *)
     | InContains (* `e in l` can be turned into `l.__contains__(e)` *)
     | InIter (* `e in l` can be turned into `l.__iter__().__next__().__eq__(e)` *)
     | InGetItem (* `e in l` can be turned into `l.__getitem__(0).__eq__(e)` *)
     | InGetItemEq (* `e in l` can be turned into `l.__getitem__(0).__eq__(e)` *)
     | Slice (* `1:2` is turned into `slice(1,2,None)` *)
+    | UnionShorthand (* `a | b` is turned into `typing.Union[a, b]` when in typing context *)
     | Negate (* `if cond:` is turned into `assert(cond)` and `assert(not cond)` *)
     | NegateIs (* `not(a is not b)` is turned into `a is b` *)
     | NegateIsNot (* `not(a is b)` is turned into `a is not b` *)
@@ -432,6 +445,9 @@ and Origin : sig
     (* `x: int = dataclasses.field(default_factory=f)` is turned into `x = f()` in the implicit
        constructor *)
     (* All the origins below are used to translate `match` statements *)
+    | MatchTypingSequence
+      (* `match x: case [..]:` is turned into `isinstance(x, typing.Sequence)` *)
+    | MatchTypingMapping (* `match x: case {...}:` is turned into `isinstance(x, typing.Mapping)` *)
     | MatchAsComparisonEquals
     | MatchAsWithCondition
     | MatchClassArgs of int
@@ -463,8 +479,10 @@ and Origin : sig
     | IterCall (* iter(x) is turned into x.__iter__() *)
     | NextCall (* next(x) is turned into x.__next__() *)
     | ImplicitInitCall (* A(x) is turned into A.__init__(..., x) *)
-    | SelfImplicitTypeVar
-      (* `def f(self):` is turned into `def f(self: TypeVar["self", bound=MyClass]):` *)
+    | SelfImplicitTypeVar of string
+    | SelfImplicitTypeVarQualification of string * string list
+      (* `def f(self):` is turned into `def f(self: TSelf):` with `TSelf = TypeVar["self",
+         bound=MyClass])` *)
     | FunctionalEnumImplicitAuto of string list
       (* `Enum("Color", ("RED", "GREEN", "BLUE"))` is turned into `class Color: RED = enum.auto();
          ...` *)
@@ -502,7 +520,7 @@ end
 
 and Expression : sig
   type expression =
-    | Await of t
+    | Await of Await.t
     | BinaryOperator of BinaryOperator.t
     | BooleanOperator of BooleanOperator.t
     | Call of Call.t
@@ -543,7 +561,7 @@ module Mapper : sig
   val map_option : mapper:'a t -> Expression.t option -> 'a option
 
   val create
-    :  map_await:(mapper:'a t -> location:Location.t -> Expression.t -> 'a) ->
+    :  map_await:(mapper:'a t -> location:Location.t -> Await.t -> 'a) ->
     map_binary_operator:(mapper:'a t -> location:Location.t -> BinaryOperator.t -> 'a) ->
     map_boolean_operator:(mapper:'a t -> location:Location.t -> BooleanOperator.t -> 'a) ->
     map_call:(mapper:'a t -> location:Location.t -> Call.t -> 'a) ->
@@ -574,7 +592,7 @@ module Mapper : sig
     'a t
 
   val create_default
-    :  ?map_await:(mapper:Expression.t t -> location:Location.t -> Expression.t -> Expression.t) ->
+    :  ?map_await:(mapper:Expression.t t -> location:Location.t -> Await.t -> Expression.t) ->
     ?map_binary_operator:
       (mapper:Expression.t t -> location:Location.t -> BinaryOperator.t -> Expression.t) ->
     ?map_boolean_operator:
@@ -616,7 +634,7 @@ module Mapper : sig
     Expression.t t
 
   val create_transformer
-    :  ?map_await:(mapper:Expression.t t -> Expression.t -> Expression.t) ->
+    :  ?map_await:(mapper:Expression.t t -> Await.t -> Await.t) ->
     ?map_binary_operator:(mapper:Expression.t t -> BinaryOperator.t -> BinaryOperator.t) ->
     ?map_boolean_operator:(mapper:Expression.t t -> BooleanOperator.t -> BooleanOperator.t) ->
     ?map_call:(mapper:Expression.t t -> Call.t -> Call.t) ->
@@ -662,7 +680,7 @@ module Folder : sig
   val fold_option : folder:'a t -> state:'a -> Expression.t option -> 'a
 
   val create
-    :  ?fold_await:(folder:'a t -> state:'a -> location:Location.t -> Expression.t -> 'a) ->
+    :  ?fold_await:(folder:'a t -> state:'a -> location:Location.t -> Await.t -> 'a) ->
     ?fold_binary_operator:(folder:'a t -> state:'a -> location:Location.t -> BinaryOperator.t -> 'a) ->
     ?fold_boolean_operator:
       (folder:'a t -> state:'a -> location:Location.t -> BooleanOperator.t -> 'a) ->
@@ -701,7 +719,7 @@ module Folder : sig
     'a t
 
   val create_with_uniform_location_fold
-    :  ?fold_await:(folder:'a t -> state:'a -> Expression.t -> 'a) ->
+    :  ?fold_await:(folder:'a t -> state:'a -> Await.t -> 'a) ->
     ?fold_binary_operator:(folder:'a t -> state:'a -> BinaryOperator.t -> 'a) ->
     ?fold_boolean_operator:(folder:'a t -> state:'a -> BooleanOperator.t -> 'a) ->
     ?fold_call:(folder:'a t -> state:'a -> Call.t -> 'a) ->

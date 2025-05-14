@@ -108,7 +108,8 @@ let is_type_variable_definition callee =
   || name_is ~name:"typing_extensions.IntVar" callee
 
 
-let transform_string_annotation_expression_after_qualification ~relative =
+let transform_string_annotation_expression_after_qualification ~preserve_original_location ~relative
+  =
   let rec transform_expression
       {
         Node.location =
@@ -168,8 +169,11 @@ let transform_string_annotation_expression_after_qualification ~relative =
           | Ok [{ Node.value = Expression ({ Node.value = Subscript _; _ } as expression); _ }]
           | Ok [{ Node.value = Expression ({ Node.value = BinaryOperator _; _ } as expression); _ }]
           | Ok [{ Node.value = Expression ({ Node.value = Call _; _ } as expression); _ }] ->
-              Transform.map_location expression ~transform_location:(fun _ -> location)
-              |> Node.value
+              if preserve_original_location then
+                Transform.map_location expression ~transform_location:(fun _ -> location)
+                |> Node.value
+              else
+                Node.value expression
           | Ok _
           | Error _ ->
               (* TODO(T76231928): replace this silent ignore with something typeCheck.ml can use *)
@@ -182,7 +186,12 @@ let transform_string_annotation_expression_after_qualification ~relative =
   transform_expression
 
 
-let transform_string_annotation_expression_before_qualification ~qualifier ~scopes ~relative =
+let transform_string_annotation_expression_before_qualification
+    ~preserve_original_location
+    ~qualifier
+    ~scopes
+    ~relative
+  =
   let is_literal =
     create_callee_name_matcher_from_references
       ~qualifier
@@ -243,8 +252,11 @@ let transform_string_annotation_expression_before_qualification ~qualifier ~scop
           | Ok [{ Node.value = Expression ({ Node.value = Subscript _; _ } as expression); _ }]
           | Ok [{ Node.value = Expression ({ Node.value = BinaryOperator _; _ } as expression); _ }]
           | Ok [{ Node.value = Expression ({ Node.value = Call _; _ } as expression); _ }] ->
-              Transform.map_location expression ~transform_location:(fun _ -> location)
-              |> Node.value
+              if preserve_original_location then
+                Transform.map_location expression ~transform_location:(fun _ -> location)
+                |> Node.value
+              else
+                Node.value expression
           | Ok _
           | Error _ ->
               (* TODO(T76231928): replace this silent ignore with something typeCheck.ml can use *)
@@ -378,12 +390,13 @@ let transform_annotations
   Transform.transform () source |> Transform.source
 
 
-let expand_string_annotations ({ Source.module_path; _ } as source) =
+let expand_string_annotations ~preserve_original_location ({ Source.module_path; _ } as source) =
   let scopes = lazy (Scope.ScopeStack.create source) in
   transform_annotations
     ~scopes
     ~transform_annotation_expression:
       (transform_string_annotation_expression_before_qualification
+         ~preserve_original_location
          ~qualifier:(ModulePath.qualifier module_path)
          ~scopes
          ~relative:(ModulePath.relative module_path))
@@ -574,8 +587,9 @@ module Qualify = struct
         scope, List.rev reversed_generators
       in
       match value with
-      | Expression.Await expression ->
-          Expression.Await (qualify_expression ~qualify_strings ~scope expression)
+      | Expression.Await { Await.operand; origin } ->
+          Expression.Await
+            { Await.operand = qualify_expression ~qualify_strings ~scope operand; origin }
       | BinaryOperator { BinaryOperator.left; operator; right; origin } ->
           BinaryOperator
             {
@@ -3229,7 +3243,7 @@ module AccessCollector = struct
         (* For attribute access, only count the base *)
         from_expression collected base
     (* The rest is boilerplates to make sure that expressions are visited recursively *)
-    | Await await -> from_expression collected await
+    | Await { Await.operand; origin = _ } -> from_expression collected operand
     | BinaryOperator { BinaryOperator.left; right; _ }
     | BooleanOperator { BooleanOperator.left; right; _ }
     | ComparisonOperator { ComparisonOperator.left; right; _ } ->
@@ -3875,7 +3889,7 @@ let replace_union_shorthand_in_annotation_expression =
     in
     let value =
       match value with
-      | Expression.BinaryOperator { operator = BinaryOperator.BitOr; left; right; origin = _ } ->
+      | Expression.BinaryOperator { operator = BinaryOperator.BitOr; left; right; origin } ->
           let indices =
             [left; right]
             (* Recursively transform them into `typing.Union[...]` form *)
@@ -3885,6 +3899,7 @@ let replace_union_shorthand_in_annotation_expression =
             |> List.rev
           in
           let index = { Node.value = Expression.Tuple indices; location } in
+          let origin = Some (Origin.create ?base:origin ~location Origin.UnionShorthand) in
           Expression.Subscript
             {
               base =
@@ -3896,11 +3911,11 @@ let replace_union_shorthand_in_annotation_expression =
                          {
                            base = { Node.location; value = Name (Name.Identifier "typing") };
                            attribute = "Union";
-                           origin = None;
+                           origin;
                          });
                 };
               index;
-              origin = None;
+              origin;
             }
       | Subscript { Subscript.base; index; origin } ->
           Subscript { base; index = transform_expression index; origin }
@@ -4765,7 +4780,11 @@ module SelfType = struct
                              base =
                                Node.create ~location (Expression.Name (Name.Identifier "typing"));
                              attribute = "TypeVar";
-                             origin = None;
+                             origin =
+                               Some
+                                 (Origin.create
+                                    ~location
+                                    (Origin.SelfImplicitTypeVar self_variable_name));
                            }));
                  arguments =
                    [
@@ -4782,13 +4801,19 @@ module SelfType = struct
                        value =
                          from_reference
                            ~location:Location.any
-                           ~create_origin:(fun _ -> None)
+                           ~create_origin:(fun attributes ->
+                             Some
+                               (Origin.create
+                                  ~location
+                                  (Origin.SelfImplicitTypeVarQualification
+                                     (self_variable_name, attributes))))
                            (NestingContext.to_qualifier
                               ~module_name:Reference.empty
                               nesting_context);
                      };
                    ];
-                 origin = Some (Origin.create ~location Origin.SelfImplicitTypeVar);
+                 origin =
+                   Some (Origin.create ~location (Origin.SelfImplicitTypeVar self_variable_name));
                }
             |> Node.create ~location);
         annotation = None;
@@ -4978,14 +5003,14 @@ let preprocess_before_wildcards source =
   |> expand_import_python_calls
 
 
-let preprocess_after_wildcards source =
+let preprocess_after_wildcards ~string_annotation_preserve_location source =
   source
   |> expand_new_types
   |> populate_unbound_names
   |> replace_union_shorthand
   |> mangle_private_attributes
   |> replace_lazy_import
-  |> expand_string_annotations
+  |> expand_string_annotations ~preserve_original_location:string_annotation_preserve_location
   |> expand_typed_dictionary_declarations
   |> expand_sqlalchemy_declarative_base
   |> expand_named_tuples
@@ -4998,5 +5023,6 @@ let preprocess_after_wildcards source =
   |> populate_captures
 
 
-let preprocess_no_wildcards source =
-  preprocess_before_wildcards source |> preprocess_after_wildcards
+let preprocess_no_wildcards ~string_annotation_preserve_location source =
+  preprocess_before_wildcards source
+  |> preprocess_after_wildcards ~string_annotation_preserve_location
