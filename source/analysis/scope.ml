@@ -64,7 +64,8 @@ module Binding = struct
     | Expression.Name (Name.Identifier name) -> { name; kind; location } :: sofar
     | Expression.Starred (Starred.Once element | Starred.Twice element) ->
         of_unannotated_target ~kind sofar element
-    | Subscript { Subscript.base; index } -> of_expression (of_expression sofar base) index
+    | Subscript { Subscript.base; index; origin = _ } ->
+        of_expression (of_expression sofar base) index
     | Tuple elements
     | List elements ->
         (* Tuple or list cannot be annotated. *)
@@ -75,7 +76,7 @@ module Binding = struct
   and of_expression sofar { Node.value = expression; _ } =
     let open Expression in
     match expression with
-    | Expression.WalrusOperator { WalrusOperator.target; value } ->
+    | Expression.WalrusOperator { WalrusOperator.target; value; origin = _ } ->
         let sofar = of_expression sofar value in
         of_unannotated_target ~kind:Kind.WalrusTarget sofar target
     (* Boilerplates to make sure all expressions are visited. *)
@@ -91,11 +92,11 @@ module Binding = struct
     | Expression.ComparisonOperator { ComparisonOperator.left; right; _ } ->
         let sofar = of_expression sofar left in
         of_expression sofar right
-    | Expression.Slice { Slice.start; stop; step } ->
+    | Expression.Slice { Slice.start; stop; step; origin = _ } ->
         let sofar = of_optional_expression sofar start in
         let sofar = of_optional_expression sofar stop in
         of_optional_expression sofar step
-    | Expression.Subscript { Subscript.base; index } ->
+    | Expression.Subscript { Subscript.base; index; origin = _ } ->
         let sofar = of_expression sofar base in
         of_expression sofar index
     | Expression.Call { Call.callee; arguments; origin = _ } ->

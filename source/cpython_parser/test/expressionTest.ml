@@ -487,6 +487,7 @@ let test_ternary_walrus =
                    {
                      WalrusOperator.target = !"a";
                      value = +Expression.Constant (Constant.Integer 1);
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -500,7 +501,9 @@ let test_ternary_walrus =
                           {
                             WalrusOperator.target = !"b";
                             value = +Expression.Constant (Constant.Integer 1);
+                            origin = None;
                           };
+                     origin = None;
                    });
         (* Standalone assignment expressions are required to be protected with parenthesis. *)
         labeled_test_case __FUNCTION__ __LINE__ @@ assert_not_parsed "a := 1";
@@ -1066,6 +1069,7 @@ let test_boolean_operators =
                      BooleanOperator.left = +Expression.Constant Constant.True;
                      operator = BooleanOperator.And;
                      right = +Expression.Constant Constant.False;
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1076,6 +1080,7 @@ let test_boolean_operators =
                      BooleanOperator.left = +Expression.Constant Constant.True;
                      operator = BooleanOperator.Or;
                      right = +Expression.Constant Constant.False;
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1089,9 +1094,11 @@ let test_boolean_operators =
                             BooleanOperator.left = +Expression.Constant (Constant.Integer 1);
                             operator = BooleanOperator.And;
                             right = +Expression.Constant (Constant.Integer 2);
+                            origin = None;
                           };
                      operator = BooleanOperator.And;
                      right = +Expression.Constant (Constant.Integer 3);
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1105,9 +1112,11 @@ let test_boolean_operators =
                             BooleanOperator.left = +Expression.Constant (Constant.Integer 1);
                             operator = BooleanOperator.Or;
                             right = +Expression.Constant (Constant.Integer 2);
+                            origin = None;
                           };
                      operator = BooleanOperator.Or;
                      right = +Expression.Constant (Constant.Integer 3);
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1121,9 +1130,11 @@ let test_boolean_operators =
                             BooleanOperator.left = +Expression.Constant (Constant.Integer 1);
                             operator = BooleanOperator.And;
                             right = +Expression.Constant (Constant.Integer 2);
+                            origin = None;
                           };
                      operator = BooleanOperator.Or;
                      right = +Expression.Constant (Constant.Integer 3);
+                     origin = None;
                    });
         (* `and` has higher precedence than `or` *)
         labeled_test_case __FUNCTION__ __LINE__
@@ -1140,7 +1151,9 @@ let test_boolean_operators =
                             BooleanOperator.left = +Expression.Constant (Constant.Integer 2);
                             operator = BooleanOperator.And;
                             right = +Expression.Constant (Constant.Integer 3);
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__ @@ assert_not_parsed "and";
         labeled_test_case __FUNCTION__ __LINE__ @@ assert_not_parsed "or";
@@ -1165,25 +1178,33 @@ let test_unary_operators =
              "not x"
              ~expected:
                (+Expression.UnaryOperator
-                   { UnaryOperator.operator = UnaryOperator.Not; operand = !"x" });
+                   { UnaryOperator.operator = UnaryOperator.Not; operand = !"x"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "~x"
              ~expected:
                (+Expression.UnaryOperator
-                   { UnaryOperator.operator = UnaryOperator.Invert; operand = !"x" });
+                   { UnaryOperator.operator = UnaryOperator.Invert; operand = !"x"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "+x"
              ~expected:
                (+Expression.UnaryOperator
-                   { UnaryOperator.operator = UnaryOperator.Positive; operand = !"x" });
+                   {
+                     UnaryOperator.operator = UnaryOperator.Positive;
+                     operand = !"x";
+                     origin = None;
+                   });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "-x"
              ~expected:
                (+Expression.UnaryOperator
-                   { UnaryOperator.operator = UnaryOperator.Negative; operand = !"x" });
+                   {
+                     UnaryOperator.operator = UnaryOperator.Negative;
+                     operand = !"x";
+                     origin = None;
+                   });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "+-x"
@@ -1193,7 +1214,12 @@ let test_unary_operators =
                      UnaryOperator.operator = UnaryOperator.Positive;
                      operand =
                        +Expression.UnaryOperator
-                          { UnaryOperator.operator = UnaryOperator.Negative; operand = !"x" };
+                          {
+                            UnaryOperator.operator = UnaryOperator.Negative;
+                            operand = !"x";
+                            origin = None;
+                          };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1204,7 +1230,12 @@ let test_unary_operators =
                      UnaryOperator.operator = UnaryOperator.Not;
                      operand =
                        +Expression.UnaryOperator
-                          { UnaryOperator.operator = UnaryOperator.Invert; operand = !"x" };
+                          {
+                            UnaryOperator.operator = UnaryOperator.Invert;
+                            operand = !"x";
+                            origin = None;
+                          };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1215,7 +1246,12 @@ let test_unary_operators =
                      UnaryOperator.operator = UnaryOperator.Negative;
                      operand =
                        +Expression.UnaryOperator
-                          { UnaryOperator.operator = UnaryOperator.Not; operand = !"x" };
+                          {
+                            UnaryOperator.operator = UnaryOperator.Not;
+                            operand = !"x";
+                            origin = None;
+                          };
+                     origin = None;
                    });
         (* `not` has higher precedence than `and`/`or` *)
         labeled_test_case __FUNCTION__ __LINE__
@@ -1226,9 +1262,14 @@ let test_unary_operators =
                    {
                      BooleanOperator.left =
                        +Expression.UnaryOperator
-                          { UnaryOperator.operator = UnaryOperator.Not; operand = !"x" };
+                          {
+                            UnaryOperator.operator = UnaryOperator.Not;
+                            operand = !"x";
+                            origin = None;
+                          };
                      operator = BooleanOperator.And;
                      right = !"y";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1238,9 +1279,14 @@ let test_unary_operators =
                    {
                      BooleanOperator.left =
                        +Expression.UnaryOperator
-                          { UnaryOperator.operator = UnaryOperator.Not; operand = !"x" };
+                          {
+                            UnaryOperator.operator = UnaryOperator.Not;
+                            operand = !"x";
+                            origin = None;
+                          };
                      operator = BooleanOperator.Or;
                      right = !"y";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__ @@ assert_not_parsed "not";
         labeled_test_case __FUNCTION__ __LINE__ @@ assert_not_parsed "x not";
@@ -1267,6 +1313,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.Equals;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1277,6 +1324,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.NotEquals;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1287,6 +1335,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.LessThan;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1297,6 +1346,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.LessThanOrEquals;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1307,6 +1357,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.GreaterThan;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1317,6 +1368,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.GreaterThanOrEquals;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1327,6 +1379,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.Is;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1337,6 +1390,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.IsNot;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1347,6 +1401,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.In;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1357,6 +1412,7 @@ let test_comparison_operators =
                      ComparisonOperator.left = !"a";
                      operator = ComparisonOperator.NotIn;
                      right = !"b";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1370,6 +1426,7 @@ let test_comparison_operators =
                             ComparisonOperator.left = !"a";
                             operator = ComparisonOperator.LessThan;
                             right = !"b";
+                            origin = None;
                           };
                      operator = BooleanOperator.And;
                      right =
@@ -1378,7 +1435,9 @@ let test_comparison_operators =
                             ComparisonOperator.left = !"b";
                             operator = ComparisonOperator.LessThan;
                             right = !"c";
+                            origin = None;
                           };
+                     origin = None;
                    });
         (* Comparisions bind tighter than `not` *)
         labeled_test_case __FUNCTION__ __LINE__
@@ -1394,7 +1453,9 @@ let test_comparison_operators =
                             ComparisonOperator.left = !"a";
                             operator = ComparisonOperator.In;
                             right = !"b";
+                            origin = None;
                           };
+                     origin = None;
                    });
         (* Comparisions bind tighter than `and`/`or` *)
         labeled_test_case __FUNCTION__ __LINE__
@@ -1409,6 +1470,7 @@ let test_comparison_operators =
                             ComparisonOperator.left = !"a";
                             operator = ComparisonOperator.LessThan;
                             right = !"b";
+                            origin = None;
                           };
                      operator = BooleanOperator.And;
                      right =
@@ -1417,7 +1479,9 @@ let test_comparison_operators =
                             ComparisonOperator.left = !"b";
                             operator = ComparisonOperator.LessThan;
                             right = !"c";
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1431,6 +1495,7 @@ let test_comparison_operators =
                             ComparisonOperator.left = !"a";
                             operator = ComparisonOperator.LessThan;
                             right = !"b";
+                            origin = None;
                           };
                      operator = BooleanOperator.Or;
                      right =
@@ -1439,7 +1504,9 @@ let test_comparison_operators =
                             ComparisonOperator.left = !"b";
                             operator = ComparisonOperator.LessThan;
                             right = !"c";
+                            origin = None;
                           };
+                     origin = None;
                    });
         (* Comparisions bind looser than `+`/`-` *)
         labeled_test_case __FUNCTION__ __LINE__
@@ -1450,11 +1517,20 @@ let test_comparison_operators =
                    {
                      ComparisonOperator.left =
                        +Expression.UnaryOperator
-                          { UnaryOperator.operator = UnaryOperator.Positive; operand = !"a" };
+                          {
+                            UnaryOperator.operator = UnaryOperator.Positive;
+                            operand = !"a";
+                            origin = None;
+                          };
                      operator = ComparisonOperator.GreaterThanOrEquals;
                      right =
                        +Expression.UnaryOperator
-                          { UnaryOperator.operator = UnaryOperator.Negative; operand = !"b" };
+                          {
+                            UnaryOperator.operator = UnaryOperator.Negative;
+                            operand = !"b";
+                            origin = None;
+                          };
+                     origin = None;
                    });
       ]
   in
@@ -1471,79 +1547,79 @@ let test_binary_operators =
              "x + y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.Add; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.Add; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x - y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.Sub; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.Sub; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x * y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.Mult; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.Mult; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x @ y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.MatMult; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.MatMult; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x / y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.Div; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.Div; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x % y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.Mod; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.Mod; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x ** y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.Pow; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.Pow; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x >> y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.RShift; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.RShift; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x << y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.LShift; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.LShift; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x | y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.BitOr; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.BitOr; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x ^ y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.BitXor; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.BitXor; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x & y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.BitAnd; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.BitAnd; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x // y"
              ~expected:
                (+Expression.BinaryOperator
-                   { operator = BinaryOperator.FloorDiv; left = !"x"; right = !"y" });
+                   { operator = BinaryOperator.FloorDiv; left = !"x"; right = !"y"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "x + y + z"
@@ -1553,8 +1629,14 @@ let test_binary_operators =
                      operator = BinaryOperator.Add;
                      left =
                        +Expression.BinaryOperator
-                          { operator = BinaryOperator.Add; left = !"x"; right = !"y" };
+                          {
+                            operator = BinaryOperator.Add;
+                            left = !"x";
+                            right = !"y";
+                            origin = None;
+                          };
                      right = !"z";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1566,7 +1648,13 @@ let test_binary_operators =
                      left = !"x";
                      right =
                        +Expression.BinaryOperator
-                          { operator = BinaryOperator.Add; left = !"y"; right = !"z" };
+                          {
+                            operator = BinaryOperator.Add;
+                            left = !"y";
+                            right = !"z";
+                            origin = None;
+                          };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1578,7 +1666,13 @@ let test_binary_operators =
                      left = !"x";
                      right =
                        +Expression.BinaryOperator
-                          { operator = BinaryOperator.Mult; left = !"y"; right = !"z" };
+                          {
+                            operator = BinaryOperator.Mult;
+                            left = !"y";
+                            right = !"z";
+                            origin = None;
+                          };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1590,7 +1684,12 @@ let test_binary_operators =
                      left = !"x";
                      right =
                        +Expression.UnaryOperator
-                          { UnaryOperator.operator = UnaryOperator.Negative; operand = !"y" };
+                          {
+                            UnaryOperator.operator = UnaryOperator.Negative;
+                            operand = !"y";
+                            origin = None;
+                          };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1604,6 +1703,7 @@ let test_binary_operators =
                        +Expression.Name
                           (Name.Attribute
                              { Name.Attribute.base = !"y"; attribute = "z"; origin = None });
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1615,7 +1715,13 @@ let test_binary_operators =
                      operator = ComparisonOperator.LessThan;
                      right =
                        +Expression.BinaryOperator
-                          { operator = BinaryOperator.Add; left = !"y"; right = !"z" };
+                          {
+                            operator = BinaryOperator.Add;
+                            left = !"y";
+                            right = !"z";
+                            origin = None;
+                          };
+                     origin = None;
                    });
       ]
   in
@@ -1766,6 +1872,7 @@ let test_call =
                             origin = None;
                           };
                      right = !"y";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1782,6 +1889,7 @@ let test_call =
                           };
                      operator = ComparisonOperator.GreaterThan;
                      right = !"y";
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1797,6 +1905,7 @@ let test_call =
                             arguments = [{ Call.Argument.name = None; value = !"x" }];
                             origin = None;
                           };
+                     origin = None;
                    });
       ]
   in
@@ -1812,7 +1921,8 @@ let test_subscript =
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "a[b]"
-             ~expected:(+Expression.Subscript { Subscript.base = !"a"; index = !"b" });
+             ~expected:
+               (+Expression.Subscript { Subscript.base = !"a"; index = !"b"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "a.__getitem__(b)"
@@ -1833,7 +1943,8 @@ let test_subscript =
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "a[(b)]"
-             ~expected:(+Expression.Subscript { Subscript.base = !"a"; index = !"b" });
+             ~expected:
+               (+Expression.Subscript { Subscript.base = !"a"; index = !"b"; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "a[1 < 2]"
@@ -1847,14 +1958,16 @@ let test_subscript =
                             ComparisonOperator.left = +Expression.Constant (Constant.Integer 1);
                             operator = ComparisonOperator.LessThan;
                             right = +Expression.Constant (Constant.Integer 2);
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "a[b,c]"
              ~expected:
                (+Expression.Subscript
-                   { Subscript.base = !"a"; index = +Expression.Tuple [!"b"; !"c"] });
+                   { Subscript.base = !"a"; index = +Expression.Tuple [!"b"; !"c"]; origin = None });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
              "a[b].c"
@@ -1863,7 +1976,8 @@ let test_subscript =
                    (Name.Attribute
                       {
                         Name.Attribute.base =
-                          +Expression.Subscript { Subscript.base = !"a"; index = !"b" };
+                          +Expression.Subscript
+                             { Subscript.base = !"a"; index = !"b"; origin = None };
                         attribute = "c";
                         origin = None;
                       }));
@@ -1874,7 +1988,10 @@ let test_subscript =
                (+Expression.Subscript
                    {
                      Subscript.base = !"a";
-                     index = +Expression.Slice { Slice.start = None; stop = None; step = None };
+                     index =
+                       +Expression.Slice
+                          { Slice.start = None; stop = None; step = None; origin = None };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1883,7 +2000,10 @@ let test_subscript =
                (+Expression.Subscript
                    {
                      Subscript.base = !"a";
-                     index = +Expression.Slice { Slice.start = None; stop = None; step = None };
+                     index =
+                       +Expression.Slice
+                          { Slice.start = None; stop = None; step = None; origin = None };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1898,7 +2018,9 @@ let test_subscript =
                             Slice.start = Some (+Expression.Constant (Constant.Integer 1));
                             stop = None;
                             step = None;
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1913,7 +2035,9 @@ let test_subscript =
                             Slice.start = None;
                             stop = Some (+Expression.Constant (Constant.Integer 1));
                             step = None;
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1928,7 +2052,9 @@ let test_subscript =
                             Slice.start = None;
                             stop = None;
                             step = Some (+Expression.Constant (Constant.Integer 1));
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1943,7 +2069,9 @@ let test_subscript =
                             Slice.start = Some (+Expression.Constant (Constant.Integer 1));
                             stop = Some (+Expression.Constant (Constant.Integer 1));
                             step = None;
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1958,7 +2086,9 @@ let test_subscript =
                             Slice.start = Some (+Expression.Constant (Constant.Integer 1));
                             stop = None;
                             step = Some (+Expression.Constant (Constant.Integer 1));
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1973,7 +2103,9 @@ let test_subscript =
                             Slice.start = None;
                             stop = Some (+Expression.Constant (Constant.Integer 1));
                             step = Some (+Expression.Constant (Constant.Integer 1));
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -1988,7 +2120,9 @@ let test_subscript =
                             Slice.start = Some (+Expression.Constant (Constant.Integer 1));
                             stop = Some (+Expression.Constant (Constant.Integer 1));
                             step = Some (+Expression.Constant (Constant.Integer 1));
+                            origin = None;
                           };
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__
         @@ assert_parsed
@@ -2005,9 +2139,11 @@ let test_subscript =
                                  Slice.start = None;
                                  stop = Some (+Expression.Constant (Constant.Integer 1));
                                  step = None;
+                                 origin = None;
                                };
                             +Expression.Constant (Constant.Integer 2);
                           ];
+                     origin = None;
                    });
         labeled_test_case __FUNCTION__ __LINE__ @@ assert_not_parsed "a[]";
         labeled_test_case __FUNCTION__ __LINE__ @@ assert_not_parsed "a[:::]";
@@ -2062,6 +2198,7 @@ let test_lambda =
                             ComparisonOperator.left = !"x";
                             operator = ComparisonOperator.Is;
                             right = !"y";
+                            origin = None;
                           };
                    });
         labeled_test_case __FUNCTION__ __LINE__

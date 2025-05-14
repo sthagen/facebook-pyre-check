@@ -113,7 +113,7 @@ let parse_access_path ~path ~location expression =
         parse_model_labels base
         >>| fun base ->
         TaintPath.Path (base @ [ModelLabel.TreeLabel (TreeLabel.create_name_index attribute)])
-    | Expression.Subscript { base; index } -> (
+    | Expression.Subscript { base; index; origin = _ } -> (
         parse_model_labels base
         >>= fun base ->
         match Node.value index with
@@ -339,6 +339,7 @@ let rec parse_annotations
           base = { Node.value = Name (Name.Identifier "WithTag"); _ };
           index =
             { Node.value = Expression.Constant (Constant.String { StringLiteral.value; _ }); _ };
+          origin = _;
         } ->
         Ok (Some value)
     | Expression.Name (Name.Identifier _) when requires_parameter_name -> Ok None
@@ -436,7 +437,11 @@ let rec parse_annotations
               (TaintKindsWithFeatures.from_kind
                  (AnnotationParser.KindExpression.from_name taint_kind)))
     | Subscript
-        { base = { Node.value = Expression.Name (Name.Identifier base_identifier); _ }; index } -> (
+        {
+          base = { Node.value = Expression.Name (Name.Identifier base_identifier); _ };
+          index;
+          origin = _;
+        } -> (
         match base_identifier with
         | "Via" -> extract_breadcrumbs index >>| TaintKindsWithFeatures.from_breadcrumbs
         | "ViaDynamicFeature" ->
@@ -620,7 +625,11 @@ let rec parse_annotations
   in
   let rec parse_annotation = function
     | Expression.Subscript
-        { base = { Node.value = Expression.Name (Name.Identifier base_identifier); _ }; index } -> (
+        {
+          base = { Node.value = Expression.Name (Name.Identifier base_identifier); _ };
+          index;
+          origin = _;
+        } -> (
         let open Core.Result in
         match base_identifier, index with
         | "TaintSink", _ -> get_sink_kinds index
@@ -802,6 +811,7 @@ let rec parse_annotations
         {
           base = { Node.value = Expression.Name (Name.Identifier "TaintInTaintOut"); _ };
           index = { Node.value = index_value; _ };
+          origin = None;
         } ->
         let gather_sources_sinks (sources, sinks) = function
           | TaintAnnotation.Source { source; features } when TaintFeatures.is_empty features ->
@@ -1681,7 +1691,7 @@ let parse_format_string ~find_clause ~allow_parameter_name ~allow_parameter_posi
     | {
         Node.value =
           Expression.BinaryOperator
-            { BinaryOperator.operator = (Add | Sub | Mult) as operator; left; right };
+            { BinaryOperator.operator = (Add | Sub | Mult) as operator; left; right; origin = _ };
         _;
       } -> (
         parse_integer_expression left
@@ -2316,6 +2326,7 @@ let parse_model_clause
                   Node.value = Expression.Tuple [taint_expression; canonical_name; canonical_port];
                   _;
                 };
+              origin = None;
             } ->
             let parse_string_argument parameter_name argument =
               match Node.value argument with
@@ -3181,7 +3192,7 @@ let parse_decorator_annotations
   let parse_sanitize_annotations ~location ~original_expression arguments =
     (* Pretend that it is a `Sanitize[...]` expression and use the annotation parser. *)
     let synthetic_sanitize_annotation =
-      Ast.Expression.subscript ~create_origin:(fun _ -> None) "Sanitize" arguments ~location
+      Ast.Expression.subscript_for_annotation ~location "Sanitize" arguments
       |> Node.create ~location
     in
     parse_annotations
@@ -3261,6 +3272,7 @@ let parse_decorator_annotations
                     {
                       base = { Node.value = Expression.Name (Name.Identifier "Parameters"); _ };
                       index;
+                      origin = _;
                     };
                 _;
               };
@@ -4259,7 +4271,7 @@ let rec parse_statement
              Node.value =
                ComparisonOperator
                  {
-                   ComparisonOperator.left =
+                   left =
                      {
                        Node.value =
                          Name
@@ -4271,8 +4283,9 @@ let rec parse_statement
                              });
                        _;
                      };
-                   ComparisonOperator.operator;
-                   ComparisonOperator.right = { Node.value = Tuple tuple; _ };
+                   operator;
+                   right = { Node.value = Tuple tuple; _ };
+                   origin = _;
                  };
              _;
            };

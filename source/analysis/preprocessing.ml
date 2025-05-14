@@ -123,7 +123,7 @@ let transform_string_annotation_expression_after_qualification ~relative =
       match value with
       | Expression.Name (Name.Attribute ({ base; _ } as name)) ->
           Expression.Name (Name.Attribute { name with base = transform_expression base })
-      | Expression.Subscript { Subscript.base; index } -> (
+      | Expression.Subscript { Subscript.base; index; origin } -> (
           match base with
           | {
            Node.value =
@@ -144,7 +144,7 @@ let transform_string_annotation_expression_after_qualification ~relative =
           } ->
               (* Don't transform arguments in Literals. *)
               value
-          | _ -> Expression.Subscript { base; index = transform_expression index })
+          | _ -> Expression.Subscript { base; index = transform_expression index; origin })
       | Expression.Call { callee; arguments = variable_name :: remaining_arguments; origin }
         when is_type_variable_definition callee ->
           Expression.Call
@@ -209,12 +209,12 @@ let transform_string_annotation_expression_before_qualification ~qualifier ~scop
       match value with
       | Expression.Name (Name.Attribute ({ base; _ } as name)) ->
           Expression.Name (Name.Attribute { name with base = transform_expression base })
-      | Expression.Subscript { Subscript.base; index } -> (
+      | Expression.Subscript { Subscript.base; index; origin } -> (
           match base with
           | { Node.value = Expression.Name name; _ } when is_literal name ->
               (* Don't transform arguments in Literals. *)
               value
-          | _ -> Expression.Subscript { base; index = transform_expression index })
+          | _ -> Expression.Subscript { base; index = transform_expression index; origin })
       | Expression.Call
           {
             callee = { Node.value = Expression.Name name; _ } as callee;
@@ -576,21 +576,23 @@ module Qualify = struct
       match value with
       | Expression.Await expression ->
           Expression.Await (qualify_expression ~qualify_strings ~scope expression)
-      | BinaryOperator { BinaryOperator.left; operator; right } ->
+      | BinaryOperator { BinaryOperator.left; operator; right; origin } ->
           BinaryOperator
             {
               BinaryOperator.left = qualify_expression ~qualify_strings ~scope left;
               operator;
               right = qualify_expression ~qualify_strings ~scope right;
+              origin;
             }
-      | BooleanOperator { BooleanOperator.left; operator; right } ->
+      | BooleanOperator { BooleanOperator.left; operator; right; origin } ->
           BooleanOperator
             {
               BooleanOperator.left = qualify_expression ~qualify_strings ~scope left;
               operator;
               right = qualify_expression ~qualify_strings ~scope right;
+              origin;
             }
-      | Subscript { Subscript.base; index } ->
+      | Subscript { Subscript.base; index; origin } ->
           let qualified_base = qualify_expression ~qualify_strings ~scope base in
           let qualified_index =
             let qualify_strings =
@@ -604,7 +606,7 @@ module Qualify = struct
             in
             qualify_expression ~qualify_strings ~scope index
           in
-          Subscript { Subscript.base = qualified_base; index = qualified_index }
+          Subscript { Subscript.base = qualified_base; index = qualified_index; origin }
       | Call { callee; arguments; origin } ->
           let callee = qualify_expression ~qualify_strings ~scope callee in
           let arguments =
@@ -632,12 +634,13 @@ module Qualify = struct
                 List.map ~f:(qualify_argument ~qualify_strings:DoNotQualify ~scope) arguments
           in
           Expression.Call { callee; arguments; origin }
-      | ComparisonOperator { ComparisonOperator.left; operator; right } ->
+      | ComparisonOperator { ComparisonOperator.left; operator; right; origin } ->
           ComparisonOperator
             {
               ComparisonOperator.left = qualify_expression ~qualify_strings ~scope left;
               operator;
               right = qualify_expression ~qualify_strings ~scope right;
+              origin;
             }
       | Dictionary entries ->
           Dictionary (List.map entries ~f:(qualify_entry ~qualify_strings ~scope))
@@ -679,12 +682,13 @@ module Qualify = struct
               Comprehension.element = qualify_expression ~qualify_strings ~scope element;
               generators;
             }
-      | Slice { Slice.start; stop; step } ->
+      | Slice { Slice.start; stop; step; origin } ->
           Slice
             {
               Slice.start = start >>| qualify_expression ~qualify_strings ~scope;
               stop = stop >>| qualify_expression ~qualify_strings ~scope;
               step = step >>| qualify_expression ~qualify_strings ~scope;
+              origin;
             }
       | Starred (Starred.Once expression) ->
           Starred (Starred.Once (qualify_expression ~qualify_strings ~scope expression))
@@ -739,15 +743,20 @@ module Qualify = struct
               alternative = qualify_expression ~qualify_strings ~scope alternative;
             }
       | Tuple elements -> Tuple (List.map elements ~f:(qualify_expression ~qualify_strings ~scope))
-      | WalrusOperator { target; value } ->
+      | WalrusOperator { target; value; origin } ->
           WalrusOperator
             {
               target = qualify_expression ~qualify_strings ~scope target;
               value = qualify_expression ~qualify_strings ~scope value;
+              origin;
             }
-      | UnaryOperator { UnaryOperator.operator; operand } ->
+      | UnaryOperator { UnaryOperator.operator; operand; origin } ->
           UnaryOperator
-            { UnaryOperator.operator; operand = qualify_expression ~qualify_strings ~scope operand }
+            {
+              UnaryOperator.operator;
+              operand = qualify_expression ~qualify_strings ~scope operand;
+              origin;
+            }
       | Yield (Some expression) ->
           Yield (Some (qualify_expression ~qualify_strings ~scope expression))
       | Yield None -> Yield None
@@ -1486,7 +1495,8 @@ let replace_version_specific_code ~major_version ~minor_version ~micro_version s
       | Statement.If { If.test; body; orelse } -> (
           let extract_comparison { Node.value; _ } =
             match value with
-            | Expression.ComparisonOperator { ComparisonOperator.left; operator; right } -> (
+            | Expression.ComparisonOperator { ComparisonOperator.left; operator; right; origin = _ }
+              -> (
                 match operator with
                 | ComparisonOperator.LessThan -> Some (Comparison.LessThan, left, right)
                 | ComparisonOperator.LessThanOrEquals ->
@@ -1574,6 +1584,7 @@ let replace_version_specific_code ~major_version ~minor_version ~micro_version s
                           _;
                         };
                       index;
+                      origin = _;
                     };
                 _;
               } -> (
@@ -1855,13 +1866,14 @@ let replace_platform_specific_code ~sys_platform source =
                   None
               in
               match test with
-              | ComparisonOperator { ComparisonOperator.left; operator = Equals | Is; right } -> (
+              | ComparisonOperator
+                  { ComparisonOperator.left; operator = Equals | Is; right; origin = _ } -> (
                   match get_platform_string "sys.platform" left right with
                   | Some platform_string ->
                       if String.equal sys_platform platform_string then body else orelse
                   | _ -> [statement])
-              | ComparisonOperator { ComparisonOperator.left; operator = NotEquals | IsNot; right }
-                -> (
+              | ComparisonOperator
+                  { ComparisonOperator.left; operator = NotEquals | IsNot; right; origin = _ } -> (
                   match get_platform_string "sys.platform" left right with
                   | Some platform_string ->
                       if String.equal sys_platform platform_string then orelse else body
@@ -1889,6 +1901,7 @@ let replace_platform_specific_code ~sys_platform source =
                             };
                         _;
                       };
+                    origin = _;
                   } -> (
                   match get_platform_string "sys.platform.startswith" callee expression with
                   | Some platform_string ->
@@ -1935,7 +1948,11 @@ let expand_type_checking_imports source =
       | Statement.If { If.test; body; _ } when is_type_checking test -> (), body
       | If
           {
-            If.test = { Node.value = UnaryOperator { UnaryOperator.operator = Not; operand }; _ };
+            If.test =
+              {
+                Node.value = UnaryOperator { UnaryOperator.operator = Not; operand; origin = _ };
+                _;
+              };
             orelse;
             _;
           }
@@ -1944,7 +1961,11 @@ let expand_type_checking_imports source =
       | If
           {
             If.test =
-              { Node.value = BooleanOperator { BooleanOperator.operator = Or; left; right }; _ };
+              {
+                Node.value =
+                  BooleanOperator { BooleanOperator.operator = Or; left; right; origin = _ };
+                _;
+              };
             body;
             _;
           }
@@ -2709,9 +2730,8 @@ let expand_named_tuples
         |> node
       in
       let fields_annotation =
-        let create_origin _ = None in
         let create_name name =
-          Expression.Name (create_name ~location ~create_origin name) |> node
+          Expression.Name (create_name ~location ~create_origin:(fun _ -> None) name) |> node
         in
         let tuple_members =
           match List.length attributes with
@@ -2719,9 +2739,9 @@ let expand_named_tuples
           | l -> List.init l ~f:(fun _ -> create_name "str")
         in
         let tuple_annotation =
-          subscript "typing.Tuple" ~location ~create_origin tuple_members |> node
+          subscript_for_annotation "typing.Tuple" ~location tuple_members |> node
         in
-        subscript "typing.ClassVar" ~location ~create_origin [tuple_annotation] |> node
+        subscript_for_annotation "typing.ClassVar" ~location [tuple_annotation] |> node
       in
       Statement.Assign
         {
@@ -2746,6 +2766,7 @@ let expand_named_tuples
                       Reference.create "typing.Final"
                       |> Ast.Expression.from_reference ~location ~create_origin:(fun _ -> None);
                     index = annotation;
+                    origin = None;
                   };
             }
           in
@@ -3214,11 +3235,11 @@ module AccessCollector = struct
     | ComparisonOperator { ComparisonOperator.left; right; _ } ->
         let collected = from_expression collected left in
         from_expression collected right
-    | Slice { Slice.start; stop; step } ->
+    | Slice { Slice.start; stop; step; origin = _ } ->
         let collected = Option.value_map start ~default:collected ~f:(from_expression collected) in
         let collected = Option.value_map stop ~default:collected ~f:(from_expression collected) in
         Option.value_map step ~default:collected ~f:(from_expression collected)
-    | Subscript { Subscript.base; index } ->
+    | Subscript { Subscript.base; index; origin = _ } ->
         let collected = from_expression collected base in
         from_expression collected index
     | Call { Call.callee; arguments; origin = _ } ->
@@ -3514,6 +3535,7 @@ let populate_captures ({ Source.statements; _ } as source) =
                                         value_annotation;
                                       ];
                                 };
+                              origin = None;
                             };
                       }
                     in
@@ -3585,6 +3607,7 @@ let populate_captures ({ Source.statements; _ } as source) =
                                         };
                                       ];
                                 };
+                              origin = None;
                             };
                       }
                     in
@@ -3845,13 +3868,14 @@ let replace_union_shorthand_in_annotation_expression =
                 _;
               };
             index = { Node.value = Tuple index_expressions; _ };
+            origin = _;
           } ->
           List.concat [sofar; index_expressions] |> List.rev
       | _ -> part_of_union_expression :: sofar
     in
     let value =
       match value with
-      | Expression.BinaryOperator { operator = BinaryOperator.BitOr; left; right } ->
+      | Expression.BinaryOperator { operator = BinaryOperator.BitOr; left; right; origin = _ } ->
           let indices =
             [left; right]
             (* Recursively transform them into `typing.Union[...]` form *)
@@ -3876,9 +3900,10 @@ let replace_union_shorthand_in_annotation_expression =
                          });
                 };
               index;
+              origin = None;
             }
-      | Subscript { Subscript.base; index } ->
-          Subscript { base; index = transform_expression index }
+      | Subscript { Subscript.base; index; origin } ->
+          Subscript { base; index = transform_expression index; origin }
       | Tuple arguments -> Tuple (List.map ~f:transform_expression arguments)
       | List arguments -> List (List.map ~f:transform_expression arguments)
       | _ -> value
@@ -4595,6 +4620,7 @@ module SelfType = struct
                       {
                         base = { Node.value = Expression.Name base_name; _ };
                         index = { Node.value = Expression.Name index_name; _ };
+                        origin = _;
                       };
                   _;
                 };
@@ -4621,9 +4647,11 @@ module SelfType = struct
                                 {
                                   base = { Node.value = Expression.Name inner_base_name; _ };
                                   index = { Node.value = Expression.Name inner_index_name; _ };
+                                  origin = _;
                                 };
                             _;
                           };
+                        origin = _;
                       };
                   _;
                 };
@@ -4659,12 +4687,11 @@ module SelfType = struct
         in
         let self_or_class_parameter =
           let annotation =
-            let create_origin _ = None in
             let variable_annotation =
-              from_reference ~location ~create_origin self_type_variable_reference
+              from_reference ~location ~create_origin:(fun _ -> None) self_type_variable_reference
             in
             if Define.Signature.is_class_method signature then
-              subscript ~location ~create_origin "typing.Type" [variable_annotation]
+              subscript_for_annotation ~location "typing.Type" [variable_annotation]
               |> Node.create ~location
             else
               variable_annotation
@@ -4674,11 +4701,7 @@ module SelfType = struct
             | { Parameter.annotation = Some _readonly_self_or_class_parameter; _ } ->
                 (* The user wrote `self: PyreReadOnly[Self]` or `cls: PyreReadOnly[Type[Self]]`. So,
                    wrap the synthesized type in `PyreReadOnly`. *)
-                subscript
-                  ~location
-                  ~create_origin:(fun _ -> None)
-                  "pyre_extensions.PyreReadOnly"
-                  [annotation]
+                subscript_for_annotation ~location "pyre_extensions.PyreReadOnly" [annotation]
                 |> Node.create ~location
             | _ -> annotation
           in

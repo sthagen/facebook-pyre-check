@@ -125,19 +125,21 @@ module Make (Transformer : Transformer) = struct
         let open Expression in
         match value with
         | Await expression -> Expression.Await (transform_expression expression)
-        | BinaryOperator { BinaryOperator.left; operator; right } ->
+        | BinaryOperator { BinaryOperator.left; operator; right; origin } ->
             BinaryOperator
               {
                 BinaryOperator.left = transform_expression left;
                 operator;
                 right = transform_expression right;
+                origin;
               }
-        | BooleanOperator { BooleanOperator.left; operator; right } ->
+        | BooleanOperator { BooleanOperator.left; operator; right; origin } ->
             BooleanOperator
               {
                 BooleanOperator.left = transform_expression left;
                 operator;
                 right = transform_expression right;
+                origin;
               }
         | Call { Call.callee; arguments; origin } ->
             Call
@@ -146,12 +148,13 @@ module Make (Transformer : Transformer) = struct
                 arguments = transform_arguments arguments;
                 origin;
               }
-        | ComparisonOperator { ComparisonOperator.left; operator; right } ->
+        | ComparisonOperator { ComparisonOperator.left; operator; right; origin } ->
             ComparisonOperator
               {
                 ComparisonOperator.left = transform_expression left;
                 operator;
                 right = transform_expression right;
+                origin;
               }
         | Constant _ -> value
         | Dictionary entries ->
@@ -208,16 +211,21 @@ module Make (Transformer : Transformer) = struct
               | Starred.Twice expression -> Starred.Twice (transform_expression expression)
             in
             Starred starred
-        | Slice { Slice.start; stop; step } ->
+        | Slice { Slice.start; stop; step; origin } ->
             Slice
               {
                 Slice.start = start >>| transform_expression;
                 stop = stop >>| transform_expression;
                 step = step >>| transform_expression;
+                origin;
               }
-        | Subscript { Subscript.base; index } ->
+        | Subscript { Subscript.base; index; origin } ->
             Subscript
-              { Subscript.base = transform_expression base; index = transform_expression index }
+              {
+                Subscript.base = transform_expression base;
+                index = transform_expression index;
+                origin;
+              }
         | Ternary { Ternary.target; test; alternative } ->
             Ternary
               {
@@ -226,13 +234,14 @@ module Make (Transformer : Transformer) = struct
                 alternative = transform_expression alternative;
               }
         | Tuple elements -> Tuple (transform_list elements ~f:transform_expression)
-        | UnaryOperator { UnaryOperator.operator; operand } ->
-            UnaryOperator { UnaryOperator.operator; operand = transform_expression operand }
-        | WalrusOperator { WalrusOperator.target; value } ->
+        | UnaryOperator { UnaryOperator.operator; operand; origin } ->
+            UnaryOperator { UnaryOperator.operator; operand = transform_expression operand; origin }
+        | WalrusOperator { WalrusOperator.target; value; origin } ->
             WalrusOperator
               {
                 WalrusOperator.target = transform_expression target;
                 value = transform_expression value;
+                origin;
               }
         | Expression.Yield expression -> Expression.Yield (expression >>| transform_expression)
         | Expression.YieldFrom expression ->

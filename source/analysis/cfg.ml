@@ -16,13 +16,13 @@ open Statement
 module MatchTranslate = struct
   open Expression
 
-  let create_boolean_and ~location ~left ~right =
-    Expression.BooleanOperator { left; operator = BooleanOperator.And; right }
+  let create_boolean_and ~location ~origin ~left ~right =
+    Expression.BooleanOperator { left; operator = BooleanOperator.And; right; origin }
     |> Node.create ~location
 
 
-  let create_boolean_or ~location ~left ~right =
-    Expression.BooleanOperator { left; operator = BooleanOperator.Or; right }
+  let create_boolean_or ~location ~origin ~left ~right =
+    Expression.BooleanOperator { left; operator = BooleanOperator.Or; right; origin }
     |> Node.create ~location
 
 
@@ -36,25 +36,25 @@ module MatchTranslate = struct
 
   let create_identifier_name ~location name = create_name ~location (Name.Identifier name)
 
-  let create_walrus ~location ~target ~value =
-    Expression.WalrusOperator { target; value } |> Node.create ~location
+  let create_walrus ~location ~origin ~target ~value =
+    Expression.WalrusOperator { target; value; origin } |> Node.create ~location
 
 
-  let create_comparison_equals ~location ~left ~right =
-    Expression.ComparisonOperator { left; operator = ComparisonOperator.Equals; right }
+  let create_comparison_equals ~location ~origin ~left ~right =
+    Expression.ComparisonOperator { left; operator = ComparisonOperator.Equals; right; origin }
     |> Node.create ~location
 
 
-  let create_comparison_is ~location left right =
-    Expression.ComparisonOperator { left; operator = ComparisonOperator.Is; right }
+  let create_comparison_is ~location ~origin ~left ~right =
+    Expression.ComparisonOperator { left; operator = ComparisonOperator.Is; right; origin }
     |> Node.create ~location
 
 
-  let create_subscript ~location ~container ~key =
-    Expression.Subscript { base = container; index = key } |> Node.create ~location
+  let create_subscript ~location ~origin ~container ~key =
+    Expression.Subscript { base = container; index = key; origin } |> Node.create ~location
 
 
-  let create_subscript_index ~location ~sequence ~index =
+  let create_subscript_index ~location ~origin ~sequence ~index =
     match sequence with
     | { Node.value = Expression.Tuple elements; _ } when index >= 0 && index < List.length elements
       ->
@@ -62,6 +62,7 @@ module MatchTranslate = struct
     | _ ->
         create_subscript
           ~location
+          ~origin
           ~container:sequence
           ~key:(create_constant ~location (Constant.Integer index))
 
@@ -70,12 +71,13 @@ module MatchTranslate = struct
     Expression.Call { callee; arguments; origin } |> Node.create ~location
 
 
-  let create_slice ~location ~lower ~upper =
+  let create_slice ~location ~origin ~lower ~upper =
     Expression.Slice
       {
         Slice.start = lower >>| (fun x -> Constant.Integer x) >>| create_constant ~location;
         stop = upper >>| (fun x -> Constant.Integer x) >>| create_constant ~location;
         step = None;
+        origin;
       }
     |> Node.create ~location
 
@@ -156,20 +158,32 @@ module MatchTranslate = struct
 
 
   let rec pattern_to_condition ~subject { Node.location; value = pattern } =
-    let boolean_expression_capture ~location ~target ~value =
+    let boolean_expression_capture ~location ~target ~value ~origin =
       (* Since we are creating boolean expression, we use walrus for capture, and add a trivial
          equality to make it a boolean expression that would always evaluate to True *)
       create_comparison_equals
         ~location
-        ~left:(create_walrus ~location ~target ~value)
+        ~left:(create_walrus ~location ~origin ~target ~value)
         ~right:target
+        ~origin
     in
     match pattern with
     | Match.Pattern.MatchAs { pattern; name } -> (
         let name = create_identifier_name ~location name in
-        let capture = boolean_expression_capture ~location ~target:name ~value:subject in
+        let capture =
+          boolean_expression_capture
+            ~location
+            ~target:name
+            ~value:subject
+            ~origin:(Some (Origin.create ~location Origin.MatchAsComparisonEquals))
+        in
         match pattern >>| pattern_to_condition ~subject:name with
-        | Some condition -> create_boolean_and ~location ~left:capture ~right:condition
+        | Some condition ->
+            create_boolean_and
+              ~location
+              ~left:capture
+              ~right:condition
+              ~origin:(Some (Origin.create ~location Origin.MatchAsWithCondition))
         | None -> capture)
     | MatchClass { class_name; patterns; keyword_attributes; keyword_patterns } ->
         let of_positional_pattern index =
@@ -179,6 +193,7 @@ module MatchTranslate = struct
             let attribute =
               create_subscript_index
                 ~location
+                ~origin:(Some (Origin.create ~location (Origin.MatchClassArgsSubscript index)))
                 ~sequence:
                   (create_attribute_name
                      ~location
@@ -212,10 +227,28 @@ module MatchTranslate = struct
           (create_name ~location:(Node.location class_name) (Node.value class_name))
         :: List.mapi ~f:of_positional_pattern patterns
         @ List.map2_exn ~f:of_attribute_pattern keyword_attributes keyword_patterns
-        |> List.reduce_exn ~f:(fun left right -> create_boolean_and ~location ~left ~right)
+        |> List.reduce_exn ~f:(fun left right ->
+               create_boolean_and
+                 ~location
+                 ~left
+                 ~right
+                 ~origin:
+                   (Some
+                      (Origin.create
+                         ?base:(Ast.Expression.origin left)
+                         ~location
+                         Origin.MatchClassJoinConditions)))
     | MatchMapping { keys; patterns; rest } ->
         let of_key_pattern key =
-          pattern_to_condition ~subject:(create_subscript ~location ~container:subject ~key)
+          pattern_to_condition
+            ~subject:
+              (create_subscript
+                 ~location
+                 ~container:subject
+                 ~key
+                 ~origin:
+                   (Some
+                      (Origin.create ~location:(Node.location key) Origin.MatchMappingKeySubscript)))
         in
         let of_rest rest =
           let target = create_identifier_name ~location rest in
@@ -225,10 +258,14 @@ module MatchTranslate = struct
           let value =
             create_dict
               ~location
-              ~origin:(Some (Origin.create ~location (Origin.MatchMappingRest rest)))
+              ~origin:(Some (Origin.create ~location (Origin.MatchMappingRestDict rest)))
               subject
           in
-          boolean_expression_capture ~location ~target ~value
+          boolean_expression_capture
+            ~location
+            ~target
+            ~value
+            ~origin:(Some (Origin.create ~location (Origin.MatchMappingRestComparisonEquals rest)))
         in
         create_isinstance
           ~location
@@ -237,12 +274,26 @@ module MatchTranslate = struct
           (create_typing_mapping ~location)
         :: List.map2_exn keys patterns ~f:of_key_pattern
         @ (Option.map rest ~f:of_rest |> Option.to_list)
-        |> List.reduce_exn ~f:(fun left right -> create_boolean_and ~location ~left ~right)
+        |> List.reduce_exn ~f:(fun left right ->
+               create_boolean_and
+                 ~location
+                 ~left
+                 ~right
+                 ~origin:(Some (Origin.create ~location Origin.MatchMappingJoinConditions)))
     | MatchOr patterns ->
         List.map patterns ~f:(pattern_to_condition ~subject)
-        |> List.reduce_exn ~f:(fun left right -> create_boolean_or ~location ~left ~right)
+        |> List.reduce_exn ~f:(fun left right ->
+               create_boolean_or
+                 ~location
+                 ~left
+                 ~right
+                 ~origin:(Some (Origin.create ~location Origin.MatchOrJoinConditions)))
     | MatchSingleton constant ->
-        create_comparison_is ~location subject (create_constant ~location constant)
+        create_comparison_is
+          ~location
+          ~origin:(Some (Origin.create ~location Origin.MatchSingletonComparisonIs))
+          ~left:subject
+          ~right:(create_constant ~location constant)
     | MatchSequence patterns ->
         let prefix, rest, suffix =
           let is_not_star_pattern = function
@@ -262,21 +313,43 @@ module MatchTranslate = struct
             let upper = if phys_equal suffix_length 0 then None else Some (-suffix_length) in
             create_subscript
               ~location
+              ~origin:(Some (Origin.create ~location (Origin.MatchSequenceRestSubscript rest)))
               ~container:subject
-              ~key:(create_slice ~location ~lower ~upper)
+              ~key:
+                (create_slice
+                   ~location
+                   ~origin:(Some (Origin.create ~location (Origin.MatchSequenceRestSlice rest)))
+                   ~lower
+                   ~upper)
             |> create_list
-                 ~origin:(Some (Origin.create ~location (Origin.MatchSequenceRest rest)))
+                 ~origin:(Some (Origin.create ~location (Origin.MatchSequenceRestList rest)))
                  ~location
           in
-          boolean_expression_capture ~location ~target ~value
+          boolean_expression_capture
+            ~location
+            ~origin:(Some (Origin.create ~location (Origin.MatchSequenceRestComparisonEquals rest)))
+            ~target
+            ~value
         in
         let of_prefix_pattern index =
-          pattern_to_condition ~subject:(create_subscript_index ~location ~sequence:subject ~index)
+          pattern_to_condition
+            ~subject:
+              (create_subscript_index
+                 ~location
+                 ~origin:(Some (Origin.create ~location (Origin.MatchSequencePrefix index)))
+                 ~sequence:subject
+                 ~index)
         in
         let of_suffix_pattern index =
           pattern_to_condition
             ~subject:
-              (create_subscript_index ~location ~sequence:subject ~index:(index - suffix_length))
+              (create_subscript_index
+                 ~location
+                 ~origin:
+                   (Some
+                      (Origin.create ~location (Origin.MatchSequenceSuffix (index - suffix_length))))
+                 ~sequence:subject
+                 ~index:(index - suffix_length))
         in
         create_isinstance
           ~origin:(Some (Origin.create ~location Origin.MatchSequenceIsInstance))
@@ -286,8 +359,18 @@ module MatchTranslate = struct
         :: List.mapi prefix ~f:of_prefix_pattern
         @ (Option.map rest ~f:of_rest |> Option.to_list)
         @ List.mapi suffix ~f:of_suffix_pattern
-        |> List.reduce_exn ~f:(fun left right -> create_boolean_and ~location ~left ~right)
-    | MatchValue value -> create_comparison_equals ~location ~left:subject ~right:value
+        |> List.reduce_exn ~f:(fun left right ->
+               create_boolean_and
+                 ~location
+                 ~left
+                 ~right
+                 ~origin:(Some (Origin.create ~location Origin.MatchSequenceJoinConditions)))
+    | MatchValue value ->
+        create_comparison_equals
+          ~location
+          ~origin:(Some (Origin.create ~location Origin.MatchValueComparisonEquals))
+          ~left:subject
+          ~right:value
     | MatchWildcard -> Expression.Constant Constant.True |> Node.create ~location
     | _ -> Expression.Constant Constant.False |> Node.create ~location
 
@@ -298,7 +381,11 @@ module MatchTranslate = struct
     | pattern_condition, None -> pattern_condition
     | { Node.value = Expression.Constant Constant.True; _ }, Some guard -> guard
     | pattern_condition, Some guard ->
-        create_boolean_and ~location ~left:pattern_condition ~right:guard
+        create_boolean_and
+          ~location
+          ~left:pattern_condition
+          ~right:guard
+          ~origin:(Some (Origin.create ~location Origin.MatchConditionWithGuard))
 end
 
 module Node = struct

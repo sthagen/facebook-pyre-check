@@ -127,6 +127,10 @@ module rec BooleanOperator : sig
     left: Expression.t;
     operator: operator;
     right: Expression.t;
+    (* If this AST node was created from lowering down another AST node (for instance, `a + b` is
+       turned into `a.__add__(b)`), `origin` stores the location of the original AST node and the
+       reason for lowering it. *)
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -145,6 +149,7 @@ end = struct
     left: Expression.t;
     operator: operator;
     right: Expression.t;
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -275,6 +280,10 @@ and ComparisonOperator : sig
     left: Expression.t;
     operator: operator;
     right: Expression.t;
+    (* If this AST node was created from lowering down another AST node (for instance, `a + b` is
+       turned into `a.__add__(b)`), `origin` stores the location of the original AST node and the
+       reason for lowering it. *)
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -307,6 +316,7 @@ end = struct
     left: Expression.t;
     operator: operator;
     right: Expression.t;
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -340,7 +350,8 @@ end = struct
       | NotIn -> "not in")
 
 
-  let lower_to_expression ~location ~callee_location { left; operator; right } =
+  let lower_to_expression ~location ~callee_location { left; operator; right; origin = base_origin }
+    =
     let left, right =
       match operator with
       | In -> right, left
@@ -363,7 +374,7 @@ end = struct
     dunder_method
     >>| fun dunder_method ->
     let arguments = [{ Call.Argument.name = None; value = right }] in
-    let origin = Some (Origin.create ~location Origin.ComparisonOperator) in
+    let origin = Some (Origin.create ?base:base_origin ~location Origin.ComparisonOperator) in
     Expression.Call
       {
         Call.callee =
@@ -409,6 +420,10 @@ and BinaryOperator : sig
     left: Expression.t;
     operator: operator;
     right: Expression.t;
+    (* If this AST node was created from lowering down another AST node (for instance, `a + b` is
+       turned into `a.__add__(b)`), `origin` stores the location of the original AST node and the
+       reason for lowering it. *)
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -442,6 +457,7 @@ end = struct
     left: Expression.t;
     operator: operator;
     right: Expression.t;
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -490,9 +506,9 @@ end = struct
     | FloorDiv -> "__floordiv__"
 
 
-  let lower_to_call ~location ~callee_location { left; operator; right } =
+  let lower_to_call ~location ~callee_location { left; operator; right; origin } =
     let arguments = [{ Call.Argument.name = None; value = right }] in
-    let origin = Some (Origin.create ~location Origin.BinaryOperator) in
+    let origin = Some (Origin.create ?base:origin ~location Origin.BinaryOperator) in
     {
       Call.callee =
         {
@@ -824,6 +840,10 @@ and Slice : sig
     start: Expression.t option;
     stop: Expression.t option;
     step: Expression.t option;
+    (* If this AST node was created from lowering down another AST node (for instance, `a + b` is
+       turned into `a.__add__(b)`), `origin` stores the location of the original AST node and the
+       reason for lowering it. *)
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -835,22 +855,23 @@ end = struct
     start: Expression.t option;
     stop: Expression.t option;
     step: Expression.t option;
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
-  let location_insensitive_compare left right =
-    match left, right with
-    | ( { start = left_start; stop = left_stop; step = left_step },
-        { start = right_start; stop = right_stop; step = right_step } ) -> (
-        match Option.compare Expression.location_insensitive_compare left_start right_start with
+  let location_insensitive_compare
+      { start = left_start; stop = left_stop; step = left_step; origin = _ }
+      { start = right_start; stop = right_stop; step = right_step; origin = _ }
+    =
+    match Option.compare Expression.location_insensitive_compare left_start right_start with
+    | x when not (Int.equal x 0) -> x
+    | _ -> (
+        match Option.compare Expression.location_insensitive_compare left_stop right_stop with
         | x when not (Int.equal x 0) -> x
-        | _ -> (
-            match Option.compare Expression.location_insensitive_compare left_stop right_stop with
-            | x when not (Int.equal x 0) -> x
-            | _ -> Option.compare Expression.location_insensitive_compare left_step right_step))
+        | _ -> Option.compare Expression.location_insensitive_compare left_step right_step)
 
 
-  let lowered ~location { Slice.start; stop; step } =
+  let lowered ~location { Slice.start; stop; step; origin } =
     let default_none = function
       | None -> Expression.Constant Constant.NoneLiteral |> Node.create ~location
       | Some expr -> expr
@@ -864,7 +885,7 @@ end = struct
             { Call.Argument.value = default_none stop; name = None };
             { Call.Argument.value = default_none step; name = None };
           ];
-        origin = Some (Origin.create ~location Origin.Slice);
+        origin = Some (Origin.create ?base:origin ~location Origin.Slice);
       }
     |> Node.create ~location
 end
@@ -873,6 +894,10 @@ and Subscript : sig
   type t = {
     base: Expression.t;
     index: Expression.t;
+    (* If this AST node was created from lowering down another AST node (for instance, `a + b` is
+       turned into `a.__add__(b)`), `origin` stores the location of the original AST node and the
+       reason for lowering it. *)
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -881,12 +906,13 @@ end = struct
   type t = {
     base: Expression.t;
     index: Expression.t;
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare
-      { base = left_base; index = left_index }
-      { base = right_base; index = right_index }
+      { base = left_base; index = left_index; origin = _ }
+      { base = right_base; index = right_index; origin = _ }
     =
     match Expression.location_insensitive_compare left_base right_base with
     | 0 -> Expression.location_insensitive_compare left_index right_index
@@ -965,6 +991,10 @@ and UnaryOperator : sig
   type t = {
     operator: operator;
     operand: Expression.t;
+    (* If this AST node was created from lowering down another AST node (for instance, `a + b` is
+       turned into `a.__add__(b)`), `origin` stores the location of the original AST node and the
+       reason for lowering it. *)
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -988,6 +1018,7 @@ end = struct
   type t = {
     operator: operator;
     operand: Expression.t;
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -1002,14 +1033,14 @@ end = struct
       | Positive -> "+")
 
 
-  let lower_to_expression ~location ~callee_location { operator; operand } =
+  let lower_to_expression ~location ~callee_location { operator; operand; origin = base_origin } =
     (match operator with
     | Invert -> Some "__invert__"
     | Negative -> Some "__neg__"
     | Not -> None
     | Positive -> Some "__pos__")
     >>| fun name ->
-    let origin = Some (Origin.create ~location Origin.UnaryOperator) in
+    let origin = Some (Origin.create ?base:base_origin ~location Origin.UnaryOperator) in
     Expression.Call
       {
         Call.callee =
@@ -1035,6 +1066,10 @@ and WalrusOperator : sig
   type t = {
     target: Expression.t;
     value: Expression.t;
+    (* If this AST node was created from lowering down another AST node (for instance, `a + b` is
+       turned into `a.__add__(b)`), `origin` stores the location of the original AST node and the
+       reason for lowering it. *)
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -1043,6 +1078,7 @@ end = struct
   type t = {
     target: Expression.t;
     value: Expression.t;
+    origin: Origin.t option;
   }
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
@@ -1102,35 +1138,64 @@ and Origin : sig
    * in the original code. This type is used to describe the original node
    * that originated the artificial node. *)
   type kind =
-    | ComparisonOperator (* a == b is turned into a.__eq__(b) *)
-    | BinaryOperator (* a + b is turned into a.__add__(b) *)
-    | UnaryOperator (* -a is turned into a.__neg__() *)
-    | AugmentedAssign (* a += b is turned into a = a.__add__(b) *)
+    | ComparisonOperator (* `a == b` is turned into `a.__eq__(b)` *)
+    | BinaryOperator (* `a + b` is turned into `a.__add__(b)` *)
+    | UnaryOperator (* `-a` is turned into `a.__neg__()` *)
+    | AugmentedAssign (* `a += b` is turned into `a = a.__add__(b)` *)
     | Qualification of string list (* all symbols are turned into their fully qualified version *)
-    | SubscriptSetItem
-    | SubscriptGetItem
-    | ForIter (* __iter__ call for a for loop *)
-    | ForNext (* __next__ call for a for loop *)
-    | GeneratorIter (* __iter__ call for a generator *)
-    | GeneratorNext (* __next__ call for a generator *)
-    | With (* __enter__ call for a with statement *)
-    | InContains (* e in l can be turned into l.__contains__(e) *)
-    | InIter (* e in l can be turned into l.__iter__().__next__().__eq__(e) *)
-    | InGetItem (* e in l can be turned into l.__getitem__(0).__eq__(e) *)
-    | InGetItemEq (* e in l can be turned into l.__getitem__(0).__eq__(e) *)
-    | Slice (* 1:2 is turned into slice(1,2,None) *)
-    | TryHandlerIsInstance (* try..except X as e is turned into assert(isinstance(X, e)) *)
+    | SubscriptSetItem (* `d[a] = b` is turned into `d.__setitem__(a, b)` *)
+    | SubscriptGetItem (* `d[a]` is turned into `d.__getitem__(a)` *)
+    | ForIter (* `for e in l:` is turned into `l.__iter__().__next__()` *)
+    | ForNext (* `for e in l:` is turned into `l.__iter__().__next__()` *)
+    | GeneratorIter (* `(e for e in l)` is turned into `l.__iter__().__next__()` *)
+    | GeneratorNext (* `(e for e in l)` is turned into `l.__iter__().__next__()` *)
+    | With (* `with e1 as e2` is turned into `e2 = e1.__enter__()` *)
+    | InContains (* `e in l` can be turned into `l.__contains__(e)` *)
+    | InIter (* `e in l` can be turned into `l.__iter__().__next__().__eq__(e)` *)
+    | InGetItem (* `e in l` can be turned into `l.__getitem__(0).__eq__(e)` *)
+    | InGetItemEq (* `e in l` can be turned into `l.__getitem__(0).__eq__(e)` *)
+    | Slice (* `1:2` is turned into `slice(1,2,None)` *)
+    | Negate (* `if cond:` is turned into `assert(cond)` and `assert(not cond)` *)
+    | NegateIs (* `not(a is not b)` is turned into `a is b` *)
+    | NegateIsNot (* `not(a is b)` is turned into `a is not b` *)
+    | Normalize (* we turn boolean expressions into negation normal form *)
+    | NormalizeNotComparison (* `not(a < b)` is turned into `a >= b` *)
+    | NormalizeNotBoolOperator (* `not(a == b)` is turned into `a != b` *)
+    | TryHandlerIsInstance (* `try..except X as e` is turned into `assert(isinstance(X, e))` *)
     | NamedTupleConstructorAssignment of string
+      (* `collections.namedtuple('T', 'a b')` is turned into `def __init__(self, a, b): self.a = a;
+         self.b = b` *)
     | DataclassImplicitField
+      (* `@dataclass` on `class A: x: int` is turned into `x: int = dataclasses.field()` *)
     | DataclassImplicitDefault
+    (* `x: int = dataclasses.field(default_factory=f)` is turned into `x = f()` in the implicit
+       constructor *)
+    (* All the origins below are used to translate `match` statements *)
+    | MatchAsComparisonEquals
+    | MatchAsWithCondition
     | MatchClassArgs of int
     | MatchClassGetAttr of int
+    | MatchClassArgsSubscript of int
     | MatchClassKeywordAttribute of string
     | MatchClassIsInstance
-    | MatchMappingRest of string
+    | MatchClassJoinConditions
+    | MatchMappingKeySubscript
+    | MatchMappingRestDict of string
+    | MatchMappingRestComparisonEquals of string
     | MatchMappingIsInstance
-    | MatchSequenceRest of string
+    | MatchMappingJoinConditions
+    | MatchOrJoinConditions
+    | MatchSingletonComparisonIs
+    | MatchSequenceRestList of string
+    | MatchSequenceRestSubscript of string
+    | MatchSequenceRestSlice of string
+    | MatchSequenceRestComparisonEquals of string
+    | MatchSequencePrefix of int
+    | MatchSequenceSuffix of int
     | MatchSequenceIsInstance
+    | MatchSequenceJoinConditions
+    | MatchValueComparisonEquals
+    | MatchConditionWithGuard
     | StrCall (* str(x) is turned into x.__str__() or x.__repr__() *)
     | ReprCall (* repr(x) is turned into x.__repr__() *)
     | AbsCall (* abs(x) is turned into x.__abs__() *)
@@ -1138,21 +1203,29 @@ and Origin : sig
     | NextCall (* next(x) is turned into x.__next__() *)
     | ImplicitInitCall (* A(x) is turned into A.__init__(..., x) *)
     | SelfImplicitTypeVar
+      (* `def f(self):` is turned into `def f(self: TypeVar["self", bound=MyClass]):` *)
     | FunctionalEnumImplicitAuto of string list
-    | DecoratorInlining
-    | ForDecoratedTarget
-    | ForDecoratedTargetCallee of string list
+      (* `Enum("Color", ("RED", "GREEN", "BLUE"))` is turned into `class Color: RED = enum.auto();
+         ...` *)
+    | DecoratorInlining (* Pysa inlines decorator during preprocessing *)
+    | ForDecoratedTarget (* `@foo def f(): ...` is turned into `def f@decorated(): return foo(f)` *)
+    | ForDecoratedTargetCallee of
+        string list (* `@foo def f(): ...` is turned into `def f@decorated(): return foo(f)` *)
     | FormatStringImplicitStr (* f"{x}" is turned into f"{x.__str__()}" or f"{x.__repr__}" *)
     | GetAttrConstantLiteral (* getattr(x, "foo") is turned into x.foo *)
     | SetAttrConstantLiteral (* object.__setattr__(x, "foo", value) is turned into x.foo = value *)
     | PysaCallRedirect of string (* hardcoded AST rewrite made for Pysa analysis *)
-    | PysaHigherOrderParameter of int
+    | PysaHigherOrderParameter of
+        int (* `f(g)` might be turned into `f(g())` for the taint analysis *)
     | ForTestPurpose (* AST node created when running tests *)
     | ForTypeChecking (* AST node created internally during a type check of an expression *)
     | Nested of {
         head: kind;
         tail: kind;
       }
+      (* In some rare cases, AST lowering happens in multiple steps.
+       * For instance: `match x: case 0: pass` turns into `if x == 0:` which then turns into `if x.__equals__(0):`.
+       * We keep a trace of all AST transforms. *)
   [@@deriving equal, compare, sexp, show, hash, to_yojson]
 
   type t = {
@@ -1166,53 +1239,76 @@ and Origin : sig
   val is_dunder_method : t -> bool
 end = struct
   type kind =
-    | ComparisonOperator (* a == b is turned into a.__eq__(b) *)
-    | BinaryOperator (* a + b is turned into a.__add__(b) *)
-    | UnaryOperator (* -a is turned into a.__neg__() *)
-    | AugmentedAssign (* a += b is turned into a = a.__add__(b) *)
-    | Qualification of string list (* all symbols are turned into their fully qualified version *)
+    | ComparisonOperator
+    | BinaryOperator
+    | UnaryOperator
+    | AugmentedAssign
+    | Qualification of string list
     | SubscriptSetItem
     | SubscriptGetItem
-    | ForIter (* __iter__ call for a for loop *)
-    | ForNext (* __next__ call for a for loop *)
-    | GeneratorIter (* __iter__ call for a generator *)
-    | GeneratorNext (* __next__ call for a generator *)
-    | With (* __enter__ call for a with statement *)
-    | InContains (* e in l can be turned into l.__contains__(e) *)
-    | InIter (* e in l can be turned into l.__iter__().__next__().__eq__(e) *)
-    | InGetItem (* e in l can be turned into l.__getitem__(0).__eq__(e) *)
-    | InGetItemEq (* e in l can be turned into l.__getitem__(0).__eq__(e) *)
-    | Slice (* 1:2 is turned into slice(1,2,None) *)
-    | TryHandlerIsInstance (* try..except X as e is turned into assert(isinstance(X, e)) *)
+    | ForIter
+    | ForNext
+    | GeneratorIter
+    | GeneratorNext
+    | With
+    | InContains
+    | InIter
+    | InGetItem
+    | InGetItemEq
+    | Slice
+    | Negate
+    | NegateIs
+    | NegateIsNot
+    | Normalize
+    | NormalizeNotComparison
+    | NormalizeNotBoolOperator
+    | TryHandlerIsInstance
     | NamedTupleConstructorAssignment of string
     | DataclassImplicitField
     | DataclassImplicitDefault
+    | MatchAsComparisonEquals
+    | MatchAsWithCondition
     | MatchClassArgs of int
     | MatchClassGetAttr of int
+    | MatchClassArgsSubscript of int
     | MatchClassKeywordAttribute of string
     | MatchClassIsInstance
-    | MatchMappingRest of string
+    | MatchClassJoinConditions
+    | MatchMappingKeySubscript
+    | MatchMappingRestDict of string
+    | MatchMappingRestComparisonEquals of string
     | MatchMappingIsInstance
-    | MatchSequenceRest of string
+    | MatchMappingJoinConditions
+    | MatchOrJoinConditions
+    | MatchSingletonComparisonIs
+    | MatchSequenceRestList of string
+    | MatchSequenceRestSubscript of string
+    | MatchSequenceRestSlice of string
+    | MatchSequenceRestComparisonEquals of string
+    | MatchSequencePrefix of int
+    | MatchSequenceSuffix of int
     | MatchSequenceIsInstance
-    | StrCall (* str(x) is turned into x.__str__() or x.__repr__() *)
-    | ReprCall (* repr(x) is turned into x.__repr__() *)
-    | AbsCall (* abs(x) is turned into x.__abs__() *)
-    | IterCall (* iter(x) is turned into x.__iter__() *)
-    | NextCall (* next(x) is turned into x.__next__() *)
-    | ImplicitInitCall (* A(x) is turned into A.__init__(..., x) *)
+    | MatchSequenceJoinConditions
+    | MatchValueComparisonEquals
+    | MatchConditionWithGuard
+    | StrCall
+    | ReprCall
+    | AbsCall
+    | IterCall
+    | NextCall
+    | ImplicitInitCall
     | SelfImplicitTypeVar
     | FunctionalEnumImplicitAuto of string list
     | DecoratorInlining
     | ForDecoratedTarget
     | ForDecoratedTargetCallee of string list
-    | FormatStringImplicitStr (* f"{x}" is turned into f"{x.__str__()}" or f"{x.__repr__}" *)
-    | GetAttrConstantLiteral (* getattr(x, "foo") is turned into x.foo *)
-    | SetAttrConstantLiteral (* object.__setattr__(x, "foo", value) is turned into x.foo = value *)
-    | PysaCallRedirect of string (* hardcoded AST rewrite made for Pysa analysis *)
+    | FormatStringImplicitStr
+    | GetAttrConstantLiteral
+    | SetAttrConstantLiteral
+    | PysaCallRedirect of string
     | PysaHigherOrderParameter of int
-    | ForTestPurpose (* AST node created when running tests *)
-    | ForTypeChecking (* AST node created internally during a type check of an expression *)
+    | ForTestPurpose
+    | ForTypeChecking
     | Nested of {
         head: kind;
         tail: kind;
@@ -1553,16 +1649,16 @@ end = struct
 
 
     and pp_slice formatter = function
-      | { Slice.start = None; stop = None; step = None } -> Format.fprintf formatter ":"
-      | { Slice.start = Some start; stop = None; step = None } ->
+      | { Slice.start = None; stop = None; step = None; origin = _ } -> Format.fprintf formatter ":"
+      | { Slice.start = Some start; stop = None; step = None; origin = _ } ->
           Format.fprintf formatter "%a:" pp_expression_t start
-      | { Slice.start = Some start; stop = Some stop; step = None } ->
+      | { Slice.start = Some start; stop = Some stop; step = None; origin = _ } ->
           Format.fprintf formatter "%a:%a" pp_expression_t start pp_expression_t stop
-      | { Slice.start = None; stop = Some stop; step = None } ->
+      | { Slice.start = None; stop = Some stop; step = None; origin = _ } ->
           Format.fprintf formatter ":%a" pp_expression_t stop
-      | { Slice.start = Some start; stop = None; step = Some step } ->
+      | { Slice.start = Some start; stop = None; step = Some step; origin = _ } ->
           Format.fprintf formatter "%a::%a" pp_expression_t start pp_expression_t step
-      | { Slice.start = Some start; stop = Some stop; step = Some step } ->
+      | { Slice.start = Some start; stop = Some stop; step = Some step; origin = _ } ->
           Format.fprintf
             formatter
             "%a:%a:%a"
@@ -1572,13 +1668,13 @@ end = struct
             stop
             pp_expression_t
             step
-      | { Slice.start = None; stop = Some stop; step = Some step } ->
+      | { Slice.start = None; stop = Some stop; step = Some step; origin = _ } ->
           Format.fprintf formatter ":%a:%a" pp_expression_t stop pp_expression_t step
-      | { Slice.start = None; stop = None; step = Some step } ->
+      | { Slice.start = None; stop = None; step = Some step; origin = _ } ->
           Format.fprintf formatter ":%a" pp_expression_t step
 
 
-    and pp_subscript formatter { Subscript.base; index } =
+    and pp_subscript formatter { Subscript.base; index; origin = _ } =
       Format.fprintf formatter "%a[%a]" pp_expression_t base pp_expression_t index
 
 
@@ -1597,7 +1693,7 @@ end = struct
     and pp_expression formatter expression =
       match expression with
       | Await expression -> Format.fprintf formatter "await %a" pp_expression_t expression
-      | BinaryOperator { BinaryOperator.left; operator; right } ->
+      | BinaryOperator { BinaryOperator.left; operator; right; origin = _ } ->
           Format.fprintf
             formatter
             "%a %a %a"
@@ -1607,7 +1703,7 @@ end = struct
             operator
             pp_expression_t
             right
-      | BooleanOperator { BooleanOperator.left; operator; right } ->
+      | BooleanOperator { BooleanOperator.left; operator; right; origin = _ } ->
           Format.fprintf
             formatter
             "%a %a %a"
@@ -1634,7 +1730,7 @@ end = struct
                   format_expr
           in
           List.iter substrings ~f:(pp_substring formatter)
-      | ComparisonOperator { ComparisonOperator.left; operator; right } ->
+      | ComparisonOperator { ComparisonOperator.left; operator; right; origin = _ } ->
           Format.fprintf
             formatter
             "%a %a %a"
@@ -1677,7 +1773,7 @@ end = struct
       | Subscript subscript -> Format.fprintf formatter "%a" pp_subscript subscript
       | Ternary ternary -> Format.fprintf formatter "%a" pp_ternary ternary
       | Tuple tuple -> Format.fprintf formatter "(%a)" pp_expression_list tuple
-      | UnaryOperator { UnaryOperator.operator; operand } ->
+      | UnaryOperator { UnaryOperator.operator; operand; origin = _ } ->
           Format.fprintf
             formatter
             "%a %a"
@@ -1685,7 +1781,7 @@ end = struct
             operator
             pp_expression_t
             operand
-      | WalrusOperator { WalrusOperator.target; value } ->
+      | WalrusOperator { WalrusOperator.target; value; origin = _ } ->
           Format.fprintf formatter "%a := %a" pp_expression_t target pp_expression_t value
       | Yield yield -> (
           match yield with
@@ -1908,8 +2004,8 @@ module Mapper = struct
     Node.create ~location (Expression.Await (default_map_await ~mapper awaited))
 
 
-  let default_map_binary_operator ~mapper { BinaryOperator.left; operator; right } =
-    { BinaryOperator.left = map ~mapper left; operator; right = map ~mapper right }
+  let default_map_binary_operator ~mapper { BinaryOperator.left; operator; right; origin } =
+    { BinaryOperator.left = map ~mapper left; operator; right = map ~mapper right; origin }
 
 
   let default_map_binary_operator_node ~mapper ~location binary_operator =
@@ -1918,8 +2014,8 @@ module Mapper = struct
       (Expression.BinaryOperator (default_map_binary_operator ~mapper binary_operator))
 
 
-  let default_map_boolean_operator ~mapper { BooleanOperator.left; operator; right } =
-    { BooleanOperator.left = map ~mapper left; operator; right = map ~mapper right }
+  let default_map_boolean_operator ~mapper { BooleanOperator.left; operator; right; origin } =
+    { BooleanOperator.left = map ~mapper left; operator; right = map ~mapper right; origin }
 
 
   let default_map_boolean_operator_node ~mapper ~location boolean_operator =
@@ -1940,8 +2036,8 @@ module Mapper = struct
     Node.create ~location (Expression.Call (default_map_call ~mapper call))
 
 
-  let default_map_comparison_operator ~mapper { ComparisonOperator.left; operator; right } =
-    { ComparisonOperator.left = map ~mapper left; operator; right = map ~mapper right }
+  let default_map_comparison_operator ~mapper { ComparisonOperator.left; operator; right; origin } =
+    { ComparisonOperator.left = map ~mapper left; operator; right = map ~mapper right; origin }
 
 
   let default_map_comparison_operator_node ~mapper ~location comparison_operator =
@@ -2041,11 +2137,12 @@ module Mapper = struct
       (Expression.SetComprehension (default_map_set_comprehension ~mapper comprehension))
 
 
-  let default_map_slice ~mapper { Slice.start; stop; step } =
+  let default_map_slice ~mapper { Slice.start; stop; step; origin } =
     {
       Slice.start = map_option ~mapper start;
       stop = map_option ~mapper stop;
       step = map_option ~mapper step;
+      origin;
     }
 
 
@@ -2062,8 +2159,8 @@ module Mapper = struct
     Node.create ~location (Expression.Starred (default_map_starred ~mapper starred))
 
 
-  let default_map_subscript ~mapper { Subscript.base; index } =
-    { Subscript.base = map ~mapper base; index = map ~mapper index }
+  let default_map_subscript ~mapper { Subscript.base; index; origin } =
+    { Subscript.base = map ~mapper base; index = map ~mapper index; origin }
 
 
   let default_map_subscript_node ~mapper ~location subscript =
@@ -2088,8 +2185,8 @@ module Mapper = struct
     Node.create ~location (Expression.Tuple (default_map_tuple ~mapper expression_list))
 
 
-  let default_map_unary_operator ~mapper { UnaryOperator.operator; operand } =
-    { UnaryOperator.operator; operand = map ~mapper operand }
+  let default_map_unary_operator ~mapper { UnaryOperator.operator; operand; origin } =
+    { UnaryOperator.operator; operand = map ~mapper operand; origin }
 
 
   let default_map_unary_operator_node ~mapper ~location unary_operator =
@@ -2098,8 +2195,8 @@ module Mapper = struct
       (Expression.UnaryOperator (default_map_unary_operator ~mapper unary_operator))
 
 
-  let default_map_walrus_operator ~mapper { WalrusOperator.target; value } =
-    { WalrusOperator.target = map ~mapper target; value = map ~mapper value }
+  let default_map_walrus_operator ~mapper { WalrusOperator.target; value; origin } =
+    { WalrusOperator.target = map ~mapper target; value = map ~mapper value; origin }
 
 
   let default_map_walrus_operator_node ~mapper ~location walrus_operator =
@@ -2637,12 +2734,20 @@ module Folder = struct
 
   let default_fold_await ~folder ~state awaited = fold ~folder ~state awaited
 
-  let default_fold_binary_operator ~folder ~state { BinaryOperator.left; operator = _; right } =
+  let default_fold_binary_operator
+      ~folder
+      ~state
+      { BinaryOperator.left; operator = _; right; origin = _ }
+    =
     let state = fold ~folder ~state left in
     fold ~folder ~state right
 
 
-  let default_fold_boolean_operator ~folder ~state { BooleanOperator.left; operator = _; right } =
+  let default_fold_boolean_operator
+      ~folder
+      ~state
+      { BooleanOperator.left; operator = _; right; origin = _ }
+    =
     let state = fold ~folder ~state left in
     fold ~folder ~state right
 
@@ -2655,7 +2760,7 @@ module Folder = struct
   let default_fold_comparison_operator
       ~folder
       ~state
-      { ComparisonOperator.left; operator = _; right }
+      { ComparisonOperator.left; operator = _; right; origin = _ }
     =
     let state = fold ~folder ~state left in
     fold ~folder ~state right
@@ -2695,7 +2800,7 @@ module Folder = struct
     | Name.Attribute { Name.Attribute.base; attribute = _; origin = _ } -> fold ~folder ~state base
 
 
-  let default_fold_slice ~folder ~state { Slice.start; stop; step } =
+  let default_fold_slice ~folder ~state { Slice.start; stop; step; origin = _ } =
     let state = fold_option ~folder ~state start in
     let state = fold_option ~folder ~state stop in
     fold_option ~folder ~state step
@@ -2707,7 +2812,7 @@ module Folder = struct
         fold ~folder ~state expression
 
 
-  let default_fold_subscript ~folder ~state { Subscript.base; index } =
+  let default_fold_subscript ~folder ~state { Subscript.base; index; origin = _ } =
     let state = fold ~folder ~state base in
     fold ~folder ~state index
 
@@ -2718,11 +2823,12 @@ module Folder = struct
     fold ~folder ~state alternative
 
 
-  let default_fold_unary_operator ~folder ~state { UnaryOperator.operator = _; operand } =
+  let default_fold_unary_operator ~folder ~state { UnaryOperator.operator = _; operand; origin = _ }
+    =
     fold ~folder ~state operand
 
 
-  let default_fold_walrus_operator ~folder ~state { WalrusOperator.target; value } =
+  let default_fold_walrus_operator ~folder ~state { WalrusOperator.target; value; origin = _ } =
     let state = fold ~folder ~state target in
     fold ~folder ~state value
 
@@ -2872,25 +2978,60 @@ end
 
 include Expression
 
+let origin { Node.value; _ } =
+  match value with
+  | Expression.Name (Name.Attribute { Name.Attribute.origin; _ }) -> origin
+  | Expression.Call { Call.origin; _ } -> origin
+  | Expression.ComparisonOperator { ComparisonOperator.origin; _ } -> origin
+  | Expression.BinaryOperator { BinaryOperator.origin; _ } -> origin
+  | Expression.UnaryOperator { UnaryOperator.origin; _ } -> origin
+  | Expression.BooleanOperator { BooleanOperator.origin; _ } -> origin
+  | Expression.Subscript { Subscript.origin; _ } -> origin
+  | Expression.WalrusOperator { WalrusOperator.origin; _ } -> origin
+  | Expression.Slice { Slice.origin; _ } -> origin
+  | _ -> None
+
+
 let negate ({ Node.location; value } as node) =
   match value with
-  | UnaryOperator { UnaryOperator.operator = UnaryOperator.Not; operand } -> operand
-  | ComparisonOperator { ComparisonOperator.operator = ComparisonOperator.IsNot; left; right } ->
+  | UnaryOperator { UnaryOperator.operator = UnaryOperator.Not; operand; origin = _ } -> operand
+  | ComparisonOperator
+      { ComparisonOperator.operator = ComparisonOperator.IsNot; left; right; origin = base_origin }
+    ->
       {
         Node.location;
         value =
-          ComparisonOperator { ComparisonOperator.operator = ComparisonOperator.Is; left; right };
+          ComparisonOperator
+            {
+              ComparisonOperator.operator = ComparisonOperator.Is;
+              left;
+              right;
+              origin = Some (Origin.create ?base:base_origin ~location Origin.NegateIs);
+            };
       }
-  | ComparisonOperator { ComparisonOperator.operator = ComparisonOperator.Is; left; right } ->
+  | ComparisonOperator
+      { ComparisonOperator.operator = ComparisonOperator.Is; left; right; origin = base_origin } ->
       {
         Node.location;
         value =
-          ComparisonOperator { ComparisonOperator.operator = ComparisonOperator.IsNot; left; right };
+          ComparisonOperator
+            {
+              ComparisonOperator.operator = ComparisonOperator.IsNot;
+              left;
+              right;
+              origin = Some (Origin.create ?base:base_origin ~location Origin.NegateIsNot);
+            };
       }
   | _ ->
       {
         Node.location;
-        value = UnaryOperator { UnaryOperator.operator = UnaryOperator.Not; operand = node };
+        value =
+          UnaryOperator
+            {
+              UnaryOperator.operator = UnaryOperator.Not;
+              operand = node;
+              origin = Some (Origin.create ?base:(origin node) ~location Origin.Negate);
+            };
       }
 
 
@@ -2898,25 +3039,53 @@ let negate ({ Node.location; value } as node) =
 let rec normalize { Node.location; value } =
   let normalized =
     match value with
-    | BooleanOperator { BooleanOperator.operator; left; right } ->
-        BooleanOperator { BooleanOperator.operator; left = normalize left; right = normalize right }
-    | UnaryOperator { UnaryOperator.operator = UnaryOperator.Not; operand = { Node.value; _ } } as
-      unary -> (
-        match value with
-        | ComparisonOperator { ComparisonOperator.left; operator; right } ->
+    | BooleanOperator { BooleanOperator.operator; left; right; origin } ->
+        BooleanOperator
+          {
+            BooleanOperator.operator;
+            left = normalize left;
+            right = normalize right;
+            origin = Some (Origin.create ?base:origin ~location Origin.Normalize);
+          }
+    | UnaryOperator
+        {
+          UnaryOperator.operator = UnaryOperator.Not;
+          operand = { Node.value = operand; location = operand_location };
+          origin = _;
+        } as unary -> (
+        match operand with
+        | ComparisonOperator
+            { ComparisonOperator.left; operator; right; origin = comparison_origin } ->
             ComparisonOperator
-              { ComparisonOperator.left; operator = ComparisonOperator.inverse operator; right }
+              {
+                ComparisonOperator.left;
+                operator = ComparisonOperator.inverse operator;
+                right;
+                origin =
+                  Some
+                    (Origin.create
+                       ?base:comparison_origin
+                       ~location:operand_location
+                       Origin.NormalizeNotComparison);
+              }
         | Constant Constant.False -> Constant Constant.True
         | Constant Constant.True -> Constant Constant.False
-        | UnaryOperator { UnaryOperator.operator = UnaryOperator.Not; operand = { Node.value; _ } }
+        | UnaryOperator
+            { UnaryOperator.operator = UnaryOperator.Not; operand = { Node.value; _ }; origin = _ }
           ->
             value
-        | BooleanOperator { BooleanOperator.left; operator; right } ->
+        | BooleanOperator { BooleanOperator.left; operator; right; origin = bool_origin } ->
             BooleanOperator
               {
                 BooleanOperator.operator = BooleanOperator.inverse operator;
                 left = normalize (negate left);
                 right = normalize (negate right);
+                origin =
+                  Some
+                    (Origin.create
+                       ?base:bool_origin
+                       ~location:operand_location
+                       Origin.NormalizeNotBoolOperator);
               }
         | _ -> unary)
     | _ -> value
@@ -3082,14 +3251,15 @@ let rec delocalize ~create_origin ({ Node.value; location } as expression) =
   let delocalize = delocalize ~create_origin in
   let value =
     match value with
-    | Subscript { Subscript.base; index } ->
-        Subscript { Subscript.base = delocalize base; index = delocalize index }
-    | Slice { Slice.start; stop; step } ->
+    | Subscript { Subscript.base; index; origin } ->
+        Subscript { Subscript.base = delocalize base; index = delocalize index; origin }
+    | Slice { Slice.start; stop; step; origin } ->
         Slice
           {
             Slice.start = Option.map ~f:delocalize start;
             stop = Option.map ~f:delocalize stop;
             step = Option.map ~f:delocalize step;
+            origin;
           }
     | Call { Call.callee; arguments; origin } ->
         let delocalize_argument ({ Call.Argument.value; _ } as argument) =
@@ -3233,14 +3403,18 @@ let arguments_location
       }
 
 
-let subscript base indices ~location ~create_origin =
-  let create_name name = Name (create_name ~location ~create_origin name) in
+let subscript base indices ~location ~create_origin_for_base ~origin =
+  let create_name name = Name (create_name ~location ~create_origin:create_origin_for_base name) in
   let index =
     match indices with
     | [index] -> index
     | multiple_indices -> Tuple multiple_indices |> Node.create_with_default_location
   in
-  Subscript { Subscript.base = { Node.location; value = create_name base }; index }
+  Subscript { Subscript.base = { Node.location; value = create_name base }; index; origin }
+
+
+let subscript_for_annotation base indices ~location =
+  subscript base indices ~location ~create_origin_for_base:(fun _ -> None) ~origin:None
 
 
 let is_dunder_attribute attribute_name =
@@ -3316,13 +3490,6 @@ let operator_name_to_symbol = function
   | _ -> None
 
 
-let origin { Node.value; _ } =
-  match value with
-  | Expression.Name (Name.Attribute { Name.Attribute.origin; _ }) -> origin
-  | Expression.Call { Call.origin; _ } -> origin
-  | _ -> None
-
-
 let remove_origins expression =
   let map_name ~mapper = function
     | Name.Identifier _ as identifier -> identifier
@@ -3340,4 +3507,62 @@ let remove_origins expression =
       origin = None;
     }
   in
-  Mapper.map ~mapper:(Mapper.create_transformer ~map_name ~map_call ()) expression
+  let map_comparison_operator ~mapper { ComparisonOperator.left; operator; right; origin = _ } =
+    {
+      ComparisonOperator.left = Mapper.map ~mapper left;
+      operator;
+      right = Mapper.map ~mapper right;
+      origin = None;
+    }
+  in
+  let map_binary_operator ~mapper { BinaryOperator.left; operator; right; origin = _ } =
+    {
+      BinaryOperator.left = Mapper.map ~mapper left;
+      operator;
+      right = Mapper.map ~mapper right;
+      origin = None;
+    }
+  in
+  let map_boolean_operator ~mapper { BooleanOperator.left; operator; right; origin = _ } =
+    {
+      BooleanOperator.left = Mapper.map ~mapper left;
+      operator;
+      right = Mapper.map ~mapper right;
+      origin = None;
+    }
+  in
+  let map_unary_operator ~mapper { UnaryOperator.operator; operand; origin = _ } =
+    { UnaryOperator.operand = Mapper.map ~mapper operand; operator; origin = None }
+  in
+  let map_subscript ~mapper { Subscript.base; index; origin = _ } =
+    { Subscript.base = Mapper.map ~mapper base; index = Mapper.map ~mapper index; origin = None }
+  in
+  let map_walrus_operator ~mapper { WalrusOperator.target; value; origin = _ } =
+    {
+      WalrusOperator.target = Mapper.map ~mapper target;
+      value = Mapper.map ~mapper value;
+      origin = None;
+    }
+  in
+  let map_slice ~mapper { Slice.start; stop; step; origin = _ } =
+    {
+      Slice.start = Option.map ~f:(Mapper.map ~mapper) start;
+      stop = Option.map ~f:(Mapper.map ~mapper) stop;
+      step = Option.map ~f:(Mapper.map ~mapper) step;
+      origin = None;
+    }
+  in
+  Mapper.map
+    ~mapper:
+      (Mapper.create_transformer
+         ~map_name
+         ~map_call
+         ~map_comparison_operator
+         ~map_binary_operator
+         ~map_boolean_operator
+         ~map_unary_operator
+         ~map_subscript
+         ~map_walrus_operator
+         ~map_slice
+         ())
+    expression

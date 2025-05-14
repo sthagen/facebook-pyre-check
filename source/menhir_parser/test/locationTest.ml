@@ -71,6 +71,7 @@ let test_assert_locations _ =
                       operator = ComparisonOperator.Is;
                       right =
                         node ~start:(1, 12) ~stop:(1, 13) (Expression.Name (Name.Identifier "b"));
+                      origin = None;
                     });
              message = None;
              origin = None;
@@ -109,6 +110,7 @@ let test_assert_locations _ =
                       operator = ComparisonOperator.IsNot;
                       right =
                         node ~start:(1, 16) ~stop:(1, 20) (Expression.Constant Constant.NoneLiteral);
+                      origin = None;
                     });
              message =
                Some
@@ -323,7 +325,9 @@ let test_call_locations _ =
                                 ~start:(1, 6)
                                 ~stop:(1, 7)
                                 (Expression.Constant (Constant.Integer 2));
+                            origin = None;
                           });
+                   origin = None;
                  })));
     ];
   assert_source_locations
@@ -355,6 +359,7 @@ let test_call_locations _ =
                               ~stop:(1, 6)
                               (Expression.Constant (Constant.Integer 2));
                           ]);
+                   origin = None;
                  })));
     ];
   assert_source_locations
@@ -734,6 +739,7 @@ let test_call_locations _ =
                         node ~start:(1, 4) ~stop:(1, 5) (Expression.Name (Name.Identifier "i"));
                       index =
                         node ~start:(1, 6) ~stop:(1, 7) (Expression.Name (Name.Identifier "j"));
+                      origin = None;
                     });
              value =
                Some (node ~start:(1, 11) ~stop:(1, 12) (Expression.Name (Name.Identifier "y")));
@@ -768,7 +774,9 @@ let test_call_locations _ =
                                    ~stop:(1, 4)
                                    (Expression.Constant (Constant.Integer 1)));
                             step = None;
+                            origin = None;
                           });
+                   origin = None;
                  })));
     ];
   assert_source_locations
@@ -799,7 +807,9 @@ let test_call_locations _ =
                                    ~start:(1, 4)
                                    ~stop:(1, 5)
                                    (Expression.Constant (Constant.Integer 2)));
+                            origin = None;
                           });
+                   origin = None;
                  })));
     ];
   assert_source_locations
@@ -820,7 +830,9 @@ let test_call_locations _ =
                      node
                        ~start:(1, 2)
                        ~stop:(1, 3)
-                       (Expression.Slice { Slice.start = None; stop = None; step = None });
+                       (Expression.Slice
+                          { Slice.start = None; stop = None; step = None; origin = None });
+                   origin = None;
                  })));
     ]
 
@@ -1501,6 +1513,7 @@ let test_generator_locations _ =
                                 ~start:(1, 6)
                                 ~stop:(1, 7)
                                 (Expression.Name (Name.Identifier "b"));
+                            origin = None;
                           });
                    generators =
                      [
@@ -1650,6 +1663,7 @@ let test_if_locations _ =
                                    ~start:(1, 8)
                                    ~stop:(1, 9)
                                    (Expression.Constant (Constant.Integer 1));
+                               origin = None;
                              });
                       operator = BooleanOperator.Or;
                       right =
@@ -1669,7 +1683,9 @@ let test_if_locations _ =
                                    ~start:(1, 18)
                                    ~stop:(1, 19)
                                    (Expression.Constant (Constant.Integer 1));
+                               origin = None;
                              });
+                      origin = None;
                     });
              body =
                [
@@ -1811,6 +1827,7 @@ let test_lambda_locations _ =
                                 ~start:(1, 21)
                                 ~stop:(1, 22)
                                 (Expression.Constant (Constant.Integer 1));
+                            origin = None;
                           });
                  })));
     ]
@@ -2122,6 +2139,7 @@ let test_number_locations _ =
                    UnaryOperator.operator = UnaryOperator.Negative;
                    operand =
                      node ~start:(1, 2) ~stop:(1, 3) (Expression.Constant (Constant.Integer 1));
+                   origin = None;
                  })));
     ]
 
@@ -2156,10 +2174,12 @@ let test_operator_locations _ =
                                 ~start:(1, 6)
                                 ~stop:(1, 7)
                                 (Expression.Constant (Constant.Integer 2));
+                            origin = None;
                           });
                    operator = BooleanOperator.Or;
                    right =
                      node ~start:(1, 11) ~stop:(1, 12) (Expression.Constant (Constant.Integer 3));
+                   origin = None;
                  })));
     ];
   assert_source_locations
@@ -2179,6 +2199,7 @@ let test_operator_locations _ =
                    operator = ComparisonOperator.IsNot;
                    right =
                      node ~start:(1, 9) ~stop:(1, 10) (Expression.Constant (Constant.Integer 1));
+                   origin = None;
                  })));
     ];
   assert_source_locations
@@ -2197,6 +2218,7 @@ let test_operator_locations _ =
                    left = node ~start:(1, 0) ~stop:(1, 1) (Expression.Constant (Constant.Integer 1));
                    right =
                      node ~start:(1, 5) ~stop:(1, 6) (Expression.Constant (Constant.Integer 2));
+                   origin = None;
                  })));
     ];
   assert_source_locations
@@ -2214,6 +2236,7 @@ let test_operator_locations _ =
                    UnaryOperator.operator = UnaryOperator.Not;
                    operand =
                      node ~start:(1, 4) ~stop:(1, 5) (Expression.Constant (Constant.Integer 1));
+                   origin = None;
                  })));
     ]
 
@@ -2650,6 +2673,7 @@ let test_string_locations _ =
                        ~start:(1, 10)
                        ~stop:(1, 17)
                        (Expression.Constant (Constant.String (StringLiteral.create "b")));
+                   origin = None;
                  })));
     ];
 
@@ -3196,6 +3220,7 @@ let test_tuple_locations _ =
                               ~start:(1, 7)
                               ~stop:(1, 8)
                               (Expression.Constant (Constant.Integer 1));
+                          origin = None;
                         });
                  ])));
     ]
@@ -3326,6 +3351,7 @@ let test_walrus_locations _ =
                      node ~start:(1, 0) ~stop:(1, 1) (Expression.Name (Name.Identifier "a"));
                    value =
                      node ~start:(1, 5) ~stop:(1, 6) (Expression.Constant (Constant.Integer 1));
+                   origin = None;
                  })));
     ]
 

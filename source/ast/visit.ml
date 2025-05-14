@@ -138,11 +138,11 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
           | Starred.Once expression
           | Starred.Twice expression ->
               visit_expression expression)
-      | Slice { Slice.start; stop; step } ->
+      | Slice { Slice.start; stop; step; origin = _ } ->
           Option.iter ~f:visit_expression start;
           Option.iter ~f:visit_expression stop;
           Option.iter ~f:visit_expression step
-      | Subscript { Subscript.base; index } ->
+      | Subscript { Subscript.base; index; origin = _ } ->
           visit_expression base;
           visit_expression index
       | FormatString substrings ->
@@ -163,7 +163,7 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
           visit_expression alternative
       | Tuple elements -> List.iter elements ~f:visit_expression
       | UnaryOperator { UnaryOperator.operand; _ } -> visit_expression operand
-      | WalrusOperator { WalrusOperator.target; value } ->
+      | WalrusOperator { WalrusOperator.target; value; origin = _ } ->
           visit_expression target;
           visit_expression value
       | Expression.Yield expression -> Option.iter ~f:visit_expression expression

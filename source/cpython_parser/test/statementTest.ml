@@ -107,6 +107,7 @@ let test_expression_return_raise =
                           ComparisonOperator.left = !"a";
                           operator = ComparisonOperator.Is;
                           right = !"b";
+                          origin = None;
                         });
                ];
         labeled_test_case __FUNCTION__ __LINE__
@@ -183,6 +184,7 @@ let test_assert_delete =
                              ComparisonOperator.left = !"a";
                              operator = ComparisonOperator.IsNot;
                              right = +Expression.Constant Constant.NoneLiteral;
+                             origin = None;
                            };
                       message =
                         Some
@@ -790,6 +792,7 @@ let test_try =
                                       BooleanOperator.left = !"a";
                                       operator = BooleanOperator.Or;
                                       right = !"b";
+                                      origin = None;
                                     });
                             name = None;
                             body = [+Statement.Expression !"c"];
@@ -818,6 +821,7 @@ let test_try =
                                       BooleanOperator.left = !"a";
                                       operator = BooleanOperator.Or;
                                       right = !"b";
+                                      origin = None;
                                     });
                             name = Some (+"e");
                             body = [+Statement.Expression !"c"];
@@ -1471,6 +1475,7 @@ let test_define =
                                            {
                                              Subscript.base = !"x";
                                              index = +Expression.Constant (Constant.Integer 0);
+                                             origin = None;
                                            };
                                       attribute = "y";
                                       origin = None;
@@ -1506,6 +1511,7 @@ let test_define =
                                    ComparisonOperator.left = !"x";
                                    operator = ComparisonOperator.LessThan;
                                    right = !"y";
+                                   origin = None;
                                  };
                             ];
                           return_annotation = None;
@@ -2201,6 +2207,7 @@ let test_define =
                                     Subscript.base = !"Tuple";
                                     index =
                                       +Expression.Tuple [+Expression.Starred (Starred.Once !"Ts")];
+                                    origin = None;
                                   });
                           async = false;
                           generator = false;
@@ -2679,6 +2686,7 @@ let test_assign =
                                 BooleanOperator.left = !"b";
                                 operator = BooleanOperator.Or;
                                 right = !"c";
+                                origin = None;
                               });
                     };
                ];
@@ -2837,7 +2845,8 @@ let test_assign =
                [
                  +Statement.Assign
                     {
-                      Assign.target = +Expression.Subscript { Subscript.base = !"i"; index = !"j" };
+                      Assign.target =
+                        +Expression.Subscript { Subscript.base = !"i"; index = !"j"; origin = None };
                       value = Some (+Expression.Constant (Constant.Integer 3));
                       annotation = None;
                     };
@@ -2849,7 +2858,8 @@ let test_assign =
                [
                  +Statement.Assign
                     {
-                      Assign.target = +Expression.Subscript { Subscript.base = !"i"; index = !"j" };
+                      Assign.target =
+                        +Expression.Subscript { Subscript.base = !"i"; index = !"j"; origin = None };
                       value = Some (+Expression.Constant (Constant.Integer 3));
                       annotation = Some !"int";
                     };
@@ -2861,7 +2871,8 @@ let test_assign =
                [
                  +Statement.Assign
                     {
-                      Assign.target = +Expression.Subscript { Subscript.base = !"i"; index = !"j" };
+                      Assign.target =
+                        +Expression.Subscript { Subscript.base = !"i"; index = !"j"; origin = None };
                       value = Some (+Expression.Constant (Constant.Integer 3));
                       annotation = None;
                     };
@@ -2874,7 +2885,7 @@ let test_assign =
                  +Statement.AugmentedAssign
                     {
                       AugmentedAssign.target =
-                        +Expression.Subscript { Subscript.base = !"i"; index = !"j" };
+                        +Expression.Subscript { Subscript.base = !"i"; index = !"j"; origin = None };
                       operator = BinaryOperator.Add;
                       value = +Expression.Constant (Constant.Integer 3);
                     };
@@ -2890,8 +2901,10 @@ let test_assign =
                         +Expression.Subscript
                            {
                              Subscript.base =
-                               +Expression.Subscript { Subscript.base = !"i"; index = !"j" };
+                               +Expression.Subscript
+                                  { Subscript.base = !"i"; index = !"j"; origin = None };
                              index = +Expression.Constant (Constant.Integer 7);
+                             origin = None;
                            };
                       value = Some (+Expression.Constant (Constant.Integer 8));
                       annotation = None;
@@ -2914,7 +2927,9 @@ let test_assign =
                                     Slice.start = Some !"j";
                                     stop = None;
                                     step = Some (+Expression.Constant (Constant.Integer 1));
+                                    origin = None;
                                   };
+                             origin = None;
                            };
                       value =
                         Some
@@ -2923,7 +2938,13 @@ let test_assign =
                                 Subscript.base = !"i";
                                 index =
                                   +Expression.Slice
-                                     { Slice.start = None; stop = Some !"j"; step = None };
+                                     {
+                                       Slice.start = None;
+                                       stop = Some !"j";
+                                       step = None;
+                                       origin = None;
+                                     };
+                                origin = None;
                               });
                       annotation = None;
                     };
@@ -2936,7 +2957,8 @@ let test_assign =
                  +Statement.Assign { Assign.target = !"x"; annotation = None; value = Some !"y" };
                  +Statement.Assign
                     {
-                      Assign.target = +Expression.Subscript { Subscript.base = !"i"; index = !"j" };
+                      Assign.target =
+                        +Expression.Subscript { Subscript.base = !"i"; index = !"j"; origin = None };
                       value = Some !"y";
                       annotation = None;
                     };
@@ -2950,7 +2972,11 @@ let test_assign =
                     {
                       Assign.target =
                         +Expression.Tuple
-                           [!"x"; +Expression.Subscript { Subscript.base = !"i"; index = !"j" }];
+                           [
+                             !"x";
+                             +Expression.Subscript
+                                { Subscript.base = !"i"; index = !"j"; origin = None };
+                           ];
                       annotation = None;
                       value = Some !"y";
                     };

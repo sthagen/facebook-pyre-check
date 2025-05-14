@@ -74,6 +74,7 @@ let test_assert_locations =
                                      ~start:(1, 12)
                                      ~stop:(1, 13)
                                      (Expression.Name (Name.Identifier "b"));
+                                 origin = None;
                                });
                         message = None;
                         origin = None;
@@ -127,6 +128,7 @@ let test_assert_locations =
                                      ~start:(1, 16)
                                      ~stop:(1, 20)
                                      (Expression.Constant Constant.NoneLiteral);
+                                 origin = None;
                                });
                         message =
                           Some
@@ -412,7 +414,9 @@ let test_call_locations =
                                            ~start:(1, 6)
                                            ~stop:(1, 7)
                                            (Expression.Constant (Constant.Integer 2));
+                                       origin = None;
                                      });
+                              origin = None;
                             })));
                ];
         labeled_test_case __FUNCTION__ __LINE__
@@ -838,6 +842,7 @@ let test_call_locations =
                                      ~start:(1, 6)
                                      ~stop:(1, 7)
                                      (Expression.Name (Name.Identifier "j"));
+                                 origin = None;
                                });
                         value =
                           Some
@@ -881,7 +886,9 @@ let test_call_locations =
                                               ~stop:(1, 4)
                                               (Expression.Constant (Constant.Integer 1)));
                                        step = None;
+                                       origin = None;
                                      });
+                              origin = None;
                             })));
                ];
         labeled_test_case __FUNCTION__ __LINE__
@@ -917,7 +924,9 @@ let test_call_locations =
                                               ~start:(1, 4)
                                               ~stop:(1, 5)
                                               (Expression.Constant (Constant.Integer 2)));
+                                       origin = None;
                                      });
+                              origin = None;
                             })));
                ];
         labeled_test_case __FUNCTION__ __LINE__
@@ -943,7 +952,9 @@ let test_call_locations =
                                 node
                                   ~start:(1, 2)
                                   ~stop:(1, 3)
-                                  (Expression.Slice { Slice.start = None; stop = None; step = None });
+                                  (Expression.Slice
+                                     { Slice.start = None; stop = None; step = None; origin = None });
+                              origin = None;
                             })));
                ];
       ]
@@ -1681,6 +1692,7 @@ let test_generator_locations =
                                            ~start:(1, 6)
                                            ~stop:(1, 7)
                                            (Expression.Name (Name.Identifier "b"));
+                                       origin = None;
                                      });
                               generators =
                                 [
@@ -1878,6 +1890,7 @@ let test_if_locations =
                                               ~start:(1, 8)
                                               ~stop:(1, 9)
                                               (Expression.Constant (Constant.Integer 1));
+                                          origin = None;
                                         });
                                  operator = BooleanOperator.Or;
                                  right =
@@ -1897,7 +1910,9 @@ let test_if_locations =
                                               ~start:(1, 18)
                                               ~stop:(1, 19)
                                               (Expression.Constant (Constant.Integer 1));
+                                          origin = None;
                                         });
+                                 origin = None;
                                });
                         body =
                           [
@@ -2098,6 +2113,7 @@ let test_lambda_locations =
                                            ~start:(1, 21)
                                            ~stop:(1, 22)
                                            (Expression.Constant (Constant.Integer 1));
+                                       origin = None;
                                      });
                             })));
                ];
@@ -2505,6 +2521,7 @@ let test_operator_locations =
                                            ~start:(1, 6)
                                            ~stop:(1, 7)
                                            (Expression.Constant (Constant.Integer 2));
+                                       origin = None;
                                      });
                               operator = BooleanOperator.Or;
                               right =
@@ -2512,6 +2529,7 @@ let test_operator_locations =
                                   ~start:(1, 11)
                                   ~stop:(1, 12)
                                   (Expression.Constant (Constant.Integer 3));
+                              origin = None;
                             })));
                ];
         labeled_test_case __FUNCTION__ __LINE__
@@ -2539,6 +2557,7 @@ let test_operator_locations =
                                   ~start:(1, 9)
                                   ~stop:(1, 10)
                                   (Expression.Constant (Constant.Integer 1));
+                              origin = None;
                             })));
                ];
         labeled_test_case __FUNCTION__ __LINE__
@@ -2566,6 +2585,7 @@ let test_operator_locations =
                                   ~start:(1, 5)
                                   ~stop:(1, 6)
                                   (Expression.Constant (Constant.Integer 2));
+                              origin = None;
                             })));
                ];
         labeled_test_case __FUNCTION__ __LINE__
@@ -2588,6 +2608,7 @@ let test_operator_locations =
                                   ~start:(1, 4)
                                   ~stop:(1, 5)
                                   (Expression.Constant (Constant.Integer 1));
+                              origin = None;
                             })));
                ];
       ]
@@ -2991,6 +3012,7 @@ let test_string_locations =
                                   ~start:(1, 10)
                                   ~stop:(1, 17)
                                   (Expression.Constant (Constant.String (StringLiteral.create "b")));
+                              origin = None;
                             })));
                ];
         labeled_test_case __FUNCTION__ __LINE__
@@ -3583,6 +3605,7 @@ let test_tuple_locations =
                                          ~start:(1, 7)
                                          ~stop:(1, 8)
                                          (Expression.Constant (Constant.Integer 1));
+                                     origin = None;
                                    });
                             ])));
                ];
@@ -3779,6 +3802,7 @@ let test_walrus_locations =
                                   ~start:(1, 6)
                                   ~stop:(1, 7)
                                   (Expression.Constant (Constant.Integer 1));
+                              origin = None;
                             })));
                ];
       ]
@@ -3989,6 +4013,7 @@ let test_type_comments =
                                             ~start:(1, 0)
                                             ~stop:(2, 2)
                                             (Expression.Name (Name.Identifier "derp"));
+                                        origin = None;
                                       }));
                             async = false;
                             generator = false;
