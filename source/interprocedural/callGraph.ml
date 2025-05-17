@@ -1554,6 +1554,78 @@ module StringFormatCallees = struct
     }
 end
 
+(** Represents a unique identifier for an expression in the control flow graph. *)
+module ExpressionIdentifier = struct
+  module T = struct
+    type t =
+      (* Identifier for a regular expression, as returned by the parser. *)
+      | Regular of Location.t
+      (* Identifier for all expressions generated from the different preprocessing steps. *)
+      | ArtificialAttributeAccess of Origin.t
+      | ArtificialCall of Origin.t
+      | ArtificialComparisonOperator of Origin.t
+      | ArtificialBinaryOperator of Origin.t
+      | ArtificialUnaryOperator of Origin.t
+      | ArtificialBooleanOperator of Origin.t
+      | ArtificialSubscript of Origin.t
+      | ArtificialWalrusOperator of Origin.t
+      | ArtificialSlice of Origin.t
+      | ArtificialAwait of Origin.t
+      (* Qualification creates identifiers without an origin. *)
+      | IdentifierExpression of {
+          location: Location.t;
+          identifier: string;
+        }
+      | FormatStringArtificial of Location.t
+      | FormatStringStringify of Location.t
+      (* Identifier for constant expression.
+       *
+       * This is necessary because we sometimes create constant expressions during preprocessing:
+       * - `Expression.normalize` can create True/False constant nodes with the same location
+       * - `Preprocessing.expand_named_tuples` can create string literals
+       * - `Cfg.MatchTranslate` can create integer constants
+       * - `Cfg.create` can create ellipsis for try handlers
+       *)
+      | Constant of {
+          location: Location.t;
+          constant: Constant.t;
+        }
+    [@@deriving compare, sexp, hash, show { with_path = false }]
+
+    let of_expression { Node.value; location } =
+      match value with
+      | Expression.Call { Call.origin = Some origin; _ } -> ArtificialCall origin
+      | Expression.Name (Name.Identifier identifier) ->
+          IdentifierExpression { location; identifier }
+      | Expression.Name (Name.Attribute { origin = Some origin; _ }) ->
+          ArtificialAttributeAccess origin
+      | Expression.ComparisonOperator { ComparisonOperator.origin = Some origin; _ } ->
+          ArtificialComparisonOperator origin
+      | Expression.BinaryOperator { BinaryOperator.origin = Some origin; _ } ->
+          ArtificialBinaryOperator origin
+      | Expression.UnaryOperator { UnaryOperator.origin = Some origin; _ } ->
+          ArtificialUnaryOperator origin
+      | Expression.BooleanOperator { BooleanOperator.origin = Some origin; _ } ->
+          ArtificialBooleanOperator origin
+      | Expression.Subscript { Subscript.origin = Some origin; _ } -> ArtificialSubscript origin
+      | Expression.WalrusOperator { WalrusOperator.origin = Some origin; _ } ->
+          ArtificialWalrusOperator origin
+      | Expression.Slice { Slice.origin = Some origin; _ } -> ArtificialSlice origin
+      | Expression.Await { Await.origin = Some origin; _ } -> ArtificialAwait origin
+      | Expression.Constant
+          (( Constant.True | Constant.False | Constant.Ellipsis | Constant.String _
+           | Constant.Integer _ ) as constant) ->
+          Constant { location; constant }
+      | _ -> Regular location
+  end
+
+  include T
+
+  module Map = struct
+    include SerializableMap.Make (T)
+  end
+end
+
 (** An aggregate of all possible callees for an arbitrary expression. *)
 module ExpressionCallees = struct
   type t = {
@@ -2692,6 +2764,10 @@ let resolve_callee_from_defining_expression
       | _ -> None)
 
 
+type resolved_stringify =
+  | Str
+  | Repr
+
 let resolve_stringify_call ~pyre_in_context ~callables_to_definitions_map expression =
   let string_callee =
     Node.create_with_default_location
@@ -2701,7 +2777,11 @@ let resolve_stringify_call ~pyre_in_context ~callables_to_definitions_map expres
               base = expression;
               attribute = "__str__";
               origin =
-                Some (Origin.create ~location:(Node.location expression) Origin.ForTypeChecking);
+                Some
+                  (Origin.create
+                     ?base:(Ast.Expression.origin expression)
+                     ~location:(Node.location expression)
+                     Origin.ResolveStrCall);
             }))
   in
   try
@@ -2714,10 +2794,10 @@ let resolve_stringify_call ~pyre_in_context ~callables_to_definitions_map expres
     with
     | Some name when Reference.equal name (Reference.create "object.__str__") ->
         (* Call resolved to object.__str__, fallback to calling __repr__ if it exists. *)
-        "__repr__"
-    | _ -> "__str__"
+        Repr
+    | _ -> Str
   with
-  | PyrePysaLogic.UntrackedClass _ -> "__str__"
+  | PyrePysaLogic.UntrackedClass _ -> Str
 
 
 (* Rewrite certain calls for the interprocedural analysis (e.g, pysa).
@@ -2742,13 +2822,13 @@ let transform_special_calls
   | Name (Name.Identifier "str"), [{ Call.Argument.value; _ }] ->
       (* str() takes an optional encoding and errors - if these are present, the call shouldn't be
          redirected: https://docs.python.org/3/library/stdtypes.html#str *)
-      let origin = Some (Origin.create ?base:call_origin ~location:call_location Origin.StrCall) in
-      let callee =
-        attribute_access
-          ~base:value
-          ~method_name:(resolve_stringify_call ~pyre_in_context ~callables_to_definitions_map value)
-          ~origin
+      let method_name, origin_kind =
+        match resolve_stringify_call ~pyre_in_context ~callables_to_definitions_map value with
+        | Str -> "__str__", Origin.StrCallToDunderStr
+        | Repr -> "__repr__", Origin.StrCallToDunderRepr
       in
+      let origin = Some (Origin.create ?base:call_origin ~location:call_location origin_kind) in
+      let callee = attribute_access ~base:value ~method_name ~origin in
       Some { Call.callee; arguments = []; origin }
   | Name (Name.Identifier "iter"), [{ Call.Argument.value; _ }] ->
       (* Only handle `iter` with a single argument here. *)
@@ -3801,6 +3881,38 @@ module MissingFlowTypeAnalysis = struct
     | _ -> callees
 end
 
+(* Helper to check that expression identifiers are truly unique. *)
+module ExpressionIdentifierInvariant = struct
+  type t = Expression.t ExpressionIdentifier.Map.t ref
+
+  let create () = ref ExpressionIdentifier.Map.empty
+
+  let check_invariant map ~define_name ~expression =
+    map :=
+      ExpressionIdentifier.Map.update
+        (ExpressionIdentifier.of_expression expression)
+        (function
+          | None -> Some expression
+          | Some existing when Expression.equal existing expression -> Some existing
+          | Some existing ->
+              Format.asprintf
+                "During call graph building of `%a`, found two expressions with the same \
+                 expression identifier:\n\
+                 Identifier: %a\n\
+                 First expression: %a\n\
+                 Second expression: %a"
+                Reference.pp
+                (Option.value define_name ~default:Reference.empty)
+                ExpressionIdentifier.pp
+                (ExpressionIdentifier.of_expression expression)
+                Expression.pp
+                existing
+                Expression.pp
+                expression
+              |> failwith)
+        !map
+end
+
 module NodeVisitorContext = struct
   type t = {
     pyre_api: PyrePysaEnvironment.ReadOnly.t;
@@ -3810,6 +3922,7 @@ module NodeVisitorContext = struct
     missing_flow_type_analysis: MissingFlowTypeAnalysis.t option;
     attribute_targets: Target.HashSet.t;
     callables_to_definitions_map: Target.CallablesSharedMemory.ReadOnly.t;
+    expression_identifier_invariant: ExpressionIdentifierInvariant.t option;
   }
 end
 
@@ -3834,6 +3947,7 @@ module CalleeVisitor = struct
                define_name;
                attribute_targets;
                callables_to_definitions_map;
+               expression_identifier_invariant;
                _;
              };
            callees_at_location;
@@ -3855,6 +3969,15 @@ module CalleeVisitor = struct
       in
       let value =
         redirect_expressions ~pyre_in_context ~callables_to_definitions_map ~location value
+      in
+      let () =
+        match expression_identifier_invariant with
+        | Some expression_identifier_invariant ->
+            ExpressionIdentifierInvariant.check_invariant
+              expression_identifier_invariant
+              ~define_name
+              ~expression:{ Node.location; value }
+        | None -> ()
       in
       let () =
         match value with
@@ -3913,11 +4036,15 @@ module CalleeVisitor = struct
                       =
                       let { CallCallees.call_targets; _ } =
                         let callee =
-                          let method_name =
-                            resolve_stringify_call
-                              ~pyre_in_context
-                              ~callables_to_definitions_map
-                              expression
+                          let method_name, origin_kind =
+                            match
+                              resolve_stringify_call
+                                ~pyre_in_context
+                                ~callables_to_definitions_map
+                                expression
+                            with
+                            | Str -> "__str__", Origin.FormatStringImplicitStr
+                            | Repr -> "__repr__", Origin.FormatStringImplicitRepr
                           in
                           {
                             Node.value =
@@ -3931,7 +4058,7 @@ module CalleeVisitor = struct
                                          (Origin.create
                                             ?base:(Ast.Expression.origin expression)
                                             ~location:expression_location
-                                            Origin.FormatStringImplicitStr);
+                                            origin_kind);
                                    });
                             location = expression_location;
                           }
@@ -5601,6 +5728,7 @@ let call_graph_of_define
     ~attribute_targets
     ~decorators
     ~callables_to_definitions_map
+    ~check_invariants
     ~qualifier
     ~define
   =
@@ -5626,6 +5754,8 @@ let call_graph_of_define
       override_graph;
       attribute_targets;
       callables_to_definitions_map;
+      expression_identifier_invariant =
+        (if check_invariants then Some (ExpressionIdentifierInvariant.create ()) else None);
     }
   in
   let module DefineFixpoint = DefineCallGraphFixpoint (struct
@@ -5678,6 +5808,7 @@ let call_graph_of_callable
     ~attribute_targets
     ~decorators
     ~callables_to_definitions_map
+    ~check_invariants
     ~callable
   =
   match Target.CallablesSharedMemory.ReadOnly.get_define callables_to_definitions_map callable with
@@ -5689,6 +5820,7 @@ let call_graph_of_callable
         ~attribute_targets
         ~decorators
         ~callables_to_definitions_map
+        ~check_invariants
         ~qualifier
         ~define:(Node.value define)
   | _ -> Format.asprintf "Found no definition for `%a`" Target.pp_pretty callable |> failwith
@@ -5749,6 +5881,7 @@ module DecoratorResolution = struct
           override_graph;
           attribute_targets = Target.HashSet.create ();
           callables_to_definitions_map;
+          expression_identifier_invariant = None;
         }
       in
       CalleeVisitor.visit_expression
@@ -6034,6 +6167,7 @@ module SharedMemory = struct
       ~decorators
       ~decorator_resolution
       ~skip_analysis_targets
+      ~check_invariants
       ~definitions
       ~create_dependency_for
     =
@@ -6056,6 +6190,7 @@ module SharedMemory = struct
                   ~attribute_targets
                   ~decorators
                   ~callables_to_definitions_map
+                  ~check_invariants
                   ~callable)
               ()
           in
