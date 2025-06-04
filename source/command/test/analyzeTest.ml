@@ -30,7 +30,6 @@ let test_json_parsing context =
       dump_call_graph = None;
       dump_model_query_results = None;
       find_missing_flows = None;
-      inline_decorators = false;
       infer_self_tito = false;
       infer_argument_tito = false;
       maximum_model_source_tree_width = None;
@@ -64,7 +63,6 @@ let test_json_parsing context =
       saved_state = Configuration.StaticAnalysis.SavedState.empty;
       compute_coverage = false;
       scheduler_policies = Configuration.SchedulerPolicies.empty;
-      higher_order_call_graph = false;
       higher_order_call_graph_max_iterations = None;
       maximum_target_depth = None;
       maximum_parameterized_targets_at_call_site = None;
@@ -93,9 +91,6 @@ let test_json_parsing context =
         dummy_analyze_configuration with
         find_missing_flows = Some Configuration.MissingFlowKind.Obscure;
       };
-  assert_parsed
-    (`Assoc (("inline_decorators", `Bool true) :: BaseConfigurationTest.dummy_base_json))
-    ~expected:{ dummy_analyze_configuration with inline_decorators = true };
   assert_parsed
     (`Assoc (("infer_self_tito", `Bool true) :: BaseConfigurationTest.dummy_base_json))
     ~expected:{ dummy_analyze_configuration with infer_self_tito = true };
@@ -229,9 +224,6 @@ let test_json_parsing context =
   assert_parsed
     (`Assoc (("compute_coverage", `Bool true) :: BaseConfigurationTest.dummy_base_json))
     ~expected:{ dummy_analyze_configuration with compute_coverage = true };
-  assert_parsed
-    (`Assoc (("higher_order_call_graph", `Bool true) :: BaseConfigurationTest.dummy_base_json))
-    ~expected:{ dummy_analyze_configuration with higher_order_call_graph = true };
   assert_parsed
     (`Assoc
       (("higher_order_call_graph_max_iterations", `Int 101) :: BaseConfigurationTest.dummy_base_json))

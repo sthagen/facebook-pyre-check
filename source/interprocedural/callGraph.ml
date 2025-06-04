@@ -900,8 +900,10 @@ module CallCallees = struct
     new_targets: CallTarget.t list;
     (* Call targets for calls to the `__init__` instance method. *)
     init_targets: CallTarget.t list;
-    (* Call targets for the calls to artificially created callables that call the decorators. Only
-       used by call graph building. *)
+    (* A decorated target, which is an artificially created callable that calls the decorators,
+       represents its returned callables, instead of itself, unlike other targets. This is used to
+       set the dependencies in the call graph fixpoint so that when a decorated target returns new
+       callables, those can be picked up by whoever depends on the decorated target. *)
     decorated_targets: CallTarget.t list;
     (* Information about arguments that are callables, and possibly called. *)
     higher_order_parameters: HigherOrderParameterMap.t;
@@ -1556,6 +1558,73 @@ module FormatStringStringifyCallees = struct
     { targets = List.map ~f:(CallTarget.Indexer.regenerate_index ~indexer) targets }
 end
 
+module DefineCallees = struct
+  type t = {
+    define_targets: CallTarget.t list;
+    decorated_targets: CallTarget.t list;
+  }
+  [@@deriving eq, show { with_path = false }]
+
+  let create ?(define_targets = []) ?(decorated_targets = []) () =
+    { define_targets; decorated_targets }
+
+
+  let join
+      { define_targets = left_define_targets; decorated_targets = left_decorated_targets }
+      { define_targets = right_define_targets; decorated_targets = right_decorated_targets }
+    =
+    {
+      define_targets = List.rev_append left_define_targets right_define_targets;
+      decorated_targets = List.rev_append left_decorated_targets right_decorated_targets;
+    }
+
+
+  let equal_ignoring_types
+      { define_targets = left_define_targets; decorated_targets = left_decorated_targets }
+      { define_targets = right_define_targets; decorated_targets = right_decorated_targets }
+    =
+    List.equal CallTarget.equal_ignoring_types left_define_targets right_define_targets
+    && List.equal CallTarget.equal_ignoring_types left_decorated_targets right_decorated_targets
+
+
+  let dedup_and_sort { define_targets; decorated_targets } =
+    {
+      define_targets = CallTarget.dedup_and_sort define_targets;
+      decorated_targets = CallTarget.dedup_and_sort decorated_targets;
+    }
+
+
+  let all_targets ~use_case { define_targets; decorated_targets } =
+    (match use_case with
+    | AllTargetsUseCase.CallGraphDependency -> decorated_targets
+    | AllTargetsUseCase.TaintAnalysisDependency ->
+        (* Taint analysis does not need to know this. *) []
+    | AllTargetsUseCase.Everything -> List.rev_append define_targets decorated_targets)
+    |> List.map ~f:CallTarget.target
+
+
+  let to_json { define_targets; decorated_targets } =
+    let bindings =
+      []
+      |> JsonHelper.add_list "define_targets" define_targets CallTarget.to_json
+      |> JsonHelper.add_list "decorated_targets" decorated_targets CallTarget.to_json
+    in
+    `Assoc bindings
+
+
+  let redirect_to_decorated ~decorators { define_targets; decorated_targets } =
+    {
+      define_targets = List.map ~f:(CallTarget.redirect_to_decorated ~decorators) define_targets;
+      decorated_targets;
+    }
+
+
+  let drop_decorated_targets callees = { callees with decorated_targets = [] }
+
+  let regenerate_call_indices ~indexer:_ callees =
+    (* No need to regenerate because these will not be used in taint analysis. *) callees
+end
+
 (** Represents a unique identifier for an expression in the control flow graph. *)
 module ExpressionIdentifier = struct
   module T = struct
@@ -1665,6 +1734,8 @@ module ExpressionIdentifier = struct
           Constant { location; constant }
       | _ -> Regular location
 
+
+    let of_define_statement define_location = Regular define_location
 
     let pp_json_key formatter = function
       | Regular location -> Location.pp formatter location
@@ -1782,6 +1853,7 @@ module ExpressionCallees = struct
     | Identifier of IdentifierCallees.t
     | FormatStringArtificial of FormatStringArtificialCallees.t
     | FormatStringStringify of FormatStringStringifyCallees.t
+    | Define of DefineCallees.t
   [@@deriving eq, show { with_path = false }]
 
   let from_call callees = Call callees
@@ -1794,6 +1866,8 @@ module ExpressionCallees = struct
 
   let from_format_string_stringify callees = FormatStringStringify callees
 
+  let from_define callees = Define callees
+
   let join left right =
     match left, right with
     | Call left, Call right -> Call (CallCallees.join left right)
@@ -1804,6 +1878,7 @@ module ExpressionCallees = struct
         FormatStringArtificial (FormatStringArtificialCallees.join left right)
     | FormatStringStringify left, FormatStringStringify right ->
         FormatStringStringify (FormatStringStringifyCallees.join left right)
+    | Define left, Define right -> Define (DefineCallees.join left right)
     | _ ->
         Format.asprintf
           "Trying to join different callee types:\n\tleft: %a\n\tright: %a"
@@ -1822,6 +1897,7 @@ module ExpressionCallees = struct
         FormatStringArtificial (FormatStringArtificialCallees.dedup_and_sort callees)
     | FormatStringStringify callees ->
         FormatStringStringify (FormatStringStringifyCallees.dedup_and_sort callees)
+    | Define callees -> Define (DefineCallees.dedup_and_sort callees)
 
 
   let all_targets ~use_case = function
@@ -1830,6 +1906,7 @@ module ExpressionCallees = struct
     | Identifier callees -> IdentifierCallees.all_targets ~use_case callees
     | FormatStringArtificial callees -> FormatStringArtificialCallees.all_targets ~use_case callees
     | FormatStringStringify callees -> FormatStringStringifyCallees.all_targets ~use_case callees
+    | Define callees -> DefineCallees.all_targets ~use_case callees
 
 
   let is_empty_attribute_access_callees = function
@@ -1847,6 +1924,7 @@ module ExpressionCallees = struct
         FormatStringArtificialCallees.equal left right
     | FormatStringStringify left, FormatStringStringify right ->
         FormatStringStringifyCallees.equal left right
+    | Define left, Define right -> DefineCallees.equal_ignoring_types left right
     | _ -> false
 
 
@@ -1858,6 +1936,7 @@ module ExpressionCallees = struct
         `Assoc ["format_string_artificial", FormatStringArtificialCallees.to_json callees]
     | FormatStringStringify callees ->
         `Assoc ["format_string_stringify", FormatStringStringifyCallees.to_json callees]
+    | Define callees -> `Assoc ["define", DefineCallees.to_json callees]
 
 
   let redirect_to_decorated ~decorators = function
@@ -1871,6 +1950,7 @@ module ExpressionCallees = struct
     | FormatStringStringify callees ->
         FormatStringStringify
           (FormatStringStringifyCallees.redirect_to_decorated ~decorators callees)
+    | Define callees -> Define (DefineCallees.redirect_to_decorated ~decorators callees)
 
 
   let drop_decorated_targets = function
@@ -1882,6 +1962,7 @@ module ExpressionCallees = struct
         FormatStringArtificial (FormatStringArtificialCallees.drop_decorated_targets callees)
     | FormatStringStringify callees ->
         FormatStringStringify (FormatStringStringifyCallees.drop_decorated_targets callees)
+    | Define callees -> Define (DefineCallees.drop_decorated_targets callees)
 
 
   let regenerate_call_indices ~indexer callees =
@@ -1897,6 +1978,7 @@ module ExpressionCallees = struct
     | FormatStringStringify callees ->
         FormatStringStringify
           (FormatStringStringifyCallees.regenerate_call_indices ~indexer callees)
+    | Define callees -> Define (DefineCallees.regenerate_call_indices ~indexer callees)
 end
 
 let log ~debug format =
@@ -2135,6 +2217,21 @@ module DefineCallGraph = struct
       ~callees:(ExpressionCallees.from_identifier callees)
 
 
+  let add_define_callees
+      ~debug
+      ~define:{ Define.signature = { name; _ }; _ }
+      ~define_location
+      ~callees
+    =
+    add_callees
+      ~debug
+      ~expression_identifier:(ExpressionIdentifier.of_define_statement define_location)
+      ~expression_for_logging:
+        (Node.create_with_default_location
+           (Expression.Name (Name.Identifier (Format.asprintf "def %a(): ..." Reference.pp name))))
+      ~callees:(ExpressionCallees.from_define callees)
+
+
   let set_call_callees ~location ~call ~callees =
     set_callees
       ~error_if_existing_empty:true
@@ -2179,6 +2276,13 @@ module DefineCallGraph = struct
       ~expression_identifier:(ExpressionIdentifier.of_format_string_stringify ~location)
       ~expression_for_logging:(Node.create_with_default_location substring)
       ~callees:(ExpressionCallees.from_format_string_stringify callees)
+
+
+  let set_define_callees ~define_location ~callees =
+    set_callees
+      ~error_if_existing_empty:true
+      ~expression_identifier:(ExpressionIdentifier.of_define_statement define_location)
+      ~callees:(ExpressionCallees.from_define callees)
 
 
   let filter_empty_attribute_access =
@@ -2260,6 +2364,15 @@ module DefineCallGraph = struct
     >>= function
     | ExpressionCallees.FormatStringStringify format_string_stringify ->
         Some format_string_stringify
+    | _ -> None
+
+
+  let resolve_define call_graph ~define_location =
+    resolve_expression
+      call_graph
+      ~expression_identifier:(ExpressionIdentifier.of_define_statement define_location)
+    >>= function
+    | ExpressionCallees.Define call -> Some call
     | _ -> None
 end
 
@@ -4258,6 +4371,30 @@ module CallGraphBuilder = struct
     resolve_identifier ~define:define_name ~pyre_in_context
 
 
+  let build_for_inner_define ~context:{ Context.debug; _ } ~callees_at_location = function
+    | {
+        Node.value =
+          Statement.Define
+            ({
+               Define.signature =
+                 { name; parent = (* Create targets only for inner functions. *) Function _; _ };
+               _;
+             } as define);
+        location;
+      } ->
+        let delocalized_name = Reference.delocalize name in
+        let target = Target.create delocalized_name define in
+        callees_at_location :=
+          DefineCallGraph.add_define_callees
+            ~debug
+            ~define
+            ~define_location:location
+            ~callees:
+              { DefineCallees.define_targets = [CallTarget.create target]; decorated_targets = [] }
+            !callees_at_location
+    | _ -> ()
+
+
   let check_expression_identifier_invariant
       ~state:{ State.context = { Context.define_name; expression_identifier_invariant; _ }; _ }
       ~location
@@ -4657,9 +4794,14 @@ struct
           let () = forward_expression name in
           let () = forward_expression value in
           ()
-      | Define _
+      | Define _ ->
+          CallGraphBuilder.build_for_inner_define
+            ~context:Context.builder_context
+            ~callees_at_location:Context.callees_at_location
+            statement
       | Break
-      | Class _
+      | Class _ ->
+          ()
       | Continue
       | Global _
       | Import _
@@ -5222,7 +5364,7 @@ module HigherOrderCallGraph = struct
       let analyze_argument
           ~higher_order_parameters
           index
-          (state_so_far, additional_higher_order_parameters)
+          (state_so_far, additional_higher_order_parameters, decorated_targets)
           { Call.Argument.value = argument; _ }
         =
         let callees, new_state =
@@ -5249,11 +5391,23 @@ module HigherOrderCallGraph = struct
               else
                 called_when_parameter, CallTarget.Set.add call_target not_called_when_parameter)
         in
-        let called_when_parameter, not_called_when_parameter =
+        let {
+          AnalyzeDecoratedTargetsResult.decorated_targets = new_decorated_targets;
+          non_decorated_targets = _;
+          result_targets;
+        }
+          =
           call_targets_from_higher_order_parameters
           |> CallTarget.Set.of_list
           |> CallTarget.Set.join callees
-          |> partition_called_when_parameter
+          |> CallTarget.Set.elements
+          |> resolve_decorated_targets
+        in
+        let called_when_parameter, not_called_when_parameter =
+          (* Partition on the targets after resolving decorated targets, not before resolving.
+             Resolving decorated targets may result in targets that needs to be treated as
+             `called_when_parameter`. *)
+          result_targets |> CallTarget.Set.of_list |> partition_called_when_parameter
         in
         log
           "Finished analyzing argument `%a` -- called_when_parameter: %a. \
@@ -5276,7 +5430,10 @@ module HigherOrderCallGraph = struct
                 unresolved = Unresolved.False;
               }
         in
-        (new_state, additional_higher_order_parameters), not_called_when_parameter
+        ( ( new_state,
+            additional_higher_order_parameters,
+            List.rev_append new_decorated_targets decorated_targets ),
+          not_called_when_parameter )
       in
       let ({
              CallCallees.call_targets = original_call_targets;
@@ -5307,12 +5464,14 @@ module HigherOrderCallGraph = struct
       let callee_return_values, state =
         analyze_expression ~pyre_in_context ~state ~expression:call.Call.callee
       in
-      let (state, additional_higher_order_parameters), argument_callees_not_called_when_parameter =
+      let ( (state, additional_higher_order_parameters, decorated_targets_from_arguments),
+            argument_callees_not_called_when_parameter )
+        =
         track_apply_call_step AnalyzeArguments (fun () ->
             List.fold_mapi
               arguments
               ~f:(analyze_argument ~higher_order_parameters)
-              ~init:(state, HigherOrderParameterMap.empty))
+              ~init:(state, HigherOrderParameterMap.empty, []))
       in
       let ( parameterized_call_targets,
             decorated_call_targets,
@@ -5419,6 +5578,7 @@ module HigherOrderCallGraph = struct
                   decorated_targets =
                     decorated_call_targets
                     |> List.rev_append decorated_init_targets
+                    |> List.rev_append decorated_targets_from_arguments
                     |> List.dedup_and_sort ~compare:CallTarget.compare;
                   init_targets = new_init_targets;
                   higher_order_parameters;
@@ -5774,31 +5934,54 @@ module HigherOrderCallGraph = struct
                 let strong_update = TaintAccessPath.Path.is_empty path in
                 store_callees ~weak:(not strong_update) ~root ~callees:CallTarget.Set.bottom state)
         | Assert { test; _ } -> analyze_expression ~pyre_in_context ~state ~expression:test |> snd
-        | Define ({ Define.signature = { name; _ }; _ } as define) ->
-            let delocalized_name = Reference.delocalize name in
-            let regular_target =
-              define |> Target.create delocalized_name |> Target.as_regular_exn
+        | Define { Define.signature = { name; _ }; _ } ->
+            let define_location = Node.location statement in
+            let callees_without_captures, captures =
+              Context.input_define_call_graph
+              |> DefineCallGraph.resolve_define ~define_location
+              >>| (fun { DefineCallees.define_targets; _ } ->
+                    let {
+                      AnalyzeDecoratedTargetsResult.decorated_targets;
+                      non_decorated_targets = _ (* Not useful to taint analysis. *);
+                      result_targets;
+                    }
+                      =
+                      resolve_decorated_targets define_targets
+                    in
+                    let () =
+                      Context.output_define_call_graph :=
+                        DefineCallGraph.set_define_callees
+                          ~define_location
+                          ~callees:
+                            { DefineCallees.define_targets = result_targets; decorated_targets }
+                          !Context.output_define_call_graph
+                    in
+                    let captures =
+                      match define_targets with
+                      | [define_target] ->
+                          define_target
+                          |> CallTarget.target
+                          |> (* Since `Define` statements inside another `Define` are stripped out
+                                (to avoid bloat), use this API to query the definition. *)
+                          Target.CallablesSharedMemory.ReadOnly.get_captures
+                            Context.callables_to_definitions_map
+                      | _ ->
+                          Format.asprintf
+                            "Expect a single `define_target` but got `[%s]`"
+                            (define_targets |> List.map ~f:CallTarget.show |> String.concat ~sep:";")
+                          |> failwith
+                    in
+                    result_targets, captures)
+              |> Option.value ~default:([], None)
             in
             let callees =
-              (* Since `Define` statements inside another `Define` are stripped out (to avoid
-                 bloat), use this API to query the definition. *)
-              match
-                regular_target
-                |> Target.from_regular
-                |> Target.CallablesSharedMemory.ReadOnly.get_captures
-                     Context.callables_to_definitions_map
-              with
+              match captures with
               | Some captures ->
                   let parameters_roots, parameters_targets =
                     captures
                     |> List.filter_map ~f:(fun { Define.Capture.name; _ } ->
                            let captured = State.create_root_from_identifier name in
-                           log
-                             "Inner function `%a` captures `%a`"
-                             Reference.pp
-                             delocalized_name
-                             TaintAccessPath.Root.pp
-                             captured;
+                           log "Inner function captures `%a`" TaintAccessPath.Root.pp captured;
                            let parameter_targets =
                              state
                              |> State.get captured
@@ -5815,10 +5998,7 @@ module HigherOrderCallGraph = struct
                     |> List.unzip
                   in
                   if List.is_empty parameters_targets then
-                    regular_target
-                    |> Target.from_regular
-                    |> CallTarget.create
-                    |> CallTarget.Set.singleton
+                    callees_without_captures
                   else
                     parameters_targets
                     |> cartesian_product_with_limit
@@ -5827,31 +6007,28 @@ module HigherOrderCallGraph = struct
                            "Avoid generating parameterized targets when analyzing `Define` \
                             statement"
                     |> Option.value ~default:[]
-                    |> List.map ~f:(fun parameters_targets ->
-                           match
-                             validate_target
-                               (Target.Parameterized
-                                  {
-                                    regular = regular_target;
-                                    parameters =
-                                      parameters_targets
-                                      |> List.zip_exn parameters_roots
-                                      |> Target.ParameterMap.of_alist_exn;
-                                  })
-                           with
-                           | Some parameterized -> CallTarget.create parameterized
-                           | None -> CallTarget.create_regular regular_target)
-                    |> CallTarget.Set.of_list
-              | _ ->
-                  regular_target
-                  |> Target.from_regular
-                  |> CallTarget.create
-                  |> CallTarget.Set.singleton
+                    |> List.concat_map ~f:(fun parameters_targets ->
+                           List.map callees_without_captures ~f:(fun call_target ->
+                               match
+                                 validate_target
+                                   (Target.Parameterized
+                                      {
+                                        regular =
+                                          call_target |> CallTarget.target |> Target.get_regular;
+                                        parameters =
+                                          parameters_targets
+                                          |> List.zip_exn parameters_roots
+                                          |> Target.ParameterMap.of_alist_exn;
+                                      })
+                               with
+                               | Some parameterized -> { call_target with target = parameterized }
+                               | None -> call_target))
+              | None -> callees_without_captures
             in
             store_callees
               ~weak:false
               ~root:(name |> Reference.show |> State.create_root_from_identifier)
-              ~callees
+              ~callees:(CallTarget.Set.of_list callees)
               state
         | Delete expressions ->
             let analyze_delete state expression =
@@ -6165,6 +6342,63 @@ module DecoratorResolution = struct
    * ```
    * would resolve into expression `decorator(decorator_factory(1, 2)(foo))`, along with its callees that are stored in `call_graph`.
    *)
+
+  (* If Pyre cannot resolve the callable on the callable expression, we hardcode the callable. *)
+  let add_callees_for_attribute_access_if_unresolved
+      ~debug
+      ~callables_to_definitions_map
+      ~callee
+      ~attribute_access
+      ~attribute_access_location
+      ~call_graph
+    =
+    let attribute_access =
+      match attribute_access with
+      | Name.Attribute attribute -> attribute
+      | attribute_access ->
+          Format.asprintf
+            "Expect the decorated callable to be an attribute but got `%a`"
+            Name.pp
+            attribute_access
+          |> failwith
+    in
+    let should_add_callable =
+      !call_graph
+      |> DefineCallGraph.resolve_attribute_access
+           ~location:attribute_access_location
+           ~attribute_access
+      >>| (fun { AttributeAccessCallees.callable_targets; property_targets; _ } ->
+            List.is_empty callable_targets && List.is_empty property_targets)
+      |> Option.value ~default:true
+    in
+    if should_add_callable then
+      let is_class_method, is_static_method =
+        Target.CallablesSharedMemory.ReadOnly.get_method_kind callables_to_definitions_map callee
+      in
+      call_graph :=
+        DefineCallGraph.add_attribute_access_callees
+          ~debug
+          ~location:attribute_access_location
+          ~attribute_access
+          ~callees:
+            (AttributeAccessCallees.create
+               ~callable_targets:
+                 [
+                   CallTarget.create
+                     ~implicit_receiver:
+                       (is_implicit_receiver
+                          ~is_static_method
+                          ~is_class_method
+                          ~explicit_receiver:false
+                          callee)
+                     ~is_class_method
+                     ~is_static_method
+                     callee;
+                 ]
+               ())
+          !call_graph
+
+
   let resolve_exn
       ?(debug = false)
       ~pyre_in_context
@@ -6236,13 +6470,14 @@ module DecoratorResolution = struct
     | ( Some Target.Normal,
         Some { CallableToDecoratorsMap.decorators = _ :: _ as decorators; define_location } ) ->
         let define_name = Target.define_name_exn callable in
-        let callable_name =
+        let attribute_access_location = define_location in
+        let attribute_access =
           Ast.Expression.create_name_from_reference
-            ~location:define_location
+            ~location:attribute_access_location
             ~create_origin:(fun attributes ->
               Some
                 (Origin.create
-                   ~location:define_location
+                   ~location:attribute_access_location
                    (Origin.ForDecoratedTargetCallee attributes)))
             define_name
         in
@@ -6250,11 +6485,19 @@ module DecoratorResolution = struct
         let expression =
           List.fold
             decorators
-            ~init:(Expression.Name callable_name |> Node.create ~location:define_location)
+            ~init:
+              (Expression.Name attribute_access |> Node.create ~location:attribute_access_location)
             ~f:create_decorator_call
         in
         let call_graph = ref DefineCallGraph.empty in
         resolve_callees ~call_graph expression;
+        add_callees_for_attribute_access_if_unresolved
+          ~debug
+          ~callables_to_definitions_map
+          ~callee:callable
+          ~attribute_access
+          ~attribute_access_location
+          ~call_graph;
         let define =
           {
             Define.signature =

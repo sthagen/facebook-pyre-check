@@ -30,8 +30,6 @@ module Context = struct
       Interprocedural.Target.t -> Interprocedural.CallGraph.DefineCallGraph.t option;
     global_constants: Interprocedural.GlobalConstants.SharedMemory.ReadOnly.t;
     type_of_expression_shared_memory: Interprocedural.TypeOfExpressionSharedMemory.t;
-    (* Whether decorators are inlined during pre-processing. *)
-    decorator_inlined: bool;
     callables_to_definitions_map: Interprocedural.Target.CallablesSharedMemory.ReadOnly.t;
   }
 end
@@ -127,7 +125,6 @@ module Analysis = struct
       ~modes
       ~previous_model
       ~get_callee_model
-      ~decorator_inlined
     =
     let taint_configuration = TaintConfiguration.SharedMemory.get taint_configuration in
     let profiler =
@@ -186,7 +183,6 @@ module Analysis = struct
             ~get_callee_model
             ~existing_model:previous_model
             ~triggered_sinks
-            ~decorator_inlined
             ())
     in
     let forward, backward =
@@ -222,7 +218,6 @@ module Analysis = struct
           get_define_call_graph;
           global_constants;
           type_of_expression_shared_memory;
-          decorator_inlined;
           callables_to_definitions_map;
         }
       ~callable
@@ -246,12 +241,8 @@ module Analysis = struct
     let define_qualifier = Ast.Reference.delocalize name in
     let open Ast in
     let module_reference =
-      (* Pysa inlines decorators when a function is decorated. However, we want issues and models to
-         point to the lines in the module where the decorator was defined, not the module where it
-         was inlined. So, look up the originating module, if any, and use that as the module
-         qualifier. *)
-      PyrePysaLogic.DecoratorPreprocessing.original_name_from_inlined_name define_qualifier
-      >>= PyrePysaEnvironment.ReadOnly.location_of_global pyre_api
+      define_qualifier
+      |> PyrePysaEnvironment.ReadOnly.location_of_global pyre_api
       >>| fun { Location.WithModule.module_reference; _ } -> module_reference
     in
     let qualifier = Option.value ~default:qualifier module_reference in
@@ -282,7 +273,6 @@ module Analysis = struct
         ~modes
         ~previous_model
         ~get_callee_model
-        ~decorator_inlined
 
 
   let skip_additional_dependency _ = false

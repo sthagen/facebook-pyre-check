@@ -509,7 +509,7 @@ let set_up_decorator_preprocessing ~handle models =
     |> Option.value ~default:Reference.SerializableMap.empty
   in
   PyrePysaLogic.DecoratorPreprocessing.setup_preprocessing
-    { actions = decorator_actions; enable_inlining = false; enable_discarding = true }
+    { actions = decorator_actions; enable_discarding = true }
 
 
 let initialize_pyre_and_fail_on_errors ~context ~handle ~source_content ~models_source =
@@ -995,8 +995,7 @@ let end_to_end_integration_test path context =
     in
     let initial_models =
       SharedModels.initialize_for_parameterized_callables
-        ~higher_order_call_graph_fixpoint:
-          (Some call_graph_fixpoint_state.CallGraphFixpoint.fixpoint)
+        ~higher_order_call_graph_fixpoint:call_graph_fixpoint_state.CallGraphFixpoint.fixpoint
         initial_models
     in
     let fixpoint_state =
@@ -1031,7 +1030,6 @@ let end_to_end_integration_test path context =
               Interprocedural.GlobalConstants.SharedMemory.read_only global_constants;
             type_of_expression_shared_memory =
               Interprocedural.TypeOfExpressionSharedMemory.create ();
-            decorator_inlined = false;
             callables_to_definitions_map =
               Interprocedural.Target.CallablesSharedMemory.read_only callables_to_definitions_map;
           }

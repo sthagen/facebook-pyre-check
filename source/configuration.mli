@@ -313,7 +313,6 @@ module StaticAnalysis : sig
     dump_model_query_results: PyrePath.t option;
     use_cache: bool;
     build_cache_only: bool;
-    inline_decorators: bool;
     infer_self_tito: bool;
     infer_argument_tito: bool;
     maximum_model_source_tree_width: int option;
@@ -333,7 +332,6 @@ module StaticAnalysis : sig
     saved_state: SavedState.t;
     compute_coverage: bool;
     scheduler_policies: SchedulerPolicies.t;
-    higher_order_call_graph: bool;
     higher_order_call_graph_max_iterations: int;
     maximum_target_depth: int;
     maximum_parameterized_targets_at_call_site: int option;
@@ -365,7 +363,6 @@ module StaticAnalysis : sig
     ?dump_model_query_results:PyrePath.t ->
     ?use_cache:bool ->
     ?build_cache_only:bool ->
-    ?inline_decorators:bool ->
     ?infer_self_tito:bool ->
     ?infer_argument_tito:bool ->
     ?maximum_model_source_tree_width:int ->
@@ -385,7 +382,6 @@ module StaticAnalysis : sig
     ?saved_state:SavedState.t ->
     ?compute_coverage:bool ->
     ?scheduler_policies:SchedulerPolicies.t ->
-    ?higher_order_call_graph:bool ->
     ?higher_order_call_graph_max_iterations:int ->
     ?maximum_parameterized_targets_at_call_site:int option ->
     unit ->

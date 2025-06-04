@@ -780,7 +780,6 @@ module StaticAnalysis = struct
     dump_model_query_results: PyrePath.t option;
     use_cache: bool;
     build_cache_only: bool;
-    inline_decorators: bool;
     infer_self_tito: bool;
     infer_argument_tito: bool;
     maximum_model_source_tree_width: int option;
@@ -800,7 +799,6 @@ module StaticAnalysis = struct
     saved_state: SavedState.t;
     compute_coverage: bool;
     scheduler_policies: SchedulerPolicies.t;
-    higher_order_call_graph: bool;
     higher_order_call_graph_max_iterations: int;
     maximum_target_depth: int;
     maximum_parameterized_targets_at_call_site: int option;
@@ -836,7 +834,6 @@ module StaticAnalysis = struct
       ?dump_model_query_results
       ?(use_cache = false)
       ?(build_cache_only = false)
-      ?(inline_decorators = true)
       ?(infer_self_tito = false)
       ?(infer_argument_tito = false)
       ?maximum_model_source_tree_width
@@ -856,7 +853,6 @@ module StaticAnalysis = struct
       ?(saved_state = SavedState.empty)
       ?(compute_coverage = false)
       ?(scheduler_policies = SchedulerPolicies.empty)
-      ?(higher_order_call_graph = false)
       ?(higher_order_call_graph_max_iterations = default_higher_order_call_graph_max_iterations)
       ?(maximum_parameterized_targets_at_call_site = None)
       ()
@@ -878,7 +874,6 @@ module StaticAnalysis = struct
       dump_model_query_results;
       use_cache;
       build_cache_only;
-      inline_decorators;
       infer_self_tito;
       infer_argument_tito;
       maximum_model_source_tree_width;
@@ -898,7 +893,6 @@ module StaticAnalysis = struct
       saved_state;
       compute_coverage;
       scheduler_policies;
-      higher_order_call_graph;
       higher_order_call_graph_max_iterations;
       maximum_target_depth;
       maximum_parameterized_targets_at_call_site;
