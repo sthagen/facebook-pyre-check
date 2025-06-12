@@ -368,7 +368,7 @@ let create_property_setter_override reference =
   Override (create_method_name ~kind:PropertySetter reference) |> from_regular
 
 
-let create define_name define =
+let from_define ~define_name ~define =
   let open Define in
   let kind = if Define.is_property_setter define then PropertySetter else Normal in
   match define.signature.legacy_parent with
@@ -410,6 +410,16 @@ let is_object target = target |> get_regular |> Regular.is_object
 let is_normal target = target |> get_regular |> Regular.is_normal
 
 let is_decorated target = target |> get_regular |> Regular.is_decorated
+
+let is_parameterized = function
+  | Regular _ -> false
+  | Parameterized _ -> true
+
+
+let is_regular = function
+  | Regular _ -> true
+  | Parameterized _ -> false
+
 
 (* A parameterized target contains recursive targets if one of its `regular` part also appears in
    one of its `parameters` part. Such recursion may lead to non-termination in high-order call graph
@@ -575,7 +585,7 @@ let get_definitions ~pyre_api ~warn_multiple_definitions define_name =
     qualifier;
     callables =
       bodies
-      |> List.map ~f:(fun body -> create define_name (Node.value body), body)
+      |> List.map ~f:(fun body -> from_define ~define_name ~define:(Node.value body), body)
       |> Map.of_alist ~f:resolve_multiple_defines;
   }
 

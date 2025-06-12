@@ -115,7 +115,7 @@ val create_property_setter_override : Reference.t -> t
 
 val create_object : Reference.t -> t
 
-val create : Ast.Reference.t -> Define.t -> t
+val from_define : define_name:Ast.Reference.t -> define:Define.t -> t
 
 val from_regular : Regular.t -> t
 
@@ -154,6 +154,10 @@ val is_object : t -> bool
 val is_normal : t -> bool
 
 val is_decorated : t -> bool
+
+val is_parameterized : t -> bool
+
+val is_regular : t -> bool
 
 (* A parameterized target contains recursive targets if one of its `regular` part also appears in
    one of its `parameters` part. Such recursion may lead to non-termination in high-order call graph
