@@ -3092,7 +3092,7 @@ let preprocess_assignments statement =
                 Assign.target;
                 annotation = None;
                 value = Some call;
-                origin = Some (Node.create ~location Assign.Origin.AugmentedAssign);
+                origin = Some (Origin.create ~location Origin.AugmentedAssignStatement);
               };
         }
     | _ -> statement
@@ -3103,8 +3103,9 @@ let preprocess_assignments statement =
      Statement.Assign
        {
          Assign.target =
-           { Node.value = Expression.Subscript { base; index; origin = subscript_origin }; _ };
+           { Node.value = Expression.Subscript { base; index; origin = subscript_origin; _ }; _ };
          value = Some value_expression;
+         origin = assign_origin;
          _;
        };
    location;
@@ -3114,7 +3115,6 @@ let preprocess_assignments statement =
          `x, y[a], z = w`. In the future, we should implement proper logic to handle those. *)
       let index_argument = { Call.Argument.value = index; name = None } in
       let value_argument = { Call.Argument.value = value_expression; name = None } in
-      let origin = Some (Origin.create ?base:subscript_origin ~location Origin.SubscriptSetItem) in
       {
         Node.location;
         value =
@@ -3126,11 +3126,24 @@ let preprocess_assignments statement =
                   {
                     callee =
                       {
-                        value = Name (Name.Attribute { base; attribute = "__setitem__"; origin });
+                        value =
+                          Name
+                            (Name.Attribute
+                               {
+                                 base;
+                                 attribute = "__setitem__";
+                                 origin =
+                                   Some
+                                     (Origin.create
+                                        ?base:subscript_origin
+                                        ~location
+                                        Origin.SubscriptSetItem);
+                               });
                         location;
                       };
                     arguments = [index_argument; value_argument];
-                    origin;
+                    origin =
+                      Some (Origin.create ?base:assign_origin ~location Origin.SubscriptSetItem);
                   };
             };
       }
@@ -4259,7 +4272,7 @@ module CallGraphBuilder = struct
       ~folder
       ~state:({ State.callees_at_location; context = { Context.debug; _ }; _ } as state)
       ~location
-      ({ Call.callee = callee_expression; arguments; _ } as call)
+      ({ Call.callee = callee_expression; arguments; origin = call_origin } as call)
     =
     let () = check_expression_identifier_invariant ~state ~location (Expression.Call call) in
     let callees = resolve_callees ~state ~location ~call in
@@ -4284,7 +4297,7 @@ module CallGraphBuilder = struct
            };
            { Call.Argument.value = _; _ };
          ];
-       origin = call_origin;
+       _;
       } ->
           let origin =
             Some (Origin.create ?base:call_origin ~location Origin.GetAttrConstantLiteral)
@@ -4324,7 +4337,7 @@ module CallGraphBuilder = struct
            };
            { Call.Argument.value = _; name = None };
          ];
-       origin = call_origin;
+       _;
       } ->
           let origin =
             Some (Origin.create ?base:call_origin ~location Origin.SetAttrConstantLiteral)
@@ -4350,10 +4363,23 @@ module CallGraphBuilder = struct
       | Expression.Name (Name.Identifier _) -> state
       | _ -> Folder.fold ~folder ~state callee_expression
     in
-    List.fold
-      ~init:state
-      ~f:(fun state { Call.Argument.value; _ } -> Folder.fold ~folder ~state value)
-      arguments
+    match call_origin, arguments with
+    | ( Some
+          {
+            Origin.kind =
+              Nested { head = Origin.SubscriptSetItem; tail = Origin.ChainedAssign { index } };
+            _;
+          },
+        [{ Call.Argument.value = index_argument; _ }; _] )
+      when index >= 1 ->
+        (* `x = a[b] = c` was turned into `a.__setitem__(b, c)`. We should NOT revisit c, since it
+           was already visited for `x = c`. *)
+        Folder.fold ~folder ~state index_argument
+    | _ ->
+        List.fold
+          ~init:state
+          ~f:(fun state { Call.Argument.value; _ } -> Folder.fold ~folder ~state value)
+          arguments
 
 
   let fold_name
@@ -4628,7 +4654,7 @@ struct
       | Statement.Assign { target; value; annotation = _; origin } ->
           let () =
             match value, origin with
-            | _, Some { Node.value = Assign.Origin.ChainedAssign { index }; _ } when index >= 1 ->
+            | _, Some { Origin.kind = Origin.ChainedAssign { index }; _ } when index >= 1 ->
                 (* We already visited the value expression for index = 0, so skip it this time. *)
                 ()
             | Some value, _ -> forward_expression value
