@@ -28,24 +28,42 @@ type kind =
        function). By contrast, we use `Normal` to represent the undecorated function. *)
 [@@deriving show { with_path = false }, sexp, compare, hash, eq]
 
-type function_name = {
-  name: string;
-  kind: kind;
-}
-[@@deriving show { with_path = false }, sexp, compare, hash, eq]
+module Function = struct
+  type t = {
+    name: string;
+    kind: kind;
+  }
+  [@@deriving show { with_path = false }, sexp, compare, hash, eq]
 
-type method_name = {
-  class_name: string;
-  method_name: string;
-  kind: kind;
-}
-[@@deriving show { with_path = false }, sexp, compare, hash, eq]
+  let create ?(kind = Normal) reference =
+    let () =
+      if Reference.is_local reference then
+        failwith (Format.asprintf "Invalid callable name: %a" Reference.pp reference)
+    in
+    { name = Reference.show reference; kind }
+end
+
+module Method = struct
+  type t = {
+    class_name: string;
+    method_name: string;
+    kind: kind;
+  }
+  [@@deriving show { with_path = false }, sexp, compare, hash, eq]
+
+  let create ?(kind = Normal) class_name method_name =
+    let () =
+      if Reference.is_local class_name then
+        failwith (Format.asprintf "Invalid class name: %a" Reference.pp class_name)
+    in
+    { class_name = Reference.show class_name; method_name; kind }
+end
 
 module Regular = struct
   type t =
-    | Function of function_name
-    | Method of method_name
-    | Override of method_name
+    | Function of Function.t
+    | Method of Method.t
+    | Override of Method.t
     (* Represents a global variable or field of a class that we want to model,
      * e.g os.environ or HttpRequest.GET *)
     | Object of string
@@ -65,9 +83,9 @@ module Regular = struct
       priority_comparison
     else
       match left, right with
-      | Function first, Function second -> compare_function_name first second
-      | Method first, Method second -> compare_method_name first second
-      | Override first, Override second -> compare_method_name first second
+      | Function first, Function second -> Function.compare first second
+      | Method first, Method second -> Method.compare first second
+      | Override first, Override second -> Method.compare first second
       | Object first, Object second -> String.compare first second
       | _ -> failwith "The compared targets must belong to the same variant."
 
@@ -112,14 +130,7 @@ module Regular = struct
 
 
   let pp_external formatter = function
-    | Function { name; kind } ->
-        Format.fprintf
-          formatter
-          "%a%a"
-          Reference.pp
-          (name |> Reference.create |> Reference.delocalize)
-          pp_kind
-          kind
+    | Function { name; kind } -> Format.fprintf formatter "%s%a" name pp_kind kind
     | Method { class_name; method_name; kind } ->
         Format.fprintf formatter "%s.%s%a" class_name method_name pp_kind kind
     | Override { class_name; method_name; kind } ->
@@ -236,8 +247,7 @@ module Regular = struct
 
 
   let create_derived_override_exn ~at_type = function
-    | Override { method_name; kind; _ } ->
-        Override { class_name = Reference.show at_type; method_name; kind }
+    | Override { method_name; kind; _ } -> Override (Method.create ~kind at_type method_name)
     | _ -> failwith "unexpected"
 end
 
@@ -327,16 +337,6 @@ let pp_external = PrettyPrintExternal.pp
 
 let external_name = PrettyPrintExternal.show
 
-let create_function_name ?(kind = Normal) reference = { name = Reference.show reference; kind }
-
-let create_method_name ?(kind = Normal) reference =
-  {
-    class_name = Reference.prefix reference >>| Reference.show |> Option.value ~default:"";
-    method_name = Reference.last reference;
-    kind;
-  }
-
-
 let from_regular regular = Regular regular
 
 let get_regular = function
@@ -352,27 +352,39 @@ let as_regular_exn = function
   | Parameterized _ -> failwith "expect `Regular`"
 
 
-let create_function ?kind reference =
-  Function (create_function_name ?kind reference) |> from_regular
+let create_function ?kind reference = Function (Function.create ?kind reference) |> from_regular
+
+let create_method ?kind class_name method_name =
+  Method (Method.create ?kind class_name method_name) |> from_regular
 
 
-let create_method ?kind reference = Method (create_method_name ?kind reference) |> from_regular
+let create_method_from_reference ?kind reference =
+  Method
+    (Method.create
+       ?kind
+       (Reference.prefix reference |> Option.value ~default:Reference.empty)
+       (Reference.last reference))
+  |> from_regular
 
-let create_property_setter reference =
-  Method (create_method_name ~kind:PropertySetter reference) |> from_regular
+
+let create_override ?kind class_name method_name =
+  Override (Method.create ?kind class_name method_name) |> from_regular
 
 
-let create_override ?kind reference = Override (create_method_name ?kind reference) |> from_regular
-
-let create_property_setter_override reference =
-  Override (create_method_name ~kind:PropertySetter reference) |> from_regular
+let create_override_from_reference ?kind reference =
+  Override
+    (Method.create
+       ?kind
+       (Reference.prefix reference |> Option.value ~default:Reference.empty)
+       (Reference.last reference))
+  |> from_regular
 
 
 let from_define ~define_name ~define =
   let open Define in
   let kind = if Define.is_property_setter define then PropertySetter else Normal in
   match define.signature.legacy_parent with
-  | Some _ -> create_method ~kind define_name
+  | Some _ -> create_method_from_reference ~kind define_name
   | None -> create_function ~kind define_name
 
 
@@ -612,7 +624,7 @@ let resolve_method ~pyre_api ~class_type ~method_name =
   in
   match callable_implementation with
   | Some callable when PyrePysaLogic.AnnotatedAttribute.defined callable ->
-      PyrePysaLogic.name_of_method callable >>| create_method
+      PyrePysaLogic.name_of_method callable >>| create_method_from_reference
   | _ -> None
 
 
@@ -788,6 +800,19 @@ module CallablesSharedMemory = struct
       match SignaturesSharedMemory.get signatures target with
       | Some { Signature.captures; _ } -> Some captures
       | None -> None
+
+
+    (* Return the function or method target from a reference *)
+    let callable_from_reference { defines; _ } name =
+      let function_target = create_function name in
+      if DefinesSharedMemory.ReadOnly.mem defines function_target then
+        Some function_target
+      else
+        let method_target = create_method_from_reference name in
+        if DefinesSharedMemory.ReadOnly.mem defines method_target then
+          Some method_target
+        else
+          None
 
 
     let mem { signatures; _ } target = SignaturesSharedMemory.mem signatures target

@@ -252,7 +252,7 @@ let test_call_graph_of_define =
                           CallTarget.create
                             ~implicit_receiver:true
                             ~receiver_class:"test.C"
-                            (Target.create_method (Reference.create "test.C.m"));
+                            (Target.create_method !&"test.C" "m");
                         ]
                       ()) );
              ]
@@ -419,7 +419,7 @@ let test_call_graph_of_define =
                           CallTarget.create
                             ~implicit_receiver:true
                             ~receiver_class:"test.C"
-                            (Target.create_method (Reference.create "test.C.m"));
+                            (Target.create_method !&"test.C" "m");
                         ]
                       ()) );
              ]
@@ -453,7 +453,7 @@ let test_call_graph_of_define =
                           CallTarget.create
                             ~implicit_receiver:true
                             ~receiver_class:"test.C"
-                            (Target.create_override (Reference.create "test.C.m"));
+                            (Target.create_override !&"test.C" "m");
                         ]
                       ()) );
              ]
@@ -486,11 +486,11 @@ let test_call_graph_of_define =
                           CallTarget.create
                             ~implicit_receiver:true
                             ~receiver_class:"test.D"
-                            (Target.create_method (Reference.create "test.C.m"));
+                            (Target.create_method !&"test.C" "m");
                           CallTarget.create
                             ~implicit_receiver:true
                             ~receiver_class:"test.D"
-                            (Target.create_method (Reference.create "test.E.m"));
+                            (Target.create_method !&"test.E" "m");
                         ]
                       ()) );
              ]
@@ -516,7 +516,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             ~implicit_dunder_call:true
                             ~receiver_class:"test.C"
-                            (Target.create_method (Reference.create "test.C.__call__"));
+                            (Target.create_method !&"test.C" "__call__");
                         ]
                       ()) );
              ]
@@ -543,7 +543,7 @@ let test_call_graph_of_define =
                             ~implicit_dunder_call:true
                             ~return_type:(Some ReturnType.bool)
                             ~is_static_method:true
-                            (Target.create_method (Reference.create "test.C.__call__"));
+                            (Target.create_method !&"test.C" "__call__");
                         ]
                       ()) );
              ]
@@ -569,7 +569,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             ~return_type:(Some ReturnType.bool)
                             ~receiver_class:"test.C"
-                            (Target.create_method (Reference.create "test.C.__call__"));
+                            (Target.create_method !&"test.C" "__call__");
                         ]
                       ()) );
              ]
@@ -597,7 +597,7 @@ let test_call_graph_of_define =
                             ~implicit_dunder_call:true
                             ~return_type:(Some ReturnType.bool)
                             ~receiver_class:"test.C"
-                            (Target.create_method (Reference.create "test.C.__call__"));
+                            (Target.create_method !&"test.C" "__call__");
                         ]
                       ()) );
              ]
@@ -3568,6 +3568,7 @@ let test_call_graph_of_define =
                         (* TODO(T112761296): Probably wrong call resolution *)
                         CallTarget.create_regular
                           ~index:1
+                          ~implicit_receiver:true
                           (Target.Regular.Method
                              {
                                class_name = "BaseException";
@@ -3647,6 +3648,7 @@ let test_call_graph_of_define =
                       [
                         (* TODO(T112761296): Wrong call resolution *)
                         CallTarget.create_regular
+                          ~implicit_receiver:true
                           (Target.Regular.Method
                              {
                                class_name = "BaseException";
@@ -4261,7 +4263,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             (Target.Regular.Override
                                {
-                                 Target.class_name = "test.Base";
+                                 Target.Method.class_name = "test.Base";
                                  method_name = "query";
                                  kind = Normal;
                                });
@@ -4276,7 +4278,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             (Target.Regular.Method
                                {
-                                 Target.class_name = "test.Base";
+                                 Target.Method.class_name = "test.Base";
                                  method_name = "query";
                                  kind = Decorated;
                                });
@@ -4284,7 +4286,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             (Target.Regular.Method
                                {
-                                 Target.class_name = "test.SubChild";
+                                 Target.Method.class_name = "test.SubChild";
                                  method_name = "query";
                                  kind = Normal;
                                });
@@ -4331,7 +4333,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             (Target.Regular.Method
                                {
-                                 Target.class_name = "test.BaseA";
+                                 Target.Method.class_name = "test.BaseA";
                                  method_name = "query";
                                  kind = Decorated;
                                });
@@ -4349,7 +4351,7 @@ let test_call_graph_of_define =
                                {
                                  (* Not `test.BaseC`, because `A` is the first parent class of
                                     `Child`. *)
-                                 Target.class_name = "test.BaseA";
+                                 Target.Method.class_name = "test.BaseA";
                                  method_name = "query";
                                  kind = Decorated;
                                });
@@ -4477,7 +4479,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             (Target.Regular.Override
                                {
-                                 Target.class_name = "test.A";
+                                 Target.Method.class_name = "test.A";
                                  method_name = "query";
                                  kind = Normal;
                                });
@@ -4493,7 +4495,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             (Target.Regular.Method
                                {
-                                 Target.class_name = "test.A";
+                                 Target.Method.class_name = "test.A";
                                  method_name = "query";
                                  kind = Decorated;
                                });
@@ -4502,7 +4504,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             (Target.Regular.Method
                                {
-                                 Target.class_name = "test.D";
+                                 Target.Method.class_name = "test.D";
                                  method_name = "query";
                                  kind = Normal;
                                });
@@ -4519,7 +4521,7 @@ let test_call_graph_of_define =
                             ~receiver_class:"test.C"
                             (Target.Regular.Method
                                {
-                                 Target.class_name = "test.C";
+                                 Target.Method.class_name = "test.C";
                                  method_name = "query";
                                  kind = Normal;
                                });
@@ -4537,7 +4539,7 @@ let test_call_graph_of_define =
                             ~index:1
                             (Target.Regular.Method
                                {
-                                 Target.class_name = "test.D";
+                                 Target.Method.class_name = "test.D";
                                  method_name = "query";
                                  kind = Normal;
                                });
@@ -4577,7 +4579,7 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             (Target.Regular.Method
                                {
-                                 Target.class_name = "test.A";
+                                 Target.Method.class_name = "test.A";
                                  method_name = "query";
                                  kind = Decorated;
                                });
@@ -5129,7 +5131,11 @@ let test_call_graph_of_define =
                             ~implicit_receiver:true
                             ~receiver_class:"test.B"
                             (Target.Regular.Method
-                               { Target.class_name = "test.B"; method_name = "foo"; kind = Normal });
+                               {
+                                 Target.Method.class_name = "test.B";
+                                 method_name = "foo";
+                                 kind = Normal;
+                               });
                         ]
                       ()) );
              ]
@@ -7520,6 +7526,7 @@ let assert_resolve_decorator_callees ?(debug = false) ~source ~expected () conte
   end
   in
   let definitions = FetchCallables.get_definitions initial_callables in
+  let definitions_and_stubs = FetchCallables.get ~definitions:true ~stubs:true initial_callables in
   let scheduler = Test.mock_scheduler () in
   let scheduler_policy = Scheduler.Policy.legacy_fixed_chunk_count () in
   let callables_to_definitions_map =
@@ -7527,7 +7534,7 @@ let assert_resolve_decorator_callees ?(debug = false) ~source ~expected () conte
       ~scheduler
       ~scheduler_policy
       ~pyre_api
-      definitions
+      definitions_and_stubs
   in
   let type_of_expression_shared_memory =
     Interprocedural.TypeOfExpressionSharedMemory.create
@@ -7541,7 +7548,7 @@ let assert_resolve_decorator_callees ?(debug = false) ~source ~expected () conte
         (Interprocedural.Target.CallablesSharedMemory.read_only callables_to_definitions_map)
       ~scheduler
       ~scheduler_policy
-      definitions
+      definitions_and_stubs
   in
   let actual =
     definitions
@@ -8127,11 +8134,21 @@ let test_resolve_decorator_callees =
                               ~call_targets:
                                 [
                                   CallTarget.create_regular
-                                    (Target.Regular.Function
-                                       { name = "test.A.decorator"; kind = Normal });
+                                    ~is_static_method:true
+                                    (Target.Regular.Method
+                                       {
+                                         class_name = "test.A";
+                                         method_name = "decorator";
+                                         kind = Normal;
+                                       });
                                   CallTarget.create_regular
-                                    (Target.Regular.Function
-                                       { name = "test.B.decorator"; kind = Normal });
+                                    ~is_static_method:true
+                                    (Target.Regular.Method
+                                       {
+                                         class_name = "test.B";
+                                         method_name = "decorator";
+                                         kind = Normal;
+                                       });
                                 ]
                               ~higher_order_parameters:
                                 (HigherOrderParameterMap.from_list
