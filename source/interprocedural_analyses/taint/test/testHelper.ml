@@ -56,6 +56,7 @@ type expectation = {
   parameters_sanitizer: Sanitize.t;
   return_sanitizer: Sanitize.t;
   parameter_sanitizers: parameter_sanitize list;
+  add_breadcrumbs_to_state: string list;
   analysis_modes: Model.ModeSet.t;
 }
 
@@ -80,6 +81,7 @@ let outcome
     ?(parameters_sanitizer = Sanitize.empty)
     ?(return_sanitizer = Sanitize.empty)
     ?(parameter_sanitizers = [])
+    ?(add_breadcrumbs_to_state = [])
     ?(analysis_modes = Model.ModeSet.empty)
     define_name
   =
@@ -97,6 +99,7 @@ let outcome
     parameters_sanitizer;
     return_sanitizer;
     parameter_sanitizers;
+    add_breadcrumbs_to_state;
     analysis_modes;
   }
 
@@ -130,6 +133,7 @@ let check_expectation
       parameters_sanitizer;
       return_sanitizer;
       parameter_sanitizers;
+      add_breadcrumbs_to_state = expected_add_breadcrumbs_to_state;
       analysis_modes = expected_analysis_modes;
     }
   =
@@ -138,7 +142,9 @@ let check_expectation
     match AccessPath.Root.parameter_name root with
     | Some name ->
         let sinks =
-          Domains.BackwardState.Tree.collapse ~breadcrumbs:Features.BreadcrumbSet.empty sink_tree
+          Domains.BackwardState.Tree.collapse
+            ~breadcrumbs:Features.BreadcrumbMayAlwaysSet.empty
+            sink_tree
           |> Domains.BackwardTaint.kinds
         in
         let sinks =
@@ -154,7 +160,9 @@ let check_expectation
     match AccessPath.Root.parameter_name root with
     | Some name ->
         let sinks =
-          Domains.ForwardState.Tree.collapse ~breadcrumbs:Features.BreadcrumbSet.empty source_tree
+          Domains.ForwardState.Tree.collapse
+            ~breadcrumbs:Features.BreadcrumbMayAlwaysSet.empty
+            source_tree
           |> Domains.ForwardTaint.kinds
         in
         let sinks =
@@ -171,6 +179,7 @@ let check_expectation
     forward;
     parameter_sources = actual_parameter_sources;
     sanitizers;
+    add_breadcrumbs_to_state;
     model_generators = _;
     modes;
   }
@@ -259,7 +268,7 @@ let check_expectation
   (* Check sources. *)
   let returned_sources =
     Domains.ForwardState.read ~root:AccessPath.Root.LocalResult ~path:[] forward.generations
-    |> Domains.ForwardState.Tree.collapse ~breadcrumbs:Features.BreadcrumbSet.empty
+    |> Domains.ForwardState.Tree.collapse ~breadcrumbs:Features.BreadcrumbMayAlwaysSet.empty
     |> Domains.ForwardTaint.kinds
     |> List.map ~f:Sources.show
     |> String.Set.of_list
@@ -335,7 +344,7 @@ let check_expectation
   let expected_return_sinks = List.map ~f:Sinks.show return_sinks |> String.Set.of_list in
   let actual_return_sinks =
     Domains.BackwardState.read ~root:AccessPath.Root.LocalResult ~path:[] backward.sink_taint
-    |> Domains.BackwardState.Tree.collapse ~breadcrumbs:Features.BreadcrumbSet.empty
+    |> Domains.BackwardState.Tree.collapse ~breadcrumbs:Features.BreadcrumbMayAlwaysSet.empty
     |> Domains.BackwardTaint.kinds
     |> List.map ~f:Sinks.show
     |> String.Set.of_list
@@ -358,6 +367,16 @@ let check_expectation
     ~printer:Sanitize.show
     return_sanitizer
     (Sanitize.RootMap.get AccessPath.Root.LocalResult sanitizers.roots);
+
+  (* Check add_breadcrumbs_to_state *)
+  assert_equal
+    ~cmp:Model.AddBreadcrumbsToState.equal
+    ~printer:Model.AddBreadcrumbsToState.show
+    (expected_add_breadcrumbs_to_state
+    |> List.map ~f:(fun name -> Features.Breadcrumb.SimpleVia name)
+    |> List.map ~f:Features.BreadcrumbInterned.intern
+    |> Model.AddBreadcrumbsToState.of_list)
+    add_breadcrumbs_to_state;
 
   assert_equal
     (Map.length expected_parameter_sanitizers)

@@ -254,6 +254,24 @@ module AnnotationName = struct
   let is_tito = equal TaintInTaintOut
 end
 
+let rec parse_via_breadcrumbs ~taint_configuration ?(is_dynamic = false) expression =
+  let open Core.Result in
+  let open TaintConfiguration.Heap in
+  match expression.Node.value with
+  | Expression.Name (Name.Identifier breadcrumb)
+  | Expression.Constant (Constant.String { value = breadcrumb; kind = String }) ->
+      if is_dynamic then
+        Ok [Features.Breadcrumb.SimpleVia breadcrumb]
+      else
+        Features.Breadcrumb.simple_via ~allowed:taint_configuration.features breadcrumb
+        >>| fun breadcrumb -> [breadcrumb]
+  | Tuple expressions ->
+      List.map ~f:(parse_via_breadcrumbs ~taint_configuration ~is_dynamic) expressions
+      |> all
+      |> map ~f:List.concat
+  | _ -> Error (Format.sprintf "Invalid expression for breadcrumb: %s" (Expression.show expression))
+
+
 let rec parse_annotations
     ~path
     ~location
@@ -287,24 +305,6 @@ let rec parse_annotations
         match List.find_mapi parameters ~f:matches_parameter_name with
         | Some index -> Ok index
         | None -> Error (annotation_error (Format.sprintf "No such parameter `%s`" name)))
-  in
-  let rec extract_breadcrumbs ?(is_dynamic = false) expression =
-    let open TaintConfiguration.Heap in
-    match expression.Node.value with
-    | Expression.Name (Name.Identifier breadcrumb)
-    | Expression.Constant (Constant.String { value = breadcrumb; kind = String }) ->
-        if is_dynamic then
-          Ok [Features.Breadcrumb.SimpleVia breadcrumb]
-        else
-          Features.Breadcrumb.simple_via ~allowed:taint_configuration.features breadcrumb
-          >>| (fun breadcrumb -> [breadcrumb])
-          |> map_error ~f:annotation_error
-    | Tuple expressions ->
-        List.map ~f:(extract_breadcrumbs ~is_dynamic) expressions |> all |> map ~f:List.concat
-    | _ ->
-        Error
-          (annotation_error
-             (Format.sprintf "Invalid expression for breadcrumb: %s" (Expression.show expression)))
   in
   let extract_subkind expression =
     match Node.value expression with
@@ -443,9 +443,14 @@ let rec parse_annotations
           origin = _;
         } -> (
         match base_identifier with
-        | "Via" -> extract_breadcrumbs index >>| TaintKindsWithFeatures.from_breadcrumbs
+        | "Via" ->
+            parse_via_breadcrumbs ~taint_configuration index
+            |> map_error ~f:annotation_error
+            >>| TaintKindsWithFeatures.from_breadcrumbs
         | "ViaDynamicFeature" ->
-            extract_breadcrumbs ~is_dynamic:true index >>| TaintKindsWithFeatures.from_breadcrumbs
+            parse_via_breadcrumbs ~taint_configuration ~is_dynamic:true index
+            |> map_error ~f:annotation_error
+            >>| TaintKindsWithFeatures.from_breadcrumbs
         | "ViaValueOf" ->
             extract_via_tag ~requires_parameter_name:true "ViaValueOf" index
             >>= fun tag ->
@@ -1174,10 +1179,10 @@ let output_path_for_tito ~input_root ~kind ~features =
 
 
 let type_breadcrumbs_from_annotations ~pyre_api annotations =
-  List.fold annotations ~init:Features.BreadcrumbSet.bottom ~f:(fun sofar annotation ->
+  List.fold annotations ~init:Features.BreadcrumbSet.empty ~f:(fun sofar annotation ->
       CallGraph.ReturnType.from_annotation ~pyre_api annotation
       |> Features.type_breadcrumbs
-      |> Features.BreadcrumbSet.add_set ~to_add:sofar)
+      |> Features.BreadcrumbSet.union sofar)
 
 
 let introduce_sink_taint
@@ -1230,13 +1235,16 @@ let introduce_sink_taint
     let leaf_names =
       leaf_names |> List.map ~f:Features.LeafNameInterned.intern |> Features.LeafNameSet.of_list
     in
-    let type_breadcrumbs = type_breadcrumbs_from_annotations ~pyre_api root_annotations in
+    let type_breadcrumbs =
+      type_breadcrumbs_from_annotations ~pyre_api root_annotations
+      |> Features.BreadcrumbMayAlwaysSet.of_set
+    in
     let breadcrumbs =
       breadcrumbs
       |> List.map ~f:Features.BreadcrumbInterned.intern
-      |> List.map ~f:Features.BreadcrumbSet.inject
-      |> Features.BreadcrumbSet.of_approximation
-      |> Features.BreadcrumbSet.add_set ~to_add:type_breadcrumbs
+      |> List.map ~f:Features.BreadcrumbMayAlwaysSet.inject
+      |> Features.BreadcrumbMayAlwaysSet.of_approximation
+      |> Features.BreadcrumbMayAlwaysSet.add_set ~to_add:type_breadcrumbs
     in
     let via_features = Features.ViaFeatureSet.of_list via_features in
     let leaf_taint =
@@ -1284,14 +1292,16 @@ let introduce_taint_in_taint_out
   let open Core.Result in
   (* For tito, both the parameter and the return type can provide type based breadcrumbs *)
   let type_breadcrumbs =
-    List.append root_annotations result_annotations |> type_breadcrumbs_from_annotations ~pyre_api
+    List.append root_annotations result_annotations
+    |> type_breadcrumbs_from_annotations ~pyre_api
+    |> Features.BreadcrumbMayAlwaysSet.of_set
   in
   let breadcrumbs =
     breadcrumbs
     |> List.map ~f:Features.BreadcrumbInterned.intern
-    |> List.map ~f:Features.BreadcrumbSet.inject
-    |> Features.BreadcrumbSet.of_approximation
-    |> Features.BreadcrumbSet.add_set ~to_add:type_breadcrumbs
+    |> List.map ~f:Features.BreadcrumbMayAlwaysSet.inject
+    |> Features.BreadcrumbMayAlwaysSet.of_approximation
+    |> Features.BreadcrumbMayAlwaysSet.add_set ~to_add:type_breadcrumbs
   in
   let via_features = Features.ViaFeatureSet.of_list via_features in
   let collapse_depth =
@@ -1345,7 +1355,7 @@ let introduce_taint_in_taint_out
         in
         Ok { Model.Backward.taint_in_taint_out; sink_taint }
     | Sinks.Attach
-      when Features.BreadcrumbSet.is_empty breadcrumbs
+      when Features.BreadcrumbMayAlwaysSet.is_empty breadcrumbs
            && Features.ViaFeatureSet.is_bottom via_features ->
         Error "`Attach` must be accompanied by a list of features to attach."
     | Sinks.Attach ->
@@ -1401,13 +1411,16 @@ let introduce_source_taint
            SourceSinkFilter.should_keep_source source_sink_filter taint_source_kind)
     |> Option.value ~default:true
   then
-    let type_breadcrumbs = type_breadcrumbs_from_annotations ~pyre_api root_annotations in
+    let type_breadcrumbs =
+      type_breadcrumbs_from_annotations ~pyre_api root_annotations
+      |> Features.BreadcrumbMayAlwaysSet.of_set
+    in
     let breadcrumbs =
       breadcrumbs
       |> List.map ~f:Features.BreadcrumbInterned.intern
-      |> List.map ~f:Features.BreadcrumbSet.inject
-      |> Features.BreadcrumbSet.of_approximation
-      |> Features.BreadcrumbSet.add_set ~to_add:type_breadcrumbs
+      |> List.map ~f:Features.BreadcrumbMayAlwaysSet.inject
+      |> Features.BreadcrumbMayAlwaysSet.of_approximation
+      |> Features.BreadcrumbMayAlwaysSet.add_set ~to_add:type_breadcrumbs
     in
     let via_features = Features.ViaFeatureSet.of_list via_features in
     let transform_call_information taint =
@@ -2787,7 +2800,8 @@ let convert_return_into_self_annotation ~source_sink_filter annotation =
       ModelAnnotation.ParameterAnnotation
         { root; annotation = convert_taint_annotation annotation; generation_if_source }
   | ModelAnnotation.ModeAnnotation _
-  | ModelAnnotation.SanitizeAnnotation _ ->
+  | ModelAnnotation.SanitizeAnnotation _
+  | ModelAnnotation.AddBreadcrumbsToState _ ->
       annotation
 
 
@@ -2915,6 +2929,18 @@ let add_taint_annotation_to_model
       Ok { model with modes = Model.ModeSet.join_user_modes model_query_modes model.modes }
   | ModelAnnotation.SanitizeAnnotation sanitizers ->
       Ok { model with sanitizers = Model.Sanitizers.join sanitizers model.sanitizers }
+  | ModelAnnotation.AddBreadcrumbsToState breadcrumbs ->
+      let breadcrumbs =
+        breadcrumbs
+        |> List.map ~f:Features.BreadcrumbInterned.intern
+        |> Model.AddBreadcrumbsToState.of_list
+      in
+      Ok
+        {
+          model with
+          add_breadcrumbs_to_state =
+            Model.AddBreadcrumbsToState.join breadcrumbs model.add_breadcrumbs_to_state;
+        }
 
 
 let parse_return_taint
@@ -3034,7 +3060,9 @@ end = struct
           | ["SkipModelBroadening"]
           | ["CapturedVariables"]
           | ["InferSelfTito"]
-          | ["InferArgumentTito"] ->
+          | ["InferArgumentTito"]
+          | ["AddBreadcrumbToState"]
+          | ["AddFeatureToState"] ->
               Either.First decorator
           | _ -> Either.Second decorator_expression)
     in
@@ -3341,6 +3369,34 @@ let parse_decorator_annotations
                   mean to use `Sanitize(...)`?")
         | sanitizer -> Ok (Model.Sanitizers.from_global sanitizer))
   in
+  let parse_add_breadcrumb_to_state ~location ~original_expression arguments =
+    let annotation_error reason =
+      model_verification_error
+        ~path
+        ~location
+        (InvalidTaintAnnotation { taint_annotation = original_expression; reason })
+    in
+    match arguments with
+    | Some
+        [
+          {
+            Call.Argument.value =
+              {
+                Node.value =
+                  Subscript
+                    {
+                      base = { Node.value = Expression.Name (Name.Identifier "Via"); _ };
+                      index;
+                      origin = _;
+                    };
+                _;
+              };
+            _;
+          };
+        ] ->
+        parse_via_breadcrumbs ~taint_configuration index |> map_error ~f:annotation_error
+    | _ -> Error (annotation_error "Invalid expression for breadcrumb, expected `Via[..]`")
+  in
   let parse_decorator_annotation
       {
         Decorator.name = { Node.value = name; location = decorator_location };
@@ -3362,6 +3418,10 @@ let parse_decorator_annotations
           ~original_expression
           arguments
         >>| fun sanitizer -> [ModelAnnotation.SanitizeAnnotation sanitizer]
+    | "AddBreadcrumbToState"
+    | "AddFeatureToState" ->
+        parse_add_breadcrumb_to_state ~location:decorator_location ~original_expression arguments
+        >>| fun breadcrumbs -> [ModelAnnotation.AddBreadcrumbsToState breadcrumbs]
     | _ -> (
         match Model.Mode.from_string name with
         | Some mode -> Ok [ModelAnnotation.ModeAnnotation (Model.ModeSet.singleton mode)]

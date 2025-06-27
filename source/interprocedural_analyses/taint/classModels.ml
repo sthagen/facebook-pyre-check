@@ -24,12 +24,15 @@ module PyrePysaLogic = Analysis.PyrePysaLogic
 
 module FeatureSet = struct
   type t = {
-    breadcrumbs: Features.BreadcrumbSet.t;
+    breadcrumbs: Features.BreadcrumbMayAlwaysSet.t;
     via_features: Features.ViaFeatureSet.t;
   }
 
   let empty =
-    { breadcrumbs = Features.BreadcrumbSet.bottom; via_features = Features.ViaFeatureSet.bottom }
+    {
+      breadcrumbs = Features.BreadcrumbMayAlwaysSet.bottom;
+      via_features = Features.ViaFeatureSet.bottom;
+    }
 
 
   let from_taint taint =
@@ -210,14 +213,7 @@ let infer ~scheduler ~scheduler_policies ~pyre_api ~user_models =
     in
     [
       ( Target.create_method (Reference.create class_name) "__init__",
-        {
-          Model.forward = Model.Forward.empty;
-          backward = { Model.Backward.taint_in_taint_out; sink_taint };
-          parameter_sources = Model.ParameterSources.empty;
-          sanitizers = Model.Sanitizers.empty;
-          model_generators = Model.ModelGeneratorSet.empty;
-          modes = Model.ModeSet.empty;
-        } );
+        { Model.empty_model with backward = { Model.Backward.taint_in_taint_out; sink_taint } } );
     ]
   in
   (* We always generate a special `_fields` attribute for NamedTuples which is a tuple containing
@@ -229,17 +225,7 @@ let infer ~scheduler ~scheduler_policies ~pyre_api ~user_models =
     else
       (* Should not omit this model. Otherwise the mode is "obscure", thus leading to a tito model,
          which joins the taint on every element of the tuple. *)
-      [
-        ( Target.create_method (Reference.create class_name) "__new__",
-          {
-            Model.forward = Model.Forward.empty;
-            backward = Model.Backward.empty;
-            parameter_sources = Model.ParameterSources.empty;
-            sanitizers = Model.Sanitizers.empty;
-            model_generators = Model.ModelGeneratorSet.empty;
-            modes = Model.ModeSet.empty;
-          } );
-      ]
+      [Target.create_method (Reference.create class_name) "__new__", Model.empty_model]
   in
   let compute_typed_dict_models class_name =
     let fields =
@@ -262,7 +248,7 @@ let infer ~scheduler ~scheduler_policies ~pyre_api ~user_models =
            ~output_root:(Sinks.ParameterUpdate self)
            ~output_path:[Abstract.TreeDomain.Label.AnyIndex]
            ~collapse_depth:0
-           ~breadcrumbs:Features.BreadcrumbSet.bottom
+           ~breadcrumbs:Features.BreadcrumbMayAlwaysSet.bottom
            ~via_features:Features.ViaFeatureSet.bottom
       |> add_tito
            ~input_root:
@@ -272,7 +258,7 @@ let infer ~scheduler ~scheduler_policies ~pyre_api ~user_models =
            ~output_root:(Sinks.ParameterUpdate self)
            ~output_path:[AccessPath.dictionary_keys]
            ~collapse_depth:Features.CollapseDepth.no_collapse
-           ~breadcrumbs:Features.BreadcrumbSet.bottom
+           ~breadcrumbs:Features.BreadcrumbMayAlwaysSet.bottom
            ~via_features:Features.ViaFeatureSet.bottom
       |> add_tito
            ~input_root:(AccessPath.Root.StarStarParameter { excluded = fields })
@@ -280,7 +266,7 @@ let infer ~scheduler ~scheduler_policies ~pyre_api ~user_models =
            ~output_root:(Sinks.ParameterUpdate self)
            ~output_path:[Abstract.TreeDomain.Label.AnyIndex]
            ~collapse_depth:Features.CollapseDepth.no_collapse
-           ~breadcrumbs:Features.BreadcrumbSet.bottom
+           ~breadcrumbs:Features.BreadcrumbMayAlwaysSet.bottom
            ~via_features:Features.ViaFeatureSet.bottom
     in
     let sink_taint =
@@ -291,14 +277,7 @@ let infer ~scheduler ~scheduler_policies ~pyre_api ~user_models =
     in
     [
       ( Target.create_method (Reference.create class_name) "__init__",
-        {
-          Model.forward = Model.Forward.empty;
-          backward = { Model.Backward.taint_in_taint_out; sink_taint };
-          parameter_sources = Model.ParameterSources.empty;
-          sanitizers = Model.Sanitizers.empty;
-          model_generators = Model.ModelGeneratorSet.empty;
-          modes = Model.ModeSet.empty;
-        } );
+        { Model.empty_model with backward = { Model.Backward.taint_in_taint_out; sink_taint } } );
     ]
   in
   let compute_models class_name class_summary =
