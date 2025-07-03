@@ -755,14 +755,14 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       | CalleeBase -> (
           match arguments_taint with
           | self_taint :: arguments_taint ->
-              CallModel.ImplicitArgument.Backward.CalleeBase self_taint, arguments_taint
+              CallModel.ImplicitArgument.Backward.for_callee_base self_taint, arguments_taint
           | _ -> failwith "missing taint for self argument")
       | Callee -> (
           match arguments_taint with
           | callee_taint :: arguments_taint ->
-              CallModel.ImplicitArgument.Backward.Callee callee_taint, arguments_taint
+              CallModel.ImplicitArgument.Backward.for_callee callee_taint, arguments_taint
           | _ -> failwith "missing taint for callee argument")
-      | None -> CallModel.ImplicitArgument.Backward.None, arguments_taint
+      | None -> CallModel.ImplicitArgument.Backward.empty, arguments_taint
     in
     { arguments_taint; implicit_argument_taint; captures_taint; captures; state }
 
@@ -807,7 +807,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let arguments_taint = List.map ~f:compute_argument_taint arguments in
     {
       arguments_taint;
-      implicit_argument_taint = CallModel.ImplicitArgument.Backward.Callee obscure_taint;
+      implicit_argument_taint = CallModel.ImplicitArgument.Backward.for_callee obscure_taint;
       captures_taint = [];
       captures = [];
       state = initial_state;
@@ -834,7 +834,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     (* Call `__init__`. Add the `self` implicit argument. *)
     let {
       arguments_taint = init_arguments_taint;
-      implicit_argument_taint;
+      implicit_argument_taint = init_implicit_argument_taint;
       captures_taint = _;
       captures = _;
       state;
@@ -843,7 +843,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       if is_object_init && not is_object_new then
         {
           arguments_taint = List.map arguments ~f:(fun _ -> BackwardState.Tree.bottom);
-          implicit_argument_taint = CallModel.ImplicitArgument.Backward.CalleeBase call_taint;
+          implicit_argument_taint = CallModel.ImplicitArgument.Backward.for_callee_base call_taint;
           captures_taint = [];
           captures = [];
           state = initial_state;
@@ -876,21 +876,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
              ~init:
                {
                  arguments_taint = List.map arguments ~f:(fun _ -> BackwardState.Tree.bottom);
-                 implicit_argument_taint = CallModel.ImplicitArgument.Backward.None;
+                 implicit_argument_taint = CallModel.ImplicitArgument.Backward.empty;
                  captures_taint = [];
                  captures = [];
                  state = bottom;
                }
-    in
-    let base_taint =
-      match implicit_argument_taint with
-      | CalleeBase taint -> taint
-      | None -> BackwardState.Tree.bottom
-      | Callee _ ->
-          (* T122799408: This is a rare case, which is handled with a simple workaround. See
-             function `dunder_call_partial_constructor` in
-             `source/interprocedural_analyses/taint/test/integration/partial.py`. *)
-          BackwardState.Tree.bottom
     in
 
     (* Call `__new__`. *)
@@ -898,7 +888,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       if is_object_new then
         {
           arguments_taint = init_arguments_taint;
-          implicit_argument_taint = CallModel.ImplicitArgument.Backward.None;
+          implicit_argument_taint = CallModel.ImplicitArgument.Backward.empty;
           captures_taint = [];
           captures = [];
           state;
@@ -906,7 +896,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       else (* Add the `cls` implicit argument. *)
         let {
           arguments_taint = new_arguments_taint;
-          implicit_argument_taint;
+          implicit_argument_taint = new_implicit_argument_taint;
           captures_taint = _;
           captures = _;
           state;
@@ -920,7 +910,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                 ~callee
                 ~arguments
                 ~state
-                ~call_taint:base_taint
+                ~call_taint:init_implicit_argument_taint.callee_base
                 ~is_implicit_new:true
                 ~implicit_returns_self:false
                 target)
@@ -929,23 +919,17 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                ~init:
                  {
                    arguments_taint = List.map arguments ~f:(fun _ -> BackwardState.Tree.bottom);
-                   implicit_argument_taint = CallModel.ImplicitArgument.Backward.None;
+                   implicit_argument_taint = CallModel.ImplicitArgument.Backward.empty;
                    captures_taint = [];
                    captures = [];
                    state = bottom;
                  }
         in
-        let callee_taint =
-          match implicit_argument_taint with
-          | CallModel.ImplicitArgument.Backward.CalleeBase taint -> taint
-          | Callee _
-          | None ->
-              failwith "Expect implicit argument `CalleeBase` from calling `__new__`"
-        in
         {
           arguments_taint =
             List.map2_exn init_arguments_taint new_arguments_taint ~f:BackwardState.Tree.join;
-          implicit_argument_taint = CallModel.ImplicitArgument.Backward.Callee callee_taint;
+          implicit_argument_taint =
+            CallModel.ImplicitArgument.Backward.for_callee new_implicit_argument_taint.callee_base;
           captures_taint = [];
           captures = [];
           state;
@@ -970,6 +954,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         init_targets;
         decorated_targets = _;
         higher_order_parameters = _;
+        shim_target = _;
         unresolved;
         recognized_call = _;
       }
@@ -1015,7 +1000,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
            ~init:
              {
                arguments_taint = List.map arguments ~f:(fun _ -> BackwardState.Tree.bottom);
-               implicit_argument_taint = CallModel.ImplicitArgument.Backward.None;
+               implicit_argument_taint = CallModel.ImplicitArgument.Backward.empty;
                captures_taint = [];
                captures = [];
                state = bottom;
@@ -1066,7 +1051,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
       ~is_property_call
       ~callee
-      ~implicit_argument_taint
+      ~implicit_argument_taint:
+        {
+          CallModel.ImplicitArgument.Backward.callee_base = implicit_base_taint;
+          callee = implicit_callee_taint;
+        }
       ~state
     =
     (* Special case: `x.foo()` where foo is a property returning a callable. *)
@@ -1093,24 +1082,14 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           |> Option.is_some
       | _ -> false
     in
-    if callee_is_property then
-      let base_taint, callee_taint =
-        match implicit_argument_taint with
-        | CallModel.ImplicitArgument.Backward.Callee taint -> BackwardState.Tree.bottom, taint
-        | CalleeBase taint -> taint, BackwardState.Tree.bottom
-        | None -> BackwardState.Tree.bottom, BackwardState.Tree.bottom
-      in
-      analyze ~base_taint ~callee_taint
+    if (not callee_is_property) && BackwardState.Tree.is_bottom implicit_callee_taint then
+      (* If possible, only analyze the base expression *)
+      match callee.Node.value with
+      | Expression.Name (Name.Attribute { base; _ }) ->
+          analyze_expression ~pyre_in_context ~taint:implicit_base_taint ~state ~expression:base
+      | _ -> analyze ~base_taint:implicit_base_taint ~callee_taint:implicit_callee_taint
     else
-      match implicit_argument_taint with
-      | CallModel.ImplicitArgument.Backward.Callee callee_taint ->
-          analyze ~base_taint:BackwardState.Tree.bottom ~callee_taint
-      | CalleeBase taint -> (
-          match callee.Node.value with
-          | Expression.Name (Name.Attribute { base; _ }) ->
-              analyze_expression ~pyre_in_context ~taint ~state ~expression:base
-          | _ -> state)
-      | None -> state
+      analyze ~base_taint:implicit_base_taint ~callee_taint:implicit_callee_taint
 
 
   and analyze_attribute_access
@@ -1132,7 +1111,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       | Some { property_targets = _ :: _ as property_targets; _ } ->
           let {
             arguments_taint = _;
-            implicit_argument_taint;
+            implicit_argument_taint =
+              { CallModel.ImplicitArgument.Backward.callee_base = base_taint; _ };
             captures_taint = _;
             captures = _;
             state;
@@ -1147,11 +1127,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
               ~state
               ~call_taint:attribute_taint
               (CallGraph.CallCallees.create ~call_targets:property_targets ())
-          in
-          let base_taint =
-            match implicit_argument_taint with
-            | CallModel.ImplicitArgument.Backward.CalleeBase taint -> taint
-            | _ -> failwith "Expect `CalleeBase` for attribute access"
           in
           base_taint, state
       | _ -> BackwardState.Tree.bottom, bottom
@@ -1356,6 +1331,138 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         analyze_unstarred_expression ~pyre_in_context argument_taint argument state)
 
 
+  and apply_shim_callees_and_return_arguments_taint
+      ~apply_tito
+      ~pyre_in_context
+      ~call_location
+      ~original_call:({ Call.arguments = original_arguments; _ } as original_call)
+      ~state
+      ~call_taint
+      { CallGraph.ShimTarget.call_targets; decorated_targets = _; argument_mapping }
+    =
+    let { Call.callee = shim_callee; arguments = shim_arguments; origin = shim_origin } =
+      Shims.ShimArgumentMapping.create_artificial_call ~call_location original_call argument_mapping
+      |> Result.ok_or_failwith
+    in
+
+    let module ImplicitArgument = CallModel.ImplicitArgument.Backward in
+    let {
+      arguments_taint = shim_arguments_taint;
+      implicit_argument_taint =
+        { ImplicitArgument.callee_base = shim_callee_base_taint; callee = shim_callee_taint };
+      captures_taint;
+      captures;
+      state;
+    }
+      =
+      apply_callees_and_return_arguments_taint
+        ~apply_tito
+        ~pyre_in_context
+        ~callee:shim_callee
+        ~call_location
+        ~arguments:shim_arguments
+        ~origin:shim_origin
+        ~state
+        ~call_taint
+        (CallGraph.CallCallees.create ~call_targets ())
+    in
+
+    let module OriginalRoot = struct
+      type t =
+        | Callee
+        | CalleeBase
+        | Argument of int
+    end
+    in
+    let module Target = Shims.ShimArgumentMapping.Target in
+    let rec shim_argument_taint_to_original ~taint = function
+      | Target.Callee -> Some (OriginalRoot.Callee, taint)
+      | Target.Argument { index } -> Some (OriginalRoot.Argument index, taint)
+      | Target.GetAttributeBase { attribute = _; inner = Target.Callee } ->
+          Some (OriginalRoot.CalleeBase, taint)
+      | Target.GetAttributeBase { attribute = _; inner } ->
+          shim_argument_taint_to_original
+            ~taint:
+              (BackwardState.Tree.collapse ~breadcrumbs:(Features.shim_broadening_set ()) taint
+              |> BackwardState.Tree.create_leaf)
+            inner
+      | Target.AppendAttribute { attribute; inner } ->
+          shim_argument_taint_to_original
+            ~taint:(BackwardState.Tree.prepend [Abstract.TreeDomain.Label.Index attribute] taint)
+            inner
+      | Target.GetTupleElement { index; inner }
+      | Target.GetListElement { index; inner } ->
+          shim_argument_taint_to_original
+            ~taint:
+              (BackwardState.Tree.prepend
+                 [Abstract.TreeDomain.Label.Index (string_of_int index)]
+                 taint)
+            inner
+      | Target.GetDictEntryValue { index = _; key; inner } ->
+          shim_argument_taint_to_original
+            ~taint:(BackwardState.Tree.prepend [Abstract.TreeDomain.Label.Index key] taint)
+            inner
+      | Target.GetCallArgument _ ->
+          (* There is no easy way to get that taint, give up *)
+          None
+      | Target.Constant _ -> None
+      | Target.Reference _ -> None
+    in
+    let shim_callee_base_taint_to_original ~taint = function
+      | Target.AppendAttribute { attribute = _; inner } ->
+          shim_argument_taint_to_original ~taint inner
+      | target ->
+          shim_argument_taint_to_original
+            ~taint:
+              (BackwardState.Tree.collapse ~breadcrumbs:(Features.shim_broadening_set ()) taint
+              |> BackwardState.Tree.create_leaf)
+            target
+    in
+    let callee_base_original_taint =
+      if not (BackwardState.Tree.is_bottom shim_callee_base_taint) then
+        shim_callee_base_taint_to_original ~taint:shim_callee_base_taint argument_mapping.callee
+      else
+        None
+    in
+    let callee_original_taint =
+      if not (BackwardState.Tree.is_bottom shim_callee_taint) then
+        shim_argument_taint_to_original ~taint:shim_callee_taint argument_mapping.callee
+      else
+        None
+    in
+    let original_taint_map =
+      List.zip_exn shim_arguments_taint argument_mapping.arguments
+      |> List.map ~f:(fun (taint, { Shims.ShimArgumentMapping.Argument.value; _ }) ->
+             shim_argument_taint_to_original ~taint value)
+      |> List.cons callee_base_original_taint
+      |> List.cons callee_original_taint
+      |> List.filter_opt
+      |> Map.Poly.of_alist_reduce ~f:BackwardState.Tree.join
+    in
+    let original_arguments_taint =
+      List.mapi original_arguments ~f:(fun index _ ->
+          Map.Poly.find original_taint_map (OriginalRoot.Argument index)
+          |> Option.value ~default:BackwardState.Tree.bottom)
+    in
+    let original_implicit_argument_taint =
+      {
+        ImplicitArgument.callee_base =
+          Map.Poly.find original_taint_map OriginalRoot.CalleeBase
+          |> Option.value ~default:BackwardState.Tree.bottom;
+        ImplicitArgument.callee =
+          Map.Poly.find original_taint_map OriginalRoot.Callee
+          |> Option.value ~default:BackwardState.Tree.bottom;
+      }
+    in
+    {
+      arguments_taint = original_arguments_taint;
+      implicit_argument_taint = original_implicit_argument_taint;
+      captures_taint;
+      captures;
+      state;
+    }
+
+
   and apply_callees
       ?(apply_tito = true)
       ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
@@ -1366,9 +1473,26 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       ~origin
       ~state:initial_state
       ~call_taint
-      callees
+      ({ CallGraph.CallCallees.higher_order_parameters; shim_target; _ } as callees)
     =
-    let { arguments_taint; implicit_argument_taint; captures_taint; captures; state } =
+    let analyze_shim_result, state =
+      match shim_target with
+      | Some shim_target ->
+          let ({ state; _ } as shim_result) =
+            apply_shim_callees_and_return_arguments_taint
+              ~apply_tito
+              ~pyre_in_context
+              ~call_location
+              ~original_call:{ Call.callee; arguments; origin }
+              ~state:initial_state
+              ~call_taint
+              shim_target
+          in
+          Some shim_result, state
+      | None -> None, initial_state
+    in
+
+    let ({ state; _ } as analyze_regular_call_result) =
       apply_callees_and_return_arguments_taint
         ~apply_tito
         ~pyre_in_context
@@ -1376,12 +1500,22 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         ~call_location
         ~arguments
         ~origin
-        ~state:initial_state
+        ~state
         ~call_taint
         callees
     in
+
+    let { arguments_taint; implicit_argument_taint; captures_taint; captures; _ } =
+      match analyze_shim_result with
+      | Some analyze_shim_result ->
+          join_call_target_results
+            { analyze_regular_call_result with state = bottom }
+            { analyze_shim_result with state = bottom }
+      | None -> analyze_regular_call_result
+    in
+
     let state =
-      if CallGraph.HigherOrderParameterMap.is_empty callees.higher_order_parameters then
+      if CallGraph.HigherOrderParameterMap.is_empty higher_order_parameters then
         analyze_arguments
           ~pyre_in_context
           ~arguments:(arguments @ CallModel.captures_as_arguments captures)
@@ -1394,7 +1528,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~arguments_taint:(arguments_taint @ captures_taint)
           ~origin
           ~state
-          ~higher_order_parameters:callees.higher_order_parameters
+          ~higher_order_parameters
     in
 
     let state =
@@ -2272,7 +2406,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       =
       let {
         arguments_taint = _;
-        implicit_argument_taint;
+        implicit_argument_taint = { callee_base = self_taint; _ };
         captures_taint = _;
         captures = _;
         state = new_state;
@@ -2313,13 +2447,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~call_taint:taint
           callees
       in
-      let new_taint =
-        match implicit_argument_taint with
-        | CallModel.ImplicitArgument.Backward.CalleeBase self_taint ->
-            BackwardState.Tree.join taint_to_join self_taint
-        | None -> taint_to_join
-        | _ -> failwith "Expect `CalleeBase` or `None` for stringify callee"
-      in
+      let new_taint = BackwardState.Tree.join taint_to_join self_taint in
       new_taint, join state_to_join new_state
     in
     let analyze_nested_expression state ({ Node.location = expression_location; _ } as expression) =

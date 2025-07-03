@@ -43,7 +43,7 @@ class Arguments:
     dump_call_graph: Optional[str] = None
     dump_model_query_results: Optional[str] = None
     find_missing_flows: Optional[str] = None
-    infer_self_tito: bool = False
+    infer_self_tito: bool = True
     infer_argument_tito: bool = False
     maximum_model_source_tree_width: Optional[int] = None
     maximum_model_sink_tree_width: Optional[int] = None
@@ -438,6 +438,7 @@ def _run_analyze_command(
                     output=output,
                     error_kind="model verification",
                 )
+                LOG.warning("Hint: use --no-verify to silence these errors")
                 return commands.ExitCode.MODEL_VERIFICATION_ERROR
             else:
                 LOG.error(f"Pyre exited with non-zero return code: {return_code}.")
