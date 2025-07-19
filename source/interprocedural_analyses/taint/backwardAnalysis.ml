@@ -35,7 +35,7 @@ open Pyre
 open Domains
 module CallGraph = Interprocedural.CallGraph
 module AccessPath = Interprocedural.AccessPath
-module PyrePysaEnvironment = Analysis.PyrePysaEnvironment
+module PyrePysaApi = Interprocedural.PyrePysaApi
 module PyrePysaLogic = Analysis.PyrePysaLogic
 
 module type FUNCTION_CONTEXT = sig
@@ -51,7 +51,7 @@ module type FUNCTION_CONTEXT = sig
 
   val profiler : TaintProfiler.t
 
-  val pyre_api : PyrePysaEnvironment.ReadOnly.t
+  val pyre_api : PyrePysaApi.ReadOnly.t
 
   val taint_configuration : TaintConfiguration.Heap.t
 
@@ -1048,7 +1048,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_callee
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       ~is_property_call
       ~callee
       ~implicit_argument_taint:
@@ -1093,7 +1093,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_attribute_access
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       ~location
       ~resolve_properties
       ~attribute_access:({ Name.Attribute.base; attribute; origin } as attribute_access)
@@ -1188,7 +1188,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_arguments_with_higher_order_parameters
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       ~arguments
       ~arguments_taint
       ~origin
@@ -1465,7 +1465,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   and apply_callees
       ?(apply_tito = true)
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       ~is_property
       ~callee
       ~call_location
@@ -1542,12 +1542,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     state
 
 
-  and analyze_dictionary_entry
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
-      taint
-      state
-      entry
-    =
+  and analyze_dictionary_entry ~(pyre_in_context : PyrePysaApi.InContext.t) taint state entry =
     let open Dictionary.Entry in
     match entry with
     | KeyValue { key; value } ->
@@ -1561,7 +1556,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   and analyze_reverse_list_element
       ~total
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       taint
       reverse_position
       state
@@ -1611,7 +1606,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       state
     =
     let inner_pyre_context =
-      PyrePysaEnvironment.InContext.resolve_generators outer_pyre_context generators
+      PyrePysaApi.InContext.resolve_generators outer_pyre_context generators
     in
     let element_taint = read_tree [Abstract.TreeDomain.Label.AnyIndex] taint in
     let state =
@@ -1626,7 +1621,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   (* Skip through * and **. Used at call sites where * and ** are handled explicitly *)
   and analyze_unstarred_expression
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       taint
       expression
       state
@@ -1639,7 +1634,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_getitem_call_target
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       ~index_number
       ~location
       ~base
@@ -1650,7 +1645,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     =
     let analyze_getitem receiver_class =
       let named_tuple_attributes =
-        PyrePysaEnvironment.ReadOnly.named_tuple_attributes pyre_api receiver_class
+        PyrePysaApi.ReadOnly.named_tuple_attributes pyre_api receiver_class
       in
       match named_tuple_attributes, index_number with
       | Some named_tuple_attributes, Some index_number ->
@@ -1972,9 +1967,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       when CallGraph.CallCallees.is_mapping_method callees
            && Option.is_some (Dictionary.string_literal_keys entries) ->
         let entries = Option.value_exn (Dictionary.string_literal_keys entries) in
-        let access_path =
-          Some { AccessPath.root = AccessPath.Root.Variable identifier; path = [] }
-        in
         let dict_taint =
           let global_taint =
             GlobalModel.from_expression
@@ -1990,7 +1982,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                  ~caller:FunctionContext.callable
             |> SinkTreeWithHandle.join
           in
-          BackwardState.Tree.join global_taint (get_taint access_path state)
+          let state_taint =
+            get_taint
+              (Some { AccessPath.root = AccessPath.Root.Variable identifier; path = [] })
+              state
+          in
+          BackwardState.Tree.join global_taint state_taint
         in
         let override_taint_from_update (taint, state) (key, value) =
           let path = [Abstract.TreeDomain.Label.Index key] in
@@ -2014,6 +2011,62 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           List.fold entries ~init:(dict_taint, state) ~f:override_taint_from_update
         in
         store_taint ~root:(AccessPath.Root.Variable identifier) ~path:[] taint state
+    | {
+     callee =
+       {
+         Node.value =
+           Name
+             (Name.Attribute
+               {
+                 base = { Node.value = Name (Name.Identifier identifier); _ } as base;
+                 attribute = "update";
+                 _;
+               });
+         _;
+       };
+     arguments = [{ Call.Argument.value = argument; name = None }];
+     origin = _;
+    }
+      when CallGraph.CallCallees.is_mapping_method callees
+           && Type.is_dictionary_or_mapping
+                (Interprocedural.TypeOfExpressionSharedMemory.compute_or_retrieve_type
+                   FunctionContext.type_of_expression_shared_memory
+                   ~pyre_in_context
+                   ~callable:FunctionContext.callable
+                   argument) ->
+        let dict_taint =
+          let global_taint =
+            GlobalModel.from_expression
+              ~pyre_in_context
+              ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
+              ~caller:FunctionContext.callable
+              ~call_graph:FunctionContext.call_graph_of_define
+              ~get_callee_model:FunctionContext.get_callee_model
+              ~expression:base
+              ~interval:FunctionContext.caller_class_interval
+            |> GlobalModel.get_sinks
+                 ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
+                 ~caller:FunctionContext.callable
+            |> SinkTreeWithHandle.join
+          in
+          let state_taint =
+            get_taint
+              (Some { AccessPath.root = AccessPath.Root.Variable identifier; path = [] })
+              state
+          in
+          BackwardState.Tree.join global_taint state_taint
+        in
+        let state =
+          let dict_taint =
+            BackwardState.Tree.transform
+              Features.TitoPositionSet.Element
+              Add
+              ~f:argument.Node.location
+              dict_taint
+          in
+          analyze_expression ~pyre_in_context ~taint:dict_taint ~state ~expression:argument
+        in
+        store_taint ~root:(AccessPath.Root.Variable identifier) ~path:[] dict_taint state
     | {
      callee =
        {
@@ -2356,7 +2409,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_joined_string
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       ~taint
       ~state
       ~breadcrumbs
@@ -2490,7 +2543,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_expression
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       ~taint
       ~state
       ~expression:({ Node.value; location } as expression)
@@ -2521,7 +2574,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           List.fold ~f:(analyze_dictionary_entry ~pyre_in_context taint) entries ~init:state
       | DictionaryComprehension { Comprehension.element = { key; value }; generators; _ } ->
           let inner_pyre_context =
-            PyrePysaEnvironment.InContext.resolve_generators pyre_in_context generators
+            PyrePysaApi.InContext.resolve_generators pyre_in_context generators
           in
           let state =
             analyze_expression
@@ -2653,7 +2706,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   (* Returns the taint, and whether to collapse one level (due to star expression) *)
-  and compute_assignment_taint ~(pyre_in_context : PyrePysaEnvironment.InContext.t) target state =
+  and compute_assignment_taint ~(pyre_in_context : PyrePysaApi.InContext.t) target state =
     match target.Node.value with
     | Expression.Starred (Once target | Twice target) ->
         (* This is approximate. Unless we can get the tuple type on the right to tell how many total
@@ -2733,7 +2786,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   and analyze_assignment
       ?(weak = false)
-      ~(pyre_in_context : PyrePysaEnvironment.InContext.t)
+      ~(pyre_in_context : PyrePysaApi.InContext.t)
       ?(fields = [])
       ~target
       ~value
@@ -2891,7 +2944,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           pp
           state;
         let pyre_in_context =
-          PyrePysaEnvironment.InContext.create_at_statement_key
+          PyrePysaApi.InContext.create_at_statement_key
             pyre_api
             ~define_name:FunctionContext.define_name
             ~define:FunctionContext.definition
@@ -2973,7 +3026,7 @@ let extract_tito_and_sink_models
   let add_type_breadcrumbs annotation tree =
     let type_breadcrumbs =
       annotation
-      >>| PyrePysaEnvironment.ReadOnly.parse_annotation pyre_api
+      >>| PyrePysaApi.ReadOnly.parse_annotation pyre_api
       |> Features.type_breadcrumbs_from_annotation ~pyre_api
       |> Features.BreadcrumbMayAlwaysSet.of_set
     in
