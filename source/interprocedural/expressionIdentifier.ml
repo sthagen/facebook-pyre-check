@@ -44,7 +44,7 @@ module T = struct
         location: Location.t;
         constant: Constant.t;
       }
-  [@@deriving compare, eq, sexp, hash, show { with_path = false }]
+  [@@deriving compare, equal, sexp, hash, show { with_path = false }]
 
   let location = function
     | Regular location
@@ -92,6 +92,8 @@ module T = struct
   let of_format_string_stringify ~location = FormatStringStringify location
 
   let of_define_statement define_location = Regular define_location
+
+  let of_return_statement return_location = Regular return_location
 
   let of_expression { Node.value; location } =
     match value with
