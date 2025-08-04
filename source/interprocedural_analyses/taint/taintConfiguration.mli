@@ -98,6 +98,18 @@ module StringOperationPartialSinks : sig
   val get_partial_sinks : t -> Sinks.t list
 end
 
+module PartialFlow : sig
+  type t = {
+    full_issue_code: int;
+    partial_issue_code: int;
+    full_issue_transform: TaintTransform.t;
+    is_prefix_flow: bool;
+    feature: string;
+  }
+
+  val to_json : t -> Yojson.Safe.t
+end
+
 (** Taint configuration, stored in the ocaml heap. *)
 module Heap : sig
   type t = {
@@ -121,6 +133,7 @@ module Heap : sig
     infer_argument_tito: bool;
     analysis_model_constraints: ModelConstraints.t;
     source_sink_filter: SourceSinkFilter.t;
+    partial_flows: PartialFlow.t list;
   }
 
   val empty : t
