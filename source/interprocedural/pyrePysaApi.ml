@@ -94,14 +94,29 @@ module ReadOnly = struct
 
   let from_pyre1_api pyre_api = Pyre1 pyre_api
 
+  let explicit_qualifiers = function
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.explicit_qualifiers pyre_api
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.explicit_qualifiers pyrefly_api
+
+
   let absolute_source_path_of_qualifier ~lookup_source = function
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.absolute_source_path_of_qualifier ~lookup_source pyre_api
     | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.absolute_source_path_of_qualifier pyrefly_api
 
 
-  let explicit_qualifiers = function
-    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.explicit_qualifiers pyre_api
-    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.explicit_qualifiers pyrefly_api
+  let relative_path_of_qualifier = function
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.relative_path_of_qualifier pyre_api
+    | Pyrefly _ -> failwith "unimplemented: ReadOnly.relative_path_of_qualifier"
+
+
+  let source_of_qualifier = function
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.source_of_qualifier pyre_api
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.source_of_qualifier pyrefly_api
+
+
+  let get_class_names_for_qualifier = function
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.get_class_names_for_qualifier pyre_api
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.get_class_names_for_qualifier pyrefly_api
 
 
   let module_exists = function
@@ -124,14 +139,23 @@ module ReadOnly = struct
     | Pyrefly _ -> failwith "unimplemented: ReadOnly.source_is_unit_test"
 
 
-  let immediate_parents = function
-    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.immediate_parents pyre_api
-    | Pyrefly _ -> failwith "unimplemented: ReadOnly.immediate_parents"
+  let class_immediate_parents = function
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.class_immediate_parents pyre_api
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.class_immediate_parents pyrefly_api
 
 
-  let get_define_names_for_qualifier = function
-    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.get_define_names_for_qualifier pyre_api
-    | Pyrefly _ -> failwith "unimplemented: ReadOnly.get_define_names_for_qualifier"
+  let get_define_names_for_qualifier api ~exclude_test_modules qualifier =
+    match api with
+    | Pyre1 _ when exclude_test_modules ->
+        failwith
+          "exclude_test_modules=true is not supported for \
+           PyrePysaEnvironment.ReadOnly.get_define_names_for_qualifier"
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.get_define_names_for_qualifier pyre_api qualifier
+    | Pyrefly pyrefly_api ->
+        PyreflyApi.ReadOnly.get_define_names_for_qualifier
+          pyrefly_api
+          ~exclude_test_modules
+          qualifier
 
 
   let parse_reference = function
@@ -227,16 +251,6 @@ module ReadOnly = struct
   let generic_parameters_as_variables = function
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.generic_parameters_as_variables pyre_api
     | Pyrefly _ -> failwith "unimplemented: ReadOnly.generic_parameters_as_variables"
-
-
-  let source_of_qualifier = function
-    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.source_of_qualifier pyre_api
-    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.source_of_qualifier pyrefly_api
-
-
-  let relative_path_of_qualifier = function
-    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.relative_path_of_qualifier pyre_api
-    | Pyrefly _ -> failwith "unimplemented: ReadOnly.relative_path_of_qualifier"
 
 
   let decorated_define = function

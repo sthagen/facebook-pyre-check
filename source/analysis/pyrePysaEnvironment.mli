@@ -66,7 +66,7 @@ module ReadOnly : sig
 
   val source_is_unit_test : t -> source:Ast.Source.t -> bool
 
-  val immediate_parents : t -> string -> string list
+  val class_immediate_parents : t -> string -> string list
 
   val get_define_names_for_qualifier : t -> Ast.Reference.t -> Ast.Reference.t list
 
@@ -137,6 +137,12 @@ module ReadOnly : sig
   val generic_parameters_as_variables : t -> string -> Type.Variable.t list option
 
   val source_of_qualifier : t -> Ast.Reference.t -> Ast.Source.t option
+
+  val get_class_names_for_qualifier
+    :  t ->
+    exclude_test_modules:bool ->
+    Ast.Reference.t ->
+    Ast.Reference.t list
 
   val relative_path_of_qualifier : t -> Ast.Reference.t -> string option
 

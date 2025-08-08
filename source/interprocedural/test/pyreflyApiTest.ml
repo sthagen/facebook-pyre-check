@@ -36,6 +36,9 @@ let test_module_qualifiers _ =
         module_name = Reference.create module_name;
         module_path = path;
         info_path = None;
+        is_test = false;
+        is_interface = false;
+        is_init = false;
       }
     in
     let to_string map =
@@ -287,13 +290,19 @@ let test_fully_qualified_names _ =
         is_classmethod = false;
         is_property_getter;
         is_property_setter;
+        is_stub = false;
         is_toplevel = false;
         is_class_toplevel = false;
       }
   in
   let create_class ?(parent = ModuleInfoFile.ParentScope.TopLevel) name =
     PyreflyApi.Testing.Definition.Class
-      { ModuleInfoFile.ClassDefinition.name; parent; class_id = PyreflyApi.ClassId.from_int 0 }
+      {
+        ModuleInfoFile.ClassDefinition.name;
+        parent;
+        local_class_id = PyreflyApi.LocalClassId.from_int 0;
+        bases = [];
+      }
   in
   let class_parent ~line = ModuleInfoFile.ParentScope.Class (location_at_line line) in
   let function_parent ~line = ModuleInfoFile.ParentScope.Function (location_at_line line) in
