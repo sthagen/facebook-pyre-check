@@ -2412,8 +2412,8 @@ module CalleeKind = struct
             let is_class () =
               let primitive, _ = Type.split parent_type in
               Type.primitive_name primitive
-              >>= PyrePysaApi.ReadOnly.get_class_summary pyre_api
-              |> Option.is_some
+              >>| PyrePysaApi.ReadOnly.class_exists pyre_api
+              |> Option.value ~default:false
             in
             if Type.is_class_type parent_type then
               Method { is_direct_call = true }
@@ -6966,6 +6966,13 @@ module WholeProgramCallGraph = struct
 
 
   let to_target_graph graph = graph
+
+  let number_edges graph =
+    (* The number of edges should fit on an `int` (30 bits + 1 sign bit), but let's use Int64 and
+       convert to an int at the end to catch overflows. This is just to be overly cautious. *)
+    fold graph ~init:Int64.zero ~f:(fun ~target:_ ~callees count ->
+        Int64.( + ) count (Int64.of_int (List.length callees)))
+    |> Int64.to_int_exn
 end
 
 (** Call graphs of callables, stored in the shared memory. This is a mapping from a callable to its

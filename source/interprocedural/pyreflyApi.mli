@@ -98,6 +98,30 @@ module ReadOnly : sig
   val is_stub_qualifier : t -> Ast.Reference.t -> bool
 
   val get_define_opt : t -> Ast.Reference.t -> Ast.Statement.Define.t Ast.Node.t option
+
+  val get_class_attributes
+    :  t ->
+    include_generated_attributes:bool ->
+    only_simple_assignments:bool ->
+    string ->
+    string list option
+end
+
+module ModelQueries : sig
+  module Function = Analysis.PyrePysaEnvironment.ModelQueries.Function
+  module Global = Analysis.PyrePysaEnvironment.ModelQueries.Global
+
+  val resolve_qualified_name_to_global
+    :  ReadOnly.t ->
+    is_property_getter:bool ->
+    is_property_setter:bool ->
+    Ast.Reference.t ->
+    Global.t option
+
+  val class_method_signatures
+    :  ReadOnly.t ->
+    Ast.Reference.t ->
+    (Ast.Reference.t * Ast.Statement.Define.Signature.t option) list option
 end
 
 (* Exposed for testing purposes *)
@@ -185,6 +209,7 @@ module ModuleInfoFile : sig
       local_class_id: LocalClassId.t;
       bases: GlobalClassId.t list;
       is_synthesized: bool;
+      fields: string list;
     }
     [@@deriving equal, show]
   end

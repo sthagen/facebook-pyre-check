@@ -973,25 +973,11 @@ let rec class_names_from_annotation = function
 let get_class_attributes ~pyre_api = function
   | "object" -> Some []
   | class_name ->
-      PyrePysaApi.ReadOnly.get_class_summary pyre_api class_name
-      >>| Node.value
-      >>| fun class_summary ->
-      let attributes =
-        PyrePysaLogic.ClassSummary.attributes ~include_generated_attributes:false class_summary
-      in
-      let constructor_attributes =
-        PyrePysaLogic.ClassSummary.constructor_attributes class_summary
-      in
-      let all_attributes =
-        Identifier.SerializableMap.union (fun _ x _ -> Some x) attributes constructor_attributes
-      in
-      let get_attribute attribute_name attribute accumulator =
-        match Node.value attribute with
-        | { PyrePysaLogic.ClassSummary.Attribute.kind = Simple _; _ } ->
-            attribute_name :: accumulator
-        | _ -> accumulator
-      in
-      Identifier.SerializableMap.fold get_attribute all_attributes []
+      PyrePysaApi.ReadOnly.get_class_attributes
+        pyre_api
+        ~include_generated_attributes:false
+        ~only_simple_assignments:true
+        class_name
 
 
 let get_class_attributes_transitive ~pyre_api class_name =
@@ -2797,7 +2783,7 @@ let add_taint_annotation_to_model
     ~path
     ~location
     ~model_name
-    ~callable_annotation
+    ~callable_undecorated_annotation
     ~source_sink_filter
     model
     annotation
@@ -2814,7 +2800,11 @@ let add_taint_annotation_to_model
       let root = AccessPath.Root.LocalResult in
       match annotation with
       | TaintAnnotation.Sink { sink; features } ->
-          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
+          let root_annotations =
+            port_annotations_from_signature
+              ~root
+              ~callable_annotation:callable_undecorated_annotation
+          in
           introduce_sink_taint
             ~pyre_api
             ~root
@@ -2825,7 +2815,11 @@ let add_taint_annotation_to_model
             sink
           |> map_error ~f:invalid_model_for_taint
       | TaintAnnotation.Source { source; features } ->
-          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
+          let root_annotations =
+            port_annotations_from_signature
+              ~root
+              ~callable_annotation:callable_undecorated_annotation
+          in
           introduce_source_taint
             ~pyre_api
             ~root
@@ -2853,7 +2847,11 @@ let add_taint_annotation_to_model
   | ModelAnnotation.ParameterAnnotation { root; annotation; generation_if_source } -> (
       match annotation with
       | TaintAnnotation.Sink { sink; features } ->
-          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
+          let root_annotations =
+            port_annotations_from_signature
+              ~root
+              ~callable_annotation:callable_undecorated_annotation
+          in
           introduce_sink_taint
             ~pyre_api
             ~root
@@ -2864,7 +2862,11 @@ let add_taint_annotation_to_model
             sink
           |> map_error ~f:invalid_model_for_taint
       | TaintAnnotation.Source { source; features } ->
-          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
+          let root_annotations =
+            port_annotations_from_signature
+              ~root
+              ~callable_annotation:callable_undecorated_annotation
+          in
           introduce_source_taint
             ~pyre_api
             ~root
@@ -2876,9 +2878,15 @@ let add_taint_annotation_to_model
             source
           |> map_error ~f:invalid_model_for_taint
       | TaintAnnotation.Tito { tito; features } ->
-          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
+          let root_annotations =
+            port_annotations_from_signature
+              ~root
+              ~callable_annotation:callable_undecorated_annotation
+          in
           let result_annotations =
-            port_annotations_from_signature ~root:AccessPath.Root.LocalResult ~callable_annotation
+            port_annotations_from_signature
+              ~root:AccessPath.Root.LocalResult
+              ~callable_annotation:callable_undecorated_annotation
           in
           introduce_taint_in_taint_out
             ~pyre_api
@@ -2890,7 +2898,11 @@ let add_taint_annotation_to_model
             tito
           |> map_error ~f:invalid_model_for_taint
       | TaintAnnotation.AddFeatureToArgument { features } ->
-          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
+          let root_annotations =
+            port_annotations_from_signature
+              ~root
+              ~callable_annotation:callable_undecorated_annotation
+          in
           introduce_sink_taint
             ~pyre_api
             ~root
@@ -2991,7 +3003,7 @@ module ParsedStatement : sig
     decorators:Ast.Expression.t list ->
     location:Location.t ->
     define_name:Reference.t ->
-    Define.t ->
+    define_decorators:Expression.t list ->
     parsed_signature
 
   val create_parsed_attribute
@@ -3100,15 +3112,14 @@ end = struct
       ~decorators
       ~location
       ~define_name
-      define
+      ~define_decorators
     =
-    let call_target = Target.from_define ~define_name ~define in
     let taint_decorators, _ = partition_taint_decorators decorators in
     {
-      callable_name = Target.define_name_exn call_target;
+      callable_name = define_name;
       parameters;
       taint_decorators;
-      define_decorators = define.signature.decorators;
+      define_decorators;
       user_provided_define_decorators = false;
       return_annotation;
       location;
@@ -3452,6 +3463,98 @@ let is_property_getter_setter ~decorators ~define_name =
   is_property_getter, is_property_setter
 
 
+let builtins_symbols =
+  String.Set.of_list
+    [
+      "object";
+      "staticmethod";
+      "classmethod";
+      "type";
+      "super";
+      "int";
+      "float";
+      "complex";
+      "str";
+      "bytes";
+      "bytearray";
+      "memoryview";
+      "bool";
+      "slice";
+      "tuple";
+      "function";
+      "list";
+      "dict";
+      "set";
+      "frozenset";
+      "enumerate";
+      "range";
+      "property";
+      "filter";
+      "map";
+      "reversed";
+      "zip";
+      "BaseException";
+      "GeneratorExit";
+      "KeyboardInterrupt";
+      "SystemExit";
+      "Exception";
+      "abs";
+      "all";
+      "any";
+      "bin";
+      "ascii";
+      "callable";
+      "chr";
+      "ord";
+      "compile";
+      "eval";
+      "exec";
+      "dir";
+      "getattr";
+      "setattr";
+      "delattr";
+      "hasattr";
+      "format";
+      "globals";
+      "locals";
+      "hash";
+      "hex";
+      "id";
+      "input";
+      "iter";
+      "aiter";
+      "next";
+      "anext";
+      "isinstance";
+      "issubclass";
+      "len";
+      "max";
+      "min";
+      "pow";
+      "round";
+      "open";
+      "print";
+      "repr";
+      "sorted";
+      "sum";
+      "vars";
+      "__import__";
+      "__build_class__";
+    ]
+
+
+(* Users can model symbols from the 'builtins' module without prefixing the name by 'builtins.'. We
+   need to add the prefix before performing lookups when using Pyrefly. *)
+let add_builtins_prefix ~pyre_api name =
+  match pyre_api with
+  | PyrePysaApi.ReadOnly.Pyre1 _ -> name
+  | PyrePysaApi.ReadOnly.Pyrefly _ ->
+      if Set.mem builtins_symbols (Reference.first name) then
+        Reference.create_from_list ("builtins" :: Reference.as_list name)
+      else
+        name
+
+
 let create_model_from_signature
     ~pyre_api
     ~path
@@ -3482,10 +3585,10 @@ let create_model_from_signature
         pyre_api
         ~is_property_getter
         ~is_property_setter
-        (mangle_top_level_name callable_name)
+        (callable_name |> mangle_top_level_name |> add_builtins_prefix ~pyre_api)
     with
     | None -> (
-        let module_name = Reference.first callable_name in
+        let module_name = Reference.first (add_builtins_prefix ~pyre_api callable_name) in
         let module_resolved =
           PyrePysaApi.ModelQueries.resolve_qualified_name_to_global
             pyre_api
@@ -3510,7 +3613,7 @@ let create_model_from_signature
         Ok
           {
             Function.define_name = name;
-            annotation = None;
+            undecorated_annotation = None;
             is_property_getter;
             is_property_setter;
             is_method = parent_is_class;
@@ -3522,7 +3625,12 @@ let create_model_from_signature
   let callable_parameter_names_to_roots =
     (* TODO(T180849788): Consolidate `callable_annotation` accesses into an API *)
     match resolved_callable with
-    | Ok { PyrePysaApi.ModelQueries.Function.annotation = Some callable_annotation; _ } ->
+    | Ok
+        {
+          PyrePysaApi.ModelQueries.Function.undecorated_annotation =
+            Some callable_undecorated_annotation;
+          _;
+        } ->
         let add_into_map map name root =
           Map.update map name ~f:(function
               | None -> [root]
@@ -3541,7 +3649,7 @@ let create_model_from_signature
               add_into_map map name (AccessPath.Root.NamedParameter { name })
           | _ -> map
         in
-        callable_annotation
+        callable_undecorated_annotation
         |> parameters_of_callable_annotation
         |> List.fold ~init:String.Map.empty ~f:add_parameter_to_position
         |> String.Map.map ~f:(List.dedup_and_sort ~compare:AccessPath.Root.compare)
@@ -3564,7 +3672,8 @@ let create_model_from_signature
                   callable_type =
                     (resolved_callable
                     |> Stdlib.Result.get_ok
-                    |> fun { Function.annotation; _ } -> Option.value_exn annotation);
+                    |> fun { Function.undecorated_annotation; _ } ->
+                    Option.value_exn undecorated_annotation);
                   errors =
                     [ModelVerificationError.IncompatibleModelError.{ reason; overload = None }];
                 };
@@ -3695,7 +3804,8 @@ let create_model_from_signature
     | None -> Ok []
   in
   resolved_callable
-  >>= fun ({ Function.annotation = callable_annotation; _ } as resolved_callable) ->
+  >>= fun ({ Function.undecorated_annotation = callable_undecorated_annotation; _ } as
+          resolved_callable) ->
   check_decorators
     ~path
     ~location
@@ -3712,7 +3822,7 @@ let create_model_from_signature
     ~location
     ~normalized_model_parameters
     ~name:callable_name
-    callable_annotation
+    callable_undecorated_annotation
   >>= fun () ->
   List.map
     normalized_model_parameters
@@ -3775,7 +3885,7 @@ let create_model_from_signature
          ~location
          ~model_name:(Reference.show callable_name)
          ~pyre_api
-         ~callable_annotation
+         ~callable_undecorated_annotation
          ~source_sink_filter)
   >>| fun model -> { Model.WithTarget.model; target = callable }
 
@@ -3792,7 +3902,7 @@ let create_model_from_attribute
     ~path
     ~location
     ~pyre_api
-    ~name:(demangle_class_attribute attribute_name)
+    ~name:(attribute_name |> demangle_class_attribute |> add_builtins_prefix ~pyre_api)
   >>= fun () ->
   let model_annotations =
     List.map annotations ~f:(fun annotation ->
@@ -3821,7 +3931,7 @@ let create_model_from_attribute
          ~location
          ~model_name:(Reference.show attribute_name)
          ~pyre_api
-         ~callable_annotation:None
+         ~callable_undecorated_annotation:None
          ~source_sink_filter)
   >>| fun model -> { Model.WithTarget.model; target = Target.create_object attribute_name }
 
@@ -3841,20 +3951,17 @@ let create_models_from_class
       location;
     }
   =
-  match PyrePysaApi.ModelQueries.class_summaries pyre_api class_name with
-  | Some ({ Node.value = { Class.body = statements; _ }; _ } :: _) ->
-      let create_model_for_statement { Node.value; _ } =
-        match value with
-        | Statement.Define
-            ({
-               Define.signature =
-                 {
-                   Define.Signature.name = raw_method_name;
-                   Define.Signature.parameters = method_parameters;
-                   _;
-                 };
-               _;
-             } as method_define) ->
+  match
+    class_name
+    |> add_builtins_prefix ~pyre_api
+    |> PyrePysaApi.ModelQueries.class_method_signatures pyre_api
+  with
+  | Some method_signatures ->
+      let create_model_for_method = function
+        | ( raw_method_name,
+            Some
+              { Define.Signature.parameters = method_parameters; decorators = define_decorators; _ }
+          ) ->
             let signature ~decorators ~source_annotation ~sink_annotation =
               let parameters =
                 let sink_parameter parameter =
@@ -3879,7 +3986,7 @@ let create_models_from_class
                 ~decorators:(List.map ~f:Decorator.to_expression decorators)
                 ~location
                 ~define_name:raw_method_name
-                method_define
+                ~define_decorators
               |> create_model_from_signature
                    ~pyre_api
                    ~path
@@ -3915,7 +4022,7 @@ let create_models_from_class
             skip_analysis_or_overrides_defines @ sources @ sinks
         | _ -> []
       in
-      statements |> List.map ~f:create_model_for_statement |> List.concat |> Result.all
+      method_signatures |> List.map ~f:create_model_for_method |> List.concat |> Result.all
   | _ ->
       Error
         {
@@ -4663,7 +4770,7 @@ let create_callable_model_from_annotations
   let define_name = Target.define_name_exn target in
   let decorators = Modelable.decorator_expressions_after_inlining modelable in
   let is_property_getter, is_property_setter = is_property_getter_setter ~decorators ~define_name in
-  let callable_annotation =
+  let callable_undecorated_annotation =
     match
       PyrePysaApi.ModelQueries.resolve_qualified_name_to_global
         pyre_api
@@ -4673,7 +4780,7 @@ let create_callable_model_from_annotations
     with
     | Some
         (PyrePysaApi.ModelQueries.Global.Function
-          { PyrePysaApi.ModelQueries.Function.annotation = Some annotation; _ }) ->
+          { PyrePysaApi.ModelQueries.Function.undecorated_annotation = Some annotation; _ }) ->
         Some annotation
     | _ -> None
   in
@@ -4690,7 +4797,7 @@ let create_callable_model_from_annotations
         ~location:Location.any
         ~model_name:"Model query"
         ~pyre_api
-        ~callable_annotation
+        ~callable_undecorated_annotation
         ~source_sink_filter
         accumulator
         model_annotation)
@@ -4722,7 +4829,7 @@ let create_attribute_model_from_annotations ~pyre_api ~name ~source_sink_filter 
         ~location:Location.any
         ~model_name:"Model query"
         ~pyre_api
-        ~callable_annotation:None
+        ~callable_undecorated_annotation:None
         ~source_sink_filter
         accumulator
         model_annotation)

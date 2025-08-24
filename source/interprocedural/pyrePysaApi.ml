@@ -134,6 +134,11 @@ module ReadOnly = struct
     | Pyrefly _ -> failwith "unimplemented: ReadOnly.get_class_summary"
 
 
+  let get_class_attributes = function
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.get_class_attributes pyre_api
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.get_class_attributes pyrefly_api
+
+
   let source_is_unit_test = function
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.source_is_unit_test pyre_api
     | Pyrefly _ -> failwith "unimplemented: ReadOnly.source_is_unit_test"
@@ -351,15 +356,16 @@ module ModelQueries = struct
 
   let resolve_qualified_name_to_global = function
     | ReadOnly.Pyre1 pyre_api -> Pyre1Api.ModelQueries.resolve_qualified_name_to_global pyre_api
-    | ReadOnly.Pyrefly _ -> failwith "unimplemented: ModelQueries.resolve_qualified_name_to_global"
+    | ReadOnly.Pyrefly pyrefly_api ->
+        PyreflyApi.ModelQueries.resolve_qualified_name_to_global pyrefly_api
 
 
-  let class_summaries = function
-    | ReadOnly.Pyre1 pyre_api -> Pyre1Api.ModelQueries.class_summaries pyre_api
-    | ReadOnly.Pyrefly _ -> failwith "unimplemented: ModelQueries.class_summaries"
+  let class_method_signatures = function
+    | ReadOnly.Pyre1 pyre_api -> Pyre1Api.ModelQueries.class_method_signatures pyre_api
+    | ReadOnly.Pyrefly pyrefly_api -> PyreflyApi.ModelQueries.class_method_signatures pyrefly_api
 
 
   let invalidate_cache = function
     | ReadOnly.Pyre1 _ -> Pyre1Api.ModelQueries.invalidate_cache ()
-    | ReadOnly.Pyrefly _ -> failwith "unimplemented: ModelQueries.invalidate_cache"
+    | ReadOnly.Pyrefly _ -> ()
 end
