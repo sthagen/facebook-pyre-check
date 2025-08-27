@@ -7,6 +7,49 @@
 
 open Core
 
+module ScalarTypeProperties : sig
+  type t [@@deriving compare, equal, sexp, hash, show]
+
+  val none : t
+
+  val unknown : t
+
+  val bool : t
+
+  val integer : t
+
+  val enumeration : t
+
+  val is_boolean : t -> bool
+
+  val is_integer : t -> bool
+
+  val is_float : t -> bool
+
+  val is_enumeration : t -> bool
+end
+
+(* Minimal abstraction for a type, provided from Pyre1 or Pyrefly and used by Pysa. *)
+module PysaType : sig
+  type t [@@deriving equal, compare, show]
+
+  val from_pyre1_type : Type.t -> t
+
+  (* Pretty print the type, usually meant for the user *)
+  val pp_concise : Format.formatter -> t -> unit
+
+  (* Return a list of fully qualified class names that this type refers to, after
+   * stripping Optional, ReadOnly and TypeVar.
+   *
+   * For instance:
+   * Union[int, str] -> [int, str]
+   * Optional[int] -> [int]
+   * List[int] -> [List]
+   * List[Dict[str, str]] -> [List]
+   *)
+  val get_class_names : t -> string list
+end
+
 module ReadWrite : sig
   type t
 
@@ -170,6 +213,10 @@ module ReadOnly : sig
   val all_classes : t -> scheduler:Scheduler.t -> string list
 
   val all_unannotated_globals : t -> scheduler:Scheduler.t -> Ast.Reference.t list
+
+  (* Returns whether the type is an int, float, bool or enum, after stripping Optional and
+     Awaitable. *)
+  val scalar_type_properties : t -> PysaType.t -> ScalarTypeProperties.t
 end
 
 module InContext : sig
@@ -215,27 +262,27 @@ module ModelQueries : sig
       | PositionalOnly of {
           name: string option;
           index: int;
-          annotation: Type.t;
+          annotation: PysaType.t;
           has_default: bool;
         }
       | Named of {
           name: string;
-          annotation: Type.t;
+          annotation: PysaType.t;
           has_default: bool;
         }
       | KeywordOnly of {
           name: string;
-          annotation: Type.t;
+          annotation: PysaType.t;
           has_default: bool;
         }
       | Variable of { name: string option }
       | Keywords of {
           name: string option;
-          annotation: Type.t;
+          annotation: PysaType.t;
         }
     [@@deriving equal, compare, show]
 
-    val annotation : t -> Type.t option
+    val annotation : t -> PysaType.t option
 
     val has_default : t -> bool
   end
@@ -252,7 +299,7 @@ module ModelQueries : sig
     type t = {
       (* Functions with `@overload` have multiple parameter signatures. *)
       overloads: FunctionParameters.t list;
-      return_annotation: Type.t;
+      return_annotation: PysaType.t;
     }
     [@@deriving equal, compare, show]
 
