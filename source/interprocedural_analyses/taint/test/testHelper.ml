@@ -104,12 +104,18 @@ let outcome
   }
 
 
-let create_callable kind define_name =
+let create_callable ~pyre_api kind define_name =
   let name = Reference.create define_name in
   match kind with
   | `Method -> Target.create_method_from_reference name
   | `Function -> Target.create_function name
-  | `PropertySetter -> Target.create_method_from_reference ~kind:Target.Pyre1PropertySetter name
+  | `PropertySetter ->
+      if PyrePysaApi.ReadOnly.is_pyrefly pyre_api then
+        Target.create_method_from_reference
+          ~kind:Target.PyreflyPropertySetter
+          (Reference.create (Format.sprintf "%s@setter" define_name))
+      else
+        Target.create_method_from_reference ~kind:Target.Pyre1PropertySetter name
   | `Override -> Target.create_override_from_reference name
   | `Object -> Target.create_object name
 
@@ -137,7 +143,7 @@ let check_expectation
       analysis_modes = expected_analysis_modes;
     }
   =
-  let callable = create_callable kind define_name in
+  let callable = create_callable ~pyre_api kind define_name in
   let extract_sinks_by_parameter_name (root, sink_tree) sink_map =
     match AccessPath.Root.parameter_name root with
     | Some name ->
@@ -977,24 +983,24 @@ let end_to_end_integration_test path context =
       in
       create_expected_and_actual_files ~suffix:".overrides" actual
     in
-    let ({
-           TestEnvironment.static_analysis_configuration;
-           taint_configuration;
-           taint_configuration_shared_memory;
-           whole_program_call_graph;
-           get_define_call_graph;
-           pyre_api;
-           override_graph_heap;
-           override_graph_shared_memory;
-           initial_models;
-           initial_callables;
-           stubs;
-           class_interval_graph_shared_memory;
-           global_constants;
-           call_graph_fixpoint_state;
-           callables_to_definitions_map;
-           _;
-         } as test_environment)
+    let {
+      TestEnvironment.static_analysis_configuration;
+      taint_configuration;
+      taint_configuration_shared_memory;
+      whole_program_call_graph;
+      get_define_call_graph;
+      pyre_api;
+      override_graph_heap;
+      override_graph_shared_memory;
+      initial_models;
+      initial_callables;
+      stubs;
+      class_interval_graph_shared_memory;
+      global_constants;
+      call_graph_fixpoint_state;
+      callables_to_definitions_map;
+      _;
+    }
       =
       try
         initialize
@@ -1111,8 +1117,7 @@ let end_to_end_integration_test path context =
       |> List.map ~f:(fun json -> Yojson.Safe.pretty_to_string ~std:true json ^ "\n")
       |> String.concat ~sep:""
     in
-    let () = TaintFixpoint.State.cleanup ~keep_models:false fixpoint.TaintFixpoint.state in
-    let () = TestEnvironment.cleanup test_environment in
+    let () = Memory.reset_shared_memory () in
     divergent_files, serialized_models
   in
   let divergent_files =

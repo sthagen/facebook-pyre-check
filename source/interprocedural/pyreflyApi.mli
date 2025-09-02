@@ -61,9 +61,11 @@ module ReadWrite : sig
     :  scheduler:Scheduler.t ->
     scheduler_policies:Configuration.SchedulerPolicies.t ->
     configuration:Configuration.Analysis.t ->
-    decorator_configuration:Analysis.DecoratorPreprocessing.Configuration.t ->
+    store_type_of_expressions:bool ->
     PyrePath.t ->
     t
+
+  val cleanup : t -> scheduler:Scheduler.t -> unit
 end
 
 (* Read-only API that can be sent to workers. Cheap to copy. *)
@@ -84,6 +86,8 @@ module ReadOnly : sig
     exclude_test_modules:bool ->
     Ast.Reference.t ->
     Ast.Reference.t list
+
+  val all_classes : t -> scheduler:Scheduler.t -> string list
 
   val get_define_names_for_qualifier
     :  t ->
@@ -112,6 +116,8 @@ module ReadOnly : sig
     PysaType.t ->
     Analysis.PyrePysaEnvironment.ScalarTypeProperties.t
 end
+
+val add_builtins_prefix : Ast.Reference.t -> Ast.Reference.t
 
 module ModelQueries : sig
   module Function = Analysis.PyrePysaEnvironment.ModelQueries.Function
@@ -184,6 +190,15 @@ end
 
 (* Exposed for testing purposes *)
 module ModuleInfoFile : sig
+  module JsonType : sig
+    type t = {
+      string: string;
+      scalar_properties: Analysis.PyrePysaEnvironment.ScalarTypeProperties.t;
+      class_names: GlobalClassId.t list;
+    }
+    [@@deriving equal, show]
+  end
+
   module ParentScope : sig
     type t =
       | TopLevel
@@ -192,10 +207,55 @@ module ModuleInfoFile : sig
     [@@deriving equal, show]
   end
 
+  module FunctionParameter : sig
+    type t =
+      | PosOnly of {
+          name: string option;
+          annotation: JsonType.t;
+          required: bool;
+        }
+      | Pos of {
+          name: string;
+          annotation: JsonType.t;
+          required: bool;
+        }
+      | VarArg of {
+          name: string option;
+          annotation: JsonType.t;
+        }
+      | KwOnly of {
+          name: string;
+          annotation: JsonType.t;
+          required: bool;
+        }
+      | Kwargs of {
+          name: string option;
+          annotation: JsonType.t;
+        }
+    [@@deriving equal, show]
+  end
+
+  module FunctionParameters : sig
+    type t =
+      | List of FunctionParameter.t list
+      | Ellipsis
+      | ParamSpec
+    [@@deriving equal, show]
+  end
+
+  module FunctionSignature : sig
+    type t = {
+      parameters: FunctionParameters.t;
+      return_annotation: JsonType.t;
+    }
+    [@@deriving equal, show]
+  end
+
   module FunctionDefinition : sig
     type t = {
       name: string;
       parent: ParentScope.t;
+      undecorated_signatures: FunctionSignature.t list;
       is_overload: bool;
       is_staticmethod: bool;
       is_classmethod: bool;

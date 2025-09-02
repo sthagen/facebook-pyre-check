@@ -479,6 +479,32 @@ let bracket_tmpfile ?suffix context =
   |> fun (filename, channel) -> CamlUnix.realpath filename, channel
 
 
+let django_stubs () =
+  [
+    ( "django/http/__init__.pyi",
+      {|
+        import typing
+        from django.http.request import HttpRequest as HttpRequest
+
+        class HttpResponse: ...
+        class Request:
+          GET: typing.Dict[str, typing.Any] = ...
+          POST: typing.Dict[str, typing.Any] = ...
+        |}
+    );
+    ( "django/http/request.pyi",
+      {|
+        import typing
+
+        class HttpRequest:
+          GET: typing.Dict[str, typing.Any] = ...
+          POST: typing.Dict[str, typing.Any] = ...
+        |}
+    );
+    "django/__init__.pyi", "import django.http";
+  ]
+
+
 let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions = true) () =
   let builtins =
     let helper_builtin_stubs =
@@ -1687,24 +1713,6 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
         |}
     );
     "builtins.pyi", builtins;
-    ( "django/http/__init__.pyi",
-      {|
-        from django.http.request import HttpRequest as HttpRequest
-
-        class HttpResponse: ...
-        class Request:
-          GET: typing.Dict[str, typing.Any] = ...
-          POST: typing.Dict[str, typing.Any] = ...
-        |}
-    );
-    ( "django/http/request.pyi",
-      {|
-        class HttpRequest:
-          GET: typing.Dict[str, typing.Any] = ...
-          POST: typing.Dict[str, typing.Any] = ...
-        |}
-    );
-    "django/__init__.pyi", "import django.http";
     ( "dataclasses.pyi",
       {|
         from typing import TypeVar, Generic, Type, Mapping, Any
@@ -3164,6 +3172,7 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
   @ sqlalchemy_stubs
   @ torch_stubs
   @ readonly_stubs
+  @ django_stubs ()
   @ if include_pyre_extensions then pyre_extensions_stubs else []
 
 
@@ -3341,9 +3350,7 @@ module ScratchProject = struct
         in
         AstEnvironment.clear_memory_for_tests ~scheduler:(mock_scheduler ()) ast_environment;
         let set_up_shared_memory _ = () in
-        let tear_down_shared_memory () _ =
-          AstEnvironment.clear_memory_for_tests ~scheduler:(mock_scheduler ()) ast_environment
-        in
+        let tear_down_shared_memory () _ = Memory.reset_shared_memory () in
         (* Clean shared memory up after the test *)
         OUnit2.bracket set_up_shared_memory tear_down_shared_memory context)
     in
@@ -3513,6 +3520,144 @@ module ScratchProject = struct
       errors_environment
       ~scheduler
       artifact_paths
+end
+
+module ScratchPyreflyProject = struct
+  type t = {
+    api: Interprocedural.PyreflyApi.ReadWrite.t;
+    configuration: Configuration.Analysis.t;
+  }
+
+  let find_pyrefly_binary () = Stdlib.Sys.getenv_opt "PYREFLY_BINARY"
+
+  let setup ~context ~pyrefly_binary ~requires_type_of_expressions ?(external_sources = []) sources =
+    let local_root = bracket_tmpdir context |> PyrePath.create_absolute in
+    let external_root = bracket_tmpdir context |> PyrePath.create_absolute in
+    let add_source ~root (relative, content) =
+      let content = trim_extra_indentation content in
+      let file = File.create ~content (PyrePath.create_relative ~root ~relative) in
+      File.write file
+    in
+    let external_sources = django_stubs () @ external_sources in
+    let () = List.iter sources ~f:(add_source ~root:local_root) in
+    let () = List.iter external_sources ~f:(add_source ~root:external_root) in
+    let () =
+      File.write
+        (File.create
+           ~content:"\n"
+           (PyrePath.create_relative ~root:local_root ~relative:"pyrefly.toml"))
+    in
+    let result_directory = bracket_tmpdir context |> PyrePath.create_absolute in
+    let python_version = Configuration.PythonVersion.create () in
+    let arguments =
+      [
+        "check";
+        "--threads=1";
+        "--verbose";
+        Format.sprintf
+          "--python-version=%d.%d.%d"
+          python_version.major
+          python_version.minor
+          python_version.micro;
+        "--search-path";
+        PyrePath.absolute external_root;
+        "--report-pysa";
+        PyrePath.absolute result_directory;
+        PyrePath.absolute local_root;
+      ]
+    in
+    Log.info "Running command: %s" (Stdlib.Filename.quote_command pyrefly_binary arguments);
+    let stdout, stdin, stderr =
+      CamlUnix.open_process_args_full
+        pyrefly_binary
+        (Array.of_list ("pyrefly" :: arguments))
+        (CamlUnix.environment ())
+    in
+    let () = Out_channel.close stdin in
+    Log.info "Pyrefly stdout: %s" (In_channel.input_all stdout);
+    Log.info "Pyrefly stderr: %s" (In_channel.input_all stderr);
+    let () = In_channel.close stdout in
+    let () = In_channel.close stderr in
+    let configuration =
+      Configuration.Analysis.create
+        ~parallel:false
+        ~source_paths:[]
+        ~search_paths:[]
+        ~python_version
+        ()
+    in
+    let api =
+      try
+        Interprocedural.PyreflyApi.ReadWrite.create_from_directory
+          ~scheduler:(Scheduler.create_sequential ())
+          ~scheduler_policies:Configuration.SchedulerPolicies.empty
+          ~store_type_of_expressions:requires_type_of_expressions
+          ~configuration
+          result_directory
+      with
+      | Interprocedural.PyreflyApi.PyreflyFileFormatError { path; error } ->
+          failwith
+            (Format.asprintf "%a: %a" PyrePath.pp path Interprocedural.PyreflyApi.Error.pp error)
+    in
+    let () =
+      (* Clean shared memory up after the test *)
+      let set_up_shared_memory _ = () in
+      let tear_down_shared_memory () _ = Memory.reset_shared_memory () in
+      OUnit2.bracket set_up_shared_memory tear_down_shared_memory context
+    in
+    { api; configuration }
+
+
+  let pyre_pysa_read_only_api { api; _ } =
+    Interprocedural.PyrePysaApi.ReadOnly.from_pyrefly_api
+      (Interprocedural.PyreflyApi.ReadOnly.of_read_write_api api)
+
+
+  let configuration_of { configuration; _ } = configuration
+end
+
+module ScratchPyrePysaProject = struct
+  type t =
+    | Pyre1 of ScratchProject.t
+    | Pyrefly of ScratchPyreflyProject.t
+
+  let pyrefly_binary =
+    lazy
+      (match ScratchPyreflyProject.find_pyrefly_binary () with
+      | Some path ->
+          let () = Log.dump "Found PYREFLY_BINARY=`%s`, running tests using pyrefly" path in
+          Some path
+      | None -> None)
+
+
+  let setup
+      ~context
+      ~requires_type_of_expressions
+      ?(force_pyre1 = false)
+      ?(external_sources = [])
+      sources
+    =
+    match Lazy.force pyrefly_binary with
+    | Some pyrefly_binary when not force_pyre1 ->
+        Pyrefly
+          (ScratchPyreflyProject.setup
+             ~context
+             ~pyrefly_binary
+             ~requires_type_of_expressions
+             ~external_sources
+             sources)
+    | _ -> Pyre1 (ScratchProject.setup ~context ~external_sources sources)
+
+
+  let read_only_api = function
+    | Pyre1 project ->
+        Interprocedural.PyrePysaApi.ReadOnly.Pyre1 (ScratchProject.pyre_pysa_read_only_api project)
+    | Pyrefly project -> ScratchPyreflyProject.pyre_pysa_read_only_api project
+
+
+  let configuration_of = function
+    | Pyre1 project -> ScratchProject.configuration_of project
+    | Pyrefly project -> ScratchPyreflyProject.configuration_of project
 end
 
 type test_other_sources_t = {

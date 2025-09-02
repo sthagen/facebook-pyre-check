@@ -40,7 +40,7 @@ module ReadWrite = struct
              ~scheduler
              ~scheduler_policies
              ~configuration
-             ~decorator_configuration
+             ~store_type_of_expressions:true
              pyrefly_results)
     | None ->
         Pyre1
@@ -96,6 +96,13 @@ module ReadOnly = struct
 
   let from_pyre1_api pyre_api = Pyre1 pyre_api
 
+  let from_pyrefly_api pyrefly_api = Pyrefly pyrefly_api
+
+  let is_pyrefly = function
+    | Pyre1 _ -> false
+    | Pyrefly _ -> true
+
+
   let explicit_qualifiers = function
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.explicit_qualifiers pyre_api
     | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.explicit_qualifiers pyrefly_api
@@ -106,8 +113,9 @@ module ReadOnly = struct
     | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.absolute_source_path_of_qualifier pyrefly_api
 
 
-  let relative_path_of_qualifier = function
-    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.relative_path_of_qualifier pyre_api
+  let relative_path_of_qualifier api qualifier =
+    match api with
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.relative_path_of_qualifier pyre_api qualifier
     | Pyrefly _ -> failwith "unimplemented: ReadOnly.relative_path_of_qualifier"
 
 
@@ -282,7 +290,7 @@ module ReadOnly = struct
 
   let all_classes = function
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.all_classes pyre_api
-    | Pyrefly _ -> failwith "unimplemented: ReadOnly.all_classes"
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.all_classes pyrefly_api
 
 
   let all_unannotated_globals = function
@@ -293,6 +301,12 @@ module ReadOnly = struct
   let scalar_type_properties = function
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.scalar_type_properties pyre_api
     | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.scalar_type_properties pyrefly_api
+
+
+  let add_builtins_prefix api reference =
+    match api with
+    | Pyre1 _ -> reference
+    | Pyrefly _ -> PyreflyApi.add_builtins_prefix reference
 end
 
 module InContext = struct

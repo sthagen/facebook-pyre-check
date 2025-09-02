@@ -13,11 +13,30 @@ open Test
 open Interprocedural
 
 let test_get_module_and_definition context =
-  let assert_get_module_and_definition ~source ~target ~expected =
+  let assert_get_module_and_definition
+      ?pyrefly_target
+      ?pyrefly_expected
+      ~source
+      ~target
+      ~expected
+      ()
+    =
     let pyre_api =
-      Test.ScratchProject.setup ~context ["test.py", source]
-      |> Test.ScratchProject.pyre_pysa_read_only_api
-      |> PyrePysaApi.ReadOnly.from_pyre1_api
+      Test.ScratchPyrePysaProject.setup
+        ~context
+        ~requires_type_of_expressions:false
+        ["test.py", source]
+      |> Test.ScratchPyrePysaProject.read_only_api
+    in
+    let target =
+      match pyrefly_target with
+      | Some pyrefly_target when PyrePysaApi.ReadOnly.is_pyrefly pyre_api -> pyrefly_target
+      | _ -> target
+    in
+    let expected =
+      match pyrefly_expected with
+      | Some pyrefly_expected when PyrePysaApi.ReadOnly.is_pyrefly pyre_api -> pyrefly_expected
+      | _ -> expected
     in
     let actual =
       target
@@ -39,7 +58,7 @@ let test_get_module_and_definition context =
       | Some (qualifier, body) ->
           Format.sprintf "%s: %s" (Reference.show qualifier) (List.to_string body ~f:Statement.show)
     in
-    assert_equal ~printer ~cmp:(Option.equal equal) actual expected
+    assert_equal ~printer ~cmp:(Option.equal equal) expected actual
   in
   assert_get_module_and_definition
     ~source:
@@ -55,6 +74,9 @@ let test_get_module_and_definition context =
     ~target:
       (Target.Regular.Method
          { class_name = "test.C"; method_name = "foo"; kind = Pyre1PropertySetter })
+    ~pyrefly_target:
+      (Target.Regular.Method
+         { class_name = "test.C"; method_name = "foo@setter"; kind = PyreflyPropertySetter })
     ~expected:
       (Some
          ( Reference.create "test",
@@ -68,45 +90,19 @@ let test_get_module_and_definition context =
                 };
              +Statement.Statement.Return { Statement.Return.is_implicit = true; expression = None };
            ] ))
-
-
-let test_resolve_method context =
-  let assert_get_resolve_method ~source ~class_type ~method_name expected =
-    let pyre_api =
-      Test.ScratchProject.setup ~context ["test.py", source]
-      |> Test.ScratchProject.pyre_pysa_read_only_api
-      |> PyrePysaApi.ReadOnly.from_pyre1_api
-    in
-    assert_equal
-      ~printer:(show_optional Target.show_pretty)
-      expected
-      (Target.resolve_method ~pyre_api ~class_type ~method_name)
-  in
-  assert_get_resolve_method
-    ~source:
-      {|
-      from typing import Callable
-      class Foo:
-        method: Callable(cls.named)[[int], str]
-     |}
-    ~class_type:(Primitive "test.Foo")
-    ~method_name:"method"
-    (Some
-       (Target.Regular.Method { class_name = "cls"; method_name = "named"; kind = Normal }
-       |> Target.from_regular));
-  assert_get_resolve_method
-    ~source:
-      {|
-      from typing import Callable
-      class Foo:
-        method: BoundMethod[Callable(cls.named)[[int], str], Foo]
-     |}
-    ~class_type:(Primitive "test.Foo")
-    ~method_name:"method"
-    (Some
-       (Target.Regular.Method { class_name = "cls"; method_name = "named"; kind = Normal }
-       |> Target.from_regular));
-  ()
+    ~pyrefly_expected:
+      (Some
+         ( Reference.create "test",
+           [
+             +Statement.Statement.Assign
+                {
+                  Statement.Assign.target = !"self._foo";
+                  annotation = None;
+                  value = Some !"value";
+                  origin = None;
+                };
+           ] ))
+    ()
 
 
 let test_pretty_print _ =
@@ -279,7 +275,6 @@ let () =
   "callable"
   >::: [
          "get_module_and_definition" >:: test_get_module_and_definition;
-         "resolve_method" >:: test_resolve_method;
          "pretty_print" >:: test_pretty_print;
          "contain_recursive_targets" >:: test_contain_recursive_targets;
          "target_depth" >:: test_target_depth;

@@ -85,7 +85,13 @@ let verify_imported_model ~path ~location ~callable_name ~imported_name =
   | _ -> Ok ()
 
 
-let model_compatible_errors ~callable_overload ~add_overload_in_error ~normalized_model_parameters =
+let model_compatible_errors
+    ~callable_signature:
+      ({ PyrePysaApi.ModelQueries.FunctionSignature.parameters = callable_parameters; _ } as
+      callable_signature)
+    ~add_overload_in_error
+    ~normalized_model_parameters
+  =
   let open ModelVerificationError in
   (* Once a requirement has been satisfied, it is removed from requirement object. At the end, we
      check whether there remains unsatisfied requirements. *)
@@ -145,7 +151,7 @@ let model_compatible_errors ~callable_overload ~add_overload_in_error ~normalize
         else
           IncompatibleModelError.UnexpectedDoubleStarredParameter :: errors, requirements
   in
-  match callable_overload with
+  match callable_parameters with
   | PyrePysaApi.ModelQueries.FunctionParameters.List parameters ->
       let parameter_requirements = create_parameters_requirements parameters in
       let errors, _ =
@@ -158,7 +164,7 @@ let model_compatible_errors ~callable_overload ~add_overload_in_error ~normalize
         ~f:(fun reason ->
           {
             IncompatibleModelError.reason;
-            overload = Option.some_if add_overload_in_error callable_overload;
+            overload = Option.some_if add_overload_in_error callable_signature;
           })
         errors
   | _ -> []
@@ -170,21 +176,21 @@ let verify_signature
     ~normalized_model_parameters
     ~name:callable_name
     ~imported_name
-    callable_signature
+    callable_signatures
   =
   let open Result in
   verify_model_syntax ~path ~location ~callable_name ~normalized_model_parameters
   >>= fun () ->
   verify_imported_model ~path ~location ~callable_name ~imported_name
   >>= fun () ->
-  match callable_signature with
-  | Some ({ PyrePysaApi.ModelQueries.FunctionSignature.overloads; _ } as callable_signature) ->
-      let add_overload_in_error = List.length overloads > 1 in
+  match callable_signatures with
+  | Some callable_signatures ->
+      let add_overload_in_error = List.length callable_signatures > 1 in
       let errors =
         let errors_in_overloads =
-          List.map overloads ~f:(fun callable_overload ->
+          List.map callable_signatures ~f:(fun callable_signature ->
               model_compatible_errors
-                ~callable_overload
+                ~callable_signature
                 ~add_overload_in_error
                 ~normalized_model_parameters)
         in
@@ -199,7 +205,7 @@ let verify_signature
              ~path
              ~location
              (IncompatibleModelError
-                { name = Reference.show callable_name; callable_signature; errors }))
+                { name = Reference.show callable_name; callable_signatures; errors }))
       else
         Ok ()
   | _ -> Ok ()
@@ -273,3 +279,57 @@ let verify_global_attribute ~path ~location ~pyre_api ~name =
                    ~path
                    ~location
                    (NotInEnvironment { module_name; name = Reference.show name }))))
+
+
+(* List of stdlib modules. To keep it short, this only includes modules that we want to annotate
+   with taint models. *)
+let stdlib_modules =
+  String.Set.of_list
+    [
+      "_socket";
+      "argparse";
+      "asyncio";
+      "bz2";
+      "code";
+      "copy";
+      "email";
+      "gzip";
+      "hmac";
+      "http";
+      "linecache";
+      "logging";
+      "marshal";
+      "os";
+      "pickle";
+      "queue";
+      "runpy";
+      "shelve";
+      "shlex";
+      "shutil";
+      "smtplib";
+      "socket";
+      "socketserver";
+      "sqlite3";
+      "tarfile";
+      "tempfile";
+      "urllib";
+      "wsgiref";
+      "xml";
+    ]
+
+
+(* Unlike Pyre, Pyrefly won't type check stdlib modules (from typeshed) that aren't included
+   transitively by a source file in under the roots. This means they won't be visible to Pysa
+   either, and taint models for those will error. Let's skip these errors since these are
+   harmless. *)
+let filter_unused_stdlib_modules_errors errors =
+  let filter = function
+    | {
+        ModelVerificationError.kind = ModelVerificationError.NotInEnvironment { module_name; _ };
+        _;
+      }
+      when Set.mem stdlib_modules module_name ->
+        false
+    | _ -> true
+  in
+  List.filter ~f:filter errors

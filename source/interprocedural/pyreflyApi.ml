@@ -16,6 +16,9 @@ module Pyre1Api = Analysis.PyrePysaEnvironment
 module PyreflyType = Pyre1Api.PyreflyType
 module PysaType = Pyre1Api.PysaType
 module ScalarTypeProperties = Pyre1Api.ScalarTypeProperties
+module FunctionParameter = Pyre1Api.ModelQueries.FunctionParameter
+module FunctionParameters = Pyre1Api.ModelQueries.FunctionParameters
+module FunctionSignature = Pyre1Api.ModelQueries.FunctionSignature
 
 module FormatError = struct
   type t =
@@ -105,6 +108,15 @@ module JsonUtil = struct
     >>= function
     | version when Int.equal version expected -> Ok ()
     | version -> Error (FormatError.UnsupportedVersion { version })
+
+
+  let get_member json key =
+    match Yojson.Safe.Util.member key json with
+    | `Null ->
+        Error
+          (FormatError.UnexpectedJsonType
+             { json; message = Format.sprintf "expected an object with key `%s`" key })
+    | value -> Ok value
 
 
   let get_object_member json key =
@@ -222,6 +234,7 @@ end
 
 (* Unique identifier for a class, assigned by pyrefly. *)
 module GlobalClassId = struct
+  (* TODO(T225700656): Potentially encode this in a single integer to save space. *)
   type t = {
     module_id: ModuleId.t;
     local_class_id: LocalClassId.t;
@@ -253,6 +266,34 @@ module GlobalClassIdSharedMemoryKey = struct
           local_class_id = LocalClassId.from_int (int_of_string local_class_id);
         }
     | _ -> failwith "unexpected global class id key"
+end
+
+(* Unique identifier for a callable (function or method) *)
+module GlobalCallableId = struct
+  type t = {
+    module_id: ModuleId.t;
+    (* TODO(T225700656): Potentially use a TextRange (2 ints) instead of Location.t (4 ints) *)
+    name_location: Location.t;
+  }
+  [@@deriving compare, equal, show]
+end
+
+module GlobalCallableIdSharedMemoryKey = struct
+  type t = GlobalCallableId.t [@@deriving compare]
+
+  let to_string { GlobalCallableId.module_id; name_location } =
+    Format.asprintf "%d|%a" (ModuleId.to_int module_id) Location.pp name_location
+
+
+  let from_string s =
+    String.split ~on:'|' s
+    |> function
+    | [module_id; name_location] ->
+        {
+          GlobalCallableId.module_id = ModuleId.from_int (int_of_string module_id);
+          name_location = Result.ok_or_failwith (Location.from_string name_location);
+        }
+    | _ -> failwith "unexpected global callable id key"
 end
 
 (* Unique identifier for a module, assigned by pysa. This maps to a specific source file. Note that
@@ -431,6 +472,7 @@ module ModuleInfoFile = struct
       scalar_properties: ScalarTypeProperties.t;
       class_names: GlobalClassId.t list;
     }
+    [@@deriving equal, show]
 
     let from_json json =
       let open Core.Result.Monad_infix in
@@ -478,10 +520,108 @@ module ModuleInfoFile = struct
       | _ -> Error (FormatError.UnexpectedJsonType { json; message = "expected parent_scope" })
   end
 
+  module FunctionParameter = struct
+    type t =
+      | PosOnly of {
+          name: string option;
+          annotation: JsonType.t;
+          required: bool;
+        }
+      | Pos of {
+          name: string;
+          annotation: JsonType.t;
+          required: bool;
+        }
+      | VarArg of {
+          name: string option;
+          annotation: JsonType.t;
+        }
+      | KwOnly of {
+          name: string;
+          annotation: JsonType.t;
+          required: bool;
+        }
+      | Kwargs of {
+          name: string option;
+          annotation: JsonType.t;
+        }
+    [@@deriving equal, show]
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      (match json with
+      | `Assoc [(kind, json)] -> Ok (kind, json)
+      | _ ->
+          Error (FormatError.UnexpectedJsonType { json; message = "expected function parameter" }))
+      >>= fun (kind, json) ->
+      JsonUtil.get_object_member json "annotation"
+      >>| (fun bindings -> `Assoc bindings)
+      >>= JsonType.from_json
+      >>= fun annotation ->
+      JsonUtil.get_optional_bool_member ~default:false json "required"
+      >>= fun required ->
+      match kind with
+      | "PosOnly" ->
+          JsonUtil.get_optional_string_member json "name"
+          >>| fun name -> PosOnly { name; annotation; required }
+      | "Pos" ->
+          JsonUtil.get_string_member json "name" >>| fun name -> Pos { name; annotation; required }
+      | "VarArg" ->
+          JsonUtil.get_optional_string_member json "name"
+          >>| fun name -> VarArg { name; annotation }
+      | "KwOnly" ->
+          JsonUtil.get_string_member json "name"
+          >>| fun name -> KwOnly { name; annotation; required }
+      | "Kwargs" ->
+          JsonUtil.get_optional_string_member json "name"
+          >>| fun name -> Kwargs { name; annotation }
+      | _ ->
+          Error (FormatError.UnexpectedJsonType { json; message = "expected function parameter" })
+  end
+
+  module FunctionParameters = struct
+    type t =
+      | List of FunctionParameter.t list
+      | Ellipsis
+      | ParamSpec
+    [@@deriving equal, show]
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      match json with
+      | `Assoc [("List", `List parameters)] ->
+          List.map ~f:FunctionParameter.from_json parameters
+          |> Result.all
+          >>| fun parameters -> List parameters
+      | `String "Ellipsis" -> Ok Ellipsis
+      | `String "ParamSpec" -> Ok ParamSpec
+      | _ ->
+          Error (FormatError.UnexpectedJsonType { json; message = "expected function parameters" })
+  end
+
+  module FunctionSignature = struct
+    type t = {
+      parameters: FunctionParameters.t;
+      return_annotation: JsonType.t;
+    }
+    [@@deriving equal, show]
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      JsonUtil.get_member json "parameters"
+      >>= FunctionParameters.from_json
+      >>= fun parameters ->
+      JsonUtil.get_object_member json "return_annotation"
+      >>| (fun bindings -> `Assoc bindings)
+      >>= JsonType.from_json
+      >>| fun return_annotation -> { parameters; return_annotation }
+  end
+
   module FunctionDefinition = struct
     type t = {
       name: string;
       parent: ParentScope.t;
+      undecorated_signatures: FunctionSignature.t list;
       is_overload: bool;
       is_staticmethod: bool;
       is_classmethod: bool;
@@ -499,6 +639,10 @@ module ModuleInfoFile = struct
       >>= fun name ->
       ParentScope.from_json (Yojson.Safe.Util.member "parent" json)
       >>= fun parent ->
+      JsonUtil.get_list_member json "undecorated_signatures"
+      >>| List.map ~f:FunctionSignature.from_json
+      >>= Result.all
+      >>= fun undecorated_signatures ->
       JsonUtil.get_optional_bool_member ~default:false json "is_overload"
       >>= fun is_overload ->
       JsonUtil.get_optional_bool_member ~default:false json "is_staticmethod"
@@ -514,6 +658,7 @@ module ModuleInfoFile = struct
       {
         name;
         parent;
+        undecorated_signatures;
         is_overload;
         is_staticmethod;
         is_classmethod;
@@ -529,6 +674,18 @@ module ModuleInfoFile = struct
       {
         name = Ast.Statement.toplevel_define_name;
         parent = ParentScope.TopLevel;
+        undecorated_signatures =
+          [
+            {
+              FunctionSignature.parameters = FunctionParameters.List [];
+              return_annotation =
+                {
+                  JsonType.string = "None";
+                  scalar_properties = ScalarTypeProperties.none;
+                  class_names = [];
+                };
+            };
+          ];
         is_overload = false;
         is_staticmethod = false;
         is_classmethod = false;
@@ -544,6 +701,18 @@ module ModuleInfoFile = struct
       {
         name = Ast.Statement.class_toplevel_define_name;
         parent = ParentScope.Class name_location;
+        undecorated_signatures =
+          [
+            {
+              FunctionSignature.parameters = FunctionParameters.List [];
+              return_annotation =
+                {
+                  JsonType.string = "None";
+                  scalar_properties = ScalarTypeProperties.none;
+                  class_names = [];
+                };
+            };
+          ];
         is_overload = false;
         is_staticmethod = false;
         is_classmethod = false;
@@ -689,7 +858,9 @@ end
 module ModuleInfosSharedMemory = struct
   module Module = struct
     type t = {
+      module_id: ModuleId.t;
       source_path: ArtifactPath.t option (* The path of source code as seen by the analyzer. *);
+      has_info: bool;
       is_test: bool; (* Is this a test file? *)
       is_stub: bool; (* Is this a stub file (e.g, `a.pyi`)? *)
     }
@@ -707,17 +878,27 @@ module ModuleInfosSharedMemory = struct
       end)
 end
 
-(* List of module qualifiers with source code, stored in shared memory. *)
-module QualifiersWithSourceSharedMemory =
-  Hack_parallel.Std.SharedMemory.FirstClass.NoCache.Make
-    (Memory.SingletonKey)
-    (struct
-      type t = ModuleQualifier.t list
+(* List of module qualifiers, stored in shared memory. *)
+module QualifiersSharedMemory = struct
+  module Value = struct
+    type t = {
+      module_qualifier: ModuleQualifier.t;
+      has_source: bool;
+      has_info: bool;
+    }
+  end
 
-      let prefix = Hack_parallel.Std.Prefix.make ()
+  include
+    Hack_parallel.Std.SharedMemory.FirstClass.NoCache.Make
+      (Memory.SingletonKey)
+      (struct
+        type t = Value.t list
 
-      let description = "pyrefly all modules"
-    end)
+        let prefix = Hack_parallel.Std.Prefix.make ()
+
+        let description = "pyrefly all modules"
+      end)
+end
 
 (* Type of expression at a given module qualifier and location, stored in shared memory. *)
 module TypeOfExpressionsSharedMemory = struct
@@ -937,6 +1118,17 @@ module ClassIdToQualifiedNameSharedMemory =
       let description = "pyrefly class id to fully qualified name"
     end)
 
+module CallableIdToQualifiedNameSharedMemory =
+  Hack_parallel.Std.SharedMemory.FirstClass.NoCache.Make
+    (GlobalCallableIdSharedMemoryKey)
+    (struct
+      type t = FullyQualifiedName.t
+
+      let prefix = Hack_parallel.Std.Prefix.make ()
+
+      let description = "pyrefly callable id to fully qualified name"
+    end)
+
 (* For a given class, its list of immediate parents. Empty if the class has no parents (it is
    implicitly ['object']) *)
 module ClassImmediateParentsSharedMemory =
@@ -984,7 +1176,8 @@ module CallableAstSharedMemory =
       let description = "pyrefly ast of callables"
     end)
 
-module CallableSignatureSharedMemory =
+(* Define signature of each callable, resulting from parsing the source file. *)
+module CallableDefineSignatureSharedMemory =
   Hack_parallel.Std.SharedMemory.FirstClass.NoCache.Make
     (FullyQualifiedNameSharedMemoryKey)
     (struct
@@ -992,7 +1185,19 @@ module CallableSignatureSharedMemory =
 
       let prefix = Hack_parallel.Std.Prefix.make ()
 
-      let description = "pyrefly signature of callables"
+      let description = "pyrefly define signature of callables"
+    end)
+
+(* Undecorated signatures of each callable, provided by pyrefly. *)
+module CallableUndecoratedSignaturesSharedMemory =
+  Hack_parallel.Std.SharedMemory.FirstClass.NoCache.Make
+    (FullyQualifiedNameSharedMemoryKey)
+    (struct
+      type t = FunctionSignature.t list
+
+      let prefix = Hack_parallel.Std.Prefix.make ()
+
+      let description = "pyrefly undecorated signatures of callables"
     end)
 
 let assert_shared_memory_key_exists message = function
@@ -1039,7 +1244,7 @@ module ReadWrite = struct
   type t = {
     qualifier_to_module_map: Module.t ModuleQualifier.Map.t;
     module_infos_shared_memory: ModuleInfosSharedMemory.t;
-    qualifiers_with_source_shared_memory: QualifiersWithSourceSharedMemory.t;
+    qualifiers_shared_memory: QualifiersSharedMemory.t;
     type_of_expressions_shared_memory: TypeOfExpressionsSharedMemory.t;
     callable_metadata_shared_memory: CallableMetadataSharedMemory.t;
     class_metadata_shared_memory: ClassMetadataSharedMemory.t;
@@ -1047,10 +1252,12 @@ module ReadWrite = struct
     module_classes_shared_memory: ModuleClassesSharedMemory.t;
     (* TODO(T225700656): this can be removed from shared memory after initialization. *)
     class_id_to_qualified_name_shared_memory: ClassIdToQualifiedNameSharedMemory.t;
+    callable_id_to_qualified_name_shared_memory: CallableIdToQualifiedNameSharedMemory.t;
     class_immediate_parents_shared_memory: ClassImmediateParentsSharedMemory.t;
     class_fields_shared_memory: ClassFieldsSharedMemory.t;
     callable_ast_shared_memory: CallableAstSharedMemory.t;
-    callable_signature_shared_memory: CallableSignatureSharedMemory.t;
+    callable_define_signature_shared_memory: CallableDefineSignatureSharedMemory.t;
+    callable_undecorated_signatures_shared_memory: CallableUndecoratedSignaturesSharedMemory.t;
     object_class: FullyQualifiedName.t;
   }
 
@@ -1181,6 +1388,29 @@ module ReadWrite = struct
     qualifier_to_module_map, object_class_id
 
 
+  let create_pysa_type
+      ~class_id_to_qualified_name_shared_memory
+      { ModuleInfoFile.JsonType.string; scalar_properties; class_names }
+    =
+    let get_class_qualified_name class_id =
+      ClassIdToQualifiedNameSharedMemory.get class_id_to_qualified_name_shared_memory class_id
+      |> assert_shared_memory_key_exists "missing qualified name for class id"
+      |> FullyQualifiedName.to_reference
+      |> Reference.show
+    in
+    let class_names = List.map ~f:get_class_qualified_name class_names in
+    PysaType.from_pyrefly_type { PyreflyType.string; scalar_properties; class_names }
+
+
+  let pysa_type_none =
+    PysaType.from_pyrefly_type
+      {
+        PyreflyType.string = "None";
+        scalar_properties = ScalarTypeProperties.none;
+        class_names = [];
+      }
+
+
   let parse_type_of_expressions
       ~scheduler
       ~scheduler_policies
@@ -1214,22 +1444,8 @@ module ReadWrite = struct
         =
         ModuleInfoFile.from_path_exn ~pyrefly_directory pyrefly_info_path
       in
-      let get_class_qualified_name class_id =
-        ClassIdToQualifiedNameSharedMemory.get class_id_to_qualified_name_shared_memory class_id
-        |> assert_shared_memory_key_exists "missing qualified name for class id"
-        |> FullyQualifiedName.to_reference
-        |> Reference.show
-      in
-      Map.iteri
-        type_of_expression
-        ~f:(fun
-             ~key:location
-             ~data:{ ModuleInfoFile.JsonType.string; scalar_properties; class_names }
-           ->
-          let class_names = List.map ~f:get_class_qualified_name class_names in
-          let type_ =
-            PysaType.from_pyrefly_type { PyreflyType.string; scalar_properties; class_names }
-          in
+      Map.iteri type_of_expression ~f:(fun ~key:location ~data:type_ ->
+          let type_ = create_pysa_type ~class_id_to_qualified_name_shared_memory type_ in
           TypeOfExpressionsSharedMemory.add
             type_of_expressions_shared_memory
             { TypeOfExpressionsSharedMemory.Key.module_qualifier; location }
@@ -1269,11 +1485,21 @@ module ReadWrite = struct
     let handle = ModuleInfosSharedMemory.create () in
     let () =
       Map.to_alist qualifier_to_module_map
-      |> List.iter ~f:(fun (qualifier, { Module.source_path; is_test; is_stub; _ }) ->
+      |> List.iter
+           ~f:(fun
+                ( qualifier,
+                  { Module.module_id; source_path; pyrefly_info_path; is_test; is_stub; _ } )
+              ->
              ModuleInfosSharedMemory.add
                handle
                qualifier
-               { ModuleInfosSharedMemory.Module.source_path; is_test; is_stub })
+               {
+                 ModuleInfosSharedMemory.Module.module_id;
+                 source_path;
+                 has_info = Option.is_some pyrefly_info_path;
+                 is_test;
+                 is_stub;
+               })
     in
     Log.info "Wrote modules to shared memory: %.3fs" (Timer.stop_in_sec timer);
     handle
@@ -1292,7 +1518,7 @@ module ReadWrite = struct
     let timer = Timer.start () in
     let () = Log.info "Parsing source files..." in
     let callable_ast_shared_memory = CallableAstSharedMemory.create () in
-    let callable_signature_shared_memory = CallableSignatureSharedMemory.create () in
+    let callable_define_signature_shared_memory = CallableDefineSignatureSharedMemory.create () in
     let controls =
       Analysis.EnvironmentControls.create
         ~populate_call_graph:false
@@ -1309,8 +1535,8 @@ module ReadWrite = struct
             | ParseError -> ParseError
             | TestFile -> TestFile
           in
-          CallableSignatureSharedMemory.add
-            callable_signature_shared_memory
+          CallableDefineSignatureSharedMemory.add
+            callable_define_signature_shared_memory
             callable
             signature_result;
           ())
@@ -1460,8 +1686,8 @@ module ReadWrite = struct
               callable_ast_shared_memory
               callable
               (CallableAst.Some define);
-            CallableSignatureSharedMemory.add
-              callable_signature_shared_memory
+            CallableDefineSignatureSharedMemory.add
+              callable_define_signature_shared_memory
               callable
               (CallableAst.Some { Node.value = signature; location });
             ())
@@ -1552,7 +1778,7 @@ module ReadWrite = struct
       ~command:"analyze"
       ~timer
       ();
-    callable_ast_shared_memory, callable_signature_shared_memory
+    callable_ast_shared_memory, callable_define_signature_shared_memory
 
 
   (* Logic to assign fully qualified names to classes and defines. *)
@@ -1905,6 +2131,9 @@ module ReadWrite = struct
     let module_callables_shared_memory = ModuleCallablesSharedMemory.create () in
     let module_classes_shared_memory = ModuleClassesSharedMemory.create () in
     let class_id_to_qualified_name_shared_memory = ClassIdToQualifiedNameSharedMemory.create () in
+    let callable_id_to_qualified_name_shared_memory =
+      CallableIdToQualifiedNameSharedMemory.create ()
+    in
     let () = Log.info "Collecting classes and definitions..." in
     (* First step: collect classes and definitions, and assign them fully qualified names. *)
     let collect_definitions_and_assign_names (module_qualifier, pyrefly_info_path) =
@@ -1958,6 +2187,10 @@ module ReadWrite = struct
                   | ModuleInfoFile.ParentScope.Class _ -> true
                   | _ -> false);
               };
+            CallableIdToQualifiedNameSharedMemory.add
+              callable_id_to_qualified_name_shared_memory
+              { GlobalCallableId.module_id; name_location }
+              qualified_name;
             qualified_name :: callables, classes
         | Class { local_class_id; is_synthesized; fields; _ } ->
             ClassMetadataSharedMemory.add
@@ -2017,18 +2250,93 @@ module ReadWrite = struct
         ~inputs
         ()
     in
-    (* Second step: record class parents. This currently requires parsing module info files again,
-       which is wasteful. *)
+    (* Second step: record class parents and undecorated signatures. This currently requires parsing
+       module info files again, which is wasteful. *)
     let class_immediate_parents_shared_memory = ClassImmediateParentsSharedMemory.create () in
-    let parse_class_parents (_module_qualifier, pyrefly_info_path) =
-      let { ModuleInfoFile.class_definitions; module_id; _ } =
+    let callable_undecorated_signatures_shared_memory =
+      CallableUndecoratedSignaturesSharedMemory.create ()
+    in
+    let parse_class_parents_and_undecorated_signatures (module_qualifier, pyrefly_info_path) =
+      let { ModuleInfoFile.function_definitions; class_definitions; module_id; _ } =
         ModuleInfoFile.from_path_exn ~pyrefly_directory pyrefly_info_path
+      in
+      let get_function_name name_location =
+        CallableIdToQualifiedNameSharedMemory.get
+          callable_id_to_qualified_name_shared_memory
+          { GlobalCallableId.module_id; name_location }
+        |> assert_shared_memory_key_exists "unknown callable id"
       in
       let get_class_name class_id =
         ClassIdToQualifiedNameSharedMemory.get class_id_to_qualified_name_shared_memory class_id
-        |> Option.value_exn
+        |> assert_shared_memory_key_exists "unknown class id"
       in
-      let add_class { ModuleInfoFile.ClassDefinition.local_class_id; bases; _ } =
+      let convert_function_parameter index = function
+        | ModuleInfoFile.FunctionParameter.PosOnly { name; annotation; required } ->
+            FunctionParameter.PositionalOnly
+              {
+                name;
+                index;
+                annotation = create_pysa_type ~class_id_to_qualified_name_shared_memory annotation;
+                has_default = not required;
+              }
+        | Pos { name; annotation; required } ->
+            FunctionParameter.Named
+              {
+                name;
+                annotation = create_pysa_type ~class_id_to_qualified_name_shared_memory annotation;
+                has_default = not required;
+              }
+        | VarArg { name; annotation = _ } -> FunctionParameter.Variable { name }
+        | KwOnly { name; annotation; required } ->
+            FunctionParameter.KeywordOnly
+              {
+                name;
+                annotation = create_pysa_type ~class_id_to_qualified_name_shared_memory annotation;
+                has_default = not required;
+              }
+        | Kwargs { name; annotation } ->
+            FunctionParameter.Keywords
+              {
+                name;
+                annotation = create_pysa_type ~class_id_to_qualified_name_shared_memory annotation;
+              }
+      in
+      let convert_function_signature
+          { ModuleInfoFile.FunctionSignature.parameters; return_annotation }
+        =
+        let parameters =
+          match parameters with
+          | ModuleInfoFile.FunctionParameters.List parameters ->
+              FunctionParameters.List (List.mapi ~f:convert_function_parameter parameters)
+          | ModuleInfoFile.FunctionParameters.Ellipsis -> FunctionParameters.Ellipsis
+          | ModuleInfoFile.FunctionParameters.ParamSpec -> FunctionParameters.ParamSpec
+        in
+        {
+          FunctionSignature.parameters;
+          return_annotation =
+            create_pysa_type ~class_id_to_qualified_name_shared_memory return_annotation;
+        }
+      in
+      let toplevel_undecorated_signature =
+        {
+          FunctionSignature.parameters = FunctionParameters.List [];
+          return_annotation = pysa_type_none;
+        }
+      in
+      let add_function
+          ~key:name_location
+          ~data:{ ModuleInfoFile.FunctionDefinition.undecorated_signatures; _ }
+        =
+        let qualified_name = get_function_name name_location in
+        let undecorated_signatures =
+          List.map ~f:convert_function_signature undecorated_signatures
+        in
+        CallableUndecoratedSignaturesSharedMemory.add
+          callable_undecorated_signatures_shared_memory
+          qualified_name
+          undecorated_signatures
+      in
+      let add_class ~key:_ ~data:{ ModuleInfoFile.ClassDefinition.local_class_id; bases; _ } =
         let class_name = get_class_name { GlobalClassId.module_id; local_class_id } in
         let parents = List.map bases ~f:get_class_name in
         (* TODO(T225700656): To save memory, we could skip classes with no bases (which implicitly
@@ -2036,9 +2344,22 @@ module ReadWrite = struct
         ClassImmediateParentsSharedMemory.add
           class_immediate_parents_shared_memory
           class_name
-          parents
+          parents;
+        CallableUndecoratedSignaturesSharedMemory.add
+          callable_undecorated_signatures_shared_memory
+          (FullyQualifiedName.create_class_toplevel class_name)
+          [toplevel_undecorated_signature];
+        ()
       in
-      class_definitions |> Map.data |> List.iter ~f:add_class
+      let () = Map.iteri ~f:add_function function_definitions in
+      let () = Map.iteri ~f:add_class class_definitions in
+      let () =
+        CallableUndecoratedSignaturesSharedMemory.add
+          callable_undecorated_signatures_shared_memory
+          (FullyQualifiedName.create_module_toplevel ~module_qualifier)
+          [toplevel_undecorated_signature]
+      in
+      ()
     in
     let scheduler_policy =
       Scheduler.Policy.from_configuration_or_default
@@ -2056,7 +2377,7 @@ module ReadWrite = struct
         scheduler
         ~policy:scheduler_policy
         ~initial:()
-        ~map:(List.iter ~f:parse_class_parents)
+        ~map:(List.iter ~f:parse_class_parents_and_undecorated_signatures)
         ~reduce:(fun () () -> ())
         ~inputs
         ()
@@ -2075,29 +2396,35 @@ module ReadWrite = struct
       module_callables_shared_memory,
       module_classes_shared_memory,
       class_id_to_qualified_name_shared_memory,
-      class_immediate_parents_shared_memory )
+      callable_id_to_qualified_name_shared_memory,
+      class_immediate_parents_shared_memory,
+      callable_undecorated_signatures_shared_memory )
 
 
   let create_from_directory
       ~scheduler
       ~scheduler_policies
       ~configuration
-      ~decorator_configuration:_
+      ~store_type_of_expressions
       pyrefly_directory
     =
     let qualifier_to_module_map, object_class_id = parse_modules ~pyrefly_directory in
 
     let module_infos_shared_memory = write_module_infos_to_shared_memory ~qualifier_to_module_map in
 
-    let qualifiers_with_source_shared_memory =
-      let handle = QualifiersWithSourceSharedMemory.create () in
+    let qualifiers_shared_memory =
+      let handle = QualifiersSharedMemory.create () in
       let qualifiers =
         qualifier_to_module_map
         |> Map.to_alist
-        |> List.filter ~f:(fun (_, { Module.source_path; _ }) -> Option.is_some source_path)
-        |> List.map ~f:fst
+        |> List.map ~f:(fun (module_qualifier, { Module.source_path; pyrefly_info_path; _ }) ->
+               {
+                 QualifiersSharedMemory.Value.module_qualifier;
+                 has_source = Option.is_some source_path;
+                 has_info = Option.is_some pyrefly_info_path;
+               })
       in
-      let () = QualifiersWithSourceSharedMemory.add handle Memory.SingletonKey.key qualifiers in
+      let () = QualifiersSharedMemory.add handle Memory.SingletonKey.key qualifiers in
       handle
     in
 
@@ -2107,7 +2434,9 @@ module ReadWrite = struct
           module_callables_shared_memory,
           module_classes_shared_memory,
           class_id_to_qualified_name_shared_memory,
-          class_immediate_parents_shared_memory )
+          callable_id_to_qualified_name_shared_memory,
+          class_immediate_parents_shared_memory,
+          callable_undecorated_signatures_shared_memory )
       =
       collect_classes_and_definitions
         ~scheduler
@@ -2117,7 +2446,7 @@ module ReadWrite = struct
         ~module_infos_shared_memory
     in
 
-    let callable_ast_shared_memory, callable_signature_shared_memory =
+    let callable_ast_shared_memory, callable_define_signature_shared_memory =
       parse_source_files
         ~scheduler
         ~scheduler_policies
@@ -2137,18 +2466,21 @@ module ReadWrite = struct
     in
 
     let type_of_expressions_shared_memory =
-      parse_type_of_expressions
-        ~scheduler
-        ~scheduler_policies
-        ~pyrefly_directory
-        ~qualifier_to_module_map
-        ~class_id_to_qualified_name_shared_memory
+      if store_type_of_expressions then
+        parse_type_of_expressions
+          ~scheduler
+          ~scheduler_policies
+          ~pyrefly_directory
+          ~qualifier_to_module_map
+          ~class_id_to_qualified_name_shared_memory
+      else
+        TypeOfExpressionsSharedMemory.create ()
     in
 
     {
       qualifier_to_module_map;
       module_infos_shared_memory;
-      qualifiers_with_source_shared_memory;
+      qualifiers_shared_memory;
       type_of_expressions_shared_memory;
       callable_metadata_shared_memory;
       class_metadata_shared_memory;
@@ -2156,50 +2488,119 @@ module ReadWrite = struct
       module_callables_shared_memory;
       module_classes_shared_memory;
       class_id_to_qualified_name_shared_memory;
+      callable_id_to_qualified_name_shared_memory;
       class_immediate_parents_shared_memory;
       callable_ast_shared_memory;
-      callable_signature_shared_memory;
+      callable_define_signature_shared_memory;
+      callable_undecorated_signatures_shared_memory;
       object_class;
     }
 
 
-  (* TODO(T225700656): Remove this, this is to silence the unused value warning *)
-  let unused
+  (* Remove information about the project from the shared memory. This should reduce considerably
+     the shared memory **heap** size. However, note that the shared memory does NOT allow removing
+     entries from the **hash table**, so all entries are kept. *)
+  let cleanup
       {
         qualifier_to_module_map;
-        type_of_expressions_shared_memory;
+        module_infos_shared_memory;
+        qualifiers_shared_memory;
+        type_of_expressions_shared_memory = _;
         callable_metadata_shared_memory;
         class_metadata_shared_memory;
+        class_fields_shared_memory;
         module_callables_shared_memory;
         module_classes_shared_memory;
         class_id_to_qualified_name_shared_memory;
-        _;
+        callable_id_to_qualified_name_shared_memory;
+        class_immediate_parents_shared_memory;
+        callable_ast_shared_memory;
+        callable_define_signature_shared_memory;
+        callable_undecorated_signatures_shared_memory;
+        object_class = _;
       }
+      ~scheduler
     =
-    let _ =
-      ( Module.pp,
-        CallableMetadata.pp,
-        ClassMetadataSharedMemory.Metadata.pp,
-        DefinitionCollector.Tree.QualifiedNode.pp,
-        qualifier_to_module_map,
-        type_of_expressions_shared_memory,
-        callable_metadata_shared_memory,
-        class_metadata_shared_memory,
-        module_callables_shared_memory,
-        module_classes_shared_memory,
-        class_id_to_qualified_name_shared_memory )
+    let scheduler_policy =
+      Scheduler.Policy.fixed_chunk_count
+        ~minimum_chunks_per_worker:1
+        ~minimum_chunk_size:1
+        ~preferred_chunks_per_worker:1
+        ()
     in
+    let cleanup_callable ~module_id callable_name =
+      let { CallableMetadata.name_location; _ } =
+        CallableMetadataSharedMemory.get callable_metadata_shared_memory callable_name
+        |> assert_shared_memory_key_exists "missing callable metadata"
+      in
+      CallableMetadataSharedMemory.remove callable_metadata_shared_memory callable_name;
+      CallableAstSharedMemory.remove callable_ast_shared_memory callable_name;
+      CallableDefineSignatureSharedMemory.remove
+        callable_define_signature_shared_memory
+        callable_name;
+      CallableUndecoratedSignaturesSharedMemory.remove
+        callable_undecorated_signatures_shared_memory
+        callable_name;
+      CallableIdToQualifiedNameSharedMemory.remove
+        callable_id_to_qualified_name_shared_memory
+        { GlobalCallableId.module_id; name_location };
+      ()
+    in
+    let cleanup_class ~module_id class_name =
+      let { ClassMetadataSharedMemory.Metadata.local_class_id; _ } =
+        ClassMetadataSharedMemory.get class_metadata_shared_memory class_name
+        |> assert_shared_memory_key_exists "missing class metadata"
+      in
+      ClassMetadataSharedMemory.remove class_metadata_shared_memory class_name;
+      ClassFieldsSharedMemory.remove class_fields_shared_memory class_name;
+      ClassImmediateParentsSharedMemory.remove class_immediate_parents_shared_memory class_name;
+      ClassIdToQualifiedNameSharedMemory.remove
+        class_id_to_qualified_name_shared_memory
+        { GlobalClassId.module_id; local_class_id };
+      ()
+    in
+    let cleanup_module module_qualifier =
+      let { ModuleInfosSharedMemory.Module.module_id; has_info; _ } =
+        ModuleInfosSharedMemory.get module_infos_shared_memory module_qualifier
+        |> assert_shared_memory_key_exists "missing module info"
+      in
+      ModuleInfosSharedMemory.remove module_infos_shared_memory module_qualifier;
+      let () =
+        if has_info then
+          ModuleCallablesSharedMemory.get module_callables_shared_memory module_qualifier
+          |> assert_shared_memory_key_exists "missing module callables"
+          |> List.iter ~f:(cleanup_callable ~module_id)
+      in
+      let () =
+        if has_info then
+          ModuleClassesSharedMemory.get module_classes_shared_memory module_qualifier
+          |> assert_shared_memory_key_exists "missing module classes"
+          |> List.iter ~f:(cleanup_class ~module_id)
+      in
+      ModuleCallablesSharedMemory.remove module_callables_shared_memory module_qualifier;
+      ModuleClassesSharedMemory.remove module_classes_shared_memory module_qualifier;
+      ()
+    in
+    Scheduler.map_reduce
+      scheduler
+      ~policy:scheduler_policy
+      ~initial:()
+      ~map:(List.iter ~f:cleanup_module)
+      ~reduce:(fun () () -> ())
+      ~inputs:(Map.keys qualifier_to_module_map)
+      ();
+    QualifiersSharedMemory.remove qualifiers_shared_memory Memory.SingletonKey.key;
+    (* TODO(T225700656): Clean up TypeOfExpressionsSharedMemory (this requires storing all locations
+       with a type) *)
+    Memory.SharedMemory.collect `aggressive;
     ()
-
-
-  let _ = unused
 end
 
 (* Read-only API that can be sent to workers. Cheap to copy. *)
 module ReadOnly = struct
   type t = {
     module_infos_shared_memory: ModuleInfosSharedMemory.t;
-    qualifiers_with_source_shared_memory: QualifiersWithSourceSharedMemory.t;
+    qualifiers_shared_memory: QualifiersSharedMemory.t;
     callable_metadata_shared_memory: CallableMetadataSharedMemory.t;
     class_metadata_shared_memory: ClassMetadataSharedMemory.t;
     class_fields_shared_memory: ClassFieldsSharedMemory.t;
@@ -2207,14 +2608,15 @@ module ReadOnly = struct
     module_classes_shared_memory: ModuleClassesSharedMemory.t;
     class_immediate_parents_shared_memory: ClassImmediateParentsSharedMemory.t;
     callable_ast_shared_memory: CallableAstSharedMemory.t;
-    callable_signature_shared_memory: CallableSignatureSharedMemory.t;
+    callable_define_signature_shared_memory: CallableDefineSignatureSharedMemory.t;
+    callable_undecorated_signatures_shared_memory: CallableUndecoratedSignaturesSharedMemory.t;
     object_class: FullyQualifiedName.t;
   }
 
   let of_read_write_api
       {
         ReadWrite.module_infos_shared_memory;
-        qualifiers_with_source_shared_memory;
+        qualifiers_shared_memory;
         callable_metadata_shared_memory;
         class_metadata_shared_memory;
         class_fields_shared_memory;
@@ -2222,14 +2624,15 @@ module ReadOnly = struct
         module_classes_shared_memory;
         class_immediate_parents_shared_memory;
         callable_ast_shared_memory;
-        callable_signature_shared_memory;
+        callable_define_signature_shared_memory;
+        callable_undecorated_signatures_shared_memory;
         object_class;
         _;
       }
     =
     {
       module_infos_shared_memory;
-      qualifiers_with_source_shared_memory;
+      qualifiers_shared_memory;
       callable_metadata_shared_memory;
       class_metadata_shared_memory;
       class_fields_shared_memory;
@@ -2237,7 +2640,8 @@ module ReadOnly = struct
       module_classes_shared_memory;
       class_immediate_parents_shared_memory;
       callable_ast_shared_memory;
-      callable_signature_shared_memory;
+      callable_define_signature_shared_memory;
+      callable_undecorated_signatures_shared_memory;
       object_class;
     }
 
@@ -2257,12 +2661,11 @@ module ReadOnly = struct
 
 
   (* Return all qualifiers with source code *)
-  let explicit_qualifiers { qualifiers_with_source_shared_memory; _ } =
-    QualifiersWithSourceSharedMemory.get
-      qualifiers_with_source_shared_memory
-      Memory.SingletonKey.key
+  let explicit_qualifiers { qualifiers_shared_memory; _ } =
+    QualifiersSharedMemory.get qualifiers_shared_memory Memory.SingletonKey.key
     |> assert_shared_memory_key_exists "missing qualifiers with source in shared memory"
-    |> List.map ~f:ModuleQualifier.to_reference
+    |> List.filter_map ~f:(fun { QualifiersSharedMemory.Value.module_qualifier; has_source; _ } ->
+           Option.some_if has_source (ModuleQualifier.to_reference module_qualifier))
 
 
   let is_test_qualifier { module_infos_shared_memory; _ } qualifier =
@@ -2294,6 +2697,36 @@ module ReadOnly = struct
         (ModuleQualifier.from_reference_unchecked qualifier)
       |> assert_shared_memory_key_exists "missing module classes for qualifier"
       |> List.map ~f:FullyQualifiedName.to_reference
+
+
+  let all_classes { qualifiers_shared_memory; module_classes_shared_memory; _ } ~scheduler =
+    let qualifiers =
+      QualifiersSharedMemory.get qualifiers_shared_memory Memory.SingletonKey.key
+      |> assert_shared_memory_key_exists "missing qualifiers with source in shared memory"
+      |> List.filter_map ~f:(fun { QualifiersSharedMemory.Value.module_qualifier; has_info; _ } ->
+             Option.some_if has_info module_qualifier)
+    in
+    let get_class_names_for_qualifier module_qualifier =
+      ModuleClassesSharedMemory.get module_classes_shared_memory module_qualifier
+      |> assert_shared_memory_key_exists "missing module classes for qualifier"
+      |> List.map ~f:FullyQualifiedName.to_reference
+      |> List.map ~f:Reference.show
+    in
+    let scheduler_policy =
+      Scheduler.Policy.fixed_chunk_count
+        ~minimum_chunks_per_worker:1
+        ~minimum_chunk_size:1
+        ~preferred_chunks_per_worker:1
+        ()
+    in
+    Scheduler.map_reduce
+      scheduler
+      ~policy:scheduler_policy
+      ~initial:[]
+      ~map:(List.concat_map ~f:get_class_names_for_qualifier)
+      ~reduce:List.append
+      ~inputs:qualifiers
+      ()
 
 
   let get_define_names_for_qualifier
@@ -2361,6 +2794,98 @@ module ReadOnly = struct
         failwith "ReadOnly.scalar_type_properties: trying to use a pyre1 type with a pyrefly API."
 end
 
+(* List of symbols exported from the 'builtins' module. To keep it short, this only contains symbols
+   that users might want to annotate. *)
+let builtins_symbols =
+  String.Set.of_list
+    [
+      "__build_class__";
+      "__import__";
+      "abs";
+      "aiter";
+      "all";
+      "anext";
+      "any";
+      "ascii";
+      "BaseException";
+      "bin";
+      "bool";
+      "bytearray";
+      "bytes";
+      "callable";
+      "chr";
+      "classmethod";
+      "compile";
+      "complex";
+      "delattr";
+      "dict";
+      "dir";
+      "enumerate";
+      "eval";
+      "Exception";
+      "exec";
+      "filter";
+      "float";
+      "format";
+      "frozenset";
+      "function";
+      "GeneratorExit";
+      "getattr";
+      "globals";
+      "hasattr";
+      "hash";
+      "hex";
+      "id";
+      "input";
+      "int";
+      "isinstance";
+      "issubclass";
+      "iter";
+      "KeyboardInterrupt";
+      "len";
+      "list";
+      "locals";
+      "map";
+      "max";
+      "memoryview";
+      "min";
+      "next";
+      "object";
+      "open";
+      "ord";
+      "pow";
+      "print";
+      "property";
+      "range";
+      "repr";
+      "reversed";
+      "round";
+      "set";
+      "setattr";
+      "slice";
+      "sorted";
+      "staticmethod";
+      "str";
+      "sum";
+      "super";
+      "SystemExit";
+      "tuple";
+      "type";
+      "vars";
+      "zip";
+    ]
+
+
+(* Unlike Pyre1, Pyrefly prefixes all builtins symbols with 'builtins.'. This function automatically
+   adds 'builtins.' in front of references that are likely builtins symbols. The main use case is
+   for taint models in .pysa files. *)
+let add_builtins_prefix name =
+  if Set.mem builtins_symbols (Reference.first name) then
+    Reference.create_from_list ("builtins" :: Reference.as_list name)
+  else
+    name
+
+
 module ModelQueries = struct
   module Function = Pyre1Api.ModelQueries.Function
   module Global = Pyre1Api.ModelQueries.Global
@@ -2370,7 +2895,8 @@ module ModelQueries = struct
         ReadOnly.module_infos_shared_memory;
         callable_metadata_shared_memory;
         class_metadata_shared_memory;
-        callable_signature_shared_memory;
+        callable_undecorated_signatures_shared_memory;
+        class_fields_shared_memory;
         _;
       }
       ~is_property_getter:_
@@ -2379,85 +2905,72 @@ module ModelQueries = struct
     =
     (* TODO(T225700656): For now, we only support looking up symbols in module names that are unique
        (i.e, the module qualifier is not prefixed by the path) *)
-    let is_module_qualifier name =
-      ModuleInfosSharedMemory.get
-        module_infos_shared_memory
-        (ModuleQualifier.from_reference_unchecked name)
-      |> Option.is_some
-    in
     let name =
       if is_property_setter then
         Reference.create (Format.asprintf "%a@setter" Reference.pp name)
       else
         name
     in
-    if is_module_qualifier name then
-      Some Global.Module
-    else
-      match
-        CallableMetadataSharedMemory.get
-          callable_metadata_shared_memory
-          (FullyQualifiedName.from_reference_unchecked name)
-      with
-      | Some { CallableMetadata.is_property_getter; is_property_setter; parent_is_class; _ } ->
-          let undecorated_signature =
-            CallableSignatureSharedMemory.get
-              callable_signature_shared_memory
-              (FullyQualifiedName.from_reference_unchecked name)
-            |> assert_shared_memory_key_exists "missing ast for callable"
-            |> function
-            | CallableAst.Some { Node.value = signature; _ } ->
-                let dummy_parser =
-                  {
-                    Analysis.AnnotatedCallable.parse_annotation =
-                      Type.create
-                        ~variables:(fun _ -> None)
-                        ~aliases:(fun ?replace_unbound_parameters_with_any:_ _ -> None);
-                    param_spec_from_vararg_annotations =
-                      (fun ~args_annotation:_ ~kwargs_annotation:_ -> None);
-                  }
-                in
-                (* This API allows us to create a `Type.Callable.t` from a `def ..` statement. The
-                   type might not be exactly right because we ignore type aliases, type variables
-                   and so on. This shouldn't matter because we only use the type to add via:scalar
-                   breadcrumbs during model parsing. *)
-                Analysis.AnnotatedCallable.create_overload_without_applying_decorators
-                  ~parser:dummy_parser
-                  ~generic_parameters_as_variables:(fun _ -> None)
-                  signature
-                |> Type.Callable.create_from_implementation
-                |> (function
-                     | Type.Callable t -> t
-                     | _ -> failwith "unexpected")
-                |> Pyre1Api.ModelQueries.FunctionSignature.from_callable_type
-                |> Option.some
-            | _ -> None
-          in
-          Some
-            (Global.Function
-               {
-                 Function.define_name = name;
-                 imported_name = None;
-                 undecorated_signature;
-                 is_property_getter;
-                 is_property_setter;
-                 is_method = parent_is_class;
-               })
-      | None -> (
-          match
-            ClassMetadataSharedMemory.get
-              class_metadata_shared_memory
-              (FullyQualifiedName.from_reference_unchecked name)
-          with
-          | Some _ -> Some (Global.Class { class_name = Reference.show name })
-          | None -> None)
+    let is_module_qualifier name =
+      ModuleInfosSharedMemory.get
+        module_infos_shared_memory
+        (ModuleQualifier.from_reference_unchecked name)
+      |> Option.is_some
+    in
+    let is_class_name name =
+      ClassMetadataSharedMemory.get
+        class_metadata_shared_memory
+        (FullyQualifiedName.from_reference_unchecked name)
+      |> Option.is_some
+    in
+    let is_class_attribute name =
+      Reference.prefix name
+      >>| FullyQualifiedName.from_reference_unchecked
+      >>= ClassFieldsSharedMemory.get class_fields_shared_memory
+      >>| (fun fields -> List.mem ~equal:String.equal fields (Reference.last name))
+      |> Option.value ~default:false
+    in
+    (* Check if this is a valid function first. *)
+    match
+      CallableMetadataSharedMemory.get
+        callable_metadata_shared_memory
+        (FullyQualifiedName.from_reference_unchecked name)
+    with
+    | Some { CallableMetadata.is_property_getter; is_property_setter; parent_is_class; _ } ->
+        let undecorated_signatures =
+          CallableUndecoratedSignaturesSharedMemory.get
+            callable_undecorated_signatures_shared_memory
+            (FullyQualifiedName.from_reference_unchecked name)
+          |> assert_shared_memory_key_exists "missing undecorated signatures for callable"
+        in
+        Some
+          (Global.Function
+             {
+               Function.define_name = name;
+               imported_name = None;
+               undecorated_signatures = Some undecorated_signatures;
+               is_property_getter;
+               is_property_setter;
+               is_method = parent_is_class;
+             })
+    | None ->
+        if is_module_qualifier name then
+          Some Global.Module
+        else if is_class_name name then
+          Some (Global.Class { class_name = Reference.show name })
+        else if is_class_attribute name then
+          (* Functions might also be considered class attributes by pyrefly, so this should be
+             checked last. *)
+          Some (Global.Attribute { name; parent_is_class = true })
+        else
+          None
 
 
   let class_method_signatures
       {
         ReadOnly.class_metadata_shared_memory;
         module_callables_shared_memory;
-        callable_signature_shared_memory;
+        callable_define_signature_shared_memory;
         _;
       }
       class_name
@@ -2482,7 +2995,9 @@ module ModelQueries = struct
         in
         let add_signature callable_name =
           let signature =
-            CallableSignatureSharedMemory.get callable_signature_shared_memory callable_name
+            CallableDefineSignatureSharedMemory.get
+              callable_define_signature_shared_memory
+              callable_name
             |> assert_shared_memory_key_exists "missing signature for callable"
             |> CallableAst.to_option
             >>| Node.value

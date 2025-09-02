@@ -14,7 +14,7 @@ val verify_signature
   normalized_model_parameters:Interprocedural.AccessPath.NormalizedParameter.t list ->
   name:Reference.t ->
   imported_name:Reference.t option ->
-  Interprocedural.PyrePysaApi.ModelQueries.FunctionSignature.t option ->
+  Interprocedural.PyrePysaApi.ModelQueries.FunctionSignature.t list option ->
   (unit, ModelVerificationError.t) result
 
 val verify_global_attribute
@@ -23,3 +23,7 @@ val verify_global_attribute
   pyre_api:Interprocedural.PyrePysaApi.ReadOnly.t ->
   name:Reference.t ->
   (unit, ModelVerificationError.t) result
+
+val filter_unused_stdlib_modules_errors
+  :  ModelVerificationError.t list ->
+  ModelVerificationError.t list
