@@ -880,16 +880,16 @@ module Modelable = struct
         target: Target.t;
         (* The syntactic definition of the function, including the AST for each parameters. *)
         define_signature: Target.CallableSignature.t Lazy.t;
-        (* The semantic (undecorated) signature of the function. *)
-        undecorated_signature: PyrePysaApi.ModelQueries.FunctionSignature.t Lazy.t;
+        (* The semantic (undecorated) signature(s) of the function. *)
+        undecorated_signatures: PyrePysaApi.ModelQueries.FunctionSignature.t list Lazy.t;
         decorators: CallableDecorator.t list Lazy.t;
       }
     | Attribute of {
-        name: Reference.t;
+        target_name: Reference.t;
         type_annotation: Expression.t option Lazy.t;
       }
     | Global of {
-        name: Reference.t;
+        target_name: Reference.t;
         type_annotation: Expression.t option Lazy.t;
       }
 
@@ -907,7 +907,7 @@ module Modelable = struct
               target
             |> failwith)
     in
-    let undecorated_signature =
+    let undecorated_signatures =
       lazy
         (match pyre_api with
         | PyrePysaApi.ReadOnly.Pyre1 pyre_api ->
@@ -917,7 +917,11 @@ module Modelable = struct
               ~pyre_api
               ~parameters
               ~return_annotation
-        | PyrePysaApi.ReadOnly.Pyrefly _ -> failwith "unimplemented: Modelable.create_callable")
+            |> fun signature -> [signature]
+        | PyrePysaApi.ReadOnly.Pyrefly pyrefly_api ->
+            Interprocedural.PyreflyApi.ReadOnly.get_undecorated_signatures
+              pyrefly_api
+              (Target.define_name_exn target))
     in
     let decorators =
       lazy
@@ -930,11 +934,11 @@ module Modelable = struct
         |> List.filter_map ~f:Statement.Decorator.from_expression
         |> List.map ~f:(CallableDecorator.create ~pyre_api ~callables_to_definitions_map))
     in
-    Callable { target; define_signature; undecorated_signature; decorators }
+    Callable { target; define_signature; undecorated_signatures; decorators }
 
 
   let create_attribute ~pyre_api target =
-    let name = Target.object_name target in
+    let target_name = Target.object_name target in
     let get_type_annotation class_name attribute =
       let get_annotation = function
         | {
@@ -963,36 +967,39 @@ module Modelable = struct
     in
     let type_annotation =
       lazy
-        (let class_name = Reference.prefix name >>| Reference.show |> Option.value ~default:"" in
-         let attribute = Reference.last name in
+        ((* TODO(T225700656): Add API to get class name from attribute name *)
+         let class_name =
+           Reference.prefix target_name >>| Reference.show |> Option.value ~default:""
+         in
+         let attribute = Reference.last target_name in
          get_type_annotation class_name attribute)
     in
-    Attribute { name; type_annotation }
+    Attribute { target_name; type_annotation }
 
 
   let create_global ~pyre_api target =
-    let name = Target.object_name target in
+    let target_name = Target.object_name target in
     let get_type_annotation reference =
       match Interprocedural.PyrePysaApi.ReadOnly.get_unannotated_global pyre_api reference with
       | Some (SimpleAssign { explicit_annotation; _ }) -> explicit_annotation
       | _ -> None
     in
-    let type_annotation = lazy (get_type_annotation name) in
-    Global { name; type_annotation }
+    let type_annotation = lazy (get_type_annotation target_name) in
+    Global { target_name; type_annotation }
 
 
   let target = function
     | Callable { target; _ } -> target
-    | Attribute { name; _ }
-    | Global { name; _ } ->
-        Target.create_object name
+    | Attribute { target_name; _ }
+    | Global { target_name; _ } ->
+        Target.create_object target_name
 
 
-  let name = function
+  let target_name = function
     | Callable { target; _ } -> Target.define_name_exn target
-    | Attribute { name; _ }
-    | Global { name; _ } ->
-        name
+    | Attribute { target_name; _ }
+    | Global { target_name; _ } ->
+        target_name
 
 
   let type_annotation = function
@@ -1002,25 +1009,34 @@ module Modelable = struct
         Lazy.force type_annotation
 
 
-  let return_annotation = function
-    | Callable { undecorated_signature; _ } ->
-        let { PyrePysaApi.ModelQueries.FunctionSignature.return_annotation; _ } =
-          Lazy.force undecorated_signature
-        in
-        return_annotation
+  let undecorated_signatures = function
+    | Callable { undecorated_signatures; _ } -> Lazy.force undecorated_signatures
+    | Attribute _
+    | Global _ ->
+        failwith "unexpected use of undecorated_signatures on an attribute or global"
+
+
+  let return_annotations = function
+    | Callable { undecorated_signatures; _ } ->
+        undecorated_signatures
+        |> Lazy.force
+        |> List.map ~f:(fun { PyrePysaApi.ModelQueries.FunctionSignature.return_annotation; _ } ->
+               return_annotation)
     | Attribute _
     | Global _ ->
         failwith "unexpected use of return_annotation on an attribute or global"
 
 
-  let parameters = function
-    | Callable { undecorated_signature; _ } -> (
-        let { PyrePysaApi.ModelQueries.FunctionSignature.parameters; _ } =
-          Lazy.force undecorated_signature
-        in
-        match parameters with
-        | PyrePysaApi.ModelQueries.FunctionParameters.List parameters -> parameters
-        | _ -> [])
+  let parameters_of_signatures = function
+    | Callable { undecorated_signatures; _ } ->
+        undecorated_signatures
+        |> Lazy.force
+        |> List.map ~f:(fun { PyrePysaApi.ModelQueries.FunctionSignature.parameters; _ } ->
+               parameters)
+        |> List.filter_map ~f:(function
+               | PyrePysaApi.ModelQueries.FunctionParameters.List parameters -> Some parameters
+               | _ -> None)
+        |> List.concat
     | Attribute _
     | Global _ ->
         failwith "unexpected use of any_parameter on an attribute or global"
@@ -1063,7 +1079,9 @@ module Modelable = struct
 
   let class_name = function
     | Callable { target; _ } -> Target.class_name target
-    | Attribute { name; _ } -> Reference.prefix name >>| Reference.show
+    | Attribute { target_name; _ } ->
+        (* TODO(T225700656): Add API to get class name from attribute name *)
+        Reference.prefix target_name >>| Reference.show
     | Global _ -> failwith "unexpected use of a class constraint on a global"
 
 
