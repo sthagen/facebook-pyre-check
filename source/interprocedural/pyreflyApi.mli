@@ -18,6 +18,7 @@ module FormatError : sig
         message: string;
       }
     | UnsupportedVersion of { version: int }
+    | UnparsableString of string
   [@@deriving show]
 end
 
@@ -97,9 +98,11 @@ module ReadOnly : sig
 
   val class_immediate_parents : t -> string -> string list
 
+  val class_mro : t -> string -> string list
+
   val get_callable_metadata : t -> Ast.Reference.t -> CallableMetadata.t
 
-  val get_overriden_base_class
+  val get_overriden_base_method
     :  t ->
     class_name:Ast.Reference.t ->
     method_name:string ->
@@ -130,10 +133,11 @@ module ReadOnly : sig
     string ->
     string list option
 
-  val scalar_type_properties
-    :  t ->
-    PysaType.t ->
-    Analysis.PyrePysaEnvironment.ScalarTypeProperties.t
+  module Type : sig
+    val scalar_properties : t -> PysaType.t -> Analysis.PyrePysaEnvironment.ScalarTypeProperties.t
+
+    val get_class_names : t -> PysaType.t -> Analysis.PyrePysaEnvironment.ClassNamesFromType.t
+  end
 end
 
 val add_builtins_prefix : Ast.Reference.t -> Ast.Reference.t
@@ -169,6 +173,11 @@ module LocalClassId : sig
   type t [@@deriving compare, equal, show]
 
   val from_int : int -> t
+end
+
+(* Exposed for testing purposes *)
+module GlobalCallableId : sig
+  type t [@@deriving compare, equal, show]
 end
 
 (* Exposed for testing purposes *)
@@ -209,13 +218,33 @@ module GlobalClassId : sig
   type t [@@deriving show]
 end
 
+module LocalFunctionId : sig
+  type t [@@deriving show]
+
+  val create_function : Ast.Location.t -> t
+
+  module Map : Map.S with type Key.t = t
+end
+
 (* Exposed for testing purposes *)
 module ModuleInfoFile : sig
+  module ClassNamesResult : sig
+    type t = {
+      class_names: GlobalClassId.t list;
+      stripped_coroutine: bool;
+      stripped_optional: bool;
+      stripped_readonly: bool;
+      unbound_type_variable: bool;
+      is_exhaustive: bool;
+    }
+    [@@deriving equal, show]
+  end
+
   module JsonType : sig
     type t = {
       string: string;
       scalar_properties: Analysis.PyrePysaEnvironment.ScalarTypeProperties.t;
-      class_names: GlobalClassId.t list;
+      class_names: ClassNamesResult.t option;
     }
     [@@deriving equal, show]
   end
@@ -285,9 +314,16 @@ module ModuleInfoFile : sig
       is_stub: bool;
       is_toplevel: bool;
       is_class_toplevel: bool;
-      overridden_base_class: GlobalClassId.t option;
+      overridden_base_method: GlobalCallableId.t option;
       defining_class: GlobalClassId.t option;
     }
+    [@@deriving equal, show]
+  end
+
+  module ClassMro : sig
+    type t =
+      | Resolved of GlobalClassId.t list
+      | Cyclic
     [@@deriving equal, show]
   end
 
@@ -297,6 +333,7 @@ module ModuleInfoFile : sig
       parent: ParentScope.t;
       local_class_id: LocalClassId.t;
       bases: GlobalClassId.t list;
+      mro: ClassMro.t;
       is_synthesized: bool;
       fields: string list;
     }
@@ -358,6 +395,7 @@ module Testing : sig
       local_name: Ast.Reference.t; (* a non-unique name, more user-friendly. *)
       definition: Definition.t; (* class or def *)
       name_location: Ast.Location.t;
+      local_function_id: LocalFunctionId.t;
     }
   end
 
@@ -365,6 +403,6 @@ module Testing : sig
     :  module_qualifier:ModuleQualifier.t ->
     module_exists:(ModuleQualifier.t -> bool) ->
     class_definitions:ModuleInfoFile.ClassDefinition.t Ast.Location.Map.t ->
-    function_definitions:ModuleInfoFile.FunctionDefinition.t Ast.Location.Map.t ->
+    function_definitions:ModuleInfoFile.FunctionDefinition.t LocalFunctionId.Map.t ->
     QualifiedDefinition.t list
 end

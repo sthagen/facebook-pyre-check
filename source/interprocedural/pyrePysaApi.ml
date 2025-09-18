@@ -11,6 +11,7 @@
 
 module Pyre1Api = Analysis.PyrePysaEnvironment
 module ScalarTypeProperties = Pyre1Api.ScalarTypeProperties
+module ClassNamesFromType = Pyre1Api.ClassNamesFromType
 module PysaType = Pyre1Api.PysaType
 
 module ReadWrite = struct
@@ -159,6 +160,11 @@ module ReadOnly = struct
     | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.class_immediate_parents pyrefly_api
 
 
+  let class_mro = function
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.class_mro pyre_api
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.class_mro pyrefly_api
+
+
   let get_define_names_for_qualifier api ~exclude_test_modules qualifier =
     match api with
     | Pyre1 _ when exclude_test_modules ->
@@ -216,11 +222,12 @@ module ReadOnly = struct
     | Pyrefly _ -> failwith "unimplemented: ReadOnly.global"
 
 
-  let get_overriden_base_class api ~class_name ~method_name =
+  let get_overriden_base_method api ~class_name ~method_name =
     match api with
-    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.get_overriden_base_class pyre_api ~class_name ~method_name
+    | Pyre1 pyre_api ->
+        Pyre1Api.ReadOnly.get_overriden_base_method pyre_api ~class_name ~method_name
     | Pyrefly pyrefly_api ->
-        PyreflyApi.ReadOnly.get_overriden_base_class pyrefly_api ~class_name ~method_name
+        PyreflyApi.ReadOnly.get_overriden_base_method pyrefly_api ~class_name ~method_name
 
 
   let annotation_parser = function
@@ -241,11 +248,6 @@ module ReadOnly = struct
   let resolve_exports = function
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.resolve_exports pyre_api
     | Pyrefly _ -> failwith "unimplemented: ReadOnly.resolve_exports"
-
-
-  let successors = function
-    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.successors pyre_api
-    | Pyrefly _ -> failwith "unimplemented: ReadOnly.successors"
 
 
   let location_of_global = function
@@ -308,10 +310,16 @@ module ReadOnly = struct
     | Pyrefly _ -> failwith "unimplemented: ReadOnly.all_unannotated_globals"
 
 
-  let scalar_type_properties = function
-    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.scalar_type_properties pyre_api
-    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.scalar_type_properties pyrefly_api
+  module Type = struct
+    let scalar_properties = function
+      | Pyre1 pyre_api -> Pyre1Api.ReadOnly.Type.scalar_properties pyre_api
+      | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.Type.scalar_properties pyrefly_api
 
+
+    let get_class_names = function
+      | Pyre1 pyre_api -> Pyre1Api.ReadOnly.Type.get_class_names pyre_api
+      | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.Type.get_class_names pyrefly_api
+  end
 
   let add_builtins_prefix api reference =
     match api with

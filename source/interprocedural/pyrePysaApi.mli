@@ -12,6 +12,7 @@ open Core
    by `Analysis.PyrePysaEnvironment` or the Pyrefly API provided by `Interprocedural.Pyrefly`. *)
 
 module ScalarTypeProperties = Analysis.PyrePysaEnvironment.ScalarTypeProperties
+module ClassNamesFromType = Analysis.PyrePysaEnvironment.ClassNamesFromType
 module PysaType = Analysis.PyrePysaEnvironment.PysaType
 
 module ReadWrite : sig
@@ -119,6 +120,8 @@ module ReadOnly : sig
 
   val class_immediate_parents : t -> string -> string list
 
+  val class_mro : t -> string -> string list
+
   val parse_reference : t -> Ast.Reference.t -> Type.t
 
   val class_exists : t -> string -> bool
@@ -145,7 +148,7 @@ module ReadOnly : sig
 
   val global : t -> Ast.Reference.t -> Analysis.AttributeResolution.Global.t option
 
-  val get_overriden_base_class
+  val get_overriden_base_method
     :  t ->
     class_name:Ast.Reference.t ->
     method_name:string ->
@@ -162,8 +165,6 @@ module ReadOnly : sig
     ?from:Ast.Reference.t ->
     Ast.Reference.t ->
     Analysis.ResolvedReference.t option
-
-  val successors : t -> string -> string list
 
   val location_of_global : t -> Ast.Reference.t -> Ast.Location.WithModule.t option
 
@@ -207,7 +208,11 @@ module ReadOnly : sig
 
   val all_unannotated_globals : t -> scheduler:Scheduler.t -> Ast.Reference.t list
 
-  val scalar_type_properties : t -> PysaType.t -> ScalarTypeProperties.t
+  module Type : sig
+    val scalar_properties : t -> PysaType.t -> ScalarTypeProperties.t
+
+    val get_class_names : t -> PysaType.t -> ClassNamesFromType.t
+  end
 
   val add_builtins_prefix : t -> Ast.Reference.t -> Ast.Reference.t
 

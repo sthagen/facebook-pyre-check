@@ -165,7 +165,7 @@ module ModelQueriesExpectedResults = struct
         ~models
       =
       let registry_contains_model registry ~target ~model =
-        (* TODO T127682824: Deal with the case of joined models *)
+        (* TODO(T127682824): Deal with the case of joined models *)
         match Registry.get registry target with
         | Some actual_model -> Model.less_or_equal ~left:model ~right:actual_model
         | None -> false
@@ -775,9 +775,11 @@ let matches_annotation_constraint
         (TypeAnnotation.show_fully_qualified_annotation annotation)
   | ModelQuery.AnnotationConstraint.AnnotationClassExtends
       { class_name; is_transitive; includes_self } -> (
-      match PyrePysaApi.PysaType.get_class_names (TypeAnnotation.as_type annotation) with
+      match
+        PyrePysaApi.ReadOnly.Type.get_class_names pyre_api (TypeAnnotation.as_type annotation)
+      with
       | {
-       PyrePysaApi.PysaType.ClassNamesResult.class_names = [extracted_class_name];
+       PyrePysaApi.ClassNamesFromType.class_names = [extracted_class_name];
        is_exhaustive = true;
        _;
       } ->
@@ -863,8 +865,8 @@ let class_matches_decorator_constraint ~name_captures ~pyre_api ~decorator_const
 
 let find_parents ~pyre_api ~is_transitive ~includes_self class_name =
   let parents =
-    if is_transitive then (* TODO(T225700656): implement successors for pyrefly *)
-      PyrePysaApi.ReadOnly.successors pyre_api class_name
+    if is_transitive then
+      PyrePysaApi.ReadOnly.class_mro pyre_api class_name
     else
       PyrePysaApi.ReadOnly.class_immediate_parents pyre_api class_name
   in

@@ -27,6 +27,7 @@ module FormatError = struct
         message: string;
       }
     | UnsupportedVersion of { version: int }
+    | UnparsableString of string
   [@@deriving show]
 end
 
@@ -37,6 +38,12 @@ module Error = struct
     | FormatError of FormatError.t
   [@@deriving show]
 end
+
+let parse_location location =
+  Location.from_string location
+  |> Result.map_error ~f:(fun error ->
+         FormatError.UnexpectedJsonType { json = `String location; message = error })
+
 
 exception
   PyreflyFileFormatError of {
@@ -149,19 +156,6 @@ module JsonUtil = struct
              })
 
 
-  let get_optional_list_member json key =
-    match Yojson.Safe.Util.member key json with
-    | `List elements -> Ok elements
-    | `Null -> Ok []
-    | _ ->
-        Error
-          (FormatError.UnexpectedJsonType
-             {
-               json;
-               message = Format.sprintf "expected an object with key `%s` containing a list" key;
-             })
-
-
   let check_object = function
     | `Assoc _ -> Ok ()
     | json ->
@@ -230,12 +224,16 @@ module LocalClassId : sig
   val from_int : int -> t
 
   val to_int : t -> int
+
+  val of_string : string -> t
 end = struct
   type t = int [@@deriving compare, equal, sexp, hash, show]
 
   let from_int = Fn.id
 
   let to_int = Fn.id
+
+  let of_string = Int.of_string
 end
 
 (* Unique identifier for a class, assigned by pyrefly. *)
@@ -270,23 +268,87 @@ module GlobalClassIdSharedMemoryKey = struct
     Format.sprintf "%d|%d" (ModuleId.to_int module_id) (LocalClassId.to_int local_class_id)
 end
 
+(* Unique identifier for a function within a module, which needs to be consistent between here and
+   the outputs of Pyrefly because the outputs often use this as the key to associate information
+   with (e.g., call graphs). *)
+module LocalFunctionId : sig
+  type t =
+    | Function of Location.t
+    | ModuleTopLevel
+    | ClassTopLevel of LocalClassId.t
+  [@@deriving compare, equal, show]
+
+  val from_string : string -> (t, FormatError.t) result
+
+  val create_function : Location.t -> t
+
+  val get_location_exn : t -> Location.t
+
+  module Map : Map.S with type Key.t = t
+end = struct
+  module T = struct
+    (* TODO(T225700656): Potentially use a TextRange (2 ints) instead of Location.t (4 ints) *)
+    type t =
+      | Function of Location.t
+      | ModuleTopLevel
+      | ClassTopLevel of LocalClassId.t
+    [@@deriving compare, equal, show, sexp]
+  end
+
+  include T
+
+  let from_string string =
+    if String.equal string "MTL" then
+      Ok ModuleTopLevel
+    else
+      match String.chop_prefix ~prefix:"F:" string with
+      | Some location ->
+          let open Core.Result.Monad_infix in
+          parse_location location >>| fun location -> Function location
+      | None -> (
+          match String.chop_prefix ~prefix:"CTL:" string with
+          | Some class_id -> Ok (ClassTopLevel (LocalClassId.of_string class_id))
+          | None -> Error (FormatError.UnparsableString string))
+
+
+  let create_function location = Function location
+
+  let get_location_exn = function
+    | Function location -> location
+    | local_function_id ->
+        Format.asprintf "Expect `Function` but got %a" pp local_function_id |> failwith
+
+
+  module Map = Map.Make (T)
+end
+
 (* Unique identifier for a callable (function or method) *)
 module GlobalCallableId = struct
   type t = {
     module_id: ModuleId.t;
-    (* TODO(T225700656): Potentially use a TextRange (2 ints) instead of Location.t (4 ints) *)
-    name_location: Location.t;
+    local_function_id: LocalFunctionId.t;
   }
   [@@deriving compare, equal, show]
 
-  let _ = pp
+  let _ = pp, LocalFunctionId.show
+
+  let from_optional_json = function
+    | Some json ->
+        let open Core.Result.Monad_infix in
+        JsonUtil.get_int_member json "module_id"
+        >>= fun module_id ->
+        JsonUtil.get_string_member json "function_id"
+        >>= LocalFunctionId.from_string
+        >>| fun local_function_id ->
+        Some { module_id = ModuleId.from_int module_id; local_function_id }
+    | None -> Ok None
 end
 
 module GlobalCallableIdSharedMemoryKey = struct
   type t = GlobalCallableId.t [@@deriving compare]
 
-  let to_string { GlobalCallableId.module_id; name_location } =
-    Format.asprintf "%d|%a" (ModuleId.to_int module_id) Location.pp name_location
+  let to_string { GlobalCallableId.module_id; local_function_id } =
+    Format.asprintf "%d|%a" (ModuleId.to_int module_id) LocalFunctionId.pp local_function_id
 end
 
 (* Unique identifier for a module, assigned by pysa. This maps to a specific source file. Note that
@@ -453,11 +515,53 @@ end
 (* Information from pyrefly about a given module, stored as a `module:id.json` file. This matches
    the `pyrefly::report::pysa::PysaModuleFile` rust type. *)
 module ModuleInfoFile = struct
+  module ClassNamesResult = struct
+    type t = {
+      class_names: GlobalClassId.t list;
+      stripped_coroutine: bool;
+      stripped_optional: bool;
+      stripped_readonly: bool;
+      unbound_type_variable: bool;
+      is_exhaustive: bool;
+    }
+    [@@deriving equal, show]
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      JsonUtil.get_list_member json "class_names"
+      >>| List.map ~f:GlobalClassId.from_json
+      >>= Result.all
+      >>= fun class_names ->
+      JsonUtil.get_optional_bool_member ~default:false json "stripped_coroutine"
+      >>= fun stripped_coroutine ->
+      JsonUtil.get_optional_bool_member ~default:false json "stripped_optional"
+      >>= fun stripped_optional ->
+      JsonUtil.get_optional_bool_member ~default:false json "stripped_readonly"
+      >>= fun stripped_readonly ->
+      JsonUtil.get_optional_bool_member ~default:false json "unbound_type_variable"
+      >>= fun unbound_type_variable ->
+      JsonUtil.get_optional_bool_member ~default:false json "is_exhaustive"
+      >>| fun is_exhaustive ->
+      {
+        class_names;
+        stripped_coroutine;
+        stripped_optional;
+        stripped_readonly;
+        unbound_type_variable;
+        is_exhaustive;
+      }
+
+
+    let from_optional_json = function
+      | None -> Ok None
+      | Some json -> from_json json |> Result.map ~f:Option.some
+  end
+
   module JsonType = struct
     type t = {
       string: string;
       scalar_properties: ScalarTypeProperties.t;
-      class_names: GlobalClassId.t list;
+      class_names: ClassNamesResult.t option;
     }
     [@@deriving equal, show]
 
@@ -473,9 +577,8 @@ module ModuleInfoFile = struct
       >>= fun is_float ->
       JsonUtil.get_optional_bool_member ~default:false json "is_enum"
       >>= fun is_enumeration ->
-      JsonUtil.get_optional_list_member json "class_names"
-      >>| List.map ~f:GlobalClassId.from_json
-      >>= Result.all
+      JsonUtil.get_optional_member json "class_names"
+      |> ClassNamesResult.from_optional_json
       >>| fun class_names ->
       let scalar_properties =
         ScalarTypeProperties.create
@@ -501,15 +604,9 @@ module ModuleInfoFile = struct
       match json with
       | `String "TopLevel" -> Ok TopLevel
       | `Assoc [("Class", `Assoc [("location", `String location_string)])] ->
-          Location.from_string location_string
-          |> Result.map_error ~f:(fun error ->
-                 FormatError.UnexpectedJsonType { json = `String location_string; message = error })
-          >>| fun location -> Class location
+          parse_location location_string >>| fun location -> Class location
       | `Assoc [("Function", `Assoc [("location", `String location_string)])] ->
-          Location.from_string location_string
-          |> Result.map_error ~f:(fun error ->
-                 FormatError.UnexpectedJsonType { json = `String location_string; message = error })
-          >>| fun location -> Function location
+          parse_location location_string >>| fun location -> Function location
       | _ -> Error (FormatError.UnexpectedJsonType { json; message = "expected parent_scope" })
   end
 
@@ -623,7 +720,7 @@ module ModuleInfoFile = struct
       is_stub: bool;
       is_toplevel: bool;
       is_class_toplevel: bool;
-      overridden_base_class: GlobalClassId.t option;
+      overridden_base_method: GlobalCallableId.t option;
       defining_class: GlobalClassId.t option;
     }
     [@@deriving equal, show]
@@ -650,9 +747,9 @@ module ModuleInfoFile = struct
       >>= fun is_property_setter ->
       JsonUtil.get_optional_bool_member ~default:false json "is_stub"
       >>= fun is_stub ->
-      JsonUtil.get_optional_member json "overridden_base_class"
-      |> GlobalClassId.from_optional_json
-      >>= fun overridden_base_class ->
+      JsonUtil.get_optional_member json "overridden_base_method"
+      |> GlobalCallableId.from_optional_json
+      >>= fun overridden_base_method ->
       JsonUtil.get_optional_member json "defining_class"
       |> GlobalClassId.from_optional_json
       >>| fun defining_class ->
@@ -668,7 +765,7 @@ module ModuleInfoFile = struct
         is_stub;
         is_toplevel = false;
         is_class_toplevel = false;
-        overridden_base_class;
+        overridden_base_method;
         defining_class;
       }
 
@@ -685,7 +782,7 @@ module ModuleInfoFile = struct
                 {
                   JsonType.string = "None";
                   scalar_properties = ScalarTypeProperties.none;
-                  class_names = [];
+                  class_names = None;
                 };
             };
           ];
@@ -697,7 +794,7 @@ module ModuleInfoFile = struct
         is_stub = false;
         is_toplevel = true;
         is_class_toplevel = false;
-        overridden_base_class = None;
+        overridden_base_method = None;
         defining_class = None;
       }
 
@@ -714,7 +811,7 @@ module ModuleInfoFile = struct
                 {
                   JsonType.string = "None";
                   scalar_properties = ScalarTypeProperties.none;
-                  class_names = [];
+                  class_names = None;
                 };
             };
           ];
@@ -726,9 +823,26 @@ module ModuleInfoFile = struct
         is_stub = false;
         is_toplevel = false;
         is_class_toplevel = true;
-        overridden_base_class = None;
+        overridden_base_method = None;
         defining_class = None;
       }
+  end
+
+  module ClassMro = struct
+    type t =
+      | Resolved of GlobalClassId.t list
+      | Cyclic
+    [@@deriving equal, show]
+
+    let from_json = function
+      | `Assoc [("Resolved", `List classes)] ->
+          let open Core.Result.Monad_infix in
+          classes
+          |> List.map ~f:GlobalClassId.from_json
+          |> Result.all
+          >>| fun classes -> Resolved classes
+      | `String "Cyclic" -> Ok Cyclic
+      | json -> Error (FormatError.UnexpectedJsonType { json; message = "expected a class mro" })
   end
 
   module ClassDefinition = struct
@@ -737,6 +851,7 @@ module ModuleInfoFile = struct
       parent: ParentScope.t;
       local_class_id: LocalClassId.t;
       bases: GlobalClassId.t list;
+      mro: ClassMro.t;
       is_synthesized: bool;
       fields: string list;
     }
@@ -754,6 +869,9 @@ module ModuleInfoFile = struct
       >>| List.map ~f:GlobalClassId.from_json
       >>= Result.all
       >>= fun bases ->
+      JsonUtil.get_member json "mro"
+      >>= ClassMro.from_json
+      >>= fun mro ->
       JsonUtil.get_optional_bool_member ~default:false json "is_synthesized"
       >>= fun is_synthesized ->
       JsonUtil.get_list_member json "fields"
@@ -765,6 +883,7 @@ module ModuleInfoFile = struct
         parent;
         local_class_id = LocalClassId.from_int class_id;
         bases;
+        mro;
         is_synthesized;
         fields;
       }
@@ -777,7 +896,7 @@ module ModuleInfoFile = struct
     module_name: Reference.t;
     source_path: ModulePath.t;
     type_of_expression: JsonType.t Location.Map.t;
-    function_definitions: FunctionDefinition.t Location.Map.t;
+    function_definitions: FunctionDefinition.t LocalFunctionId.Map.t;
     class_definitions: ClassDefinition.t Location.Map.t;
     global_variables: string list;
   }
@@ -787,31 +906,25 @@ module ModuleInfoFile = struct
     let parse_type_of_expression type_of_expression =
       type_of_expression
       |> List.map ~f:(fun (location, type_) ->
-             Location.from_string location
-             |> Result.map_error ~f:(fun error ->
-                    FormatError.UnexpectedJsonType { json = `String location; message = error })
+             parse_location location
              >>= fun location -> JsonType.from_json type_ >>| fun type_ -> location, type_)
       |> Result.all
       >>| Location.Map.of_alist_exn
     in
     let parse_function_definitions function_definitions =
       function_definitions
-      |> List.map ~f:(fun (location, function_definition) ->
-             Location.from_string location
-             |> Result.map_error ~f:(fun error ->
-                    FormatError.UnexpectedJsonType { json = `String location; message = error })
-             >>= fun location ->
+      |> List.map ~f:(fun (local_function_id, function_definition) ->
+             LocalFunctionId.from_string local_function_id
+             >>= fun local_function_id ->
              FunctionDefinition.from_json function_definition
-             >>| fun function_definition -> location, function_definition)
+             >>| fun function_definition -> local_function_id, function_definition)
       |> Result.all
-      >>| Location.Map.of_alist_exn
+      >>| LocalFunctionId.Map.of_alist_exn
     in
     let parse_class_definitions class_definitions =
       class_definitions
       |> List.map ~f:(fun (location, class_definition) ->
-             Location.from_string location
-             |> Result.map_error ~f:(fun error ->
-                    FormatError.UnexpectedJsonType { json = `String location; message = error })
+             parse_location location
              >>= fun location ->
              ClassDefinition.from_json class_definition
              >>| fun class_definition -> location, class_definition)
@@ -1062,8 +1175,9 @@ module CallableMetadataSharedMemory = struct
       metadata: CallableMetadata.t;
       (* This is the original name, without the fully qualified suffixes like `$2` or `@setter`. *)
       name: string;
-      overridden_base_class: GlobalClassId.t option;
+      overridden_base_method: GlobalCallableId.t option;
       defining_class: GlobalClassId.t option;
+      local_function_id: LocalFunctionId.t;
     }
   end
 
@@ -1092,6 +1206,8 @@ module ClassMetadataSharedMemory = struct
       (* For a given class, its list of immediate parents. Empty if the class has no parents (it is
          implicitly ['object']) *)
       parents: GlobalClassId.t list;
+      (* For a given class, its resolved MRO (Method Resolution Order). *)
+      mro: ModuleInfoFile.ClassMro.t;
     }
     [@@deriving show]
 
@@ -1411,17 +1527,34 @@ module ReadWrite = struct
     qualifier_to_module_map, object_class_id
 
 
-  let create_pysa_type
-      ~class_id_to_qualified_name_shared_memory
-      { ModuleInfoFile.JsonType.string; scalar_properties; class_names }
-    =
-    let get_class_qualified_name class_id =
-      class_id
-      |> ClassIdToQualifiedNameSharedMemory.get_class_name class_id_to_qualified_name_shared_memory
-      |> FullyQualifiedName.to_reference
-      |> Reference.show
+  let create_pysa_type { ModuleInfoFile.JsonType.string; scalar_properties; class_names } =
+    let class_names =
+      match class_names with
+      | Some
+          {
+            ModuleInfoFile.ClassNamesResult.class_names;
+            stripped_coroutine;
+            stripped_optional;
+            stripped_readonly;
+            unbound_type_variable;
+            is_exhaustive;
+          } ->
+          Some
+            {
+              PyreflyType.ClassNamesFromType.class_names =
+                List.map
+                  ~f:(fun { GlobalClassId.module_id; local_class_id } ->
+                    ModuleId.to_int module_id, LocalClassId.to_int local_class_id)
+                  class_names;
+              stripped_coroutine;
+              stripped_optional;
+              stripped_readonly;
+              unbound_type_variable;
+              is_exhaustive;
+            }
+      | None -> None
     in
-    let class_names = List.map ~f:get_class_qualified_name class_names in
+
     PysaType.from_pyrefly_type { PyreflyType.string; scalar_properties; class_names }
 
 
@@ -1430,7 +1563,7 @@ module ReadWrite = struct
       {
         PyreflyType.string = "None";
         scalar_properties = ScalarTypeProperties.none;
-        class_names = [];
+        class_names = None;
       }
 
 
@@ -1439,7 +1572,6 @@ module ReadWrite = struct
       ~scheduler_policies
       ~pyrefly_directory
       ~qualifier_to_module_map
-      ~class_id_to_qualified_name_shared_memory
     =
     let timer = Timer.start () in
     let () = Log.info "Parsing type of expressions from pyrefly..." in
@@ -1469,7 +1601,7 @@ module ReadWrite = struct
         ModuleInfoFile.from_path_exn ~pyrefly_directory pyrefly_info_path
       in
       Map.iteri type_of_expression ~f:(fun ~key:location ~data:type_ ->
-          let type_ = create_pysa_type ~class_id_to_qualified_name_shared_memory type_ in
+          let type_ = create_pysa_type type_ in
           TypeOfExpressionsSharedMemory.add
             type_of_expressions_shared_memory
             { TypeOfExpressionsSharedMemory.Key.module_qualifier; location }
@@ -1825,6 +1957,7 @@ module ReadWrite = struct
         local_name: Reference.t; (* a non-unique name, more user-friendly. *)
         definition: Definition.t;
         name_location: Location.t;
+        local_function_id: LocalFunctionId.t;
       }
     end
 
@@ -1843,7 +1976,7 @@ module ReadWrite = struct
           create_local_path ~function_definitions ~class_definitions sofar parent
       | ModuleInfoFile.ParentScope.Function parent_location ->
           let ({ ModuleInfoFile.FunctionDefinition.parent; _ } as function_definition) =
-            Map.find_exn function_definitions parent_location
+            Map.find_exn function_definitions (LocalFunctionId.create_function parent_location)
           in
           let sofar =
             { Node.location = parent_location; value = Definition.Function function_definition }
@@ -1855,13 +1988,18 @@ module ReadWrite = struct
     let local_path_of_function
         ~function_definitions
         ~class_definitions
-        ~location
+        ~local_function_id
         ({ ModuleInfoFile.FunctionDefinition.parent; _ } as function_definition)
       =
       create_local_path
         ~function_definitions
         ~class_definitions
-        [{ Node.location; value = Definition.Function function_definition }]
+        [
+          {
+            Node.location = LocalFunctionId.get_location_exn local_function_id;
+            value = Definition.Function function_definition;
+          };
+        ]
         parent
 
 
@@ -1927,12 +2065,12 @@ module ReadWrite = struct
         in
         Map.fold
           ~init:tree
-          ~f:(fun ~key:location ~data:function_definition sofar ->
+          ~f:(fun ~key:local_function_id ~data:function_definition sofar ->
             add_local_path
               (local_path_of_function
                  ~function_definitions
                  ~class_definitions
-                 ~location
+                 ~local_function_id
                  function_definition)
               sofar)
           function_definitions
@@ -2073,6 +2211,7 @@ module ReadWrite = struct
               local_name = Reference.create_from_list (List.rev (symbol_name :: parent_local_name));
               definition;
               name_location = location;
+              local_function_id = LocalFunctionId.create_function location;
             }
             :: sofar
           in
@@ -2099,7 +2238,7 @@ module ReadWrite = struct
         =
         let sofar = qualified_definition :: sofar in
         match definition with
-        | Definition.Class _ ->
+        | Definition.Class { local_class_id; _ } ->
             {
               QualifiedDefinition.definition =
                 Definition.Function
@@ -2110,6 +2249,7 @@ module ReadWrite = struct
                   local_name
                   (Reference.create_from_list [Ast.Statement.class_toplevel_define_name]);
               name_location;
+              local_function_id = LocalFunctionId.ClassTopLevel local_class_id;
             }
             :: sofar
         | _ -> sofar
@@ -2122,6 +2262,7 @@ module ReadWrite = struct
         qualified_name = FullyQualifiedName.create_module_toplevel ~module_qualifier;
         local_name = Reference.create_from_list [Ast.Statement.toplevel_define_name];
         name_location = Location.any;
+        local_function_id = LocalFunctionId.ModuleTopLevel;
       }
       :: definitions
   end
@@ -2181,7 +2322,13 @@ module ReadWrite = struct
       in
       let store_definition
           (callables, classes)
-          { DefinitionCollector.QualifiedDefinition.qualified_name; definition; name_location; _ }
+          {
+            DefinitionCollector.QualifiedDefinition.qualified_name;
+            definition;
+            name_location;
+            local_function_id;
+            _;
+          }
         =
         match definition with
         | Function
@@ -2195,7 +2342,7 @@ module ReadWrite = struct
               is_stub;
               is_toplevel;
               is_class_toplevel;
-              overridden_base_class;
+              overridden_base_method;
               defining_class;
               _;
             } ->
@@ -2218,15 +2365,16 @@ module ReadWrite = struct
                     parent_is_class = Option.is_some defining_class;
                   };
                 name;
-                overridden_base_class;
+                overridden_base_method;
                 defining_class;
+                local_function_id;
               };
             CallableIdToQualifiedNameSharedMemory.add
               callable_id_to_qualified_name_shared_memory
-              { GlobalCallableId.module_id; name_location }
+              { GlobalCallableId.module_id; local_function_id }
               qualified_name;
             qualified_name :: callables, classes
-        | Class { local_class_id; is_synthesized; fields; bases; _ } ->
+        | Class { local_class_id; is_synthesized; fields; bases; mro; _ } ->
             ClassMetadataSharedMemory.add
               class_metadata_shared_memory
               qualified_name
@@ -2236,6 +2384,7 @@ module ReadWrite = struct
                 local_class_id;
                 is_synthesized;
                 parents = bases;
+                mro;
               };
             ClassFieldsSharedMemory.add class_fields_shared_memory qualified_name fields;
             ClassIdToQualifiedNameSharedMemory.add
@@ -2295,10 +2444,10 @@ module ReadWrite = struct
       let { ModuleInfoFile.function_definitions; class_definitions; module_id; _ } =
         ModuleInfoFile.from_path_exn ~pyrefly_directory pyrefly_info_path
       in
-      let get_function_name name_location =
+      let get_function_name local_function_id =
         CallableIdToQualifiedNameSharedMemory.get
           callable_id_to_qualified_name_shared_memory
-          { GlobalCallableId.module_id; name_location }
+          { GlobalCallableId.module_id; local_function_id }
         |> assert_shared_memory_key_exists "unknown callable id"
       in
       let fold_function_parameters (position, excluded, sofar) = function
@@ -2311,7 +2460,7 @@ module ReadWrite = struct
                 {
                   name;
                   position;
-                  annotation = create_pysa_type ~class_id_to_qualified_name_shared_memory annotation;
+                  annotation = create_pysa_type annotation;
                   has_default = not required;
                 }
               :: sofar )
@@ -2322,7 +2471,7 @@ module ReadWrite = struct
                 {
                   name;
                   position;
-                  annotation = create_pysa_type ~class_id_to_qualified_name_shared_memory annotation;
+                  annotation = create_pysa_type annotation;
                   has_default = not required;
                 }
               :: sofar )
@@ -2332,21 +2481,13 @@ module ReadWrite = struct
             ( position + 1,
               name :: excluded,
               FunctionParameter.KeywordOnly
-                {
-                  name;
-                  annotation = create_pysa_type ~class_id_to_qualified_name_shared_memory annotation;
-                  has_default = not required;
-                }
+                { name; annotation = create_pysa_type annotation; has_default = not required }
               :: sofar )
         | Kwargs { name; annotation } ->
             ( position + 1,
               [],
               FunctionParameter.Keywords
-                {
-                  name;
-                  annotation = create_pysa_type ~class_id_to_qualified_name_shared_memory annotation;
-                  excluded;
-                }
+                { name; annotation = create_pysa_type annotation; excluded }
               :: sofar )
       in
       let convert_function_signature
@@ -2364,11 +2505,7 @@ module ReadWrite = struct
           | ModuleInfoFile.FunctionParameters.Ellipsis -> FunctionParameters.Ellipsis
           | ModuleInfoFile.FunctionParameters.ParamSpec -> FunctionParameters.ParamSpec
         in
-        {
-          FunctionSignature.parameters;
-          return_annotation =
-            create_pysa_type ~class_id_to_qualified_name_shared_memory return_annotation;
-        }
+        { FunctionSignature.parameters; return_annotation = create_pysa_type return_annotation }
       in
       let toplevel_undecorated_signature =
         {
@@ -2377,10 +2514,10 @@ module ReadWrite = struct
         }
       in
       let add_function
-          ~key:name_location
+          ~key:local_function_id
           ~data:{ ModuleInfoFile.FunctionDefinition.undecorated_signatures; _ }
         =
-        let qualified_name = get_function_name name_location in
+        let qualified_name = get_function_name local_function_id in
         let undecorated_signatures =
           List.map ~f:convert_function_signature undecorated_signatures
         in
@@ -2524,7 +2661,6 @@ module ReadWrite = struct
           ~scheduler_policies
           ~pyrefly_directory
           ~qualifier_to_module_map
-          ~class_id_to_qualified_name_shared_memory
       else
         TypeOfExpressionsSharedMemory.create ()
     in
@@ -2581,7 +2717,7 @@ module ReadWrite = struct
         ()
     in
     let cleanup_callable ~module_id callable_name =
-      let { CallableMetadataSharedMemory.Value.metadata = { name_location; _ }; _ } =
+      let { CallableMetadataSharedMemory.Value.local_function_id; _ } =
         CallableMetadataSharedMemory.get callable_metadata_shared_memory callable_name
         |> assert_shared_memory_key_exists "missing callable metadata"
       in
@@ -2595,7 +2731,7 @@ module ReadWrite = struct
         callable_name;
       CallableIdToQualifiedNameSharedMemory.remove
         callable_id_to_qualified_name_shared_memory
-        { GlobalCallableId.module_id; name_location };
+        { GlobalCallableId.module_id; local_function_id };
       ()
     in
     let cleanup_class ~module_id class_name =
@@ -2663,6 +2799,7 @@ module ReadOnly = struct
     callable_define_signature_shared_memory: CallableDefineSignatureSharedMemory.t;
     callable_undecorated_signatures_shared_memory: CallableUndecoratedSignaturesSharedMemory.t;
     class_id_to_qualified_name_shared_memory: ClassIdToQualifiedNameSharedMemory.t;
+    callable_id_to_qualified_name_shared_memory: CallableIdToQualifiedNameSharedMemory.t;
     object_class: FullyQualifiedName.t;
   }
 
@@ -2680,6 +2817,7 @@ module ReadOnly = struct
         callable_define_signature_shared_memory;
         callable_undecorated_signatures_shared_memory;
         class_id_to_qualified_name_shared_memory;
+        callable_id_to_qualified_name_shared_memory;
         object_class;
         _;
       }
@@ -2697,6 +2835,7 @@ module ReadOnly = struct
       callable_define_signature_shared_memory;
       callable_undecorated_signatures_shared_memory;
       class_id_to_qualified_name_shared_memory;
+      callable_id_to_qualified_name_shared_memory;
       object_class;
     }
 
@@ -2822,6 +2961,37 @@ module ReadOnly = struct
     |> List.map ~f:Reference.show
 
 
+  let class_mro
+      { class_metadata_shared_memory; class_id_to_qualified_name_shared_memory; object_class; _ }
+      class_name
+    =
+    (* TOOD(T225700656): Update the API to take a reference and return a reference. *)
+    let class_name = FullyQualifiedName.from_reference_unchecked (Reference.create class_name) in
+    let get_mro_from_class_metadata { ClassMetadataSharedMemory.Metadata.mro; _ } =
+      match mro with
+      | _ when FullyQualifiedName.equal class_name object_class -> []
+      | ModuleInfoFile.ClassMro.Cyclic ->
+          (* Failed to resolve the mro because the class hierarchy is cyclic. Fallback to
+             [object]. *)
+          [object_class]
+      | ModuleInfoFile.ClassMro.Resolved mro ->
+          let mro =
+            List.map
+              ~f:
+                (ClassIdToQualifiedNameSharedMemory.get_class_name
+                   class_id_to_qualified_name_shared_memory)
+              mro
+          in
+          (* Pyrefly does not include 'object' in the mro. *)
+          mro @ [object_class]
+    in
+    ClassMetadataSharedMemory.get class_metadata_shared_memory class_name
+    |> assert_shared_memory_key_exists "missing class metadata for class"
+    |> get_mro_from_class_metadata
+    |> List.map ~f:FullyQualifiedName.to_reference
+    |> List.map ~f:Reference.show
+
+
   let get_callable_metadata { callable_metadata_shared_memory; _ } define_name =
     CallableMetadataSharedMemory.get
       callable_metadata_shared_memory
@@ -2830,8 +3000,8 @@ module ReadOnly = struct
     |> fun { CallableMetadataSharedMemory.Value.metadata; _ } -> metadata
 
 
-  let get_overriden_base_class
-      { callable_metadata_shared_memory; class_id_to_qualified_name_shared_memory; _ }
+  let get_overriden_base_method
+      { callable_metadata_shared_memory; callable_id_to_qualified_name_shared_memory; _ }
       ~class_name
       ~method_name
     =
@@ -2840,9 +3010,9 @@ module ReadOnly = struct
       callable_metadata_shared_memory
       (FullyQualifiedName.from_reference_unchecked define_name)
     |> assert_shared_memory_key_exists "missing callable metadata"
-    |> fun { CallableMetadataSharedMemory.Value.overridden_base_class; _ } ->
-    overridden_base_class
-    >>| ClassIdToQualifiedNameSharedMemory.get_class_name class_id_to_qualified_name_shared_memory
+    |> fun { CallableMetadataSharedMemory.Value.overridden_base_method; _ } ->
+    overridden_base_method
+    >>= CallableIdToQualifiedNameSharedMemory.get callable_id_to_qualified_name_shared_memory
     >>| FullyQualifiedName.to_reference
 
 
@@ -2918,11 +3088,55 @@ module ReadOnly = struct
       (FullyQualifiedName.from_reference_unchecked (Reference.create class_name))
 
 
-  let scalar_type_properties _ pysa_type =
-    match PysaType.as_pyrefly_type pysa_type with
-    | Some { PyreflyType.scalar_properties; _ } -> scalar_properties
-    | None ->
-        failwith "ReadOnly.scalar_type_properties: trying to use a pyre1 type with a pyrefly API."
+  module Type = struct
+    let scalar_properties _ pysa_type =
+      match PysaType.as_pyrefly_type pysa_type with
+      | None ->
+          failwith "ReadOnly.Type.type_properties: trying to use a pyre1 type with a pyrefly API."
+      | Some { PyreflyType.scalar_properties; _ } -> scalar_properties
+
+
+    let get_class_names { class_id_to_qualified_name_shared_memory; _ } pysa_type =
+      match PysaType.as_pyrefly_type pysa_type with
+      | None ->
+          failwith "ReadOnly.Type.get_class_names: trying to use a pyre1 type with a pyrefly API."
+      | Some { PyreflyType.class_names = None; _ } ->
+          Analysis.PyrePysaEnvironment.ClassNamesFromType.not_a_class
+      | Some
+          {
+            PyreflyType.class_names =
+              Some
+                {
+                  class_names;
+                  stripped_coroutine;
+                  stripped_optional;
+                  stripped_readonly;
+                  unbound_type_variable;
+                  is_exhaustive;
+                };
+            _;
+          } ->
+          let get_class_name (module_id, class_id) =
+            ClassIdToQualifiedNameSharedMemory.get
+              class_id_to_qualified_name_shared_memory
+              {
+                GlobalClassId.module_id = ModuleId.from_int module_id;
+                local_class_id = LocalClassId.from_int class_id;
+              }
+            |> assert_shared_memory_key_exists "missing class id"
+            |> FullyQualifiedName.to_reference
+            |> Reference.show
+          in
+          {
+            Analysis.PyrePysaEnvironment.ClassNamesFromType.class_names =
+              List.map ~f:get_class_name class_names;
+            stripped_coroutine;
+            stripped_optional;
+            stripped_readonly;
+            unbound_type_variable;
+            is_exhaustive;
+          }
+  end
 end
 
 (* List of symbols exported from the 'builtins' module. To keep it short, this only contains symbols

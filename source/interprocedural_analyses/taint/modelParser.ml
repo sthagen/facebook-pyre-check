@@ -957,7 +957,7 @@ let get_class_attributes ~pyre_api = function
 
 
 let get_class_attributes_transitive ~pyre_api class_name =
-  let successors = PyrePysaApi.ReadOnly.successors pyre_api class_name in
+  let successors = PyrePysaApi.ReadOnly.class_mro pyre_api class_name in
   class_name :: successors |> List.filter_map ~f:(get_class_attributes ~pyre_api) |> List.concat
 
 
@@ -966,8 +966,8 @@ let paths_for_source_or_sink ~pyre_api ~kind ~root ~root_annotations ~features =
   let all_static_field_paths () =
     let attributes =
       root_annotations
-      |> List.map ~f:PyrePysaApi.PysaType.get_class_names
-      |> List.map ~f:(fun { PyrePysaApi.PysaType.ClassNamesResult.class_names; _ } -> class_names)
+      |> List.map ~f:(PyrePysaApi.ReadOnly.Type.get_class_names pyre_api)
+      |> List.map ~f:(fun { PyrePysaApi.ClassNamesFromType.class_names; _ } -> class_names)
       |> List.concat
       |> List.concat_map ~f:(get_class_attributes_transitive ~pyre_api)
       |> List.filter ~f:(Fn.non Ast.Expression.is_dunder_attribute)
@@ -1112,7 +1112,7 @@ let output_path_for_tito ~input_root ~kind ~features =
 
 let type_breadcrumbs_from_annotations ~pyre_api annotations =
   List.fold annotations ~init:Features.BreadcrumbSet.empty ~f:(fun sofar annotation ->
-      PyrePysaApi.ReadOnly.scalar_type_properties pyre_api annotation
+      PyrePysaApi.ReadOnly.Type.scalar_properties pyre_api annotation
       |> Features.type_breadcrumbs
       |> Features.BreadcrumbSet.union sofar)
 

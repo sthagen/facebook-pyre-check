@@ -497,9 +497,11 @@ let test_fully_qualified_names _ =
       |> List.filter_map ~f:(fun (line, definition) ->
              match definition with
              | PyreflyApi.Testing.Definition.Function function_definition ->
-                 Some (location_at_line line, function_definition)
+                 Some
+                   ( line |> location_at_line |> PyreflyApi.LocalFunctionId.create_function,
+                     function_definition )
              | _ -> None)
-      |> Ast.Location.Map.of_alist_exn
+      |> PyreflyApi.LocalFunctionId.Map.of_alist_exn
     in
     let actual =
       PyreflyApi.Testing.create_fully_qualified_names
@@ -533,7 +535,7 @@ let test_fully_qualified_names _ =
         is_stub = false;
         is_toplevel = false;
         is_class_toplevel = false;
-        overridden_base_class = None;
+        overridden_base_method = None;
         defining_class = None;
       }
   in
@@ -544,6 +546,7 @@ let test_fully_qualified_names _ =
         parent;
         local_class_id = PyreflyApi.LocalClassId.from_int 0;
         bases = [];
+        mro = ModuleInfoFile.ClassMro.Resolved [];
         is_synthesized = false;
         fields = [];
       }
