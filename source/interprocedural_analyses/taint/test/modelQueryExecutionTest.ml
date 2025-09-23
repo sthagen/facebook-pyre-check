@@ -3240,7 +3240,6 @@ let test_generated_annotations_for_attributes context =
       }
     ~name:"test.C.x"
     ~expected:[source "Test"]
-    ~skip_for_pyrefly:true (* TODO(T225700656): handle class attribute annotation constraints. *)
     ();
   assert_generated_annotations_for_attributes
     ~source:{|
@@ -3262,7 +3261,6 @@ let test_generated_annotations_for_attributes context =
       }
     ~name:"test.C.y"
     ~expected:[]
-    ~skip_for_pyrefly:true (* TODO(T225700656): handle class attribute annotation constraints. *)
     ();
   assert_generated_annotations_for_attributes
     ~source:
@@ -3293,7 +3291,6 @@ let test_generated_annotations_for_attributes context =
       }
     ~name:"test.C.x"
     ~expected:[source "Test"]
-    ~skip_for_pyrefly:true (* TODO(T225700656): handle class attribute annotation constraints. *)
     ();
   assert_generated_annotations_for_attributes
     ~source:
@@ -3353,7 +3350,6 @@ let test_generated_annotations_for_attributes context =
       }
     ~name:"test.C.y"
     ~expected:[source "Test"]
-    ~skip_for_pyrefly:true (* TODO(T225700656): handle class attribute annotation constraints. *)
     ();
   assert_generated_annotations_for_attributes
     ~source:
@@ -3384,7 +3380,6 @@ let test_generated_annotations_for_attributes context =
       }
     ~name:"test.C.z"
     ~expected:[]
-    ~skip_for_pyrefly:true (* TODO(T225700656): handle class attribute annotation constraints. *)
     ();
   assert_generated_annotations_for_attributes
     ~source:
@@ -3408,7 +3403,6 @@ let test_generated_annotations_for_attributes context =
       }
     ~name:"test.C.x"
     ~expected:[]
-    ~skip_for_pyrefly:true (* TODO(T225700656): handle class attribute annotation constraints. *)
     ();
   assert_generated_annotations_for_attributes
     ~source:
@@ -3432,7 +3426,6 @@ let test_generated_annotations_for_attributes context =
       }
     ~name:"test.C.y"
     ~expected:[source "Test"]
-    ~skip_for_pyrefly:true (* TODO(T225700656): handle class attribute annotation constraints. *)
     ();
 
   ()
@@ -5301,6 +5294,29 @@ let test_generated_annotations_for_globals context =
       }
     ~name:"test.foo"
     ~expected:[]
+    ();
+  assert_generated_annotations_for_globals
+    ~source:{|
+      foo: list[int] = []
+     |}
+    ~query:
+      {
+        location = Ast.Location.any;
+        name = "get_foo";
+        logging_group_name = None;
+        path = None;
+        where =
+          [
+            AnnotationConstraint
+              (FullyQualifiedConstraint (Matches (Re2.create_exn "^(list|typing.List)\\[int\\]$")));
+          ];
+        models = [Global [TaintAnnotation (source "Test")]];
+        find = Global;
+        expected_models = [];
+        unexpected_models = [];
+      }
+    ~name:"test.foo"
+    ~expected:[source "Test"]
     ();
   ()
 
