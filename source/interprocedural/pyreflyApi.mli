@@ -108,6 +108,14 @@ module ReadOnly : sig
     method_name:string ->
     Ast.Reference.t option
 
+  val get_callable_captures : t -> Ast.Reference.t -> string list
+
+  val get_callable_decorator_callees
+    :  t ->
+    Ast.Reference.t ->
+    Ast.Location.t ->
+    Ast.Reference.t list option
+
   val get_methods_for_qualifier
     :  t ->
     exclude_test_modules:bool ->
@@ -201,7 +209,7 @@ module ModulePath : sig
 end
 
 (* Exposed for testing purposes *)
-module ModuleInfoPath : sig
+module ModuleInfoFilename : sig
   type t [@@deriving compare, equal, show]
 
   val create : string -> t
@@ -214,7 +222,7 @@ module ProjectFile : sig
       module_id: ModuleId.t;
       module_name: Ast.Reference.t;
       module_path: ModulePath.t;
-      info_path: ModuleInfoPath.t option;
+      info_filename: ModuleInfoFilename.t option;
       is_test: bool;
       is_interface: bool;
       is_init: bool;
@@ -228,6 +236,7 @@ module GlobalClassId : sig
   type t [@@deriving show]
 end
 
+(* Exposed for testing purposes *)
 module LocalFunctionId : sig
   type t [@@deriving show]
 
@@ -237,28 +246,30 @@ module LocalFunctionId : sig
 end
 
 (* Exposed for testing purposes *)
-module ModuleInfoFile : sig
-  module ClassNamesResult : sig
-    type t = {
-      class_names: GlobalClassId.t list;
-      stripped_coroutine: bool;
-      stripped_optional: bool;
-      stripped_readonly: bool;
-      unbound_type_variable: bool;
-      is_exhaustive: bool;
-    }
-    [@@deriving equal, show]
-  end
+module ClassNamesResult : sig
+  type t = {
+    class_names: GlobalClassId.t list;
+    stripped_coroutine: bool;
+    stripped_optional: bool;
+    stripped_readonly: bool;
+    unbound_type_variable: bool;
+    is_exhaustive: bool;
+  }
+  [@@deriving equal, show]
+end
 
-  module JsonType : sig
-    type t = {
-      string: string;
-      scalar_properties: Analysis.PyrePysaEnvironment.ScalarTypeProperties.t;
-      class_names: ClassNamesResult.t option;
-    }
-    [@@deriving equal, show]
-  end
+(* Exposed for testing purposes *)
+module JsonType : sig
+  type t = {
+    string: string;
+    scalar_properties: Analysis.PyrePysaEnvironment.ScalarTypeProperties.t;
+    class_names: ClassNamesResult.t option;
+  }
+  [@@deriving equal, show]
+end
 
+(* Exposed for testing purposes *)
+module ModuleDefinitionsFile : sig
   module ParentScope : sig
     type t =
       | TopLevel
@@ -311,11 +322,16 @@ module ModuleInfoFile : sig
     [@@deriving equal, show]
   end
 
+  module CapturedVariable : sig
+    type t = { name: string } [@@deriving equal, show]
+  end
+
   module FunctionDefinition : sig
     type t = {
       name: string;
       parent: ParentScope.t;
       undecorated_signatures: FunctionSignature.t list;
+      captured_variables: CapturedVariable.t list;
       is_overload: bool;
       is_staticmethod: bool;
       is_classmethod: bool;
@@ -326,6 +342,7 @@ module ModuleInfoFile : sig
       is_class_toplevel: bool;
       overridden_base_method: GlobalCallableId.t option;
       defining_class: GlobalClassId.t option;
+      decorator_callees: GlobalCallableId.t list Ast.Location.SerializableMap.t;
     }
     [@@deriving equal, show]
   end
@@ -356,6 +373,7 @@ module ModuleInfoFile : sig
       mro: ClassMro.t;
       is_synthesized: bool;
       fields: JsonClassField.t list;
+      decorator_callees: GlobalCallableId.t list Ast.Location.SerializableMap.t;
     }
     [@@deriving equal, show]
   end
@@ -388,7 +406,7 @@ module Testing : sig
       module_id: ModuleId.t;
       module_name: Ast.Reference.t;
       source_path: ArtifactPath.t option;
-      pyrefly_info_path: ModuleInfoPath.t option;
+      pyrefly_info_filename: ModuleInfoFilename.t option;
       is_test: bool;
       is_stub: bool;
     }
@@ -404,8 +422,8 @@ module Testing : sig
 
   module Definition : sig
     type t =
-      | Function of ModuleInfoFile.FunctionDefinition.t
-      | Class of ModuleInfoFile.ClassDefinition.t
+      | Function of ModuleDefinitionsFile.FunctionDefinition.t
+      | Class of ModuleDefinitionsFile.ClassDefinition.t
     [@@deriving equal, show]
   end
 
@@ -422,7 +440,7 @@ module Testing : sig
   val create_fully_qualified_names
     :  module_qualifier:ModuleQualifier.t ->
     module_exists:(ModuleQualifier.t -> bool) ->
-    class_definitions:ModuleInfoFile.ClassDefinition.t Ast.Location.Map.t ->
-    function_definitions:ModuleInfoFile.FunctionDefinition.t LocalFunctionId.Map.t ->
+    class_definitions:ModuleDefinitionsFile.ClassDefinition.t Ast.Location.Map.t ->
+    function_definitions:ModuleDefinitionsFile.FunctionDefinition.t LocalFunctionId.Map.t ->
     QualifiedDefinition.t list
 end
