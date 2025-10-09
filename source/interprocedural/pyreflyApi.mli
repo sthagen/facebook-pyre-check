@@ -53,6 +53,10 @@ module CallableMetadata : sig
   [@@deriving show]
 end
 
+module PysaClassSummary : sig
+  type t
+end
+
 (* API handle stored in the main process. The type `t` should not be sent to workers, since it's
    expensive to copy. *)
 module ReadWrite : sig
@@ -134,6 +138,8 @@ module ReadOnly : sig
     Ast.Reference.t ->
     Analysis.PyrePysaEnvironment.ModelQueries.FunctionSignature.t list
 
+  val get_class_summary : t -> string -> PysaClassSummary.t
+
   val get_class_decorators_opt : t -> string -> Ast.Expression.t list option
 
   val get_class_attributes
@@ -157,6 +163,20 @@ module ReadOnly : sig
     val scalar_properties : t -> PysaType.t -> Analysis.PyrePysaEnvironment.ScalarTypeProperties.t
 
     val get_class_names : t -> PysaType.t -> Analysis.PyrePysaEnvironment.ClassNamesFromType.t
+  end
+
+  module ClassSummary : sig
+    val has_custom_new : t -> PysaClassSummary.t -> bool
+
+    val is_dataclass : t -> PysaClassSummary.t -> bool
+
+    val is_named_tuple : t -> PysaClassSummary.t -> bool
+
+    val is_typed_dict : t -> PysaClassSummary.t -> bool
+
+    val dataclass_ordered_attributes : t -> PysaClassSummary.t -> string list
+
+    val typed_dictionary_attributes : t -> PysaClassSummary.t -> string list
   end
 end
 
@@ -193,6 +213,11 @@ module LocalClassId : sig
   type t [@@deriving compare, equal, show]
 
   val from_int : int -> t
+end
+
+(* Exposed for testing purposes *)
+module Target : sig
+  type t [@@deriving compare, equal, show]
 end
 
 (* Exposed for testing purposes *)
@@ -267,6 +292,17 @@ module JsonType : sig
     scalar_properties: Analysis.PyrePysaEnvironment.ScalarTypeProperties.t;
     class_names: ClassNamesResult.t option;
   }
+  [@@deriving equal, show]
+end
+
+(* Exposed for testing purposes *)
+module ClassFieldDeclarationKind : sig
+  type t =
+    | DeclaredByAnnotation
+    | DeclaredWithoutAnnotation
+    | AssignedInBody
+    | DefinedWithoutAssign
+    | DefinedInMethod
   [@@deriving equal, show]
 end
 
@@ -362,6 +398,7 @@ module ModuleDefinitionsFile : sig
       type_: JsonType.t;
       explicit_annotation: string option;
       location: Ast.Location.t option;
+      declaration_kind: ClassFieldDeclarationKind.t option;
     }
     [@@deriving equal, show]
   end
@@ -374,6 +411,9 @@ module ModuleDefinitionsFile : sig
       bases: GlobalClassId.t list;
       mro: ClassMro.t;
       is_synthesized: bool;
+      is_dataclass: bool;
+      is_named_tuple: bool;
+      is_typed_dict: bool;
       fields: JsonClassField.t list;
       decorator_callees: GlobalCallableId.t list Ast.Location.SerializableMap.t;
     }
