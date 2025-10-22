@@ -62,6 +62,7 @@ module CallableMetadata : sig
     is_stub: bool; (* Is this a stub definition, e.g `def foo(): ...` *)
     is_def_statement: bool; (* Is it defined with a `def ..():` statement? *)
     parent_is_class: bool;
+    captures: string list;
   }
   [@@deriving show]
 end
@@ -79,8 +80,13 @@ module ReadWrite : sig
     :  scheduler:Scheduler.t ->
     scheduler_policies:Configuration.SchedulerPolicies.t ->
     configuration:Configuration.Analysis.t ->
-    store_type_of_expressions:bool ->
     PyrePath.t ->
+    t
+
+  val parse_type_of_expressions
+    :  t ->
+    scheduler:Scheduler.t ->
+    scheduler_policies:Configuration.SchedulerPolicies.t ->
     t
 
   val cleanup : t -> scheduler:Scheduler.t -> unit
@@ -176,6 +182,8 @@ module ReadOnly : sig
 
   val get_global_inferred_type : t -> qualifier:Ast.Reference.t -> name:string -> PysaType.t option
 
+  val target_from_define_name : t -> Ast.Reference.t -> Target.t
+
   module Type : sig
     val scalar_properties : t -> PysaType.t -> Analysis.PyrePysaEnvironment.ScalarTypeProperties.t
 
@@ -230,11 +238,6 @@ module LocalClassId : sig
   type t [@@deriving compare, equal, show]
 
   val from_int : int -> t
-end
-
-(* Exposed for testing purposes *)
-module Target : sig
-  type t [@@deriving compare, equal, show]
 end
 
 (* Exposed for testing purposes *)

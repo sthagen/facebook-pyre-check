@@ -386,7 +386,7 @@ module GlobalCallableId = struct
     | None -> Ok None
 end
 
-module Target = struct
+module PyreflyTarget = struct
   type t =
     | Function of GlobalCallableId.t
     | Override of GlobalCallableId.t
@@ -840,9 +840,10 @@ module ModuleDefinitionsFile = struct
 
   let parse_decorator_callees bindings =
     let extract_global_callable_id_from_target_exn = function
-      | Target.Function global_callable_id -> global_callable_id
+      | PyreflyTarget.Function global_callable_id -> global_callable_id
       | target ->
-          Format.asprintf "Unexpected type of decorator callee: `%a`" Target.pp target |> failwith
+          Format.asprintf "Unexpected type of decorator callee: `%a`" PyreflyTarget.pp target
+          |> failwith
     in
     let open Core.Result.Monad_infix in
     let parse_binding (key, value) =
@@ -850,7 +851,9 @@ module ModuleDefinitionsFile = struct
       >>= fun location ->
       JsonUtil.as_list value
       >>| List.map ~f:(fun json ->
-              json |> Target.from_json |> Result.map ~f:extract_global_callable_id_from_target_exn)
+              json
+              |> PyreflyTarget.from_json
+              |> Result.map ~f:extract_global_callable_id_from_target_exn)
       >>= Result.all
       >>| fun callables -> location, callables
     in
@@ -1439,6 +1442,7 @@ module CallableMetadata = struct
     is_stub: bool;
     is_def_statement: bool;
     parent_is_class: bool;
+    captures: string list;
   }
   [@@deriving show]
 end
@@ -1459,7 +1463,6 @@ module CallableMetadataSharedMemory = struct
       local_function_id: LocalFunctionId.t;
       (* This is the original name, without the fully qualified suffixes like `$2` or `@setter`. *)
       name: string;
-      captures: string list;
       overridden_base_method: GlobalCallableId.t option;
       defining_class: GlobalClassId.t option;
       (* The list of callees for each decorator *)
@@ -1706,10 +1709,11 @@ module ReadWrite = struct
   end
 
   type t = {
+    pyrefly_directory: PyrePath.t;
     qualifier_to_module_map: Module.t ModuleQualifier.Map.t;
     module_infos_shared_memory: ModuleInfosSharedMemory.t;
     qualifiers_shared_memory: QualifiersSharedMemory.t;
-    type_of_expressions_shared_memory: TypeOfExpressionsSharedMemory.t;
+    type_of_expressions_shared_memory: TypeOfExpressionsSharedMemory.t option;
     callable_metadata_shared_memory: CallableMetadataSharedMemory.t;
     class_metadata_shared_memory: ClassMetadataSharedMemory.t;
     class_fields_shared_memory: ClassFieldsSharedMemory.t;
@@ -1849,64 +1853,6 @@ module ReadWrite = struct
       ~integers:["modules", Map.length qualifier_to_module_map]
       ();
     qualifier_to_module_map, object_class_id
-
-
-  let parse_type_of_expressions
-      ~scheduler
-      ~scheduler_policies
-      ~pyrefly_directory
-      ~qualifier_to_module_map
-    =
-    let timer = Timer.start () in
-    let () = Log.info "Parsing type of expressions from pyrefly..." in
-    let type_of_expressions_shared_memory = TypeOfExpressionsSharedMemory.create () in
-    let scheduler_policy =
-      Scheduler.Policy.from_configuration_or_default
-        scheduler_policies
-        Configuration.ScheduleIdentifier.ParsePyreflyModuleInfo
-        ~default:
-          (Scheduler.Policy.fixed_chunk_count
-             ~minimum_chunks_per_worker:1
-             ~minimum_chunk_size:1
-             ~preferred_chunks_per_worker:1
-             ())
-    in
-    let parse_module_info (module_qualifier, pyrefly_info_filename) =
-      let { ModuleTypeOfExpressions.type_of_expression; module_id = _ } =
-        ModuleTypeOfExpressions.from_path_exn ~pyrefly_directory pyrefly_info_filename
-      in
-      Map.iteri type_of_expression ~f:(fun ~key:location ~data:type_ ->
-          let type_ = JsonType.to_pysa_type type_ in
-          TypeOfExpressionsSharedMemory.add
-            type_of_expressions_shared_memory
-            { TypeOfExpressionsSharedMemory.Key.module_qualifier; location }
-            type_)
-    in
-    let inputs =
-      qualifier_to_module_map
-      |> Map.to_alist
-      |> List.filter_map ~f:(fun (qualifier, { Module.pyrefly_info_filename; _ }) ->
-             match pyrefly_info_filename with
-             | Some pyrefly_info_filename -> Some (qualifier, pyrefly_info_filename)
-             | None -> None)
-    in
-    let () =
-      Scheduler.map_reduce
-        scheduler
-        ~policy:scheduler_policy
-        ~initial:()
-        ~map:(List.iter ~f:parse_module_info)
-        ~reduce:(fun () () -> ())
-        ~inputs
-        ()
-    in
-    Log.info "Parsed type of expressions from pyrefly: %.3fs" (Timer.stop_in_sec timer);
-    Statistics.performance
-      ~name:"Parsed type of expressions from pyrefly"
-      ~phase_name:"Parsing type of expressions from pyrefly"
-      ~timer
-      ();
-    type_of_expressions_shared_memory
 
 
   let write_module_infos_to_shared_memory ~qualifier_to_module_map =
@@ -2832,15 +2778,15 @@ module ReadWrite = struct
                     is_stub;
                     is_def_statement;
                     parent_is_class = Option.is_some defining_class;
+                    captures =
+                      List.map
+                        ~f:(fun { ModuleDefinitionsFile.CapturedVariable.name } -> name)
+                        captured_variables;
                   };
                 name;
                 local_function_id;
                 overridden_base_method;
                 defining_class;
-                captures =
-                  List.map
-                    ~f:(fun { ModuleDefinitionsFile.CapturedVariable.name } -> name)
-                    captured_variables;
                 decorator_callees;
               };
             CallableIdToQualifiedNameSharedMemory.add
@@ -3110,13 +3056,7 @@ module ReadWrite = struct
       callable_undecorated_signatures_shared_memory )
 
 
-  let create_from_directory
-      ~scheduler
-      ~scheduler_policies
-      ~configuration
-      ~store_type_of_expressions
-      pyrefly_directory
-    =
+  let create_from_directory ~scheduler ~scheduler_policies ~configuration pyrefly_directory =
     let qualifier_to_module_map, object_class_id = parse_modules ~pyrefly_directory in
 
     let module_infos_shared_memory = write_module_infos_to_shared_memory ~qualifier_to_module_map in
@@ -3177,22 +3117,12 @@ module ReadWrite = struct
         object_class_id
     in
 
-    let type_of_expressions_shared_memory =
-      if store_type_of_expressions then
-        parse_type_of_expressions
-          ~scheduler
-          ~scheduler_policies
-          ~pyrefly_directory
-          ~qualifier_to_module_map
-      else
-        TypeOfExpressionsSharedMemory.create ()
-    in
-
     {
+      pyrefly_directory;
       qualifier_to_module_map;
       module_infos_shared_memory;
       qualifiers_shared_memory;
-      type_of_expressions_shared_memory;
+      type_of_expressions_shared_memory = None;
       callable_metadata_shared_memory;
       class_metadata_shared_memory;
       class_fields_shared_memory;
@@ -3209,11 +3139,72 @@ module ReadWrite = struct
     }
 
 
+  let parse_type_of_expressions
+      ({ pyrefly_directory; qualifier_to_module_map; _ } as read_write_api)
+      ~scheduler
+      ~scheduler_policies
+    =
+    let timer = Timer.start () in
+    let () = Log.info "Parsing type of expressions from pyrefly..." in
+    let type_of_expressions_shared_memory = TypeOfExpressionsSharedMemory.create () in
+    let scheduler_policy =
+      Scheduler.Policy.from_configuration_or_default
+        scheduler_policies
+        Configuration.ScheduleIdentifier.ParsePyreflyModuleInfo
+        ~default:
+          (Scheduler.Policy.fixed_chunk_count
+             ~minimum_chunks_per_worker:1
+             ~minimum_chunk_size:1
+             ~preferred_chunks_per_worker:1
+             ())
+    in
+    let parse_module_info (module_qualifier, pyrefly_info_filename) =
+      let { ModuleTypeOfExpressions.type_of_expression; module_id = _ } =
+        ModuleTypeOfExpressions.from_path_exn ~pyrefly_directory pyrefly_info_filename
+      in
+      Map.iteri type_of_expression ~f:(fun ~key:location ~data:type_ ->
+          let type_ = JsonType.to_pysa_type type_ in
+          TypeOfExpressionsSharedMemory.add
+            type_of_expressions_shared_memory
+            { TypeOfExpressionsSharedMemory.Key.module_qualifier; location }
+            type_)
+    in
+    let inputs =
+      qualifier_to_module_map
+      |> Map.to_alist
+      |> List.filter_map ~f:(fun (qualifier, { Module.pyrefly_info_filename; _ }) ->
+             match pyrefly_info_filename with
+             | Some pyrefly_info_filename -> Some (qualifier, pyrefly_info_filename)
+             | None -> None)
+    in
+    let () =
+      Scheduler.map_reduce
+        scheduler
+        ~policy:scheduler_policy
+        ~initial:()
+        ~map:(List.iter ~f:parse_module_info)
+        ~reduce:(fun () () -> ())
+        ~inputs
+        ()
+    in
+    Log.info "Parsed type of expressions from pyrefly: %.3fs" (Timer.stop_in_sec timer);
+    Statistics.performance
+      ~name:"Parsed type of expressions from pyrefly"
+      ~phase_name:"Parsing type of expressions from pyrefly"
+      ~timer
+      ();
+    {
+      read_write_api with
+      type_of_expressions_shared_memory = Some type_of_expressions_shared_memory;
+    }
+
+
   (* Remove information about the project from the shared memory. This should reduce considerably
      the shared memory **heap** size. However, note that the shared memory does NOT allow removing
      entries from the **hash table**, so all entries are kept. *)
   let cleanup
       {
+        pyrefly_directory = _;
         qualifier_to_module_map;
         module_infos_shared_memory;
         qualifiers_shared_memory;
@@ -3555,7 +3546,7 @@ module ReadOnly = struct
       callable_metadata_shared_memory
       (FullyQualifiedName.from_reference_unchecked define_name)
     |> assert_shared_memory_key_exists "missing callable metadata"
-    |> fun { CallableMetadataSharedMemory.Value.captures; _ } -> captures
+    |> fun { CallableMetadataSharedMemory.Value.metadata = { captures; _ }; _ } -> captures
 
 
   let get_callable_decorator_callees
@@ -3691,6 +3682,22 @@ module ReadOnly = struct
     |> SerializableStringMap.find_opt name
     |> assert_shared_memory_key_exists "missing global variable"
     |> fun { GlobalVariable.type_; _ } -> type_
+
+
+  let target_from_define_name api name =
+    let { CallableMetadata.is_property_setter; parent_is_class; _ } =
+      get_callable_metadata api name
+    in
+    let kind =
+      if is_property_setter then
+        Target.PyreflyPropertySetter
+      else
+        Target.Normal
+    in
+    if parent_is_class then
+      Target.create_method_from_reference ~kind name
+    else
+      Target.create_function ~kind name
 
 
   module Type = struct

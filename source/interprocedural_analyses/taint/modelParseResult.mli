@@ -431,7 +431,7 @@ module CallableDecorator : sig
 
   val create
     :  pyre_api:PyrePysaApi.ReadOnly.t ->
-    callables_to_definitions_map:Interprocedural.Target.CallablesSharedMemory.ReadOnly.t ->
+    callables_to_definitions_map:Interprocedural.CallablesSharedMemory.ReadOnly.t ->
     target:Interprocedural.Target.t ->
     Ast.Statement.Decorator.t ->
     t
@@ -480,7 +480,7 @@ module Modelable : sig
 
   val create_callable
     :  pyre_api:PyrePysaApi.ReadOnly.t ->
-    callables_to_definitions_map:Interprocedural.Target.CallablesSharedMemory.ReadOnly.t ->
+    callables_to_definitions_map:Interprocedural.CallablesSharedMemory.ReadOnly.t ->
     Interprocedural.Target.t ->
     t
 
@@ -500,7 +500,7 @@ module Modelable : sig
 
   val parameters_of_signatures : t -> PyrePysaApi.ModelQueries.FunctionParameter.t list
 
-  val captures : t -> Ast.Statement.Define.Capture.t list
+  val captures : t -> string list
 
   val decorator_expressions_after_inlining : t -> Ast.Expression.t list
 
