@@ -1330,11 +1330,70 @@ module ModuleCallGraphs = struct
       }
   end
 
+  module JsonUnresolved = struct
+    let from_json = function
+      | `String "False" -> Ok CallGraph.Unresolved.False
+      | `Assoc [("True", `String reason)] as json -> (
+          match CallGraph.Unresolved.reason_from_string reason with
+          | Some reason -> Ok (CallGraph.Unresolved.True reason)
+          | None ->
+              Error (FormatError.UnexpectedJsonType { json; message = "unknown unresolved reason" })
+          )
+      | json -> Error (FormatError.UnexpectedJsonType { json; message = "expected unresolved" })
+  end
+
+  module JsonHigherOrderParameter = struct
+    type t = {
+      index: int;
+      call_targets: JsonCallTarget.t list;
+      unresolved: CallGraph.Unresolved.t;
+    }
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      let parse_call_target_list targets =
+        targets |> List.map ~f:JsonCallTarget.from_json |> Result.all
+      in
+      JsonUtil.get_optional_list_member json "call_targets"
+      >>= parse_call_target_list
+      >>= fun call_targets ->
+      JsonUtil.get_int_member json "index"
+      >>= fun index ->
+      JsonUtil.get_optional_member json "unresolved"
+      |> (function
+           | Some json -> JsonUnresolved.from_json json
+           | None -> Ok CallGraph.Unresolved.False)
+      >>| fun unresolved -> { index; call_targets; unresolved }
+  end
+
+  module JsonHigherOrderParameterMap = struct
+    module Map = SerializableMap.Make (Int)
+
+    type t = JsonHigherOrderParameter.t Map.t
+
+    let empty = Map.empty
+
+    let data = Map.data
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      json
+      |> JsonUtil.check_object
+      >>| List.map ~f:(fun (index, higher_order_parameter) ->
+              let index = int_of_string index in
+              JsonHigherOrderParameter.from_json higher_order_parameter
+              >>| fun higher_order_parameter -> index, higher_order_parameter)
+      >>= Result.all
+      >>| Map.of_alist_exn
+  end
+
   module JsonCallCallees = struct
     type t = {
       call_targets: JsonCallTarget.t list;
       init_targets: JsonCallTarget.t list;
       new_targets: JsonCallTarget.t list;
+      higher_order_parameters: JsonHigherOrderParameterMap.t;
+      unresolved: CallGraph.Unresolved.t;
     }
 
     let from_json json =
@@ -1350,7 +1409,18 @@ module ModuleCallGraphs = struct
       >>= fun init_targets ->
       JsonUtil.get_optional_list_member json "new_targets"
       >>= parse_call_target_list
-      >>| fun new_targets -> { call_targets; init_targets; new_targets }
+      >>= fun new_targets ->
+      JsonUtil.get_optional_member json "higher_order_parameters"
+      |> (function
+           | Some json -> JsonHigherOrderParameterMap.from_json json
+           | None -> Ok JsonHigherOrderParameterMap.empty)
+      >>= fun higher_order_parameters ->
+      JsonUtil.get_optional_member json "unresolved"
+      |> (function
+           | Some json -> JsonUnresolved.from_json json
+           | None -> Ok CallGraph.Unresolved.False)
+      >>| fun unresolved ->
+      { call_targets; init_targets; new_targets; higher_order_parameters; unresolved }
   end
 
   module JsonAttributeAccessCallees = struct
@@ -1386,11 +1456,25 @@ module ModuleCallGraphs = struct
       >>| fun if_called -> { if_called }
   end
 
+  module JsonDefineCallees = struct
+    type t = { define_targets: JsonCallTarget.t list }
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      let parse_call_target_list targets =
+        targets |> List.map ~f:JsonCallTarget.from_json |> Result.all
+      in
+      JsonUtil.get_list_member json "define_targets"
+      >>= parse_call_target_list
+      >>| fun define_targets -> { define_targets }
+  end
+
   module JsonExpressionCallees = struct
     type t =
       | Call of JsonCallCallees.t
       | Identifier of JsonIdentifierCallees.t
       | AttributeAccess of JsonAttributeAccessCallees.t
+      | Define of JsonDefineCallees.t
 
     let from_json json =
       let open Core.Result.Monad_infix in
@@ -1403,6 +1487,8 @@ module ModuleCallGraphs = struct
       | `Assoc [("AttributeAccess", attribute_access_callees)] ->
           JsonAttributeAccessCallees.from_json attribute_access_callees
           >>| fun attribute_access_callees -> AttributeAccess attribute_access_callees
+      | `Assoc [("Define", define_callees)] ->
+          JsonDefineCallees.from_json define_callees >>| fun define_callees -> Define define_callees
       | _ ->
           Error (FormatError.UnexpectedJsonType { json; message = "expected expression callees" })
   end
@@ -3977,17 +4063,38 @@ module ReadOnly = struct
         return_type;
       }
     in
-    let instantiate_call_callees { JsonCallCallees.call_targets; init_targets; new_targets } =
+    let instantiate_higher_order_parameter
+        { JsonHigherOrderParameter.index; call_targets; unresolved }
+      =
+      {
+        CallGraph.HigherOrderParameter.index;
+        call_targets = List.map ~f:instantiate_call_target call_targets;
+        unresolved;
+      }
+    in
+    let instantiate_call_callees
+        {
+          JsonCallCallees.call_targets;
+          init_targets;
+          new_targets;
+          higher_order_parameters;
+          unresolved;
+        }
+      =
       (* TODO(T225700656): Support higher order parameters, shim targets, unresolved calles. *)
       {
         CallCallees.call_targets = List.map ~f:instantiate_call_target call_targets;
         init_targets = List.map ~f:instantiate_call_target init_targets;
         new_targets = List.map ~f:instantiate_call_target new_targets;
         decorated_targets = [];
-        higher_order_parameters = HigherOrderParameterMap.empty;
+        higher_order_parameters =
+          higher_order_parameters
+          |> JsonHigherOrderParameterMap.data
+          |> List.map ~f:instantiate_higher_order_parameter
+          |> CallGraph.HigherOrderParameterMap.from_list;
         shim_target = None;
-        unresolved = Unresolved.False;
-        recognized_call = CallCallees.RecognizedCall.False;
+        unresolved;
+        recognized_call = CallGraph.CallCallees.RecognizedCall.False;
       }
     in
     let instantiate_identifier_callees { JsonIdentifierCallees.if_called } =
@@ -4008,6 +4115,12 @@ module ReadOnly = struct
         if_called;
       }
     in
+    let instantiate_define_callees { JsonDefineCallees.define_targets } =
+      {
+        CallGraph.DefineCallees.define_targets = List.map ~f:instantiate_call_target define_targets;
+        decorated_targets = [];
+      }
+    in
     let instantiate_expression_callees = function
       | JsonExpressionCallees.Call callees ->
           ExpressionCallees.Call (instantiate_call_callees callees)
@@ -4015,6 +4128,8 @@ module ReadOnly = struct
           ExpressionCallees.Identifier (instantiate_identifier_callees callees)
       | JsonExpressionCallees.AttributeAccess callees ->
           ExpressionCallees.AttributeAccess (instantiate_attribute_access_callees callees)
+      | JsonExpressionCallees.Define callees ->
+          ExpressionCallees.Define (instantiate_define_callees callees)
     in
     let instantiate_call_edge ~key:location ~data:callees call_graph =
       let callees = instantiate_expression_callees callees in
