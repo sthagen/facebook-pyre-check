@@ -3399,7 +3399,7 @@ let test_call_graph_of_define =
       (* Resolving __call__ via __getattr__ when a union including self type is involved. *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       from __future__ import annotations
@@ -3429,7 +3429,7 @@ let test_call_graph_of_define =
       (* Detecting a __call__ picked up via __getattr__ redirection *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       from __future__ import annotations
@@ -3483,7 +3483,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~object_targets:[Target.Regular.Object "test.Token.token"]
            ~source:
              {|
@@ -3516,7 +3516,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~object_targets:
              [Target.Regular.Object "test.A.attribute"; Target.Regular.Object "test.C.attribute"]
            ~source:
@@ -3558,7 +3558,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~object_targets:[Target.Regular.Object "test.Token.token"]
            ~source:
              {|
@@ -3593,7 +3593,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~object_targets:[Target.Regular.Object "test.Token.token"]
            ~source:
              {|
@@ -3632,7 +3632,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~object_targets:[Target.Regular.Object "test.Token.token"]
            ~source:
              {|
@@ -3661,7 +3661,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       class Test:
