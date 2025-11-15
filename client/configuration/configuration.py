@@ -135,6 +135,7 @@ class PartialConfiguration:
     number_of_workers: Optional[int] = None
     max_number_of_workers: Optional[int] = None
     oncall: Optional[str] = None
+    only_privacy_errors: Optional[bool] = None
     other_critical_files: Sequence[str] = field(
         default_factory=list,
         metadata={"merge_policy": dataclasses_merge.Policy.PREPEND},
@@ -170,7 +171,6 @@ class PartialConfiguration:
     )
     typeshed: Optional[str] = None
     unwatched_dependency: Optional[unwatched.UnwatchedDependency] = None
-    use_buck2: Optional[bool] = None
     version_hash: Optional[str] = None
 
     @staticmethod
@@ -221,6 +221,7 @@ class PartialConfiguration:
             number_of_workers=arguments.number_of_workers,
             max_number_of_workers=arguments.max_number_of_workers,
             oncall=None,
+            only_privacy_errors=arguments.only_privacy_errors,
             other_critical_files=[],
             pysa_version_hash=None,
             python_version=(
@@ -250,7 +251,6 @@ class PartialConfiguration:
             targets=targets,
             typeshed=arguments.typeshed,
             unwatched_dependency=None,
-            use_buck2=arguments.use_buck2,
             version_hash=None,
         )
 
@@ -470,6 +470,9 @@ class PartialConfiguration:
                     configuration_json, "max_workers", int
                 ),
                 oncall=ensure_option_type(configuration_json, "oncall", str),
+                only_privacy_errors=ensure_option_type(
+                    configuration_json, "only_privacy_errors", bool
+                ),
                 other_critical_files=ensure_string_list(
                     configuration_json, "critical_files"
                 ),
@@ -495,7 +498,6 @@ class PartialConfiguration:
                 targets=ensure_optional_string_list(configuration_json, "targets"),
                 typeshed=ensure_option_type(configuration_json, "typeshed", str),
                 unwatched_dependency=unwatched_dependency,
-                use_buck2=ensure_option_type(configuration_json, "use_buck2", bool),
                 version_hash=ensure_option_type(configuration_json, "version", str),
             )
 
@@ -627,6 +629,7 @@ class Configuration:
     number_of_workers: Optional[int] = None
     max_number_of_workers: Optional[int] = None
     oncall: Optional[str] = None
+    only_privacy_errors: Optional[bool] = None
     other_critical_files: Sequence[str] = field(default_factory=list)
     pysa_version_hash: Optional[str] = None
     python_version: Optional[python_version_module.PythonVersion] = None
@@ -649,7 +652,6 @@ class Configuration:
     targets: Optional[Sequence[str]] = None
     typeshed: Optional[str] = None
     unwatched_dependency: Optional[unwatched.UnwatchedDependency] = None
-    use_buck2: bool = True
     version_hash: Optional[str] = None
 
     @staticmethod
@@ -691,6 +693,7 @@ class Configuration:
             number_of_workers=partial_configuration.number_of_workers,
             max_number_of_workers=partial_configuration.max_number_of_workers,
             oncall=partial_configuration.oncall,
+            only_privacy_errors=partial_configuration.only_privacy_errors,
             other_critical_files=partial_configuration.other_critical_files,
             pysa_version_hash=partial_configuration.pysa_version_hash,
             python_version=partial_configuration.python_version,
@@ -713,9 +716,6 @@ class Configuration:
             targets=partial_configuration.targets,
             typeshed=partial_configuration.typeshed,
             unwatched_dependency=partial_configuration.unwatched_dependency,
-            use_buck2=_get_optional_value(
-                partial_configuration.use_buck2, default=True
-            ),
             version_hash=partial_configuration.version_hash,
         )
 
@@ -854,7 +854,6 @@ class Configuration:
                 if unwatched_dependency is not None
                 else {}
             ),
-            "use_buck2": self.use_buck2,
             **({"version_hash": version_hash} if version_hash is not None else {}),
         }
 

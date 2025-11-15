@@ -167,10 +167,6 @@ class Base(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def uses_buck2(self) -> bool:
-        raise NotImplementedError()
-
-    @abc.abstractmethod
     def get_buck_mode(self) -> Optional[str]:
         raise NotImplementedError()
 
@@ -216,6 +212,10 @@ class Base(abc.ABC):
 
     @abc.abstractmethod
     def get_include_suppressed_errors(self) -> Optional[bool]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def get_only_privacy_errors(self) -> bool:
         raise NotImplementedError()
 
     def get_local_root(self) -> Optional[Path]:
@@ -378,9 +378,6 @@ class OpenSource(Base):
         targets = self.configuration.targets
         return list(targets) if targets is not None else None
 
-    def uses_buck2(self) -> bool:
-        return self.configuration.use_buck2
-
     def get_buck_mode(self) -> Optional[str]:
         mode = self.configuration.buck_mode
         return mode.get() if mode is not None else None
@@ -417,3 +414,6 @@ class OpenSource(Base):
 
     def get_include_suppressed_errors(self) -> Optional[bool]:
         return self.configuration.include_suppressed_errors
+
+    def get_only_privacy_errors(self) -> bool:
+        return False

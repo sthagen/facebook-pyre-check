@@ -110,9 +110,9 @@ class CommandArguments:
     shared_memory_hash_table_power: Optional[int] = None
     number_of_workers: Optional[int] = None
     max_number_of_workers: Optional[int] = None
-    use_buck2: Optional[bool] = None
     enable_unawaited_awaitable_analysis: Optional[bool] = None
     include_suppressed_errors: Optional[bool] = None
+    only_privacy_errors: Optional[bool] = None
 
 
 @dataclass(frozen=True)
