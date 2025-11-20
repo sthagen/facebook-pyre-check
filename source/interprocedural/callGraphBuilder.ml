@@ -4455,8 +4455,8 @@ let call_graph_of_decorated_callable
     ~body:
       {
         CallableToDecoratorsMap.DecoratedDefineBody.return_expression;
-        attribute_access;
-        attribute_access_location;
+        original_function_name;
+        original_function_name_location;
         define_name;
         decorated_callable;
         _;
@@ -4493,27 +4493,27 @@ let call_graph_of_decorated_callable
       expression
   in
   (* If Pyre cannot resolve the callable on the callable expression, we hardcode the callable. *)
-  let add_callees_for_attribute_access_if_unresolved
+  let add_callees_for_original_function_name_if_unresolved
       ~callee
-      ~attribute_access
-      ~attribute_access_location
+      ~original_function_name
+      ~original_function_name_location
       ~call_graph
     =
-    let attribute_access =
-      match attribute_access with
+    let original_function_name =
+      match original_function_name with
       | Name.Attribute attribute -> attribute
-      | attribute_access ->
+      | original_function_name ->
           Format.asprintf
             "Expect the decorated callable to be an attribute but got `%a`"
             Name.pp
-            attribute_access
+            original_function_name
           |> failwith
     in
     let should_add_callable =
       !call_graph
       |> DefineCallGraph.resolve_attribute_access
-           ~location:attribute_access_location
-           ~attribute_access
+           ~location:original_function_name_location
+           ~attribute_access:original_function_name
       >>| (fun {
                  AttributeAccessCallees.if_called =
                    { CallCallees.call_targets = callable_targets; _ };
@@ -4529,8 +4529,8 @@ let call_graph_of_decorated_callable
       call_graph :=
         DefineCallGraph.set_attribute_access_callees
           ~error_if_new:false (* empty attribute accesses are stripped *)
-          ~location:attribute_access_location
-          ~attribute_access
+          ~location:original_function_name_location
+          ~attribute_access:original_function_name
           ~callees:
             (AttributeAccessCallees.create
                ~if_called:
@@ -4554,10 +4554,10 @@ let call_graph_of_decorated_callable
   in
   let call_graph = ref DefineCallGraph.empty in
   resolve_callees ~call_graph return_expression;
-  add_callees_for_attribute_access_if_unresolved
+  add_callees_for_original_function_name_if_unresolved
     ~callee:callable
-    ~attribute_access
-    ~attribute_access_location
+    ~original_function_name
+    ~original_function_name_location
     ~call_graph;
   DefineCallGraph.filter_empty_attribute_access !call_graph
 
@@ -4751,6 +4751,7 @@ let build_whole_program_call_graph_for_pyrefly
     ~scheduler_policies
     ~pyrefly_api
     ~callables_to_decorators_map
+    ~override_graph
     ~store_shared_memory
     ~attribute_targets
     ~skip_analysis_targets
@@ -4762,8 +4763,8 @@ let build_whole_program_call_graph_for_pyrefly
        in the return expression `decorator1(decorator2(original_function))` *)
     let original_callable = Target.set_kind Target.Normal decorated_target in
     let {
-      CallableToDecoratorsMap.DecoratedDefineBody.attribute_access;
-      attribute_access_location;
+      CallableToDecoratorsMap.DecoratedDefineBody.original_function_name;
+      original_function_name_location;
       _;
     }
       =
@@ -4772,14 +4773,14 @@ let build_whole_program_call_graph_for_pyrefly
         original_callable
       |> Option.value_exn ~message:"Unexpected decorated target without a decorated body"
     in
-    let attribute_access =
-      match attribute_access with
-      | Name.Attribute attribute -> attribute
-      | attribute_access ->
+    let original_function_name =
+      match original_function_name with
+      | Name.Identifier name -> name
+      | original_function_name ->
           Format.asprintf
-            "Expect the decorated callable to be an attribute but got `%a`"
+            "Expect the decorated callable to be an identifier, bbcbut got `%a`"
             Name.pp
-            attribute_access
+            original_function_name
           |> failwith
     in
     let {
@@ -4792,12 +4793,12 @@ let build_whole_program_call_graph_for_pyrefly
         pyrefly_api
         (Target.define_name_exn original_callable)
     in
-    DefineCallGraph.set_attribute_access_callees
+    DefineCallGraph.set_identifier_callees
       ~error_if_new:false
-      ~location:attribute_access_location
-      ~attribute_access
-      ~callees:
-        (AttributeAccessCallees.create
+      ~location:original_function_name_location
+      ~identifier:original_function_name
+      ~identifier_callees:
+        (IdentifierCallees.create
            ~if_called:
              (CallCallees.create
                 ~call_targets:
@@ -4817,25 +4818,38 @@ let build_whole_program_call_graph_for_pyrefly
            ())
       call_graph
   in
+  let apply_skip_overrides target =
+    match target, override_graph with
+    | Target.Regular (Target.Regular.Override target_method), Some override_graph ->
+        let base_target = Target.Regular (Target.Regular.Method target_method) in
+        if not (OverrideGraph.SharedMemory.ReadOnly.overrides_exist override_graph base_target) then
+          (* Pyrefly believes this method has overrides, but the override graph disagrees. This must
+             mean we have a model with `@SkipOverrides`. *)
+          base_target
+        else
+          target
+    | _ -> target
+  in
   let transform_call_graph _ callable call_graph =
     let call_indexer = CallGraph.Indexer.create () in
     let call_graph =
       if Target.is_decorated callable then
-        call_graph
-        |> transform_redirected_call_graph callable
-        |> DefineCallGraph.filter_empty_attribute_access
+        transform_redirected_call_graph callable call_graph
       else
-        call_graph
-        |> DefineCallGraph.filter_empty_attribute_access
-        |> DefineCallGraph.map_target
-             ~f:
-               (CallableToDecoratorsMap.SharedMemory.redirect_to_decorated
-                  callables_to_decorators_map)
-             ~map_call_if:CallCallees.should_redirect_to_decorated
-             ~map_return_if:(fun _ -> false)
+        DefineCallGraph.map_target
+          ~f:
+            (CallableToDecoratorsMap.SharedMemory.redirect_to_decorated callables_to_decorators_map)
+          ~map_call_if:CallCallees.should_redirect_to_decorated
+          ~map_return_if:(fun _ -> false)
+          call_graph
     in
     call_graph
+    |> DefineCallGraph.map_target
+         ~f:apply_skip_overrides
+         ~map_call_if:(fun _ -> true)
+         ~map_return_if:(fun _ -> true)
     |> DefineCallGraph.dedup_and_sort
+    |> DefineCallGraph.filter_empty_attribute_access
     |> DefineCallGraph.regenerate_call_indices ~indexer:call_indexer
   in
   PyreflyApi.ReadOnly.parse_call_graphs
@@ -4892,6 +4906,7 @@ let build_whole_program_call_graph
           ~scheduler_policies
           ~pyrefly_api
           ~callables_to_decorators_map
+          ~override_graph
           ~store_shared_memory
           ~attribute_targets
           ~skip_analysis_targets
