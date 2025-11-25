@@ -1721,7 +1721,7 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
         (* Add scalar breadcrumbs only for variables, for performance reasons *)
         let type_breadcrumbs =
           let type_ =
-            Interprocedural.TypeOfExpressionSharedMemory.compute_or_retrieve_type
+            Interprocedural.TypeOfExpressionSharedMemory.compute_or_retrieve_pysa_type
               type_of_expression_shared_memory
               ~pyre_in_context
               ~callable
@@ -1729,7 +1729,7 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
           in
           Features.type_breadcrumbs_from_annotation
             ~pyre_api:(PyrePysaApi.InContext.pyre_api pyre_in_context)
-            (Some type_)
+            type_
           |> Features.BreadcrumbMayAlwaysSet.of_set
         in
         add_local_breadcrumbs type_breadcrumbs taint

@@ -127,6 +127,18 @@ module ReadOnly : sig
 
   val get_callable_metadata : t -> Ast.Reference.t -> CallableMetadata.t
 
+  val get_callable_return_annotations
+    :  t ->
+    define_name:Ast.Reference.t ->
+    define:Ast.Statement.Define.t ->
+    PysaType.t list
+
+  val get_callable_parameter_annotations
+    :  t ->
+    define_name:Ast.Reference.t ->
+    Analysis.TaintAccessPath.NormalizedParameter.t list ->
+    (Analysis.TaintAccessPath.NormalizedParameter.t * PysaType.t list) list
+
   val get_overriden_base_method
     :  t ->
     class_name:Ast.Reference.t ->
@@ -198,10 +210,18 @@ module ReadOnly : sig
       (t -> Target.t -> CallGraph.DefineCallGraph.t -> CallGraph.DefineCallGraph.t) ->
     CallGraph.SharedMemory.call_graphs
 
+  val get_type_of_expression
+    :  t ->
+    qualifier:Ast.Reference.t ->
+    location:Ast.Location.t ->
+    PysaType.t option
+
   module Type : sig
     val scalar_properties : t -> PysaType.t -> Analysis.PyrePysaEnvironment.ScalarTypeProperties.t
 
     val get_class_names : t -> PysaType.t -> Analysis.PyrePysaEnvironment.ClassNamesFromType.t
+
+    val is_dictionary_or_mapping : t -> PysaType.t -> bool
   end
 
   module ClassSummary : sig

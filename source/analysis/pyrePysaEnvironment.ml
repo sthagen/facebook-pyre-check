@@ -155,6 +155,9 @@ module PyreflyType = struct
     class_names: ClassNamesFromType.t option;
   }
   [@@deriving equal, compare, show]
+
+  let top =
+    { string = "unknown"; scalar_properties = ScalarTypeProperties.none; class_names = None }
 end
 
 (* Minimal abstraction for a type, provided from Pyre1 or Pyrefly and used by Pysa. See
@@ -195,6 +198,11 @@ module PysaType = struct
   let show_fully_qualified = function
     | Pyre1 type_ -> PyreType.show type_
     | Pyrefly { PyreflyType.string; _ } -> string
+
+
+  let weaken_literals = function
+    | Pyre1 type_ -> Pyre1 (Type.weaken_literals type_)
+    | Pyrefly type_ -> Pyrefly type_ (* pyrefly already weakens literals before exporting types *)
 end
 
 module PyreClassSummary = ClassSummary
@@ -582,6 +590,36 @@ module ReadOnly = struct
     | _ -> []
 
 
+  let get_callable_return_annotations
+      api
+      ~define_name:_
+      ~define:{ Ast.Statement.Define.signature = { return_annotation; _ }; _ }
+    =
+    match return_annotation with
+    | Some return_annotation -> [PysaType.from_pyre1_type (parse_annotation api return_annotation)]
+    | None -> []
+
+
+  let get_callable_parameter_annotations api ~define_name:_ parameters =
+    let attach_annotation
+        ({
+           TaintAccessPath.NormalizedParameter.original =
+             { Ast.Node.value = { Ast.Expression.Parameter.annotation; _ }; _ };
+           _;
+         } as parameter)
+      =
+      let annotation =
+        annotation
+        >>| parse_annotation api
+        >>| PysaType.from_pyre1_type
+        >>| List.return
+        |> Option.value ~default:[]
+      in
+      parameter, annotation
+    in
+    List.map parameters ~f:attach_annotation
+
+
   let resolve_define api = global_resolution api |> GlobalResolution.resolve_define
 
   let resolve_define_undecorated api =
@@ -879,6 +917,11 @@ module ReadOnly = struct
             stripped_readonly;
             unbound_type_variable;
           }
+
+
+    let is_dictionary_or_mapping _ = function
+      | PysaType.Pyrefly _ -> failwith "cannot use a pyrefly type with the pyre API"
+      | PysaType.Pyre1 annotation -> Type.is_dictionary_or_mapping annotation
   end
 
   module ClassSummary = struct

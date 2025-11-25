@@ -245,6 +245,16 @@ module ReadOnly = struct
     | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.get_callable_captures pyrefly_api
 
 
+  let get_callable_return_annotations = function
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.get_callable_return_annotations pyre_api
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.get_callable_return_annotations pyrefly_api
+
+
+  let get_callable_parameter_annotations = function
+    | Pyre1 pyre_api -> Pyre1Api.ReadOnly.get_callable_parameter_annotations pyre_api
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.get_callable_parameter_annotations pyrefly_api
+
+
   let get_variable = function
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.get_variable pyre_api
     | Pyrefly _ -> failwith "unimplemented: ReadOnly.get_variable"
@@ -368,6 +378,11 @@ module ReadOnly = struct
     let get_class_names = function
       | Pyre1 pyre_api -> Pyre1Api.ReadOnly.Type.get_class_names pyre_api
       | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.Type.get_class_names pyrefly_api
+
+
+    let is_dictionary_or_mapping = function
+      | Pyre1 pyre_api -> Pyre1Api.ReadOnly.Type.is_dictionary_or_mapping pyre_api
+      | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.Type.is_dictionary_or_mapping pyrefly_api
   end
 
   module ClassSummary = struct

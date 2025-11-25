@@ -176,6 +176,18 @@ module ReadOnly : sig
 
   val get_callable_captures : t -> Ast.Reference.t -> string list
 
+  val get_callable_return_annotations
+    :  t ->
+    define_name:Ast.Reference.t ->
+    define:Ast.Statement.Define.t ->
+    PysaType.t list
+
+  val get_callable_parameter_annotations
+    :  t ->
+    define_name:Ast.Reference.t ->
+    Analysis.TaintAccessPath.NormalizedParameter.t list ->
+    (Analysis.TaintAccessPath.NormalizedParameter.t * PysaType.t list) list
+
   val annotation_parser : t -> Analysis.AnnotatedCallable.annotation_parser
 
   val less_or_equal : t -> left:Type.t -> right:Type.t -> bool
@@ -241,6 +253,8 @@ module ReadOnly : sig
     val scalar_properties : t -> PysaType.t -> ScalarTypeProperties.t
 
     val get_class_names : t -> PysaType.t -> ClassNamesFromType.t
+
+    val is_dictionary_or_mapping : t -> PysaType.t -> bool
   end
 
   module ClassSummary : sig

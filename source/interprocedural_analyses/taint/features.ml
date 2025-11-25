@@ -515,13 +515,13 @@ module ViaFeature = struct
     =
     let feature =
       argument
-      >>| Interprocedural.TypeOfExpressionSharedMemory.compute_or_retrieve_type
+      >>| Interprocedural.TypeOfExpressionSharedMemory.compute_or_retrieve_pysa_type
             type_of_expression_shared_memory
             ~pyre_in_context
             ~callable:caller
-      >>| Type.weaken_literals
-      |> Option.value ~default:Type.Top
-      |> Type.show
+      >>| PyrePysaApi.PysaType.weaken_literals
+      >>| PyrePysaApi.PysaType.show_fully_qualified
+      |> Option.value ~default:"unknown"
     in
     Breadcrumb.ViaType { value = feature; tag } |> BreadcrumbInterned.intern
 
@@ -800,12 +800,7 @@ let type_breadcrumbs scalar_properties =
 
 
 let type_breadcrumbs_from_annotation ~pyre_api type_ =
-  type_
-  (* TODO(T225700656): Remove call to `from_pyre1_type` *)
-  >>| PyrePysaApi.PysaType.from_pyre1_type
-  >>| PyrePysaApi.ReadOnly.Type.scalar_properties pyre_api
-  |> Option.value ~default:PyrePysaApi.ScalarTypeProperties.none
-  |> type_breadcrumbs
+  type_ |> PyrePysaApi.ReadOnly.Type.scalar_properties pyre_api |> type_breadcrumbs
 
 
 let expand_via_features

@@ -1996,8 +1996,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
      origin = _;
     }
       when CallGraph.CallCallees.is_mapping_method callees
-           && Type.is_dictionary_or_mapping
-                (Interprocedural.TypeOfExpressionSharedMemory.compute_or_retrieve_type
+           && PyrePysaApi.ReadOnly.Type.is_dictionary_or_mapping
+                pyre_api
+                (Interprocedural.TypeOfExpressionSharedMemory.compute_or_retrieve_pysa_type
                    FunctionContext.type_of_expression_shared_memory
                    ~pyre_in_context
                    ~callable:FunctionContext.callable
@@ -2967,16 +2968,21 @@ module SinkPartition = struct
         BackwardState.Tree.join taint sofar)
 end
 
-let get_normalized_parameters { Statement.Define.signature = { parameters; _ }; captures; _ } =
+let get_normalized_parameters
+    ~pyre_api
+    ~define_name
+    { Statement.Define.signature = { parameters; _ }; captures; _ }
+  =
   let normalized_parameters =
     parameters
     |> AccessPath.normalize_parameters
-    |> List.map ~f:(fun { AccessPath.NormalizedParameter.root; qualified_name; original } ->
-           root, qualified_name, original.Node.value.Parameter.annotation)
+    |> PyrePysaApi.ReadOnly.get_callable_parameter_annotations pyre_api ~define_name
+    |> List.map ~f:(fun ({ AccessPath.NormalizedParameter.root; qualified_name; _ }, annotations) ->
+           root, qualified_name, annotations)
   in
   let captures =
     List.map captures ~f:(fun capture ->
-        AccessPath.Root.CapturedVariable { name = capture.name }, capture.name, None)
+        AccessPath.Root.CapturedVariable { name = capture.name }, capture.name, [])
   in
   List.append normalized_parameters captures
 
@@ -3020,16 +3026,17 @@ let extract_tito_and_sink_models
     else
       tree
   in
-  let add_type_breadcrumbs annotation tree =
+  let add_type_breadcrumbs annotations tree =
     let type_breadcrumbs =
-      annotation
-      >>| PyrePysaApi.ReadOnly.parse_annotation pyre_api
-      |> Features.type_breadcrumbs_from_annotation ~pyre_api
+      annotations
+      |> List.map ~f:(Features.type_breadcrumbs_from_annotation ~pyre_api)
+      |> List.reduce ~f:Features.BreadcrumbSet.inter
+      |> Option.value ~default:Features.BreadcrumbSet.empty
       |> Features.BreadcrumbMayAlwaysSet.of_set
     in
     BackwardState.Tree.add_local_breadcrumbs type_breadcrumbs tree
   in
-  let split_and_simplify model (parameter, qualified_name, annotation) =
+  let split_and_simplify model (parameter, qualified_name, annotations) =
     let partition =
       SinkPartition.read_and_partition_sinks
         ~root:(AccessPath.Root.Variable qualified_name)
@@ -3088,7 +3095,7 @@ let extract_tito_and_sink_models
              ~shape_breadcrumbs:(Features.model_tito_shaping_set ())
              ~limit_breadcrumbs:(Features.model_tito_broadening_set ())
              ~maximum_tree_width:maximum_model_tito_tree_width
-        |> add_type_breadcrumbs annotation
+        |> add_type_breadcrumbs annotations
       in
       let candidate_tree =
         match maximum_tito_depth with
@@ -3127,7 +3134,7 @@ let extract_tito_and_sink_models
                    ~shape_breadcrumbs:(Features.model_sink_shaping_set ())
                    ~limit_breadcrumbs:(Features.model_sink_broadening_set ())
                    ~maximum_tree_width:maximum_model_sink_tree_width
-              |> add_type_breadcrumbs annotation
+              |> add_type_breadcrumbs annotations
             in
             let sink_tree =
               match Sinks.discard_transforms sink with
@@ -3316,7 +3323,7 @@ let run
   let apply_broadening =
     not (Model.ModeSet.contains Model.Mode.SkipModelBroadening existing_model.Model.modes)
   in
-  let normalized_parameters = get_normalized_parameters define.value in
+  let normalized_parameters = get_normalized_parameters ~pyre_api ~define_name define.value in
   let extract_model State.{ taint; _ } =
     TaintProfiler.track_duration ~profiler ~name:"Backward analysis - extract model" ~f:(fun () ->
         extract_tito_and_sink_models

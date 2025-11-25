@@ -20,6 +20,7 @@ module ScalarTypeProperties = Pyre1Api.ScalarTypeProperties
 module FunctionParameter = Pyre1Api.ModelQueries.FunctionParameter
 module FunctionParameters = Pyre1Api.ModelQueries.FunctionParameters
 module FunctionSignature = Pyre1Api.ModelQueries.FunctionSignature
+module AccessPath = Analysis.TaintAccessPath
 
 module FormatError = struct
   type t =
@@ -3623,6 +3624,7 @@ module ReadOnly = struct
     callable_ast_shared_memory: CallableAstSharedMemory.t;
     callable_define_signature_shared_memory: CallableDefineSignatureSharedMemory.t;
     callable_undecorated_signatures_shared_memory: CallableUndecoratedSignaturesSharedMemory.t;
+    type_of_expressions_shared_memory: TypeOfExpressionsSharedMemory.t option;
     class_id_to_qualified_name_shared_memory: ClassIdToQualifiedNameSharedMemory.t;
     callable_id_to_qualified_name_shared_memory: CallableIdToQualifiedNameSharedMemory.t;
     object_class: FullyQualifiedName.t;
@@ -3643,6 +3645,7 @@ module ReadOnly = struct
         callable_ast_shared_memory;
         callable_define_signature_shared_memory;
         callable_undecorated_signatures_shared_memory;
+        type_of_expressions_shared_memory;
         class_id_to_qualified_name_shared_memory;
         callable_id_to_qualified_name_shared_memory;
         object_class;
@@ -3663,6 +3666,7 @@ module ReadOnly = struct
       callable_ast_shared_memory;
       callable_define_signature_shared_memory;
       callable_undecorated_signatures_shared_memory;
+      type_of_expressions_shared_memory;
       class_id_to_qualified_name_shared_memory;
       callable_id_to_qualified_name_shared_memory;
       object_class;
@@ -3856,6 +3860,68 @@ module ReadOnly = struct
       (FullyQualifiedName.from_reference_unchecked define_name)
     |> assert_shared_memory_key_exists "missing callable metadata"
     |> fun { CallableMetadataSharedMemory.Value.metadata = { captures; _ }; _ } -> captures
+
+
+  let get_callable_return_annotations
+      { callable_undecorated_signatures_shared_memory; _ }
+      ~define_name
+      ~define:_
+    =
+    CallableUndecoratedSignaturesSharedMemory.get
+      callable_undecorated_signatures_shared_memory
+      (FullyQualifiedName.from_reference_unchecked define_name)
+    |> assert_shared_memory_key_exists "missing callable metadata"
+    |> List.map ~f:(fun { FunctionSignature.return_annotation; _ } -> return_annotation)
+
+
+  let get_callable_parameter_annotations
+      { callable_undecorated_signatures_shared_memory; _ }
+      ~define_name
+      parameters
+    =
+    let signatures =
+      CallableUndecoratedSignaturesSharedMemory.get
+        callable_undecorated_signatures_shared_memory
+        (FullyQualifiedName.from_reference_unchecked define_name)
+      |> assert_shared_memory_key_exists "missing callable metadata"
+    in
+    let normalize_root = function
+      | AccessPath.Root.PositionalParameter { position; positional_only = true; _ } ->
+          AccessPath.Root.PositionalParameter { position; positional_only = true; name = "" }
+      | AccessPath.Root.StarStarParameter _ -> AccessPath.Root.StarStarParameter { excluded = [] }
+      | root -> root
+    in
+    let fold_signature_parameter sofar parameter =
+      let root = normalize_root (FunctionParameter.root parameter) in
+      match FunctionParameter.annotation parameter with
+      | None -> sofar
+      | Some annotation ->
+          AccessPath.Root.Map.update
+            root
+            (function
+              | None -> Some [annotation]
+              | Some existing -> Some (annotation :: existing))
+            sofar
+    in
+    let fold_signatures sofar { FunctionSignature.parameters; _ } =
+      match parameters with
+      | FunctionParameters.Ellipsis
+      | FunctionParameters.ParamSpec ->
+          sofar
+      | FunctionParameters.List signature_parameters ->
+          List.fold ~init:sofar ~f:fold_signature_parameter signature_parameters
+    in
+    let root_annotations_map =
+      List.fold ~init:AccessPath.Root.Map.empty ~f:fold_signatures signatures
+    in
+    List.map
+      parameters
+      ~f:(fun ({ AccessPath.NormalizedParameter.root; _ } as normalized_parameter) ->
+        let annotations =
+          AccessPath.Root.Map.find_opt (normalize_root root) root_annotations_map
+          |> Option.value ~default:[]
+        in
+        normalized_parameter, annotations)
 
 
   let get_callable_decorator_callees
@@ -4324,6 +4390,22 @@ module ReadOnly = struct
     { CallGraph.SharedMemory.whole_program_call_graph; define_call_graphs }
 
 
+  let get_type_of_expression { type_of_expressions_shared_memory; _ } ~qualifier ~location =
+    match type_of_expressions_shared_memory with
+    | None ->
+        failwith
+          "Using `PyreflyApi.ReadOnly.get_type_of_expression` before calling \
+           `parse_type_of_expressions`."
+    | Some type_of_expressions_shared_memory ->
+        TypeOfExpressionsSharedMemory.get
+          type_of_expressions_shared_memory
+          {
+            TypeOfExpressionsSharedMemory.Key.module_qualifier =
+              ModuleQualifier.from_reference_unchecked qualifier;
+            location;
+          }
+
+
   module Type = struct
     let scalar_properties _ pysa_type =
       match PysaType.as_pyrefly_type pysa_type with
@@ -4372,6 +4454,17 @@ module ReadOnly = struct
             unbound_type_variable;
             is_exhaustive;
           }
+
+
+    let is_dictionary_or_mapping _ pysa_type =
+      match PysaType.as_pyrefly_type pysa_type with
+      | None ->
+          failwith
+            "ReadOnly.Type.is_dictionary_or_mapping: trying to use a pyre1 type with a pyrefly API."
+      | Some { PyreflyType.string; _ } ->
+          (* TODO(T225700656): Use the class id from class names *)
+          String.is_prefix ~prefix:"typing.Mapping[" string
+          || String.is_prefix ~prefix:"builtins.dict[" string
   end
 
   module ClassSummary = struct
