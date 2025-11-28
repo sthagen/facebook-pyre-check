@@ -216,7 +216,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     in
     GlobalModel.get_sinks
       ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-      ~caller:FunctionContext.callable
       global_model
     |> List.iter ~f:check
 
@@ -278,7 +277,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                      ~pyre_in_context
                      ~type_of_expression_shared_memory:
                        FunctionContext.type_of_expression_shared_memory
-                     ~caller:FunctionContext.callable
                      ~call_site:(CallSite.create location)
                      ~location
                      ~callee:call_target.CallGraph.CallTarget.target
@@ -448,7 +446,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           CallModel.at_callsite
             ~pyre_in_context
             ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-            ~caller:FunctionContext.callable
             ~get_callee_model:FunctionContext.get_callee_model
             ~call_target:target
             ~arguments)
@@ -590,7 +587,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             CallModel.sink_trees_of_argument
               ~pyre_in_context
               ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-              ~caller:FunctionContext.callable
               ~transform_non_leaves:(fun _ tree -> tree)
               ~model:taint_model
               ~call_site
@@ -680,7 +676,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                 CallModel.source_tree_of_argument
                   ~pyre_in_context
                   ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-                  ~caller:FunctionContext.callable
                   ~model:taint_model
                   ~call_site
                   ~location:argument.Node.location
@@ -726,7 +721,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             |> ForwardState.Tree.apply_call
                  ~pyre_in_context
                  ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-                 ~caller:FunctionContext.callable
                  ~call_site
                  ~location:call_location
                  ~callee:target
@@ -778,7 +772,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         GlobalModel.from_expression
           ~pyre_in_context
           ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-          ~caller:FunctionContext.callable
           ~call_graph:FunctionContext.call_graph_of_define
           ~get_callee_model:FunctionContext.get_callee_model
           ~expression:argument
@@ -814,13 +807,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       let propagate_captured_variables state root =
         match root with
         | AccessPath.Root.CapturedVariable { name = variable } ->
+            (* TODO(T225700656): Handle captured variable propagation *)
             let nonlocal_reference = Reference.delocalize (Reference.create variable) in
-            let define_reference =
-              PyrePysaLogic.qualified_name_of_define
-                ~module_name:FunctionContext.qualifier
-                FunctionContext.definition.value
+            let is_prefix =
+              Reference.is_prefix ~prefix:FunctionContext.define_name nonlocal_reference
             in
-            let is_prefix = Reference.is_prefix ~prefix:define_reference nonlocal_reference in
             (* Treat any function call, even those that wrap a closure write, as a closure write *)
             let state =
               (* TODO(T169657906): Programatically decide between weak and strong storing of
@@ -2096,7 +2087,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         GlobalModel.from_expression
           ~pyre_in_context
           ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-          ~caller:FunctionContext.callable
           ~call_graph:FunctionContext.call_graph_of_define
           ~get_callee_model:FunctionContext.get_callee_model
           ~expression:base
@@ -2126,7 +2116,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                 (Interprocedural.TypeOfExpressionSharedMemory.compute_or_retrieve_pysa_type
                    FunctionContext.type_of_expression_shared_memory
                    ~pyre_in_context
-                   ~callable:FunctionContext.callable
                    argument) ->
         let base_taint =
           ForwardState.read ~root:(AccessPath.Root.Variable identifier) ~path:[] state.taint
@@ -2145,7 +2134,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         GlobalModel.from_expression
           ~pyre_in_context
           ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-          ~caller:FunctionContext.callable
           ~call_graph:FunctionContext.call_graph_of_define
           ~get_callee_model:FunctionContext.get_callee_model
           ~expression:base
@@ -2556,7 +2544,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             GlobalModel.from_expression
               ~pyre_in_context
               ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-              ~caller:FunctionContext.callable
               ~call_graph:FunctionContext.call_graph_of_define
               ~get_callee_model:FunctionContext.get_callee_model
               ~expression
@@ -2565,7 +2552,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           let attribute_taint =
             GlobalModel.get_source
               ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-              ~caller:FunctionContext.callable
               global_model
           in
           let add_tito_features taint =
@@ -2634,7 +2620,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         ~callee:call_target.CallGraph.CallTarget.target
         ~pyre_in_context
         ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-        ~caller:FunctionContext.callable
         ~call_site
         ~location:call_location
         FunctionContext.string_combine_partial_sink_tree
@@ -2643,7 +2628,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       CallModel.StringFormatCall.implicit_string_literal_sources
         ~pyre_in_context
         ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-        ~caller:FunctionContext.callable
         ~implicit_sources:FunctionContext.taint_configuration.implicit_sources
         string_literal
     in
@@ -2826,14 +2810,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             GlobalModel.from_expression
               ~pyre_in_context
               ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-              ~caller:FunctionContext.callable
               ~call_graph:FunctionContext.call_graph_of_define
               ~get_callee_model:FunctionContext.get_callee_model
               ~expression:{ Node.value; location }
               ~interval:FunctionContext.caller_class_interval
             |> GlobalModel.get_source
                  ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-                 ~caller:FunctionContext.callable
           in
 
           let global_taint, state =
@@ -2869,7 +2851,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             |> ForwardState.Tree.add_local_type_breadcrumbs
                  ~pyre_in_context
                  ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-                 ~callable:FunctionContext.callable
                  ~expression:{ Node.value; location }
           in
           ( local_taint
@@ -2997,7 +2978,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       ForwardState.Tree.add_local_type_breadcrumbs
         ~pyre_in_context
         ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-        ~callable:FunctionContext.callable
         ~expression:target
         taint
     in
@@ -3039,7 +3019,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         GlobalModel.from_expression
           ~pyre_in_context
           ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-          ~caller:FunctionContext.callable
           ~call_graph:FunctionContext.call_graph_of_define
           ~get_callee_model:FunctionContext.get_callee_model
           ~expression:target
@@ -3097,7 +3076,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                     ~pyre_in_context
                     ~type_of_expression_shared_memory:
                       FunctionContext.type_of_expression_shared_memory
-                    ~caller:FunctionContext.callable
                     ~call_site
                     ~location:(Location.strip_module location)
                     ~callee:Interprocedural.Target.ArtificialTargets.condition
@@ -3176,7 +3154,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         (CallModel.return_sink
            ~pyre_in_context
            ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-           ~caller:FunctionContext.callable
            ~location:statement_location
            ~callee:FunctionContext.callable
            ~sink_model:FunctionContext.existing_model.Model.backward.sink_taint);
@@ -3219,7 +3196,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           GlobalModel.from_expression
             ~pyre_in_context
             ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-            ~caller:FunctionContext.callable
             ~call_graph:FunctionContext.call_graph_of_define
             ~get_callee_model:FunctionContext.get_callee_model
             ~expression:target
@@ -3323,16 +3299,20 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           "AugmentedAssign nodes should always be rewritten by `CallGraph.preprocess_statement`"
 
 
-  let create ~existing_model parameters define_location =
+  let create ~existing_model ~qualifier ~parameters ~define_name ~define_location =
     (* Use primed sources to populate initial state of parameters *)
     let parameter_sources = existing_model.Model.parameter_sources.parameter_sources in
-    let pyre_in_context = PyrePysaApi.InContext.create_at_global_scope pyre_api in
+    let pyre_in_context =
+      PyrePysaApi.InContext.create_at_function_scope
+        pyre_api
+        ~module_qualifier:qualifier
+        ~define_name
+    in
     let apply_call ~location ~root =
       ForwardState.read ~root ~path:[] parameter_sources
       |> ForwardState.Tree.apply_call
            ~pyre_in_context
            ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
-           ~caller:FunctionContext.callable
            ~call_site:(CallSite.create define_location)
            ~location
            ~callee:FunctionContext.callable
@@ -3407,8 +3387,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           pp
           state;
         let pyre_in_context =
-          PyrePysaApi.InContext.create_at_statement_key
+          PyrePysaApi.InContext.create_at_statement_scope
             pyre_api
+            ~module_qualifier:FunctionContext.qualifier
             ~define_name:FunctionContext.define_name
             ~define:FunctionContext.definition
             ~statement_key
@@ -3546,9 +3527,7 @@ let run
     =
     define
   in
-  let define_name =
-    PyrePysaLogic.qualified_name_of_define ~module_name:qualifier (Node.value define)
-  in
+  let define_name = Interprocedural.Target.define_name_exn callable in
   let module FunctionContext = struct
     let qualifier = qualifier
 
@@ -3604,7 +3583,12 @@ let run
   let initial =
     TaintProfiler.track_duration ~profiler ~name:"Forward analysis - initial state" ~f:(fun () ->
         let normalized_parameters = AccessPath.normalize_parameters parameters in
-        State.create ~existing_model normalized_parameters define_location)
+        State.create
+          ~existing_model
+          ~qualifier
+          ~parameters:normalized_parameters
+          ~define_name
+          ~define_location)
   in
   let () = State.log "Processing CFG:@.%a" PyrePysaLogic.Cfg.pp cfg in
   let exit_state =
