@@ -2130,7 +2130,7 @@ let test_call_graph_of_define =
                       ~define_targets:
                         [
                           CallTarget.create_regular
-                            ~return_type:None
+                            ~return_type:(Some ReturnType.none)
                             (Target.Regular.Function { name = "test.foo.inner"; kind = Decorated });
                         ]
                       ()) );
@@ -3681,8 +3681,11 @@ let test_call_graph_of_define =
                ( "6:9-6:36",
                  ExpressionCallees.from_call
                    (CallCallees.create
-                      ~unresolved:
-                        (CallGraph.Unresolved.True CallGraph.Unresolved.UnexpectedPyreflyTarget)
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            (Target.Regular.Function { name = "builtins.getattr"; kind = Normal });
+                        ]
                       ()) );
                ( "6:9-6:36|artificial-attribute-access|get-attr-constant-literal",
                  ExpressionCallees.from_attribute_access
@@ -4612,7 +4615,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
        import typing
@@ -4640,7 +4643,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
        from typing import Union, overload
@@ -4707,7 +4710,7 @@ let test_call_graph_of_define =
       (* Nested defines. *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
        def baz(x: int) -> int:
@@ -4736,7 +4739,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
        def baz(x: int) -> int:
@@ -4768,7 +4771,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
        def decorator(function):
@@ -4835,7 +4838,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
        def decorator(function):
@@ -5053,7 +5056,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       from typing import Generic, TypeVar
@@ -5163,7 +5166,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       from typing import Generic, TypeVar
@@ -5204,7 +5207,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
        def foo(l: typing.AsyncIterator[int | str]):
@@ -5625,7 +5628,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
        class A:
