@@ -1,5 +1,5 @@
-def _test_sink(arg: TaintSink[Test, Via[special_sink]]): ...
-def _test_source() -> TaintSource[Test, Via[special_source]]: ...
+def pysa._test_sink(arg: TaintSink[Test, Via[special_sink]]): ...
+def pysa._test_source() -> TaintSource[Test, Via[special_source]]: ...
 
 dictionary.tainted_dictionary: TaintSink[Test] = ...
 
@@ -15,12 +15,14 @@ def dict.get(
     self: TaintInTaintOut[LocalReturn, ParameterPath[_.all()], NoCollapse],
     __key: Sanitize[TaintInTaintOut],
     __default: TaintInTaintOut[LocalReturn, NoCollapse],
+    /
 ): ...
 
 @SkipObscure
 def typing.Mapping.get(
     self: TaintInTaintOut[LocalReturn, ParameterPath[_.all()], NoCollapse],
     __key: Sanitize[TaintInTaintOut],
+    /,
     default: TaintInTaintOut[LocalReturn, NoCollapse],
 ): ...
 
@@ -28,16 +30,18 @@ def typing.Mapping.get(
 def dict.__getitem__(
     self: TaintInTaintOut[LocalReturn, ParameterPath[_.all()], NoCollapse],
     __key: Sanitize[TaintInTaintOut],
+    /
 ): ...
 
 @SkipObscure
 def typing.Mapping.__getitem__(
     self: TaintInTaintOut[LocalReturn, ParameterPath[_.all()], NoCollapse],
     __key: Sanitize[TaintInTaintOut],
+    /
 ): ...
 
 @SkipOverrides
-def dict.__setitem__(self): ...
+def dict.__setitem__(): ...
 
 # Duplicated models to test model joins
-def dict.get(self: TaintInTaintOut[LocalReturn, ParameterPath[_.all()], NoCollapse], __k, __default = ...): ...
+def dict.get(self: TaintInTaintOut[LocalReturn, ParameterPath[_.all()], NoCollapse], __k, __default = ..., /): ...

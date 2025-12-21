@@ -23,14 +23,14 @@ let test_partition_call_map context =
       pyre_api
       ~module_qualifier:!&"test"
       ~define_name:!&"test.__toplevel__"
+      ~call_graph:Interprocedural.CallGraph.DefineCallGraph.empty
   in
   let taint =
     ForwardTaint.singleton CallInfo.declaration (Sources.NamedSource "UserControlled") Frame.initial
   in
   let callee =
-    Interprocedural.Target.Regular.Method
-      { class_name = "test.Foo"; method_name = "bar"; kind = Normal }
-    |> Interprocedural.Target.from_regular
+    Target.Regular.Method { class_name = "test.Foo"; method_name = "bar"; kind = Normal }
+    |> Target.from_regular
   in
   let type_of_expression_shared_memory =
     Interprocedural.TypeOfExpressionSharedMemory.create

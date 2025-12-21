@@ -8,6 +8,16 @@
 open Ast
 open Expression
 
+module IdentifiedCallee : sig
+  type t =
+    | FunctoolsPartial
+    | MultiprocessingProcess
+    | PromoteQueue
+    | ApiClient
+    | WeatherDatatype of string
+  [@@deriving show]
+end
+
 (* Represents how a specific call should be shimmed to another call, as a syntactic
    transformation. *)
 module ShimArgumentMapping : sig
@@ -51,7 +61,10 @@ module ShimArgumentMapping : sig
           inner: t;
         }
       | Constant of Constant.t
-      | Reference of Reference.t
+      | StaticMethod of {
+          class_name: Reference.t;
+          method_name: string;
+        }
     [@@deriving equal, show { with_path = false }]
 
     val to_json : t -> Yojson.Safe.t

@@ -3,8 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
-from abc import abstractclassmethod, abstractmethod
+from pysa import _test_sink, _test_source
+from abc import abstractclassmethod, abstractmethod  # pyrefly: ignore[deprecated]
 from typing import TypeVar, Generic
 
 
@@ -44,6 +44,7 @@ class C(Generic[TInput]):
 
     @classmethod
     def one_hop_abstract_method(cls, arg):
+        # pyrefly: ignore[missing-argument]
         cls.abstract_method(arg)  # Expect sink on `arg`
 
     @classmethod

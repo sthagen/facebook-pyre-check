@@ -75,7 +75,7 @@ Higher order call graphs
         { "target": "Obj{<format-string>}", "index": 0 }
       ]
     },
-    "112:12-112:18|artificial-call|str-call-to-dunder-str": {
+    "112:12-112:18|artificial-call|str-call-to-dunder-method": {
       "call": {
         "calls": [
           {
@@ -287,7 +287,7 @@ Higher order call graphs
     "142:23-142:37": {
       "call": {
         "calls": [
-          { "target": "_test_source", "index": 0, "return_type": [] }
+          { "target": "pysa._test_source", "index": 0, "return_type": [] }
         ]
       }
     },
@@ -323,7 +323,7 @@ Higher order call graphs
     "147:23-147:37": {
       "call": {
         "calls": [
-          { "target": "_test_source", "index": 0, "return_type": [] }
+          { "target": "pysa._test_source", "index": 0, "return_type": [] }
         ]
       }
     },
@@ -688,7 +688,7 @@ Higher order call graphs
         ]
       }
     },
-    "188:11-188:17|artificial-call|str-call-to-dunder-str": {
+    "188:11-188:17|artificial-call|str-call-to-dunder-method": {
       "call": {
         "calls": [
           {
@@ -932,7 +932,7 @@ Higher order call graphs
         "calls": [ { "target": "eval", "index": 0, "return_type": [] } ]
       }
     },
-    "195:9-195:15|artificial-call|str-call-to-dunder-str": {
+    "195:9-195:15|artificial-call|str-call-to-dunder-method": {
       "call": {
         "calls": [
           {
@@ -1095,7 +1095,7 @@ Higher order call graphs
         "calls": [ { "target": "eval", "index": 0, "return_type": [] } ]
       }
     },
-    "37:9-37:15|artificial-call|str-call-to-dunder-repr": {
+    "37:9-37:15|artificial-call|str-call-to-dunder-method": {
       "call": {
         "calls": [
           {
@@ -1139,7 +1139,7 @@ Higher order call graphs
         "calls": [ { "target": "eval", "index": 0, "return_type": [] } ]
       }
     },
-    "27:9-27:15|artificial-call|str-call-to-dunder-str": {
+    "27:9-27:15|artificial-call|str-call-to-dunder-method": {
       "call": {
         "calls": [
           {
@@ -1173,7 +1173,7 @@ Higher order call graphs
     "169:12-169:26": {
       "call": {
         "calls": [
-          { "target": "_test_source", "index": 0, "return_type": [] }
+          { "target": "pysa._test_source", "index": 0, "return_type": [] }
         ]
       }
     },

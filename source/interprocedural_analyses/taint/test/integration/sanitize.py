@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # flake8: noqa
-from builtins import _cookies, _rce, _sql, _test_sink, _test_source, _user_controlled
+from pysa import _cookies, _rce, _sql, _test_sink, _test_source, _user_controlled
 from typing import Sequence, TypeVar
 
 
@@ -84,7 +84,7 @@ def return_taint_sanitize(arg: T) -> T:
 
 def test1():
     tainted = object()
-    tainted.id = _test_source()
+    tainted.id = _test_source() # pyrefly: ignore[missing-attribute]
     test2(tainted)
     test3(tainted)
 

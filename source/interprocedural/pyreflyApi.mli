@@ -105,6 +105,8 @@ module ReadOnly : sig
 
   val absolute_source_path_of_qualifier : t -> Ast.Reference.t -> string option
 
+  val relative_path_of_qualifier : t -> Ast.Reference.t -> string option
+
   val get_class_names_for_qualifier
     :  t ->
     exclude_test_modules:bool ->
@@ -202,6 +204,7 @@ module ReadOnly : sig
     scheduler_policies:Configuration.SchedulerPolicies.t ->
     method_has_overrides:(Target.Method.t -> bool) ->
     store_shared_memory:bool ->
+    attribute_targets:Target.Set.t ->
     skip_analysis_targets:Target.HashSet.t ->
     definitions:Target.t list ->
     create_dependency_for:CallGraph.AllTargetsUseCase.t ->
@@ -209,6 +212,8 @@ module ReadOnly : sig
     transform_call_graph:
       (t -> Target.t -> CallGraph.DefineCallGraph.t -> CallGraph.DefineCallGraph.t) ->
     CallGraph.SharedMemory.call_graphs
+
+  val parse_type_errors : t -> Analysis.AnalysisError.Instantiated.t list
 
   val get_type_of_expression
     :  t ->
@@ -271,16 +276,20 @@ module InContext : sig
     :  ReadOnly.t ->
     module_qualifier:Ast.Reference.t ->
     define_name:Ast.Reference.t ->
+    call_graph:CallGraph.DefineCallGraph.t ->
     t
 
   val create_at_statement_scope
     :  ReadOnly.t ->
     module_qualifier:Ast.Reference.t ->
     define_name:Ast.Reference.t ->
+    call_graph:CallGraph.DefineCallGraph.t ->
     statement_key:int ->
     t
 
   val pyre_api : t -> ReadOnly.t
+
+  val call_graph : t -> CallGraph.DefineCallGraph.t
 
   val is_global : t -> reference:Ast.Reference.t -> bool
 
@@ -349,7 +358,8 @@ module ProjectFile : sig
     type t = {
       module_id: ModuleId.t;
       module_name: Ast.Reference.t;
-      module_path: ModulePath.t;
+      absolute_source_path: ModulePath.t;
+      relative_source_path: string option;
       info_filename: ModuleInfoFilename.t option;
       is_test: bool;
       is_interface: bool;
@@ -374,13 +384,18 @@ module LocalFunctionId : sig
 end
 
 (* Exposed for testing purposes *)
+module ClassWithModifiers : sig
+  type t = {
+    class_name: GlobalClassId.t;
+    modifiers: Analysis.PyrePysaEnvironment.TypeModifier.t list;
+  }
+  [@@deriving equal, show]
+end
+
+(* Exposed for testing purposes *)
 module ClassNamesResult : sig
   type t = {
-    class_names: GlobalClassId.t list;
-    stripped_coroutine: bool;
-    stripped_optional: bool;
-    stripped_readonly: bool;
-    unbound_type_variable: bool;
+    classes: ClassWithModifiers.t list;
     is_exhaustive: bool;
   }
   [@@deriving equal, show]
@@ -551,7 +566,8 @@ module Testing : sig
     type t = {
       module_id: ModuleId.t;
       module_name: Ast.Reference.t;
-      source_path: ArtifactPath.t option;
+      absolute_source_path: ArtifactPath.t option;
+      relative_source_path: string option;
       pyrefly_info_filename: ModuleInfoFilename.t option;
       is_test: bool;
       is_stub: bool;

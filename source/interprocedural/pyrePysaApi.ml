@@ -10,6 +10,8 @@
    by `Analysis.PyrePysaEnvironment` or the Pyrefly API provided by `Interprocedural.Pyrefly`. *)
 
 module Pyre1Api = Analysis.PyrePysaEnvironment
+module TypeModifier = Analysis.PyrePysaEnvironment.TypeModifier
+module ClassWithModifiers = Analysis.PyrePysaEnvironment.ClassWithModifiers
 module ScalarTypeProperties = Pyre1Api.ScalarTypeProperties
 module ClassNamesFromType = Pyre1Api.ClassNamesFromType
 module PysaType = Pyre1Api.PysaType
@@ -126,6 +128,11 @@ module ReadOnly = struct
 
   let from_pyrefly_api pyrefly_api = Pyrefly pyrefly_api
 
+  let is_pyre1 = function
+    | Pyre1 _ -> true
+    | Pyrefly _ -> false
+
+
   let is_pyrefly = function
     | Pyre1 _ -> false
     | Pyrefly _ -> true
@@ -144,7 +151,7 @@ module ReadOnly = struct
   let relative_path_of_qualifier api qualifier =
     match api with
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.relative_path_of_qualifier pyre_api qualifier
-    | Pyrefly _ -> failwith "unimplemented: ReadOnly.relative_path_of_qualifier"
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.relative_path_of_qualifier pyrefly_api qualifier
 
 
   let source_of_qualifier = function
@@ -467,16 +474,27 @@ module InContext = struct
     | Pyre1 of Pyre1Api.InContext.t
     | Pyrefly of PyreflyApi.InContext.t
 
-  let create_at_function_scope api ~module_qualifier ~define_name =
+  let create_at_function_scope api ~module_qualifier ~define_name ~call_graph =
     match api with
     | ReadOnly.Pyre1 pyre_api ->
         Pyre1 (Pyre1Api.InContext.create_at_function_scope pyre_api ~module_qualifier ~define_name)
     | ReadOnly.Pyrefly pyrefly_api ->
         Pyrefly
-          (PyreflyApi.InContext.create_at_function_scope pyrefly_api ~module_qualifier ~define_name)
+          (PyreflyApi.InContext.create_at_function_scope
+             pyrefly_api
+             ~module_qualifier
+             ~define_name
+             ~call_graph)
 
 
-  let create_at_statement_scope api ~module_qualifier ~define_name ~define ~statement_key =
+  let create_at_statement_scope
+      api
+      ~module_qualifier
+      ~define_name
+      ~define
+      ~call_graph
+      ~statement_key
+    =
     match api with
     | ReadOnly.Pyre1 pyre_api ->
         Pyre1
@@ -492,6 +510,7 @@ module InContext = struct
              pyrefly_api
              ~module_qualifier
              ~define_name
+             ~call_graph
              ~statement_key)
 
 

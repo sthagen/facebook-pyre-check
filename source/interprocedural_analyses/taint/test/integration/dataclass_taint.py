@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
+from pysa import _test_sink, _test_source
 from dataclasses import dataclass
 from typing import final
 
@@ -15,13 +15,13 @@ class DataClass:
 
 
 def bad_is_tainted():
-    context = DataClass(bad=_test_source(), benign=1)
+    context = DataClass(bad=_test_source(), benign="")
     _test_sink(context)
     return context
 
 
 def benign_is_untainted():
-    context = DataClass(bad=_test_source(), benign=1)
+    context = DataClass(bad=_test_source(), benign="")
     _test_sink(context.benign)
     return context
 

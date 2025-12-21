@@ -12,6 +12,8 @@ open Core
    by `Analysis.PyrePysaEnvironment` or the Pyrefly API provided by `Interprocedural.Pyrefly`. *)
 
 module ScalarTypeProperties = Analysis.PyrePysaEnvironment.ScalarTypeProperties
+module TypeModifier = Analysis.PyrePysaEnvironment.TypeModifier
+module ClassWithModifiers = Analysis.PyrePysaEnvironment.ClassWithModifiers
 module ClassNamesFromType = Analysis.PyrePysaEnvironment.ClassNamesFromType
 module PysaType = Analysis.PyrePysaEnvironment.PysaType
 module PyreClassSummary = Analysis.ClassSummary
@@ -84,6 +86,8 @@ module ReadOnly : sig
   val from_pyre1_api : Analysis.PyrePysaEnvironment.ReadOnly.t -> t
 
   val from_pyrefly_api : PyreflyApi.ReadOnly.t -> t
+
+  val is_pyre1 : t -> bool
 
   val is_pyrefly : t -> bool
 
@@ -286,6 +290,7 @@ module InContext : sig
     :  ReadOnly.t ->
     module_qualifier:Ast.Reference.t ->
     define_name:Ast.Reference.t ->
+    call_graph:CallGraph.DefineCallGraph.t ->
     t
 
   val create_at_statement_scope
@@ -293,6 +298,7 @@ module InContext : sig
     module_qualifier:Ast.Reference.t ->
     define_name:Ast.Reference.t ->
     define:Ast.Statement.Define.t Ast.Node.t ->
+    call_graph:CallGraph.DefineCallGraph.t ->
     statement_key:int ->
     t
 

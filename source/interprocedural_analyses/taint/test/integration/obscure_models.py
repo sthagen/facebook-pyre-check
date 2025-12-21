@@ -3,32 +3,33 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
+from pysa import _test_sink, _test_source
+from typing import Any
 
 
 class C:
-    def obscure(self, x=0, y=0):
+    def obscure(self, x=0, y=0) -> Any:
         ...
 
-    def obscure_with_skip_overrides(self, x, y):
+    def obscure_with_skip_overrides(self, x, y) -> Any:
         ...
 
-    def obscure_with_skip_inlining(self, x, y):
+    def obscure_with_skip_inlining(self, x, y) -> Any:
         ...
 
-    def obscure_with_source(self, x, y):
+    def obscure_with_source(self, x, y) -> Any:
         ...
 
-    def obscure_with_skip_obscure(self, x, y):
+    def obscure_with_skip_obscure(self, x, y) -> Any:
         ...
 
-    def obscure_with_skip_obscure_and_tito(self, x, y):
+    def obscure_with_skip_obscure_and_tito(self, x, y) -> Any:
         ...
 
-    def obscure_with_multiple_models(self, x, y):
+    def obscure_with_multiple_models(self, x, y) -> Any:
         ...
 
-    def obscure_with_tito(self, x):
+    def obscure_with_tito(self, x) -> Any:
         ...
 
 

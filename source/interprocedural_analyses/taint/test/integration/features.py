@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
+from pysa import _test_sink, _test_source
 from typing import Any, Optional, Tuple
 
 
@@ -79,7 +79,7 @@ def issue_from_tuple():
     _test_sink(a)
 
 
-def tito_with_tuple(o: Any, b: bool) -> Tuple[bool, bool]:
+def tito_with_tuple(o: Any, b: bool) -> Tuple[Any, Any]:
     if b:
         return min(o, "abc"), min(o, "abc")
     else:

@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
+from pysa import _test_sink, _test_source
 
 
 def goes_to_sink(arg):
@@ -40,7 +40,7 @@ def test_higher_order_method():
 
 def test_higher_order_method_self():
     c: C = _test_source()
-    higher_order_function(c.self_to_sink)
+    higher_order_function(c.self_to_sink, 0)
 
 
 def higher_order_function_and_sink(f, arg):
@@ -199,4 +199,4 @@ test_duplicate_issues_in_different_parameterized_callables(print, _test_source()
 
 
 def test_callable_default_value(f = _test_source) -> None:
-    _test_sink(f())  # TODO(T225702991): False negative
+    _test_sink(f())

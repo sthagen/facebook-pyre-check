@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
+from pysa import _test_sink, _test_source
 from typing import Optional, TypeVar
 
 
@@ -27,11 +27,11 @@ class Builder:
         _test_sink(self._saved)
 
     def set_saved_through_typevar(self: T, saved: str) -> T:
-        self._saved = saved
+        self._saved = saved  # pyrefly: ignore[missing-attribute]
         return self
 
     def set_not_saved_through_typevar(self: T, not_saved: str) -> T:
-        self._not_saved = not_saved
+        self._not_saved = not_saved  # pyrefly: ignore[missing-attribute]
         return self
 
     def return_self(self) -> "Builder":

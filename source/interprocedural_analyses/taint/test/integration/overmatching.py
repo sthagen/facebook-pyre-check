@@ -3,8 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
-from typing import Dict
+from pysa import _test_sink, _test_source
+from typing import Dict, Any
 
 
 def sink_on_0(x: Dict) -> None:
@@ -17,7 +17,7 @@ def sink_on_0_and_star(x: Dict, i: int) -> None:
 
 
 def issue_source_on_0_and_star_to_sink_on_0_and_star(i: int) -> None:
-    x = {}
+    x: Dict[int | str, Any] = {}
     x[i] = _test_source()
     x["0"] = _test_source()
     sink_on_0_and_star(x, i)
@@ -30,7 +30,7 @@ def issue_source_on_0_to_sink_on_0_and_star(i: int) -> None:
 
 
 def issue_source_on_0_and_star_to_sink_on_0(i: int) -> None:
-    x = {}
+    x: Dict[int | str, Any] = {}
     x[i] = _test_source()
     x["0"] = _test_source()
     sink_on_0(x)

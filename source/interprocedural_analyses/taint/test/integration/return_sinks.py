@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink
+from pysa import _test_sink
 
 
 def sink_on_return():
@@ -27,7 +27,7 @@ def sink_on_return_and_tito(arg, arg2):
 
 def propagate_returned_sink_to_arg(arg):
     # Sink is first generated and then propagated to arg
-    sink_on_return_and_tito(arg)
+    sink_on_return_and_tito(arg, 0)
 
 
 def not_propagate_returned_sink_to_arg(arg):

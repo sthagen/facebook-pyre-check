@@ -533,7 +533,7 @@ let pyre_extensions_stubs () =
 
 let django_stubs () =
   [
-    ( "django/http/__init__.pyi",
+    ( "django-stubs/http/__init__.pyi",
       {|
         import typing
         from django.http.request import HttpRequest as HttpRequest
@@ -544,7 +544,7 @@ let django_stubs () =
           POST: typing.Dict[str, typing.Any] = ...
         |}
     );
-    ( "django/http/request.pyi",
+    ( "django-stubs/http/request.pyi",
       {|
         import typing
 
@@ -553,9 +553,41 @@ let django_stubs () =
           POST: typing.Dict[str, typing.Any] = ...
         |}
     );
-    "django/__init__.pyi", "import django.http";
+    "django-stubs/__init__.pyi", "import django.http";
   ]
 
+
+let pysa_stubs () =
+  [
+    ( "pysa/__init__.pyi",
+      {|
+        from typing import Any, Callable
+
+        def _test_sink(arg: Any) -> None: ...
+        def _test_source() -> Any: ...
+        def _tito(*x: Any, **kw: Any) -> Any: ...
+        def _user_controlled() -> Any: ...
+        def _cookies() -> Any: ...
+        def _rce(argument: Any) -> None: ...
+        def _sql(argument: Any) -> None: ...
+        _global_sink: Any
+        def copy(obj: object) -> object: ...
+        def pyre_dump() -> None: ...
+
+        class ClassWithSinkAttribute:
+          attribute: Any = ...
+
+        class TestCallableTarget:
+          def __call__(self) -> int: ...
+          def async_delay(*args: Any, **kwargs: Any) -> None: ...
+          def async_schedule(*args: Any, **kwargs: Any) -> None: ...
+        def to_callable_target(f: Callable[..., Any]) -> TestCallableTarget: ...
+        |}
+    );
+  ]
+
+
+let pytest_stubs () = ["pytest.pyi", ""]
 
 let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions = true) () =
   let builtins =
@@ -581,22 +613,6 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
         def takes_iterable(x: Iterable[_T]) -> None: ...
         def awaitable_int() -> typing.Awaitable[int]: ...
         def condition() -> bool: ...
-
-        def _test_sink(arg: Any) -> None: ...
-        def _test_source() -> Any: ...
-        class TestCallableTarget:
-          def __call__(self) -> int: ...
-        def to_callable_target(f: typing.Callable[..., Any]) -> TestCallableTarget: ...
-        def _tito( *x: Any, **kw: Any) -> Any: ...
-        def _user_controlled() -> Any: ...
-        def _cookies() -> Any: ...
-        def _rce(argument: Any) -> None: ...
-        def _sql(argument: Any) -> None: ...
-        _global_sink: Any
-        def copy(obj: object) -> object: ...
-        def pyre_dump() -> None: ...
-        class ClassWithSinkAttribute():
-          attribute: Any = ...
 
         class IsAwaitable(typing.Awaitable[int]): pass
 
@@ -1023,12 +1039,12 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
           def add_both(self, key: _KT, value: _VT) -> None: pass
           def items(self) -> Iterable[Tuple[_KT, _VT]]: pass
           def __delitem__(self, __v: _KT) -> None: ...
-          def __getitem__(self, __k: _KT) -> _VT: ...
-          def __setitem__(self, __k: _KT, __v: _VT) -> None: ...
+          def __getitem__(self, __k: _KT, /) -> _VT: ...
+          def __setitem__(self, __k: _KT, __v: _VT, /) -> None: ...
           @overload
-          def get(self, __key: _KT) -> Optional[_VT]: ...
+          def get(self, __key: _KT, /) -> Optional[_VT]: ...
           @overload
-          def get(self, __key: _KT, __default: Union[_VT, _T]) -> Union[_VT, _T]: ...
+          def get(self, __key: _KT, __default: Union[_VT, _T], /) -> Union[_VT, _T]: ...
           def __len__(self) -> int: ...
 
         class list(MutableSequence[_T], Generic[_T]):
@@ -1047,7 +1063,7 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
           @overload
           def __iter__(self: _PyreReadOnly_[Self]) -> Iterator[_PyreReadOnly_[_T]]: ...
 
-          def append(self, __element: _T) -> None: ...
+          def append(self, object: _T, /) -> None: ...
           def insert(self, __index: int, __object: _T) -> None: ...
           @overload
           def __getitem__(self, index: int) -> _T: ...
@@ -1099,12 +1115,13 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
         ) -> bool: ...
         def sum(iterable: Iterable[_T]) -> Union[_T, int]: ...
 
-        def eval(arg: str) -> None: ...
+        def eval(arg: source, /) -> None: ...
 
         def getattr(
           o: object,
           name: str,
           default: Any = ...,
+          /
         ) -> Any: ...
 
         def all(i: Iterable[_T]) -> bool: ...
@@ -1146,11 +1163,11 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
 
         class filter(Iterator[_T], Generic[_T]):
           @overload
-          def __init__(self, __function: None, __iterable: Iterable[_T | None]) -> None: ...
+          def __new__(cls, __function: None, __iterable: Iterable[_T | None], /) -> _Self: ...
           @overload
-          def __init__(self, __function: Callable[[_S], TypeGuard[_T]], __iterable: Iterable[_S]) -> None: ...
+          def __new__(cls, __function: Callable[[_S], TypeGuard[_T]], __iterable: Iterable[_S], /) -> _Self: ...
           @overload
-          def __init__(self, __function: Callable[[_T], Any], __iterable: Iterable[_T]) -> None: ...
+          def __new__(cls, __function: Callable[[_T], Any], __iterable: Iterable[_T], /) -> _Self: ...
           def __iter__(self: _Self) -> _Self: ...
           def __next__(self) -> _T: ...
 
@@ -1485,13 +1502,13 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
 
         class Mapping(_Collection[_KT], Generic[_KT, _VT_co]):
           @abstractmethod
-          def __getitem__(self, __k: _KT) -> _VT_co:
+          def __getitem__(self, __k: _KT, /) -> _VT_co:
               ...
           # Mixin methods
           @overload
-          def get(self, __key: _KT) -> Optional[_VT_co]: ...
+          def get(self, __key: _KT, /) -> Optional[_VT_co]: ...
           @overload
-          def get(self, __key: _KT, default: Union[_VT_co, _T]) -> Union[_VT_co, _T]: ...
+          def get(self, __key: _KT, /, default: Union[_VT_co, _T]) -> Union[_VT_co, _T]: ...
           def items(self) -> AbstractSet[Tuple[_KT, _VT_co]]: ...
           def keys(self) -> AbstractSet[_KT]: ...
           def values(self) -> ValuesView[_VT_co]: ...
@@ -2034,7 +2051,6 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
         sep: str
         |}
     );
-    "pytest.pyi", "";
     ( "os/__init__.pyi",
       {|
     from builtins import _PathLike as PathLike
@@ -2209,6 +2225,9 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
         ) -> Callable[[_C], _C]: ...
       |}
     );
+    "random.pyi", {|
+        def random() -> float: ...
+      |};
     ( "click/__init__.pyi",
       {|
         # -*- coding: utf-8 -*-
@@ -3156,6 +3175,8 @@ let typeshed_stubs ?(include_helper_builtins = true) ?(include_pyre_extensions =
   @ torch_stubs
   @ readonly_stubs
   @ django_stubs ()
+  @ pysa_stubs ()
+  @ pytest_stubs ()
   @ if include_pyre_extensions then pyre_extensions_stubs () else []
 
 
@@ -3521,7 +3542,13 @@ module ScratchPyreflyProject = struct
       let file = File.create ~content (PyrePath.create_relative ~root ~relative) in
       File.write file
     in
-    let external_sources = django_stubs () @ pyre_extensions_stubs () @ external_sources in
+    let external_sources =
+      django_stubs ()
+      @ pysa_stubs ()
+      @ pytest_stubs ()
+      @ pyre_extensions_stubs ()
+      @ external_sources
+    in
     let () = List.iter sources ~f:(add_source ~root:local_root) in
     let () = List.iter external_sources ~f:(add_source ~root:external_root) in
     let () =
@@ -3599,10 +3626,7 @@ module ScratchPyreflyProject = struct
     { api; configuration }
 
 
-  let pyre_pysa_read_only_api { api; _ } =
-    Interprocedural.PyrePysaApi.ReadOnly.from_pyrefly_api
-      (Interprocedural.PyreflyApi.ReadOnly.of_read_write_api api)
-
+  let pyre_pysa_read_only_api { api; _ } = Interprocedural.PyreflyApi.ReadOnly.of_read_write_api api
 
   let configuration_of { configuration; _ } = configuration
 end
@@ -3616,22 +3640,34 @@ module ScratchPyrePysaProject : sig
     ?use_cache:bool ->
     ?force_pyre1:bool ->
     ?external_sources:(string * string) list ->
+    ?decorator_preprocessing_configuration:PyrePysaLogic.DecoratorPreprocessing.Configuration.t ->
     (string * string) list ->
     t
+
+  val errors : t -> AnalysisError.Instantiated.t list
 
   val read_only_api : t -> Interprocedural.PyrePysaApi.ReadOnly.t
 
   val configuration_of : t -> Configuration.Analysis.t
 end = struct
   type t =
-    | Pyre1 of ScratchProject.t
-    | Pyrefly of ScratchPyreflyProject.t
+    | Pyre1 of {
+        project: ScratchProject.t;
+        pyre_api: Analysis.PyrePysaEnvironment.ReadOnly.t;
+        errors: Analysis.AnalysisError.t list;
+      }
+    | Pyrefly of {
+        project: ScratchPyreflyProject.t;
+        pyrefly_api: Interprocedural.PyreflyApi.ReadOnly.t;
+      }
 
   module ProjectInputs = struct
     module T = struct
       type t = {
-        requires_type_of_expressions: bool;
         force_pyre1: bool;
+        requires_type_of_expressions: bool;
+        decorator_preprocessing_configuration:
+          PyrePysaLogic.DecoratorPreprocessing.Configuration.t option;
         external_sources: string String.Map.t;
         sources: string String.Map.t;
       }
@@ -3713,7 +3749,13 @@ end = struct
 
   let setup_without_cache
       ~context
-      { ProjectInputs.requires_type_of_expressions; force_pyre1; external_sources; sources }
+      {
+        ProjectInputs.force_pyre1;
+        requires_type_of_expressions;
+        decorator_preprocessing_configuration;
+        external_sources;
+        sources;
+      }
     =
     let timer = Timer.start () in
     let external_sources = Map.to_alist external_sources in
@@ -3721,14 +3763,27 @@ end = struct
     let result =
       match Lazy.force pyrefly_binary with
       | Some pyrefly_binary when not force_pyre1 ->
-          Pyrefly
-            (ScratchPyreflyProject.setup
-               ~context
-               ~pyrefly_binary
-               ~requires_type_of_expressions
-               ~external_sources
-               sources)
-      | _ -> Pyre1 (ScratchProject.setup ~context ~external_sources sources)
+          let project =
+            ScratchPyreflyProject.setup
+              ~context
+              ~pyrefly_binary
+              ~requires_type_of_expressions
+              ~external_sources
+              sources
+          in
+          let pyrefly_api = ScratchPyreflyProject.pyre_pysa_read_only_api project in
+          Pyrefly { project; pyrefly_api }
+      | _ ->
+          let project = ScratchProject.setup ~context ~external_sources sources in
+          let () =
+            match decorator_preprocessing_configuration with
+            | Some configuration ->
+                PyrePysaLogic.DecoratorPreprocessing.setup_preprocessing configuration
+            | None -> ()
+          in
+          let _, errors = ScratchProject.build_type_environment_and_postprocess project in
+          let pyre_api = ScratchProject.pyre_pysa_read_only_api project in
+          Pyre1 { project; pyre_api; errors }
     in
     Log.debug
       "Type checked project using %s in %.3fs"
@@ -3745,12 +3800,14 @@ end = struct
       ?(use_cache = true)
       ?(force_pyre1 = false)
       ?(external_sources = [])
+      ?decorator_preprocessing_configuration
       sources
     =
     let inputs =
       {
-        ProjectInputs.requires_type_of_expressions;
-        force_pyre1;
+        ProjectInputs.force_pyre1;
+        requires_type_of_expressions;
+        decorator_preprocessing_configuration;
         external_sources =
           external_sources |> String.Map.of_alist_exn |> String.Map.map ~f:trim_extra_indentation;
         sources = sources |> String.Map.of_alist_exn |> String.Map.map ~f:trim_extra_indentation;
@@ -3768,14 +3825,25 @@ end = struct
 
 
   let read_only_api = function
-    | Pyre1 project ->
-        Interprocedural.PyrePysaApi.ReadOnly.Pyre1 (ScratchProject.pyre_pysa_read_only_api project)
-    | Pyrefly project -> ScratchPyreflyProject.pyre_pysa_read_only_api project
+    | Pyre1 { pyre_api; _ } -> Interprocedural.PyrePysaApi.ReadOnly.Pyre1 pyre_api
+    | Pyrefly { pyrefly_api; _ } -> Interprocedural.PyrePysaApi.ReadOnly.Pyrefly pyrefly_api
+
+
+  let errors = function
+    | Pyre1 { pyre_api; errors; _ } ->
+        let instantiate =
+          PyrePysaLogic.Testing.AnalysisError.instantiate
+            ~show_error_traces:false
+            ~lookup:(Analysis.PyrePysaEnvironment.ReadOnly.relative_path_of_qualifier pyre_api)
+        in
+        List.map ~f:instantiate errors
+    | Pyrefly { pyrefly_api; _ } ->
+        Interprocedural.PyreflyApi.ReadOnly.parse_type_errors pyrefly_api
 
 
   let configuration_of = function
-    | Pyre1 project -> ScratchProject.configuration_of project
-    | Pyrefly project -> ScratchPyreflyProject.configuration_of project
+    | Pyre1 { project; _ } -> ScratchProject.configuration_of project
+    | Pyrefly { project; _ } -> ScratchPyreflyProject.configuration_of project
 end
 
 type test_other_sources_t = {

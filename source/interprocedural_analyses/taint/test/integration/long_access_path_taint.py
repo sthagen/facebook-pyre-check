@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
+from pysa import _test_sink, _test_source
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -31,6 +31,6 @@ class C:
         return cls(id, params, kind, request)
 
 
-def test():
-    obj = C.async_create(1, {_test_source(): _test_source()}, "")
+async def test():
+    obj = await C.async_create(1, {_test_source(): _test_source()}, "")
     _test_sink(obj.id)

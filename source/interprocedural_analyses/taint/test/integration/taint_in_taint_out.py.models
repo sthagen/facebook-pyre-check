@@ -2,9 +2,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_test_sink",
-    "filename": "builtins.pyi",
-    "callable_line": 618,
+    "callable": "pysa._test_sink",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 4,
     "sinks": [
       {
         "port": "formal(arg, position=0)",
@@ -27,9 +27,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_test_source",
-    "filename": "builtins.pyi",
-    "callable_line": 619,
+    "callable": "pysa._test_source",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 5,
     "sources": [
       {
         "port": "result",
@@ -54,7 +54,7 @@
   "data": {
     "callable": "taint_in_taint_out.ComplexEvaluator.evaluate_lazy_payload._evaluate",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 185,
+    "callable_line": 193,
     "tito": [
       {
         "port": "formal(field, position=0)",
@@ -76,8 +76,8 @@
               { "via": "obscure:unknown-callee" }
             ],
             "tito_positions": [
-              { "line": 187, "start": 50, "end": 55 },
-              { "line": 188, "start": 44, "end": 49 }
+              { "line": 195, "start": 50, "end": 55 },
+              { "line": 196, "start": 44, "end": 49 }
             ],
             "tito": {
               "caller_interval": [ { "lower": 2, "upper": 3 } ],
@@ -94,7 +94,7 @@
   "data": {
     "callable": "taint_in_taint_out.add_feature",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 136,
+    "callable_line": 144,
     "tito": [
       {
         "port": "formal(arg, position=0)",
@@ -123,7 +123,7 @@
   "data": {
     "callable": "taint_in_taint_out.adds_tito",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 82,
+    "callable_line": 90,
     "sources": [
       {
         "port": "result",
@@ -147,8 +147,8 @@
               { "always-via": "string_concat_lhs" },
               { "always-type": "scalar" }
             ],
-            "origin": { "line": 82, "start": 14, "end": 28 },
-            "call_site": "82:0-83:21"
+            "origin": { "line": 90, "start": 14, "end": 28 },
+            "call_site": "90:0-91:21"
           }
         ]
       }
@@ -178,7 +178,7 @@
   "data": {
     "callable": "taint_in_taint_out.adds_tito_inherited",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 90,
+    "callable_line": 98,
     "sources": [
       {
         "port": "result",
@@ -202,8 +202,8 @@
               { "always-via": "string_concat_lhs" },
               { "always-type": "scalar" }
             ],
-            "origin": { "line": 90, "start": 24, "end": 43 },
-            "call_site": "90:0-91:21"
+            "origin": { "line": 98, "start": 24, "end": 43 },
+            "call_site": "98:0-99:21"
           }
         ]
       }
@@ -233,7 +233,7 @@
   "data": {
     "callable": "taint_in_taint_out.adds_tito_with_indirect_sink",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 94,
+    "callable_line": 102,
     "sinks": [
       {
         "port": "formal(src, position=0)[add_tito]",
@@ -250,10 +250,10 @@
               }
             ],
             "call": {
-              "position": { "line": 95, "start": 18, "end": 21 },
+              "position": { "line": 103, "start": 18, "end": 21 },
               "resolves_to": [ "taint_in_taint_out.indirect_sink" ],
               "port": "formal(x, position=0)[add_tito]",
-              "call_site": "95:4-95:22"
+              "call_site": "103:4-103:22"
             }
           }
         ]
@@ -266,7 +266,7 @@
   "data": {
     "callable": "taint_in_taint_out.approximate_return_access_paths",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 107,
+    "callable_line": 115,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -290,7 +290,7 @@
   "data": {
     "callable": "taint_in_taint_out.collapse_two_then_into_deep_dict",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 321,
+    "callable_line": 329,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -304,7 +304,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 322, "start": 26, "end": 27 } ],
+            "tito_positions": [ { "line": 330, "start": 26, "end": 27 } ],
             "tito": {}
           }
         ]
@@ -317,7 +317,7 @@
   "data": {
     "callable": "taint_in_taint_out.collapse_two_then_into_dict",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 311,
+    "callable_line": 319,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -331,7 +331,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 312, "start": 26, "end": 27 } ],
+            "tito_positions": [ { "line": 320, "start": 26, "end": 27 } ],
             "tito": {}
           }
         ]
@@ -344,96 +344,6 @@
   "data": {
     "callable": "taint_in_taint_out.combine_collapse_one",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 326,
-    "tito": [
-      {
-        "port": "formal(arg, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "[a]": 0 },
-                "length": 2,
-                "kind": "LocalReturn"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [
-              { "line": 328, "start": 26, "end": 27 },
-              { "line": 330, "start": 26, "end": 27 }
-            ],
-            "tito": {}
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "taint_in_taint_out.combine_collapse_one_and_two",
-    "filename": "taint_in_taint_out.py",
-    "callable_line": 358,
-    "tito": [
-      {
-        "port": "formal(arg, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "[a][a]": 0 },
-                "length": 2,
-                "kind": "LocalReturn"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [
-              { "line": 360, "start": 26, "end": 27 },
-              { "line": 362, "start": 26, "end": 27 }
-            ],
-            "tito": {}
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "taint_in_taint_out.combine_collapse_three",
-    "filename": "taint_in_taint_out.py",
-    "callable_line": 342,
-    "tito": [
-      {
-        "port": "formal(arg, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "[a][a]": 1 },
-                "length": 2,
-                "kind": "LocalReturn"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [
-              { "line": 344, "start": 28, "end": 29 },
-              { "line": 346, "start": 28, "end": 29 }
-            ],
-            "tito": {}
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "taint_in_taint_out.combine_collapse_two",
-    "filename": "taint_in_taint_out.py",
     "callable_line": 334,
     "tito": [
       {
@@ -442,7 +352,7 @@
           {
             "kinds": [
               {
-                "return_paths": { "[a][a]": 0 },
+                "return_paths": { "[a]": 0 },
                 "length": 2,
                 "kind": "LocalReturn"
               }
@@ -462,9 +372,99 @@
 {
   "kind": "model",
   "data": {
-    "callable": "taint_in_taint_out.combine_collapse_two_and_one",
+    "callable": "taint_in_taint_out.combine_collapse_one_and_two",
+    "filename": "taint_in_taint_out.py",
+    "callable_line": 366,
+    "tito": [
+      {
+        "port": "formal(arg, position=0)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[a][a]": 0 },
+                "length": 2,
+                "kind": "LocalReturn"
+              }
+            ],
+            "local_features": [ { "always-via": "tito" } ],
+            "tito_positions": [
+              { "line": 368, "start": 26, "end": 27 },
+              { "line": 370, "start": 26, "end": 27 }
+            ],
+            "tito": {}
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "taint_in_taint_out.combine_collapse_three",
     "filename": "taint_in_taint_out.py",
     "callable_line": 350,
+    "tito": [
+      {
+        "port": "formal(arg, position=0)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[a][a]": 1 },
+                "length": 2,
+                "kind": "LocalReturn"
+              }
+            ],
+            "local_features": [ { "always-via": "tito" } ],
+            "tito_positions": [
+              { "line": 352, "start": 28, "end": 29 },
+              { "line": 354, "start": 28, "end": 29 }
+            ],
+            "tito": {}
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "taint_in_taint_out.combine_collapse_two",
+    "filename": "taint_in_taint_out.py",
+    "callable_line": 342,
+    "tito": [
+      {
+        "port": "formal(arg, position=0)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[a][a]": 0 },
+                "length": 2,
+                "kind": "LocalReturn"
+              }
+            ],
+            "local_features": [ { "always-via": "tito" } ],
+            "tito_positions": [
+              { "line": 344, "start": 26, "end": 27 },
+              { "line": 346, "start": 26, "end": 27 }
+            ],
+            "tito": {}
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "taint_in_taint_out.combine_collapse_two_and_one",
+    "filename": "taint_in_taint_out.py",
+    "callable_line": 358,
     "tito": [
       {
         "port": "formal(arg, position=0)",
@@ -479,8 +479,8 @@
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [
-              { "line": 352, "start": 26, "end": 27 },
-              { "line": 354, "start": 26, "end": 27 }
+              { "line": 360, "start": 26, "end": 27 },
+              { "line": 362, "start": 26, "end": 27 }
             ],
             "tito": {}
           }
@@ -494,7 +494,7 @@
   "data": {
     "callable": "taint_in_taint_out.complex_argument_tito",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 570,
+    "callable_line": 578,
     "tito": [
       {
         "port": "formal(y, position=1)[bar]",
@@ -519,7 +519,7 @@
   "data": {
     "callable": "taint_in_taint_out.evaluate_lazy",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 169,
+    "callable_line": 177,
     "tito": [
       {
         "port": "formal(payload, position=0)[*]",
@@ -551,7 +551,7 @@
   "data": {
     "callable": "taint_in_taint_out.get_data",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 32,
+    "callable_line": 40,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -575,7 +575,7 @@
   "data": {
     "callable": "taint_in_taint_out.get_related",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 74,
+    "callable_line": 82,
     "tito": [
       {
         "port": "formal(select, position=0)[*][*][0][target]",
@@ -599,7 +599,7 @@
               { "via": "broadening" },
               { "via": "widen-broadening" }
             ],
-            "tito_positions": [ { "line": 75, "start": 21, "end": 27 } ],
+            "tito_positions": [ { "line": 83, "start": 21, "end": 27 } ],
             "tito": {}
           }
         ]
@@ -612,7 +612,7 @@
   "data": {
     "callable": "taint_in_taint_out.indirect_sink",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 98,
+    "callable_line": 106,
     "sinks": [
       {
         "port": "formal(x, position=0)[add_tito]",
@@ -621,13 +621,15 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
             "local_features": [ { "always-via": "string_concat_lhs" } ],
-            "origin": { "line": 99, "start": 15, "end": 25 },
-            "call_site": "99:4-99:26"
+            "origin": { "line": 107, "start": 15, "end": 25 },
+            "call_site": "107:4-107:26"
           }
         ]
       }
@@ -639,7 +641,7 @@
   "data": {
     "callable": "taint_in_taint_out.into_dict_then_collapse_two",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 306,
+    "callable_line": 314,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -653,7 +655,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 308, "start": 29, "end": 30 } ],
+            "tito_positions": [ { "line": 316, "start": 29, "end": 30 } ],
             "tito": {}
           }
         ]
@@ -666,7 +668,7 @@
   "data": {
     "callable": "taint_in_taint_out.into_dict_then_perfect_tito",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 230,
+    "callable_line": 238,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -680,7 +682,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 232, "start": 24, "end": 25 } ],
+            "tito_positions": [ { "line": 240, "start": 24, "end": 25 } ],
             "tito": {}
           }
         ]
@@ -693,7 +695,7 @@
   "data": {
     "callable": "taint_in_taint_out.into_dict_then_tito_collapse",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 204,
+    "callable_line": 212,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -709,7 +711,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 206, "start": 24, "end": 25 } ],
+            "tito_positions": [ { "line": 214, "start": 24, "end": 25 } ],
             "tito": {}
           }
         ]
@@ -721,9 +723,9 @@
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.issue_approximate_return_access_paths",
-    "callable_line": 252,
+    "callable_line": 260,
     "code": 5002,
-    "line": 256,
+    "line": 264,
     "start": 15,
     "end": 21,
     "filename": "taint_in_taint_out.py",
@@ -737,7 +739,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -751,8 +753,8 @@
               { "always-via": "broadening" },
               { "always-via": "model-tito-broadening" }
             ],
-            "tito_positions": [ { "line": 255, "start": 40, "end": 41 } ],
-            "origin": { "line": 254, "start": 10, "end": 24 }
+            "tito_positions": [ { "line": 263, "start": 40, "end": 41 } ],
+            "origin": { "line": 262, "start": 10, "end": 24 }
           }
         ]
       },
@@ -763,12 +765,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 256, "start": 15, "end": 21 },
-            "call_site": "256:4-256:22"
+            "origin": { "line": 264, "start": 15, "end": 21 },
+            "call_site": "264:4-264:22"
           }
         ]
       }
@@ -786,20 +790,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.issue_approximate_return_access_paths:5002:0:Call|_test_sink|0|formal(arg):b397ed467b4e4883c0ac173e17b910b7"
+    "master_handle": "taint_in_taint_out.issue_approximate_return_access_paths:5002:0:Call|pysa._test_sink|0|formal(arg):6cfc7b66619a5caaaeba1c031ca246ea"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.issue_approximate_return_access_paths_common_prefix",
-    "callable_line": 259,
+    "callable_line": 267,
     "code": 5002,
-    "line": 263,
+    "line": 271,
     "start": 15,
     "end": 21,
     "filename": "taint_in_taint_out.py",
@@ -813,7 +817,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -827,8 +831,8 @@
               { "always-via": "broadening" },
               { "always-via": "model-tito-broadening" }
             ],
-            "tito_positions": [ { "line": 262, "start": 40, "end": 41 } ],
-            "origin": { "line": 261, "start": 12, "end": 26 }
+            "tito_positions": [ { "line": 270, "start": 40, "end": 41 } ],
+            "origin": { "line": 269, "start": 12, "end": 26 }
           }
         ]
       },
@@ -839,12 +843,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 263, "start": 15, "end": 21 },
-            "call_site": "263:4-263:22"
+            "origin": { "line": 271, "start": 15, "end": 21 },
+            "call_site": "271:4-271:22"
           }
         ]
       }
@@ -862,20 +868,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.issue_approximate_return_access_paths_common_prefix:5002:0:Call|_test_sink|0|formal(arg):f1e25faa1e150c05627cdcf815d99e0e"
+    "master_handle": "taint_in_taint_out.issue_approximate_return_access_paths_common_prefix:5002:0:Call|pysa._test_sink|0|formal(arg):5e1e74cf899658ac782e64140b5920b9"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.issue_join_tito_collapse_test_3",
-    "callable_line": 426,
+    "callable_line": 434,
     "code": 5002,
-    "line": 429,
+    "line": 437,
     "start": 15,
     "end": 28,
     "filename": "taint_in_taint_out.py",
@@ -889,7 +895,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -899,8 +905,8 @@
               { "first-index": "foo" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 428, "start": 34, "end": 35 } ],
-            "origin": { "line": 427, "start": 14, "end": 28 }
+            "tito_positions": [ { "line": 436, "start": 34, "end": 35 } ],
+            "origin": { "line": 435, "start": 14, "end": 28 }
           }
         ]
       },
@@ -911,12 +917,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 429, "start": 15, "end": 28 },
-            "call_site": "429:4-429:29"
+            "origin": { "line": 437, "start": 15, "end": 28 },
+            "call_site": "437:4-437:29"
           }
         ]
       }
@@ -930,20 +938,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.issue_join_tito_collapse_test_3:5002:0:Call|_test_sink|0|formal(arg):86e09dfb758836f619bfdb14cb6011b1"
+    "master_handle": "taint_in_taint_out.issue_join_tito_collapse_test_3:5002:0:Call|pysa._test_sink|0|formal(arg):1b76f332bb75a616999da55b0d94ba73"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.issue_user_declared_tito_collapse_one",
-    "callable_line": 452,
+    "callable_line": 460,
     "code": 5002,
-    "line": 455,
+    "line": 463,
     "start": 15,
     "end": 26,
     "filename": "taint_in_taint_out.py",
@@ -957,7 +965,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -969,8 +977,8 @@
               { "always-via": "tito" },
               { "always-via": "broadening" }
             ],
-            "tito_positions": [ { "line": 454, "start": 40, "end": 41 } ],
-            "origin": { "line": 453, "start": 20, "end": 34 }
+            "tito_positions": [ { "line": 462, "start": 40, "end": 41 } ],
+            "origin": { "line": 461, "start": 20, "end": 34 }
           }
         ]
       },
@@ -981,12 +989,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 455, "start": 15, "end": 26 },
-            "call_site": "455:4-455:27"
+            "origin": { "line": 463, "start": 15, "end": 26 },
+            "call_site": "463:4-463:27"
           }
         ]
       }
@@ -1002,20 +1012,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.issue_user_declared_tito_collapse_one:5002:0:Call|_test_sink|0|formal(arg):52a4e58994c49afe4fd19e9968a653e0"
+    "master_handle": "taint_in_taint_out.issue_user_declared_tito_collapse_one:5002:0:Call|pysa._test_sink|0|formal(arg):a31400093f1917121764ed2785b323b2"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.issue_with_indirect_sink_tito",
-    "callable_line": 102,
+    "callable_line": 110,
     "code": 5002,
-    "line": 104,
+    "line": 112,
     "start": 33,
     "end": 34,
     "filename": "taint_in_taint_out.py",
@@ -1029,12 +1039,12 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 103, "start": 8, "end": 22 }
+            "origin": { "line": 111, "start": 8, "end": 22 }
           }
         ]
       },
@@ -1048,18 +1058,20 @@
                   { "always-via": "special_sink" },
                   { "always-via": "string_concat_lhs" }
                 ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "length": 2,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 104, "start": 33, "end": 34 },
+              "position": { "line": 112, "start": 33, "end": 34 },
               "resolves_to": [
                 "taint_in_taint_out.adds_tito_with_indirect_sink"
               ],
               "port": "formal(src, position=0)[add_tito]",
-              "call_site": "104:4-104:35"
+              "call_site": "112:4-112:35"
             }
           }
         ]
@@ -1083,9 +1095,9 @@
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.issue_with_into_dict_then_tito_collapse",
-    "callable_line": 214,
+    "callable_line": 222,
     "code": 5002,
-    "line": 217,
+    "line": 225,
     "start": 15,
     "end": 21,
     "filename": "taint_in_taint_out.py",
@@ -1099,7 +1111,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -1110,8 +1122,8 @@
               { "always-via": "obscure:model" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 216, "start": 37, "end": 38 } ],
-            "origin": { "line": 215, "start": 8, "end": 22 }
+            "tito_positions": [ { "line": 224, "start": 37, "end": 38 } ],
+            "origin": { "line": 223, "start": 8, "end": 22 }
           }
         ]
       },
@@ -1122,12 +1134,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 217, "start": 15, "end": 21 },
-            "call_site": "217:4-217:22"
+            "origin": { "line": 225, "start": 15, "end": 21 },
+            "call_site": "225:4-225:22"
           }
         ]
       }
@@ -1142,11 +1156,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.issue_with_into_dict_then_tito_collapse:5002:0:Call|_test_sink|0|formal(arg):7af3a3bf3abc6cc79118c6f8ec76ee70"
+    "master_handle": "taint_in_taint_out.issue_with_into_dict_then_tito_collapse:5002:0:Call|pysa._test_sink|0|formal(arg):21ef841d1ff25030d44f4e3a14428710"
   }
 }
 {
@@ -1154,7 +1168,7 @@
   "data": {
     "callable": "taint_in_taint_out.join_tito_collapse_test_1",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 387,
+    "callable_line": 395,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1169,8 +1183,8 @@
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [
-              { "line": 390, "start": 37, "end": 38 },
-              { "line": 392, "start": 39, "end": 40 }
+              { "line": 398, "start": 37, "end": 38 },
+              { "line": 400, "start": 39, "end": 40 }
             ],
             "tito": {}
           }
@@ -1184,7 +1198,7 @@
   "data": {
     "callable": "taint_in_taint_out.join_tito_collapse_test_2",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 396,
+    "callable_line": 404,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1199,8 +1213,8 @@
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [
-              { "line": 399, "start": 37, "end": 38 },
-              { "line": 401, "start": 41, "end": 42 }
+              { "line": 407, "start": 37, "end": 38 },
+              { "line": 409, "start": 41, "end": 42 }
             ],
             "tito": {}
           }
@@ -1214,7 +1228,7 @@
   "data": {
     "callable": "taint_in_taint_out.join_tito_collapse_test_3",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 419,
+    "callable_line": 427,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1229,8 +1243,8 @@
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [
-              { "line": 421, "start": 33, "end": 34 },
-              { "line": 423, "start": 41, "end": 42 }
+              { "line": 429, "start": 33, "end": 34 },
+              { "line": 431, "start": 41, "end": 42 }
             ],
             "tito": {}
           }
@@ -1244,7 +1258,7 @@
   "data": {
     "callable": "taint_in_taint_out.loop_perfect_tito",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 366,
+    "callable_line": 374,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1263,7 +1277,7 @@
               }
             ],
             "local_features": [ { "via": "tito" } ],
-            "tito_positions": [ { "line": 369, "start": 25, "end": 26 } ],
+            "tito_positions": [ { "line": 377, "start": 25, "end": 26 } ],
             "tito": {}
           }
         ]
@@ -1276,7 +1290,7 @@
   "data": {
     "callable": "taint_in_taint_out.loop_tito_collapse_one",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 373,
+    "callable_line": 381,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1286,7 +1300,7 @@
               { "return_paths": { "[a]": 0, "": 4 }, "kind": "LocalReturn" }
             ],
             "local_features": [ { "via": "tito" } ],
-            "tito_positions": [ { "line": 376, "start": 30, "end": 31 } ],
+            "tito_positions": [ { "line": 384, "start": 30, "end": 31 } ],
             "tito": {}
           }
         ]
@@ -1299,7 +1313,7 @@
   "data": {
     "callable": "taint_in_taint_out.loop_tito_collapse_two",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 380,
+    "callable_line": 388,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1312,7 +1326,7 @@
               }
             ],
             "local_features": [ { "via": "tito" } ],
-            "tito_positions": [ { "line": 383, "start": 30, "end": 31 } ],
+            "tito_positions": [ { "line": 391, "start": 30, "end": 31 } ],
             "tito": {}
           }
         ]
@@ -1325,7 +1339,7 @@
   "data": {
     "callable": "taint_in_taint_out.no_tito_init_then_overwrite",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 461,
+    "callable_line": 469,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1345,9 +1359,9 @@
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.non_issue_approximate_return_access_paths_common_prefix",
-    "callable_line": 266,
+    "callable_line": 274,
     "code": 5002,
-    "line": 271,
+    "line": 279,
     "start": 15,
     "end": 21,
     "filename": "taint_in_taint_out.py",
@@ -1361,7 +1375,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -1375,8 +1389,8 @@
               { "always-via": "broadening" },
               { "always-via": "model-tito-broadening" }
             ],
-            "tito_positions": [ { "line": 269, "start": 40, "end": 41 } ],
-            "origin": { "line": 268, "start": 10, "end": 24 }
+            "tito_positions": [ { "line": 277, "start": 40, "end": 41 } ],
+            "origin": { "line": 276, "start": 10, "end": 24 }
           }
         ]
       },
@@ -1387,12 +1401,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 271, "start": 15, "end": 21 },
-            "call_site": "271:4-271:22"
+            "origin": { "line": 279, "start": 15, "end": 21 },
+            "call_site": "279:4-279:22"
           }
         ]
       }
@@ -1410,11 +1426,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.non_issue_approximate_return_access_paths_common_prefix:5002:0:Call|_test_sink|0|formal(arg):a05422bf6e233e2e98a1de22b95dfa33"
+    "master_handle": "taint_in_taint_out.non_issue_approximate_return_access_paths_common_prefix:5002:0:Call|pysa._test_sink|0|formal(arg):25769c9b670df0496c44359afce73164"
   }
 }
 {
@@ -1422,7 +1438,7 @@
   "data": {
     "callable": "taint_in_taint_out.perfect_tito",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 226,
+    "callable_line": 234,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1441,7 +1457,7 @@
   "data": {
     "callable": "taint_in_taint_out.perfect_tito_then_into_deep_dict",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 316,
+    "callable_line": 324,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1455,7 +1471,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 317, "start": 21, "end": 22 } ],
+            "tito_positions": [ { "line": 325, "start": 21, "end": 22 } ],
             "tito": {}
           }
         ]
@@ -1468,7 +1484,7 @@
   "data": {
     "callable": "taint_in_taint_out.perfect_tito_then_into_dict",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 235,
+    "callable_line": 243,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1482,7 +1498,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 236, "start": 21, "end": 22 } ],
+            "tito_positions": [ { "line": 244, "start": 21, "end": 22 } ],
             "tito": {}
           }
         ]
@@ -1495,7 +1511,7 @@
   "data": {
     "callable": "taint_in_taint_out.perfect_tito_with_tree_manipulation",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 274,
+    "callable_line": 282,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1517,7 +1533,7 @@
   "data": {
     "callable": "taint_in_taint_out.product_data",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 36,
+    "callable_line": 44,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1542,6 +1558,9 @@
               }
             ],
             "local_features": [
+              { "has": "first-index" },
+              { "first-index": "name" },
+              { "first-index": "id" },
               { "via": "obscure:model" },
               { "via": "model-shaping" },
               { "always-via": "tito" },
@@ -1549,13 +1568,13 @@
               { "via": "model-tito-shaping" }
             ],
             "tito_positions": [
-              { "line": 37, "start": 20, "end": 21 },
-              { "line": 40, "start": 30, "end": 38 },
-              { "line": 44, "start": 30, "end": 37 },
-              { "line": 45, "start": 33, "end": 40 },
-              { "line": 45, "start": 51, "end": 60 },
-              { "line": 45, "start": 72, "end": 82 },
-              { "line": 47, "start": 26, "end": 38 }
+              { "line": 45, "start": 20, "end": 21 },
+              { "line": 48, "start": 30, "end": 38 },
+              { "line": 52, "start": 30, "end": 40 },
+              { "line": 53, "start": 33, "end": 43 },
+              { "line": 53, "start": 54, "end": 66 },
+              { "line": 53, "start": 78, "end": 88 },
+              { "line": 55, "start": 26, "end": 38 }
             ],
             "tito": {}
           }
@@ -1569,7 +1588,7 @@
   "data": {
     "callable": "taint_in_taint_out.product_data_wrapper",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 54,
+    "callable_line": 62,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -1600,7 +1619,7 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 55, "start": 24, "end": 25 } ],
+            "tito_positions": [ { "line": 63, "start": 24, "end": 25 } ],
             "tito": {}
           }
         ]
@@ -1613,7 +1632,7 @@
   "data": {
     "callable": "taint_in_taint_out.return_taint",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 123,
+    "callable_line": 131,
     "tito": [
       {
         "port": "formal(b2, position=2)",
@@ -1656,7 +1675,7 @@
   "data": {
     "callable": "taint_in_taint_out.return_taint_in_list",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 132,
+    "callable_line": 140,
     "tito": [
       {
         "port": "formal(b, position=2)",
@@ -1698,9 +1717,9 @@
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_always_via_feature",
-    "callable_line": 147,
+    "callable_line": 155,
     "code": 5002,
-    "line": 148,
+    "line": 156,
     "start": 15,
     "end": 48,
     "filename": "taint_in_taint_out.py",
@@ -1714,7 +1733,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -1722,8 +1741,8 @@
             "local_features": [
               { "always-via": "string_concat_rhs" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 148, "start": 33, "end": 47 } ],
-            "origin": { "line": 148, "start": 33, "end": 47 }
+            "tito_positions": [ { "line": 156, "start": 33, "end": 47 } ],
+            "origin": { "line": 156, "start": 33, "end": 47 }
           }
         ]
       },
@@ -1734,12 +1753,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 148, "start": 15, "end": 48 },
-            "call_site": "148:4-148:49"
+            "origin": { "line": 156, "start": 15, "end": 48 },
+            "call_site": "156:4-156:49"
           }
         ]
       }
@@ -1752,214 +1773,18 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_always_via_feature:5002:0:Call|_test_sink|0|formal(arg):5f5be39770a875ee131d712a9575c6ec"
+    "master_handle": "taint_in_taint_out.test_always_via_feature:5002:0:Call|pysa._test_sink|0|formal(arg):7a17357b213c831195de2ab02ec3e9d0"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_complex_argument_tito",
-    "callable_line": 574,
-    "code": 5002,
-    "line": 581,
-    "start": 15,
-    "end": 20,
-    "filename": "taint_in_taint_out.py",
-    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "local_features": [ { "always-via": "special_source" } ],
-                "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
-                ],
-                "kind": "Test"
-              }
-            ],
-            "local_features": [
-              { "has": "first-field" }, { "first-field": "foo" }
-            ],
-            "origin": { "line": 577, "start": 12, "end": 26 }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
-                "kind": "Test"
-              }
-            ],
-            "origin": { "line": 581, "start": 15, "end": 20 },
-            "call_site": "581:4-581:21"
-          }
-        ]
-      }
-    ],
-    "features": [
-      { "has": "first-field" },
-      { "first-field": "foo" },
-      { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ],
-    "sink_handle": {
-      "kind": "Call",
-      "callee": "_test_sink",
-      "index": 2,
-      "parameter": "formal(arg)"
-    },
-    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|_test_sink|2|formal(arg):e26e1e66d8be1337852ba48c8246e509"
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "taint_in_taint_out.test_complex_argument_tito",
-    "callable_line": 574,
-    "code": 5002,
-    "line": 586,
-    "start": 15,
-    "end": 20,
-    "filename": "taint_in_taint_out.py",
-    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "local_features": [ { "always-via": "special_source" } ],
-                "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
-                ],
-                "kind": "Test"
-              }
-            ],
-            "local_features": [
-              { "has": "first-field" },
-              { "first-field": "foo" },
-              { "always-via": "tito" }
-            ],
-            "tito_positions": [ { "line": 585, "start": 29, "end": 30 } ],
-            "origin": { "line": 584, "start": 12, "end": 26 }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
-                "kind": "Test"
-              }
-            ],
-            "origin": { "line": 586, "start": 15, "end": 20 },
-            "call_site": "586:4-586:21"
-          }
-        ]
-      }
-    ],
-    "features": [
-      { "has": "first-field" },
-      { "first-field": "foo" },
-      { "always-via": "special_source" },
-      { "always-via": "special_sink" },
-      { "always-via": "tito" }
-    ],
-    "sink_handle": {
-      "kind": "Call",
-      "callee": "_test_sink",
-      "index": 4,
-      "parameter": "formal(arg)"
-    },
-    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|_test_sink|4|formal(arg):e5da9adc5537b799f9d9af8047ed246a"
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "taint_in_taint_out.test_complex_argument_tito",
-    "callable_line": 574,
-    "code": 5002,
-    "line": 588,
-    "start": 15,
-    "end": 20,
-    "filename": "taint_in_taint_out.py",
-    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "local_features": [ { "always-via": "special_source" } ],
-                "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
-                ],
-                "kind": "Test"
-              }
-            ],
-            "local_features": [
-              { "has": "first-field" }, { "first-field": "foo" }
-            ],
-            "origin": { "line": 577, "start": 12, "end": 26 }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
-                "kind": "Test"
-              }
-            ],
-            "origin": { "line": 588, "start": 15, "end": 20 },
-            "call_site": "588:4-588:21"
-          }
-        ]
-      }
-    ],
-    "features": [
-      { "has": "first-field" },
-      { "first-field": "foo" },
-      { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ],
-    "sink_handle": {
-      "kind": "Call",
-      "callee": "_test_sink",
-      "index": 6,
-      "parameter": "formal(arg)"
-    },
-    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|_test_sink|6|formal(arg):ad2a67cf72f264c002bf59e822e0c972"
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "taint_in_taint_out.test_complex_argument_tito",
-    "callable_line": 574,
+    "callable_line": 582,
     "code": 5002,
     "line": 589,
     "start": 15,
@@ -1975,15 +1800,15 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
             "local_features": [
-              { "has": "first-field" }, { "first-field": "bar" }
+              { "has": "first-field" }, { "first-field": "foo" }
             ],
-            "origin": { "line": 584, "start": 12, "end": 26 }
+            "origin": { "line": 585, "start": 12, "end": 26 }
           }
         ]
       },
@@ -1994,12 +1819,216 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
             "origin": { "line": 589, "start": 15, "end": 20 },
             "call_site": "589:4-589:21"
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "has": "first-field" },
+      { "first-field": "foo" },
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "pysa._test_sink",
+      "index": 2,
+      "parameter": "formal(arg)"
+    },
+    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|pysa._test_sink|2|formal(arg):74ead6145bf855c70f8c57fb00200e7f"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "taint_in_taint_out.test_complex_argument_tito",
+    "callable_line": 582,
+    "code": 5002,
+    "line": 594,
+    "start": 15,
+    "end": 20,
+    "filename": "taint_in_taint_out.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "local_features": [ { "always-via": "special_source" } ],
+                "leaves": [
+                  { "name": "pysa._test_source", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "has": "first-field" },
+              { "first-field": "foo" },
+              { "always-via": "tito" }
+            ],
+            "tito_positions": [ { "line": 593, "start": 29, "end": 30 } ],
+            "origin": { "line": 592, "start": 12, "end": 26 }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "local_features": [ { "always-via": "special_sink" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "origin": { "line": 594, "start": 15, "end": 20 },
+            "call_site": "594:4-594:21"
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "has": "first-field" },
+      { "first-field": "foo" },
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "pysa._test_sink",
+      "index": 4,
+      "parameter": "formal(arg)"
+    },
+    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|pysa._test_sink|4|formal(arg):5d4303da8e22b226f2a4530b65144522"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "taint_in_taint_out.test_complex_argument_tito",
+    "callable_line": 582,
+    "code": 5002,
+    "line": 596,
+    "start": 15,
+    "end": 20,
+    "filename": "taint_in_taint_out.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "local_features": [ { "always-via": "special_source" } ],
+                "leaves": [
+                  { "name": "pysa._test_source", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "has": "first-field" }, { "first-field": "foo" }
+            ],
+            "origin": { "line": 585, "start": 12, "end": 26 }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "local_features": [ { "always-via": "special_sink" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "origin": { "line": 596, "start": 15, "end": 20 },
+            "call_site": "596:4-596:21"
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "has": "first-field" },
+      { "first-field": "foo" },
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "pysa._test_sink",
+      "index": 6,
+      "parameter": "formal(arg)"
+    },
+    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|pysa._test_sink|6|formal(arg):defea9b316efc719261f7056dd2acdc3"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "taint_in_taint_out.test_complex_argument_tito",
+    "callable_line": 582,
+    "code": 5002,
+    "line": 597,
+    "start": 15,
+    "end": 20,
+    "filename": "taint_in_taint_out.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "local_features": [ { "always-via": "special_source" } ],
+                "leaves": [
+                  { "name": "pysa._test_source", "port": "leaf:return" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "has": "first-field" }, { "first-field": "bar" }
+            ],
+            "origin": { "line": 592, "start": 12, "end": 26 }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "local_features": [ { "always-via": "special_sink" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "origin": { "line": 597, "start": 15, "end": 20 },
+            "call_site": "597:4-597:21"
           }
         ]
       }
@@ -2012,20 +2041,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 7,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|_test_sink|7|formal(arg):e01d9a0e94ec4c1f6a16bce99d8d9040"
+    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|pysa._test_sink|7|formal(arg):4ecd2c532d3bd59f638ae949119188dc"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_complex_argument_tito",
-    "callable_line": 574,
+    "callable_line": 582,
     "code": 5002,
-    "line": 596,
+    "line": 604,
     "start": 15,
     "end": 24,
     "filename": "taint_in_taint_out.py",
@@ -2039,7 +2068,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2049,8 +2078,8 @@
               { "first-field": "baz" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 593, "start": 33, "end": 34 } ],
-            "origin": { "line": 584, "start": 12, "end": 26 }
+            "tito_positions": [ { "line": 601, "start": 33, "end": 34 } ],
+            "origin": { "line": 592, "start": 12, "end": 26 }
           }
         ]
       },
@@ -2061,12 +2090,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 596, "start": 15, "end": 24 },
-            "call_site": "596:4-596:25"
+            "origin": { "line": 604, "start": 15, "end": 24 },
+            "call_site": "604:4-604:25"
           }
         ]
       }
@@ -2080,20 +2111,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 10,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|_test_sink|10|formal(arg):00e0191c1657766d1a8c3654abe17be5"
+    "master_handle": "taint_in_taint_out.test_complex_argument_tito:5002:0:Call|pysa._test_sink|10|formal(arg):3e7ac4967368a3f4366bcf0baf4f8aeb"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_complex_evaluator",
-    "callable_line": 193,
+    "callable_line": 201,
     "code": 5002,
-    "line": 194,
+    "line": 202,
     "start": 15,
     "end": 62,
     "filename": "taint_in_taint_out.py",
@@ -2107,7 +2138,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2121,8 +2152,8 @@
               { "via": "model-tito-shaping" },
               { "always-via": "obscure:unknown-callee" }
             ],
-            "tito_positions": [ { "line": 194, "start": 47, "end": 61 } ],
-            "origin": { "line": 194, "start": 47, "end": 61 }
+            "tito_positions": [ { "line": 202, "start": 47, "end": 61 } ],
+            "origin": { "line": 202, "start": 47, "end": 61 }
           }
         ]
       },
@@ -2133,12 +2164,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 194, "start": 15, "end": 62 },
-            "call_site": "194:4-194:63"
+            "origin": { "line": 202, "start": 15, "end": 62 },
+            "call_site": "202:4-202:63"
           }
         ]
       }
@@ -2156,20 +2189,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_complex_evaluator:5002:0:Call|_test_sink|0|formal(arg):ab8fd57412bae9ae7f76b9d9e5b62315"
+    "master_handle": "taint_in_taint_out.test_complex_evaluator:5002:0:Call|pysa._test_sink|0|formal(arg):7d3fadab2ada204a9b6019a699ba2f9c"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_explicit_call_to_superclass",
-    "callable_line": 164,
+    "callable_line": 172,
     "code": 5002,
-    "line": 166,
+    "line": 174,
     "start": 15,
     "end": 23,
     "filename": "taint_in_taint_out.py",
@@ -2183,7 +2216,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2193,8 +2226,8 @@
               { "first-field": "arg" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 165, "start": 19, "end": 33 } ],
-            "origin": { "line": 165, "start": 19, "end": 33 }
+            "tito_positions": [ { "line": 173, "start": 19, "end": 33 } ],
+            "origin": { "line": 173, "start": 19, "end": 33 }
           }
         ]
       },
@@ -2205,12 +2238,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 166, "start": 15, "end": 23 },
-            "call_site": "166:4-166:24"
+            "origin": { "line": 174, "start": 15, "end": 23 },
+            "call_site": "174:4-174:24"
           }
         ]
       }
@@ -2224,20 +2259,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_explicit_call_to_superclass:5002:0:Call|_test_sink|0|formal(arg):542fa2512fcbd87d221e85e3ff59321e"
+    "master_handle": "taint_in_taint_out.test_explicit_call_to_superclass:5002:0:Call|pysa._test_sink|0|formal(arg):08fa7b561d32f3133976f5d0406edaf1"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_simplified_evaluator",
-    "callable_line": 173,
+    "callable_line": 181,
     "code": 5002,
-    "line": 174,
+    "line": 182,
     "start": 15,
     "end": 44,
     "filename": "taint_in_taint_out.py",
@@ -2251,7 +2286,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2261,8 +2296,8 @@
               { "always-via": "broadening" },
               { "always-via": "issue-broadening" }
             ],
-            "tito_positions": [ { "line": 174, "start": 29, "end": 43 } ],
-            "origin": { "line": 174, "start": 29, "end": 43 }
+            "tito_positions": [ { "line": 182, "start": 29, "end": 43 } ],
+            "origin": { "line": 182, "start": 29, "end": 43 }
           }
         ]
       },
@@ -2273,12 +2308,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 174, "start": 15, "end": 44 },
-            "call_site": "174:4-174:45"
+            "origin": { "line": 182, "start": 15, "end": 44 },
+            "call_site": "182:4-182:45"
           }
         ]
       }
@@ -2292,20 +2329,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_simplified_evaluator:5002:0:Call|_test_sink|0|formal(arg):4ea1dfcb4011b7d278405c93836ee5d8"
+    "master_handle": "taint_in_taint_out.test_simplified_evaluator:5002:0:Call|pysa._test_sink|0|formal(arg):2a5ded288935a7fafb17a5b25f5c4956"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_tito_class_method",
-    "callable_line": 546,
+    "callable_line": 554,
     "code": 5002,
-    "line": 549,
+    "line": 557,
     "start": 15,
     "end": 32,
     "filename": "taint_in_taint_out.py",
@@ -2319,7 +2356,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2329,8 +2366,8 @@
               { "first-field": "TitoClassMethod" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 548, "start": 26, "end": 40 } ],
-            "origin": { "line": 548, "start": 26, "end": 40 }
+            "tito_positions": [ { "line": 556, "start": 26, "end": 40 } ],
+            "origin": { "line": 556, "start": 26, "end": 40 }
           }
         ]
       },
@@ -2341,12 +2378,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 549, "start": 15, "end": 32 },
-            "call_site": "549:4-549:33"
+            "origin": { "line": 557, "start": 15, "end": 32 },
+            "call_site": "557:4-557:33"
           }
         ]
       }
@@ -2360,20 +2399,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 1,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_tito_class_method:5002:0:Call|_test_sink|1|formal(arg):dfe7753c9b9fd28285d08404a1965ed5"
+    "master_handle": "taint_in_taint_out.test_tito_class_method:5002:0:Call|pysa._test_sink|1|formal(arg):71f9cf88c92928af4a5bd675f44353a5"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_tito_from_0_to_1",
-    "callable_line": 562,
+    "callable_line": 570,
     "code": 5002,
-    "line": 566,
+    "line": 574,
     "start": 15,
     "end": 16,
     "filename": "taint_in_taint_out.py",
@@ -2387,12 +2426,12 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 563, "start": 8, "end": 22 }
+            "origin": { "line": 571, "start": 8, "end": 22 }
           }
         ]
       },
@@ -2403,12 +2442,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 566, "start": 15, "end": 16 },
-            "call_site": "566:4-566:17"
+            "origin": { "line": 574, "start": 15, "end": 16 },
+            "call_site": "574:4-574:17"
           }
         ]
       }
@@ -2418,20 +2459,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_tito_from_0_to_1:5002:0:Call|_test_sink|0|formal(arg):8fad1fe9526b2fba923135310fd5d879"
+    "master_handle": "taint_in_taint_out.test_tito_from_0_to_1:5002:0:Call|pysa._test_sink|0|formal(arg):63e85aeadef6f251278e8e9819a2911b"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_tito_from_0_to_1",
-    "callable_line": 562,
+    "callable_line": 570,
     "code": 5002,
-    "line": 567,
+    "line": 575,
     "start": 15,
     "end": 16,
     "filename": "taint_in_taint_out.py",
@@ -2445,7 +2486,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2455,8 +2496,8 @@
               { "always-via": "broadening" },
               { "always-via": "issue-broadening" }
             ],
-            "tito_positions": [ { "line": 565, "start": 21, "end": 22 } ],
-            "origin": { "line": 563, "start": 8, "end": 22 }
+            "tito_positions": [ { "line": 573, "start": 21, "end": 22 } ],
+            "origin": { "line": 571, "start": 8, "end": 22 }
           }
         ]
       },
@@ -2467,12 +2508,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 567, "start": 15, "end": 16 },
-            "call_site": "567:4-567:17"
+            "origin": { "line": 575, "start": 15, "end": 16 },
+            "call_site": "575:4-575:17"
           }
         ]
       }
@@ -2486,20 +2529,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 1,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_tito_from_0_to_1:5002:0:Call|_test_sink|1|formal(arg):4f9c249c5c6080dd4d47d886050da118"
+    "master_handle": "taint_in_taint_out.test_tito_from_0_to_1:5002:0:Call|pysa._test_sink|1|formal(arg):17a95a24ef1524cf4e57b95c88271437"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_tito_self",
-    "callable_line": 504,
+    "callable_line": 512,
     "code": 5002,
-    "line": 506,
+    "line": 514,
     "start": 15,
     "end": 18,
     "filename": "taint_in_taint_out.py",
@@ -2513,7 +2556,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2523,8 +2566,8 @@
               { "first-field": "a" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 505, "start": 17, "end": 31 } ],
-            "origin": { "line": 505, "start": 17, "end": 31 }
+            "tito_positions": [ { "line": 513, "start": 17, "end": 31 } ],
+            "origin": { "line": 513, "start": 17, "end": 31 }
           }
         ]
       },
@@ -2535,12 +2578,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 506, "start": 15, "end": 18 },
-            "call_site": "506:4-506:19"
+            "origin": { "line": 514, "start": 15, "end": 18 },
+            "call_site": "514:4-514:19"
           }
         ]
       }
@@ -2554,20 +2599,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|_test_sink|0|formal(arg):9889cda2da940a02f3e96ccd24d92510"
+    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|pysa._test_sink|0|formal(arg):5998b16a94991af3d1ccbab9e955f8b3"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_tito_self",
-    "callable_line": 504,
+    "callable_line": 512,
     "code": 5002,
-    "line": 511,
+    "line": 519,
     "start": 15,
     "end": 18,
     "filename": "taint_in_taint_out.py",
@@ -2581,7 +2626,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2591,8 +2636,8 @@
               { "first-field": "a" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 510, "start": 12, "end": 26 } ],
-            "origin": { "line": 510, "start": 12, "end": 26 }
+            "tito_positions": [ { "line": 518, "start": 12, "end": 26 } ],
+            "origin": { "line": 518, "start": 12, "end": 26 }
           }
         ]
       },
@@ -2603,12 +2648,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 511, "start": 15, "end": 18 },
-            "call_site": "511:4-511:19"
+            "origin": { "line": 519, "start": 15, "end": 18 },
+            "call_site": "519:4-519:19"
           }
         ]
       }
@@ -2622,20 +2669,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 2,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|_test_sink|2|formal(arg):297469be874c8520f509a6ffa59622f9"
+    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|pysa._test_sink|2|formal(arg):2903e5081c187a814ee0e42546a730c6"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_tito_self",
-    "callable_line": 504,
+    "callable_line": 512,
     "code": 5002,
-    "line": 516,
+    "line": 524,
     "start": 15,
     "end": 21,
     "filename": "taint_in_taint_out.py",
@@ -2649,7 +2696,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2661,8 +2708,8 @@
               { "first-field": "a" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 515, "start": 12, "end": 32 } ],
-            "origin": { "line": 515, "start": 17, "end": 31 }
+            "tito_positions": [ { "line": 523, "start": 12, "end": 32 } ],
+            "origin": { "line": 523, "start": 17, "end": 31 }
           }
         ]
       },
@@ -2673,12 +2720,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 516, "start": 15, "end": 21 },
-            "call_site": "516:4-516:22"
+            "origin": { "line": 524, "start": 15, "end": 21 },
+            "call_site": "524:4-524:22"
           }
         ]
       }
@@ -2694,20 +2743,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 4,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|_test_sink|4|formal(arg):287a70c681a4857f3b7b2df7d7f08b2e"
+    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|pysa._test_sink|4|formal(arg):b33dd03b4e9e558abd56c9229dc52bba"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_tito_self",
-    "callable_line": 504,
+    "callable_line": 512,
     "code": 5002,
-    "line": 522,
+    "line": 530,
     "start": 15,
     "end": 18,
     "filename": "taint_in_taint_out.py",
@@ -2721,7 +2770,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2731,8 +2780,8 @@
               { "first-field": "a" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 521, "start": 15, "end": 29 } ],
-            "origin": { "line": 521, "start": 15, "end": 29 }
+            "tito_positions": [ { "line": 529, "start": 15, "end": 29 } ],
+            "origin": { "line": 529, "start": 15, "end": 29 }
           }
         ]
       },
@@ -2743,12 +2792,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 522, "start": 15, "end": 18 },
-            "call_site": "522:4-522:19"
+            "origin": { "line": 530, "start": 15, "end": 18 },
+            "call_site": "530:4-530:19"
           }
         ]
       }
@@ -2762,20 +2813,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 7,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|_test_sink|7|formal(arg):5f00299349eb52ee6703d4d97d1b1f97"
+    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|pysa._test_sink|7|formal(arg):e23abce07702a1370fa66c8998058100"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_tito_self",
-    "callable_line": 504,
+    "callable_line": 512,
     "code": 5002,
-    "line": 526,
+    "line": 534,
     "start": 15,
     "end": 18,
     "filename": "taint_in_taint_out.py",
@@ -2789,7 +2840,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2799,15 +2850,15 @@
               { "first-field": "a" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 521, "start": 15, "end": 29 } ],
-            "origin": { "line": 521, "start": 15, "end": 29 }
+            "tito_positions": [ { "line": 529, "start": 15, "end": 29 } ],
+            "origin": { "line": 529, "start": 15, "end": 29 }
           },
           {
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2817,8 +2868,8 @@
               { "first-field": "a" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 525, "start": 19, "end": 33 } ],
-            "origin": { "line": 525, "start": 19, "end": 33 }
+            "tito_positions": [ { "line": 533, "start": 19, "end": 33 } ],
+            "origin": { "line": 533, "start": 19, "end": 33 }
           }
         ]
       },
@@ -2829,12 +2880,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 526, "start": 15, "end": 18 },
-            "call_site": "526:4-526:19"
+            "origin": { "line": 534, "start": 15, "end": 18 },
+            "call_site": "534:4-534:19"
           }
         ]
       }
@@ -2848,20 +2901,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 9,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|_test_sink|9|formal(arg):1e3be64eafa3ab8c2676f60ec553513c"
+    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|pysa._test_sink|9|formal(arg):4011f2fc758065326ef465bbbeb97445"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "taint_in_taint_out.test_tito_self",
-    "callable_line": 504,
+    "callable_line": 512,
     "code": 5002,
-    "line": 531,
+    "line": 539,
     "start": 15,
     "end": 20,
     "filename": "taint_in_taint_out.py",
@@ -2875,7 +2928,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2885,8 +2938,8 @@
               { "first-field": "a" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 530, "start": 19, "end": 33 } ],
-            "origin": { "line": 530, "start": 19, "end": 33 }
+            "tito_positions": [ { "line": 538, "start": 19, "end": 33 } ],
+            "origin": { "line": 538, "start": 19, "end": 33 }
           }
         ]
       },
@@ -2897,12 +2950,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 531, "start": 15, "end": 20 },
-            "call_site": "531:4-531:21"
+            "origin": { "line": 539, "start": 15, "end": 20 },
+            "call_site": "539:4-539:21"
           }
         ]
       }
@@ -2916,11 +2971,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 11,
       "parameter": "formal(arg)"
     },
-    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|_test_sink|11|formal(arg):26fbc2cf9ff32964aca777b7841edc79"
+    "master_handle": "taint_in_taint_out.test_tito_self:5002:0:Call|pysa._test_sink|11|formal(arg):977ee16e361dbe179143534eed0c9be1"
   }
 }
 {
@@ -2928,7 +2983,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 58,
+    "callable_line": 66,
     "sources": [
       {
         "port": "result[id]",
@@ -2938,7 +2993,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2950,8 +3005,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       },
@@ -2963,7 +3018,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -2975,8 +3030,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       },
@@ -2988,7 +3043,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -3000,8 +3055,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       },
@@ -3013,7 +3068,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -3025,8 +3080,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       },
@@ -3038,7 +3093,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -3050,8 +3105,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       },
@@ -3063,7 +3118,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -3075,8 +3130,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       },
@@ -3088,7 +3143,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -3100,8 +3155,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       },
@@ -3113,7 +3168,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -3125,8 +3180,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       },
@@ -3138,7 +3193,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -3150,8 +3205,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       },
@@ -3163,7 +3218,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -3175,8 +3230,8 @@
               { "via": "broadening" },
               { "via": "model-tito-shaping" }
             ],
-            "tito_positions": [ { "line": 59, "start": 32, "end": 46 } ],
-            "origin": { "line": 59, "start": 32, "end": 46 }
+            "tito_positions": [ { "line": 67, "start": 32, "end": 46 } ],
+            "origin": { "line": 67, "start": 32, "end": 46 }
           }
         ]
       }
@@ -3188,7 +3243,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_collapse_one",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 283,
+    "callable_line": 291,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -3206,7 +3261,7 @@
               { "first-index": "c" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 284, "start": 39, "end": 40 } ],
+            "tito_positions": [ { "line": 292, "start": 39, "end": 40 } ],
             "tito": {}
           }
         ]
@@ -3219,7 +3274,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_collapse_one_append_a_b_c",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 279,
+    "callable_line": 287,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -3240,7 +3295,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_collapse_one_with_input_path",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 405,
+    "callable_line": 413,
     "tito": [
       {
         "port": "formal(x, position=0)[a][b]",
@@ -3258,7 +3313,7 @@
               { "first-index": "b" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 406, "start": 29, "end": 40 } ],
+            "tito_positions": [ { "line": 414, "start": 29, "end": 40 } ],
             "tito": {}
           }
         ]
@@ -3271,7 +3326,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_collapse_one_with_input_path_with_hop",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 409,
+    "callable_line": 417,
     "tito": [
       {
         "port": "formal(x, position=0)[a][b]",
@@ -3285,7 +3340,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 410, "start": 45, "end": 46 } ],
+            "tito_positions": [ { "line": 418, "start": 45, "end": 46 } ],
             "tito": {}
           }
         ]
@@ -3298,7 +3353,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_collapse_then_into_dict",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 209,
+    "callable_line": 217,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -3314,7 +3369,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 210, "start": 21, "end": 22 } ],
+            "tito_positions": [ { "line": 218, "start": 21, "end": 22 } ],
             "tito": {}
           }
         ]
@@ -3327,7 +3382,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_collapse_three",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 301,
+    "callable_line": 309,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -3345,7 +3400,7 @@
               { "first-index": "a" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 302, "start": 37, "end": 38 } ],
+            "tito_positions": [ { "line": 310, "start": 37, "end": 38 } ],
             "tito": {}
           }
         ]
@@ -3358,7 +3413,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_collapse_three_append_a",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 297,
+    "callable_line": 305,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -3379,7 +3434,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_collapse_two",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 292,
+    "callable_line": 300,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -3397,7 +3452,7 @@
               { "first-index": "b" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 293, "start": 37, "end": 38 } ],
+            "tito_positions": [ { "line": 301, "start": 37, "end": 38 } ],
             "tito": {}
           }
         ]
@@ -3410,7 +3465,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_collapse_two_append_a_b",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 288,
+    "callable_line": 296,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -3431,7 +3486,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_from_0_to_1",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 558,
+    "callable_line": 566,
     "tito": [
       {
         "port": "formal(x, position=0)",
@@ -3456,7 +3511,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_with_feature",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 140,
+    "callable_line": 148,
     "tito": [
       {
         "port": "formal(arg, position=0)",
@@ -3475,7 +3530,7 @@
             "local_features": [
               { "always-via": "string_concat_rhs" }, { "via": "tito" }
             ],
-            "tito_positions": [ { "line": 144, "start": 27, "end": 30 } ],
+            "tito_positions": [ { "line": 152, "start": 27, "end": 30 } ],
             "tito": {}
           }
         ]
@@ -3488,7 +3543,7 @@
   "data": {
     "callable": "taint_in_taint_out.tito_with_sink",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 472,
+    "callable_line": 480,
     "sinks": [
       {
         "port": "formal(d, position=0)[a]",
@@ -3497,15 +3552,17 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
             "local_features": [
               { "has": "first-index" }, { "first-index": "a" }
             ],
-            "origin": { "line": 474, "start": 15, "end": 21 },
-            "call_site": "474:4-474:22"
+            "origin": { "line": 482, "start": 15, "end": 21 },
+            "call_site": "482:4-482:22"
           }
         ]
       }
@@ -3531,7 +3588,7 @@
   "data": {
     "callable": "taint_in_taint_out.user_declared_tito_collapse_one",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 442,
+    "callable_line": 450,
     "tito": [
       {
         "port": "formal(arg, position=0)",
@@ -3550,7 +3607,7 @@
   "data": {
     "callable": "taint_in_taint_out.user_declared_tito_no_collapse",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 432,
+    "callable_line": 440,
     "tito": [
       {
         "port": "formal(arg, position=0)",
@@ -3571,7 +3628,7 @@
   "data": {
     "callable": "taint_in_taint_out.via_getattr",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 62,
+    "callable_line": 70,
     "tito": [
       {
         "port": "formal(y, position=1)",
@@ -3599,7 +3656,7 @@
   "data": {
     "callable": "taint_in_taint_out.ComplexEvaluator.evaluate_lazy_field",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 178,
+    "callable_line": 186,
     "tito": [
       {
         "port": "formal(field, position=1)",
@@ -3619,7 +3676,7 @@
   "data": {
     "callable": "taint_in_taint_out.ComplexEvaluator.evaluate_lazy_payload",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 184,
+    "callable_line": 192,
     "tito": [
       {
         "port": "formal(payload, position=1)[items]",
@@ -3651,7 +3708,7 @@
               { "via": "model-tito-shaping" },
               { "always-via": "obscure:unknown-callee" }
             ],
-            "tito_positions": [ { "line": 190, "start": 31, "end": 36 } ],
+            "tito_positions": [ { "line": 198, "start": 31, "end": 36 } ],
             "tito": {
               "caller_interval": [ { "lower": 2, "upper": 3 } ],
               "is_self_call": false
@@ -3667,7 +3724,7 @@
   "data": {
     "callable": "taint_in_taint_out.Data.__init__",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 27,
+    "callable_line": 35,
     "tito": [
       {
         "port": "formal(b, position=2)",
@@ -3705,7 +3762,7 @@
   "data": {
     "callable": "taint_in_taint_out.GetQuery.__init__",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 155,
+    "callable_line": 163,
     "tito": [
       {
         "port": "formal(arg, position=1)",
@@ -3729,7 +3786,7 @@
   "data": {
     "callable": "taint_in_taint_out.GetUser.__init__",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 160,
+    "callable_line": 168,
     "tito": [
       {
         "port": "formal(arg, position=1)",
@@ -3743,7 +3800,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 161, "start": 32, "end": 35 } ],
+            "tito_positions": [ { "line": 169, "start": 32, "end": 35 } ],
             "tito": {
               "caller_interval": [ { "lower": 13, "upper": 14 } ],
               "is_self_call": false
@@ -3759,7 +3816,7 @@
   "data": {
     "callable": "taint_in_taint_out.Recursive.__init__",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 67,
+    "callable_line": 75,
     "tito": [
       {
         "port": "formal(select, position=1)[*][*][0][target]",
@@ -3797,7 +3854,7 @@
               { "via": "broadening" },
               { "via": "widen-broadening" }
             ],
-            "tito_positions": [ { "line": 71, "start": 35, "end": 41 } ],
+            "tito_positions": [ { "line": 79, "start": 35, "end": 41 } ],
             "tito": {
               "caller_interval": [ { "lower": 18, "upper": 19 } ],
               "is_self_call": false
@@ -3813,7 +3870,7 @@
   "data": {
     "callable": "taint_in_taint_out.TitoClassMethod.set_a",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 542,
+    "callable_line": 550,
     "tito": [
       {
         "port": "formal(a, position=1)",
@@ -3838,7 +3895,7 @@
   "data": {
     "callable": "taint_in_taint_out.TitoSelf.__init__",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 481,
+    "callable_line": 489,
     "tito": [
       {
         "port": "formal(b, position=2)",
@@ -3877,7 +3934,7 @@
   "data": {
     "callable": "taint_in_taint_out.TitoSelf.recursive_tito",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 500,
+    "callable_line": 508,
     "tito": [
       {
         "port": "formal(self, position=0)",
@@ -3902,7 +3959,7 @@
   "data": {
     "callable": "taint_in_taint_out.TitoSelf.set_a",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 485,
+    "callable_line": 493,
     "tito": [
       {
         "port": "formal(a, position=1)",
@@ -3927,7 +3984,7 @@
   "data": {
     "callable": "taint_in_taint_out.TitoSelf.set_join",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 488,
+    "callable_line": 496,
     "tito": [
       {
         "port": "formal(y, position=2)",
@@ -3966,7 +4023,7 @@
   "data": {
     "callable": "taint_in_taint_out.TitoSelf.set_subfield",
     "filename": "taint_in_taint_out.py",
-    "callable_line": 494,
+    "callable_line": 502,
     "tito": [
       {
         "port": "formal(x, position=1)",
@@ -3980,7 +4037,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 495, "start": 32, "end": 33 } ],
+            "tito_positions": [ { "line": 503, "start": 32, "end": 33 } ],
             "tito": {
               "caller_interval": [ { "lower": 22, "upper": 23 } ],
               "is_self_call": false

@@ -3,9 +3,9 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
+from pysa import _test_sink, _test_source
 from contextlib import contextmanager
-from typing import List, Optional, Type
+from typing import List, Optional, Type, Any
 
 
 class C:
@@ -82,7 +82,7 @@ def test_classmethod():
 class HasDecoratedClassmethod:
     @classmethod
     @contextmanager
-    def to_sink(self, x):
+    def to_sink(self, x) -> Any:
         _test_sink(x)
 
 

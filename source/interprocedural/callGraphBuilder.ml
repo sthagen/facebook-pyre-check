@@ -660,57 +660,102 @@ let resolve_callee_from_defining_expression
       | _ -> None)
 
 
-type resolved_stringify =
-  | Str
-  | Repr
+module ResolvedStrinfigy = struct
+  type t =
+    | Str
+    | Repr
 
-let resolve_stringify_call ~pyre_in_context ~type_of_expression_shared_memory expression =
-  let string_callee =
-    Node.create
-      ~location:(Node.location expression)
-      (Expression.Name
-         (Name.Attribute
+  let from_method_name = function
+    | "__str__" -> Some Str
+    | "__repr__" -> Some Repr
+    | _ -> None
+
+
+  let to_method_name = function
+    | Str -> "__str__"
+    | Repr -> "__repr__"
+end
+
+(* Resolve a call to `str(x)` into `x.__str__()` or `x.__repr__()` *)
+let resolve_stringify_call
+    ~pyre_in_context
+    ~type_of_expression_shared_memory
+    ~outer_expression_identifier
+    expression
+  =
+  match pyre_in_context with
+  | PyrePysaApi.InContext.Pyre1 _ -> (
+      let string_callee =
+        Node.create
+          ~location:(Node.location expression)
+          (Expression.Name
+             (Name.Attribute
+                {
+                  base = expression;
+                  attribute = "__str__";
+                  origin =
+                    Some
+                      (Origin.create
+                         ?base:(Ast.Expression.origin expression)
+                         ~location:(Node.location expression)
+                         Origin.ResolveStrCall);
+                }))
+      in
+      try
+        match
+          TypeOfExpressionSharedMemory.compute_or_retrieve_pyre_type
+            type_of_expression_shared_memory
+            ~pyre_in_context
+            string_callee
+          |> Type.callable_name
+        with
+        | Some name when Reference.equal name (Reference.create "object.__str__") ->
+            (* Call resolved to object.__str__, fallback to calling __repr__ if it exists. *)
+            ResolvedStrinfigy.Repr
+        | _ -> ResolvedStrinfigy.Str
+      with
+      | Analysis.ClassHierarchy.Untracked _ -> Str)
+  | PyrePysaApi.InContext.Pyrefly pyrefly_api -> (
+      (* When using pyrefly, use the callee of the artificial call resolved by pyrefly *)
+      let call_graph = PyreflyApi.InContext.call_graph pyrefly_api in
+      match
+        DefineCallGraph.resolve_expression
+          call_graph
+          ~expression_identifier:outer_expression_identifier
+      with
+      | Some
+          (ExpressionCallees.Call
             {
-              base = expression;
-              attribute = "__str__";
-              origin =
-                Some
-                  (Origin.create
-                     ?base:(Ast.Expression.origin expression)
-                     ~location:(Node.location expression)
-                     Origin.ResolveStrCall);
-            }))
-  in
-  try
-    match
-      TypeOfExpressionSharedMemory.compute_or_retrieve_pyre_type
-        type_of_expression_shared_memory
-        ~pyre_in_context
-        string_callee
-      |> Type.callable_name
-    with
-    | Some name when Reference.equal name (Reference.create "object.__str__") ->
-        (* Call resolved to object.__str__, fallback to calling __repr__ if it exists. *)
-        Repr
-    | _ -> Str
-  with
-  | Analysis.ClassHierarchy.Untracked _ -> Str
+              CallCallees.call_targets =
+                {
+                  CallTarget.target =
+                    Target.Regular
+                      ( Target.Regular.Method { Target.Method.method_name; _ }
+                      | Target.Regular.Override { Target.Method.method_name; _ } );
+                  _;
+                }
+                :: _;
+              _;
+            }) ->
+          ResolvedStrinfigy.from_method_name method_name
+          |> Option.value_exn ~message:"unexpected method name"
+      | Some (ExpressionCallees.Call { CallCallees.unresolved = Unresolved.True _; _ }) ->
+          ResolvedStrinfigy.Repr (* fallback *)
+      | _ ->
+          Format.asprintf
+            "Missing or unexpected call graph edge for expression identifier %a"
+            ExpressionIdentifier.pp
+            outer_expression_identifier
+          |> failwith)
 
 
 (* Rewrite certain calls for the interprocedural analysis (e.g, pysa).
  * These rewrites are done symbolically during the analysis.
  * These should be preferred over AST transformations (see `preprocess_special_calls`). *)
-let shim_special_calls { Call.callee; arguments; origin = _ } =
+let apply_identified_shim_call ~identified_callee ~arguments =
   let open Shims.ShimArgumentMapping in
-  match Node.value callee, arguments with
-  | ( Expression.Name
-        (Name.Attribute
-          {
-            base = { Node.value = Expression.Name (Name.Identifier "functools"); _ };
-            attribute = "partial";
-            _;
-          }),
-      _actual_callable :: actual_arguments ) ->
+  match identified_callee, arguments with
+  | Some Shims.IdentifiedCallee.FunctoolsPartial, _actual_callable :: actual_arguments ->
       Some
         {
           identifier = "functools.partial";
@@ -722,20 +767,16 @@ let shim_special_calls { Call.callee; arguments; origin = _ } =
                   value = Target.Argument { index = index_minus_one + 1 };
                 });
         }
-  | ( Expression.Name
-        (Name.Attribute
-          {
-            base = { Node.value = Expression.Name (Name.Identifier "multiprocessing"); _ };
-            attribute = "Process";
-            _;
-          }),
+  | ( Some Shims.IdentifiedCallee.MultiprocessingProcess,
       [
-        { Call.Argument.name = Some { Node.value = "$parameter$target"; _ }; _ };
+        { Call.Argument.name = Some { Node.value = target; _ }; _ };
         {
           Call.Argument.value = { Node.value = Expression.Tuple process_arguments; _ };
-          name = Some { Node.value = "$parameter$args"; _ };
+          name = Some { Node.value = args; _ };
         };
-      ] ) ->
+      ] )
+    when target |> Analysis.TaintAccessPath.Root.chop_parameter_prefix |> String.equal "target"
+         && args |> Analysis.TaintAccessPath.Root.chop_parameter_prefix |> String.equal "args" ->
       Some
         {
           identifier = "multiprocessing.Process";
@@ -750,12 +791,59 @@ let shim_special_calls { Call.callee; arguments; origin = _ } =
   | _ -> None
 
 
+let shim_special_calls_for_pyre1 { Call.callee; arguments; origin = _ } =
+  let identified_callee =
+    match Node.value callee with
+    | Expression.Name
+        (Name.Attribute
+          {
+            base = { Node.value = Expression.Name (Name.Identifier "functools"); _ };
+            attribute = "partial";
+            _;
+          }) ->
+        Some Shims.IdentifiedCallee.FunctoolsPartial
+    | Expression.Name
+        (Name.Attribute
+          {
+            base = { Node.value = Expression.Name (Name.Identifier "multiprocessing"); _ };
+            attribute = "Process";
+            _;
+          }) ->
+        Some Shims.IdentifiedCallee.MultiprocessingProcess
+    | _ -> None
+  in
+  apply_identified_shim_call ~identified_callee ~arguments
+
+
+let shim_special_calls_for_pyrefly ~callees ~arguments =
+  let define_name_equals ~name target =
+    Target.get_regular target
+    |> Target.Regular.define_name
+    >>| Reference.show
+    >>| String.equal name
+    |> Option.value ~default:false
+  in
+  let identified_callee =
+    if List.exists callees ~f:(define_name_equals ~name:"functools.partial.__new__") then
+      Some Shims.IdentifiedCallee.FunctoolsPartial
+    else if
+      List.exists
+        callees
+        ~f:(define_name_equals ~name:"multiprocessing.process.BaseProcess.__init__")
+    then
+      Some Shims.IdentifiedCallee.MultiprocessingProcess
+    else
+      None
+  in
+  apply_identified_shim_call ~identified_callee ~arguments
+
+
 (* Rewrite certain calls for the interprocedural analysis (e.g, pysa).
  * These rewrites are done as AST transformations. In general, this should be
  * avoided, hence this is only used for a few specific functions in the standard
  * library. One main difference between preprocessing and shimming is that shims
  * are considered additional calls, where preprocessing completely removes the
- * original call. This is preferred for things like `str`/`iter`/`next`. *)
+ * original call. This is preferred for things like `str`/`iter`/`next`. *)
 let preprocess_special_calls
     ~pyre_in_context
     ~type_of_expression_shared_memory
@@ -773,18 +861,39 @@ let preprocess_special_calls
     }
   in
   match Node.value callee, arguments with
-  | Name (Name.Identifier "str"), [{ Call.Argument.value; _ }] ->
+  | Name (Name.Identifier "str"), [{ Call.Argument.value; name = None }] ->
       (* str() takes an optional encoding and errors - if these are present, the call shouldn't be
          redirected: https://docs.python.org/3/library/stdtypes.html#str *)
-      let method_name, origin_kind =
-        match resolve_stringify_call ~pyre_in_context ~type_of_expression_shared_memory value with
-        | Str -> "__str__", Origin.StrCallToDunderStr
-        | Repr -> "__repr__", Origin.StrCallToDunderRepr
+      let origin =
+        Origin.create ?base:call_origin ~location:call_location Origin.StrCallToDunderMethod
       in
-      let origin = Some (Origin.create ?base:call_origin ~location:call_location origin_kind) in
-      let callee = attribute_access ~base:value ~method_name ~origin in
-      Some { Call.callee; arguments = []; origin }
-  | Name (Name.Identifier "iter"), [{ Call.Argument.value; _ }] ->
+      let method_name =
+        resolve_stringify_call
+          ~pyre_in_context
+          ~type_of_expression_shared_memory
+          ~outer_expression_identifier:(ExpressionIdentifier.ArtificialCall origin)
+          value
+        |> ResolvedStrinfigy.to_method_name
+      in
+      let callee = attribute_access ~base:value ~method_name ~origin:(Some origin) in
+      Some { Call.callee; arguments = []; origin = Some origin }
+  | Name (Name.Identifier "abs"), [{ Call.Argument.value; _ }] ->
+      let origin = Some (Origin.create ?base:call_origin ~location:call_location Origin.AbsCall) in
+      Some
+        {
+          Call.callee = attribute_access ~base:value ~method_name:"__abs__" ~origin;
+          arguments = [];
+          origin;
+        }
+  | Name (Name.Identifier "repr"), [{ Call.Argument.value; name = None }] ->
+      let origin = Some (Origin.create ?base:call_origin ~location:call_location Origin.ReprCall) in
+      Some
+        {
+          Call.callee = attribute_access ~base:value ~method_name:"__repr__" ~origin;
+          arguments = [];
+          origin;
+        }
+  | Name (Name.Identifier "iter"), [{ Call.Argument.value; name = None }] ->
       (* Only handle `iter` with a single argument here. *)
       let origin = Some (Origin.create ?base:call_origin ~location:call_location Origin.IterCall) in
       Some
@@ -793,7 +902,7 @@ let preprocess_special_calls
           arguments = [];
           origin;
         }
-  | Name (Name.Identifier "next"), [{ Call.Argument.value; _ }] ->
+  | Name (Name.Identifier "next"), [{ Call.Argument.value; name = None }] ->
       (* Only handle `next` with a single argument here. *)
       let origin = Some (Origin.create ?base:call_origin ~location:call_location Origin.NextCall) in
       Some
@@ -802,7 +911,7 @@ let preprocess_special_calls
           arguments = [];
           origin;
         }
-  | Name (Name.Identifier "anext"), [{ Call.Argument.value; _ }] ->
+  | Name (Name.Identifier "anext"), [{ Call.Argument.value; name = None }] ->
       (* Only handle `anext` with a single argument here. *)
       let origin = Some (Origin.create ?base:call_origin ~location:call_location Origin.NextCall) in
       Some
@@ -815,36 +924,48 @@ let preprocess_special_calls
 
 
 let shim_for_call ~pyre_in_context ~callables_to_definitions_map call =
-  match shim_special_calls call with
+  match shim_special_calls_for_pyre1 call with
   | Some shim -> Some shim
   | None ->
-      SpecialCallResolution.shim_calls
+      SpecialCallResolution.shim_calls_for_pyre1
         ~resolve_expression_to_type:
           (CallResolution.resolve_ignoring_errors ~pyre_in_context ~callables_to_definitions_map)
         call
 
 
+let shim_for_call_for_pyrefly ~callees ~nested_callees ~arguments =
+  match shim_special_calls_for_pyrefly ~callees ~arguments with
+  | Some identified_callee -> Some identified_callee
+  | None -> SpecialCallResolution.shim_calls_for_pyrefly ~callees ~nested_callees ~arguments
+
+
+let create_shim_callee_expression ~debug ~callable ~location ~call shim =
+  log ~debug "Found shim for call `%a`: `%a`" Call.pp call Shims.ShimArgumentMapping.pp shim;
+  Shims.ShimArgumentMapping.create_artificial_call ~call_location:location call shim
+  |> function
+  | Ok { Call.callee = shim_callee_expression; _ } -> Some shim_callee_expression
+  | Error error ->
+      let () =
+        Log.warning
+          "Error applying shim argument mapping: %s for expression `%a` in `%a` at %a"
+          error
+          Expression.pp
+          (Node.create_with_default_location (Expression.Call call))
+          Target.pp
+          callable
+          Location.pp
+          location
+      in
+      None
+
+
 let preprocess_call ~pyre_in_context ~type_of_expression_shared_memory ~location original_call =
-  match
-    preprocess_special_calls
-      ~pyre_in_context
-      ~type_of_expression_shared_memory
-      ~location
-      original_call
-  with
-  | Some call -> call
-  | None -> (
-      match
-        Analysis.AnnotatedCall.preprocess_special_calls
-          ~resolve_expression_to_type:
-            (TypeOfExpressionSharedMemory.compute_or_retrieve_pyre_type
-               type_of_expression_shared_memory
-               ~pyre_in_context)
-          ~location
-          original_call
-      with
-      | Some call -> call
-      | None -> original_call)
+  preprocess_special_calls
+    ~pyre_in_context
+    ~type_of_expression_shared_memory
+    ~location
+    original_call
+  |> Option.value ~default:original_call
 
 
 let rec preprocess_expression
@@ -1003,6 +1124,8 @@ let preprocess_assignments statement =
      Node.value = Statement.AugmentedAssign ({ AugmentedAssign.target; _ } as augmented_assignment);
      location;
     } ->
+        (* TODO(T225700656): Augmented assignments can be lowered into `__iadd__`, `__add__` or
+           `__radd__`. We only support the first case here. *)
         let call =
           AugmentedAssign.lower_to_expression
             ~location
@@ -1223,24 +1346,6 @@ let resolve_recognized_callees
         ~callee
         ~return_type
         ~implementing_class
-  | Expression.Name name, _
-    when is_all_names (Node.value callee)
-         && Set.mem SpecialCallResolution.recognized_callable_target_types callee_type ->
-      Ast.Expression.name_to_reference name
-      >>| fun name ->
-      let return_type =
-        let pyre_api = PyrePysaApi.InContext.pyre_api pyre_in_context in
-        ReturnTypeBuilder.from_annotation ~pyre_api (Lazy.force return_type)
-      in
-      CallCallees.create
-        ~call_targets:
-          [
-            CallTargetBuilder.create_with_default_index
-              ~implicit_dunder_call:false
-              ~return_type:(Some return_type)
-              (Target.create_function name);
-          ]
-        ()
   | _ -> None)
   >>| fun call_callees -> { call_callees with recognized_call = CallCallees.RecognizedCall.True }
 
@@ -1861,23 +1966,7 @@ let resolve_callees
   let shim_target =
     shim_for_call ~pyre_in_context ~callables_to_definitions_map call
     >>= fun shim ->
-    log ~debug "Found shim for call: %a" Shims.ShimArgumentMapping.pp shim;
-    Shims.ShimArgumentMapping.create_artificial_call ~call_location:location call shim
-    |> (function
-         | Ok { Call.callee = shim_callee_expression; _ } -> Some shim_callee_expression
-         | Error error ->
-             let () =
-               Log.warning
-                 "Error applying shim argument mapping: %s for expression `%a` in `%a` at %a"
-                 error
-                 Expression.pp
-                 (Node.create_with_default_location (Expression.Call call))
-                 Target.pp
-                 caller
-                 Location.pp
-                 location
-             in
-             None)
+    create_shim_callee_expression ~debug ~callable:caller ~location ~call shim
     >>= fun shim_callee_expression ->
     resolve_regular_callees
       ~debug
@@ -2295,7 +2384,7 @@ module CallGraphBuilder = struct
        Call.callee = { Node.value = Name (Name.Identifier "getattr"); _ };
        arguments =
          [
-           { Call.Argument.value = base; _ };
+           { Call.Argument.value = base; name = None };
            {
              Call.Argument.value =
                {
@@ -2303,9 +2392,9 @@ module CallGraphBuilder = struct
                    Expression.Constant (Constant.String { StringLiteral.value = attribute; _ });
                  _;
                };
-             _;
+             name = None;
            };
-           { Call.Argument.value = _; _ };
+           { Call.Argument.value = _; name = None };
          ];
        _;
       } ->
@@ -2497,10 +2586,13 @@ module CallGraphBuilder = struct
                       resolve_stringify_call
                         ~pyre_in_context
                         ~type_of_expression_shared_memory
+                        ~outer_expression_identifier:
+                          (ExpressionIdentifier.of_format_string_stringify
+                             ~location:expression_location)
                         expression
                     with
-                    | Str -> "__str__", Origin.FormatStringImplicitStr
-                    | Repr -> "__repr__", Origin.FormatStringImplicitRepr
+                    | ResolvedStrinfigy.Str -> "__str__", Origin.FormatStringImplicitStr
+                    | ResolvedStrinfigy.Repr -> "__repr__", Origin.FormatStringImplicitRepr
                   in
                   {
                     Node.value =
@@ -2742,7 +2834,7 @@ let register_callees_on_return
 module DefineCallGraphFixpoint (Context : sig
   val builder_context : CallGraphBuilder.Context.t
 
-  val pyre_api : PyrePysaApi.ReadOnly.t
+  val pyre1_api : Analysis.PyrePysaEnvironment.ReadOnly.t
 
   val callees_at_location : DefineCallGraph.t ref (* This can be mutated. *)
 
@@ -2849,12 +2941,13 @@ struct
 
     let forward ~statement_key _ ~statement =
       let pyre_in_context =
-        PyrePysaApi.InContext.create_at_statement_scope
-          Context.pyre_api
-          ~module_qualifier:Context.builder_context.module_qualifier
-          ~define_name:(Option.value_exn Context.builder_context.define_name)
-          ~define:Context.define
-          ~statement_key
+        PyrePysaApi.InContext.Pyre1
+          (Analysis.PyrePysaEnvironment.InContext.create_at_statement_scope
+             Context.pyre1_api
+             ~module_qualifier:Context.builder_context.module_qualifier
+             ~define_name:(Option.value_exn Context.builder_context.define_name)
+             ~define:Context.define
+             ~statement_key)
       in
       forward_statement ~pyre_in_context ~statement
 
@@ -4196,6 +4289,7 @@ module HigherOrderCallGraph = struct
               ~module_qualifier:Context.module_qualifier
               ~define_name:Context.define_name
               ~define:Context.define
+              ~call_graph:Context.input_define_call_graph
               ~statement_key
           in
           analyze_statement ~pyre_in_context ~state ~statement)
@@ -4282,6 +4376,7 @@ let higher_order_call_graph_of_define
         pyre_api
         ~module_qualifier:qualifier
         ~define_name:(Target.define_name_exn callable)
+        ~call_graph:Context.input_define_call_graph
     in
     List.fold
       define.Ast.Node.value.Ast.Statement.Define.signature.parameters
@@ -4294,7 +4389,12 @@ let higher_order_call_graph_of_define
           default_value)
   in
   let returned_callables =
-    Fixpoint.forward ~cfg:(PyrePysaLogic.Cfg.create (Node.value define)) ~initial:initial_state
+    let cfg =
+      PyrePysaLogic.Cfg.create
+        ~normalize_asserts:(PyrePysaApi.ReadOnly.is_pyre1 pyre_api)
+        (Node.value define)
+    in
+    Fixpoint.forward ~cfg ~initial:initial_state
     |> Fixpoint.exit
     >>| TransferFunction.get_returned_callables
     |> Option.value ~default:CallTarget.Set.bottom
@@ -4354,10 +4454,15 @@ let call_graph_of_define
         (if check_invariants then Some (ExpressionIdentifierInvariant.create ()) else None);
     }
   in
+  let pyre1_api =
+    match pyre_api with
+    | PyrePysaApi.ReadOnly.Pyre1 pyre1_api -> pyre1_api
+    | PyrePysaApi.ReadOnly.Pyrefly _ -> failwith "cannot use pyrefly API in call_graph_of_define"
+  in
   let module DefineFixpoint = DefineCallGraphFixpoint (struct
     let builder_context = context
 
-    let pyre_api = pyre_api
+    let pyre1_api = pyre1_api
 
     let callees_at_location = callees_at_location
 
@@ -4368,10 +4473,11 @@ let call_graph_of_define
   (* Handle parameters. *)
   let () =
     let pyre_in_context =
-      PyrePysaApi.InContext.create_at_function_scope
-        pyre_api
-        ~module_qualifier:qualifier
-        ~define_name
+      PyrePysaApi.InContext.Pyre1
+        (Analysis.PyrePysaEnvironment.InContext.create_at_function_scope
+           pyre1_api
+           ~module_qualifier:qualifier
+           ~define_name)
     in
     List.iter
       define.Ast.Node.value.Ast.Statement.Define.signature.parameters
@@ -4392,7 +4498,11 @@ let call_graph_of_define
               value))
   in
 
-  let cfg = PyrePysaLogic.Cfg.create (Node.value define) in
+  let cfg =
+    PyrePysaLogic.Cfg.create
+      ~normalize_asserts:(PyrePysaApi.ReadOnly.is_pyre1 pyre_api)
+      (Node.value define)
+  in
   log ~debug:context.debug "Processing CFG:@.%a" PyrePysaLogic.Cfg.pp cfg;
   DefineFixpoint.forward ~cfg ~initial:() |> ignore;
   let call_indexer = CallGraph.Indexer.create () in
@@ -4464,8 +4574,18 @@ let call_graph_of_decorated_callable
         _;
       }
   =
+  let pyre1_api =
+    match pyre_api with
+    | PyrePysaApi.ReadOnly.Pyre1 pyre1_api -> pyre1_api
+    | PyrePysaApi.ReadOnly.Pyrefly _ ->
+        failwith "cannot use pyrefly API in call_graph_of_decorated_callable"
+  in
   let pyre_in_context =
-    PyrePysaApi.InContext.create_at_function_scope pyre_api ~module_qualifier ~define_name
+    PyrePysaApi.InContext.Pyre1
+      (Analysis.PyrePysaEnvironment.InContext.create_at_function_scope
+         pyre1_api
+         ~module_qualifier
+         ~define_name)
   in
   let resolve_callees ~call_graph expression =
     let context =
@@ -4755,9 +4875,11 @@ let build_whole_program_call_graph_for_pyrefly
     ~scheduler
     ~scheduler_policies
     ~pyrefly_api
+    ~callables_to_definitions_map
     ~callables_to_decorators_map
     ~override_graph
     ~store_shared_memory
+    ~attribute_targets
     ~skip_analysis_targets
     ~definitions
     ~create_dependency_for
@@ -4822,22 +4944,265 @@ let build_whole_program_call_graph_for_pyrefly
            ())
       call_graph
   in
+  let add_targets callable call_graph =
+    match CallablesSharedMemory.ReadOnly.get_define callables_to_definitions_map callable with
+    | AstResult.Some
+        {
+          CallablesSharedMemory.DefineAndQualifier.define = { Node.location; value = define };
+          qualifier;
+        } ->
+        let allow_modifier = function
+          | PyrePysaApi.TypeModifier.Optional
+          | PyrePysaApi.TypeModifier.Coroutine
+          | PyrePysaApi.TypeModifier.Awaitable
+          | PyrePysaApi.TypeModifier.ReadOnly
+          | PyrePysaApi.TypeModifier.TypeVariableBound ->
+              true
+          | PyrePysaApi.TypeModifier.Type -> false
+        in
+        let is_class_instance modifiers = List.for_all ~f:allow_modifier modifiers in
+        let is_class_type modifiers =
+          match List.rev modifiers with
+          | PyrePysaApi.TypeModifier.Type :: rest -> List.for_all ~f:allow_modifier rest
+          | _ -> false
+        in
+        let map_attribute_access
+            ~location:attribute_access_location
+            ~attribute_access:
+              ({ Ast.Expression.Name.Attribute.base; attribute; _ } as attribute_access)
+            call_graph
+          =
+          let targets =
+            PyreflyApi.ReadOnly.get_type_of_expression
+              pyrefly_api
+              ~qualifier
+              ~location:(Ast.Node.location base)
+            >>| PyreflyApi.ReadOnly.Type.get_class_names pyrefly_api
+            >>| (fun { PyrePysaApi.ClassNamesFromType.classes; _ } -> classes)
+            >>| List.map ~f:(fun { PyrePysaApi.ClassWithModifiers.modifiers; class_name } ->
+                    let parents =
+                      class_name :: PyreflyApi.ReadOnly.class_mro pyrefly_api class_name
+                    in
+                    if is_class_instance modifiers then
+                      List.map
+                        ~f:(fun class_name -> Format.sprintf "%s.%s" class_name attribute)
+                        parents
+                    else if is_class_type modifiers then
+                      List.map
+                        ~f:(fun class_name -> Format.sprintf "%s.__class__.%s" class_name attribute)
+                        parents
+                    else
+                      [])
+            >>| List.concat
+            >>| List.map ~f:Reference.create
+            >>| List.map ~f:Target.create_object
+            >>| List.filter ~f:(fun target -> Target.Set.mem target attribute_targets)
+            >>| List.map ~f:(fun target -> CallGraph.CallTarget.create target)
+            |> Option.value ~default:[]
+          in
+          if not (List.is_empty targets) then
+            DefineCallGraph.add_attribute_access_callees
+              ~debug:false
+              ~caller:callable
+              ~on_existing_callees:DefineCallGraph.OnExistingCallees.Join
+              ~location:attribute_access_location
+              ~attribute_access
+              ~callees:(AttributeAccessCallees.create ~global_targets:targets ~is_attribute:true ())
+              call_graph
+          else
+            call_graph
+        in
+        let add_shim_target ~debug ~expression_location ~call ~arguments call_graph =
+          let fetch_regular_targets call_callees =
+            call_callees.CallCallees.call_targets
+            |> List.rev_append call_callees.CallCallees.init_targets
+            |> List.rev_append call_callees.CallCallees.new_targets
+            |> List.map ~f:CallTarget.target
+          in
+          DefineCallGraph.resolve_call ~location:expression_location ~call call_graph
+          >>= fun original_call_callees ->
+          let { Node.value = callee_expression; location = callee_location } = call.Call.callee in
+          let nested_callees =
+            match callee_expression with
+            | Expression.Call nested_call ->
+                let callees =
+                  DefineCallGraph.resolve_call
+                    ~location:callee_location
+                    ~call:nested_call
+                    call_graph
+                  >>| fetch_regular_targets
+                in
+                SpecialCallResolution.NestedCallees.NestedCall (Option.value ~default:[] callees)
+            | Expression.Name
+                (Name.Attribute
+                  {
+                    Name.Attribute.base =
+                      { Node.value = Expression.Name (Name.Attribute attribute_access); location };
+                    _;
+                  }) ->
+                let callees =
+                  DefineCallGraph.resolve_attribute_access ~attribute_access ~location call_graph
+                  >>| fun { AttributeAccessCallees.if_called; property_targets; _ } ->
+                  fetch_regular_targets if_called
+                  |> List.rev_append (List.map ~f:CallTarget.target property_targets)
+                in
+                SpecialCallResolution.NestedCallees.NestedAttributeAccess
+                  (Option.value ~default:[] callees)
+            | _ -> SpecialCallResolution.NestedCallees.None
+          in
+          let () =
+            log
+              ~debug
+              "Shimming call: `%a`. Original callees: `%a`"
+              Call.pp
+              call
+              CallCallees.pp
+              original_call_callees
+          in
+          shim_for_call_for_pyrefly
+            ~callees:(fetch_regular_targets original_call_callees)
+            ~nested_callees
+            ~arguments
+          >>= fun ({ Shims.ShimArgumentMapping.callee = shim_target_callee; _ } as shim) ->
+          create_shim_callee_expression ~debug ~callable ~location ~call shim
+          >>= fun ({ Node.value = shim_callee; location = shim_callee_location } as
+                  shim_callee_expression) ->
+          let () =
+            log
+              ~debug
+              "Shimmed callee: `%a` at `%a`"
+              Expression.pp_expression
+              shim_callee
+              Location.pp
+              shim_callee_location
+          in
+          let set_shim_target ~call_targets call_graph =
+            if List.is_empty call_targets then
+              let () =
+                log
+                  ~debug
+                  "Failed to resolve callees for shimmed callee %a"
+                  Expression.pp
+                  shim_callee_expression
+              in
+              call_graph
+            else
+              let shim_target =
+                Some { ShimTarget.call_targets; decorated_targets = []; argument_mapping = shim }
+              in
+              DefineCallGraph.set_call_callees
+                ~error_if_new:false
+                ~location:expression_location
+                ~call
+                ~callees:{ original_call_callees with CallCallees.shim_target }
+                call_graph
+          in
+          match shim_callee, shim_target_callee, nested_callees with
+          | _, Shims.ShimArgumentMapping.Target.StaticMethod { class_name; method_name }, _ ->
+              (* We just want to call this method, regardless of whether it exists. *)
+              Some
+                (set_shim_target
+                   ~call_targets:[CallTarget.create (Target.create_method class_name method_name)]
+                   call_graph)
+          | ( Expression.Name (Name.Attribute { Name.Attribute.attribute; _ }),
+              Shims.ShimArgumentMapping.Target.AppendAttribute
+                {
+                  inner =
+                    Shims.ShimArgumentMapping.Target.GetAttributeBase
+                      {
+                        inner =
+                          Shims.ShimArgumentMapping.Target.GetAttributeBase
+                            { inner = Shims.ShimArgumentMapping.Target.Callee; _ };
+                        _;
+                      };
+                  attribute = append_attribute;
+                },
+              SpecialCallResolution.NestedCallees.NestedAttributeAccess nested_callees )
+            when String.equal attribute append_attribute ->
+              (* This case is for `PromoteQueue`. *)
+              let call_targets =
+                nested_callees
+                |> List.filter_map ~f:(function
+                       | Target.Regular (Method { class_name; _ }) ->
+                           (* Given call `x.y.original_attribute(...)`, we want to resolve callees
+                              on the made-up call `x.new_attribute(...)`. Here we fetch callees on
+                              `x.y` and then replace `y` with `new_attribute`. *)
+                           Some (Target.create_method (Reference.create class_name) attribute)
+                       | _ -> None)
+                |> List.map ~f:(CallTarget.create ~implicit_receiver:true)
+              in
+              Some (set_shim_target ~call_targets call_graph)
+          | Expression.Name (Name.Identifier identifier), _, _ ->
+              DefineCallGraph.resolve_identifier
+                ~location:shim_callee_location
+                ~identifier
+                call_graph
+              >>| fun { IdentifierCallees.if_called = { CallCallees.call_targets; _ }; _ } ->
+              set_shim_target ~call_targets call_graph
+          | Expression.Name (Name.Attribute attribute_access), _, _ ->
+              DefineCallGraph.resolve_attribute_access
+                ~location:shim_callee_location
+                ~attribute_access
+                call_graph
+              >>| fun { AttributeAccessCallees.if_called = { CallCallees.call_targets; _ }; _ } ->
+              set_shim_target ~call_targets call_graph
+          | shim_callee, _, _ ->
+              (* If `shim_callee` does not refer to an existing AST node (i.e., it is a made-up
+                 one), then we give up adding a shim target. Otherwise we fetch callees on them and
+                 use those as shim targets -- see the above cases. *)
+              let () =
+                log
+                  ~debug
+                  "Unknown shim callee (probably a made-up AST node): `%s`"
+                  (Expression.show_expression shim_callee)
+              in
+              Some call_graph
+        in
+        let module Visitor = Ast.Visit.Make (struct
+          type t = DefineCallGraph.t
+
+          let debug =
+            Ast.Statement.Define.dump define || Ast.Statement.Define.dump_call_graph define
+
+
+          let expression call_graph { Node.value = expression; location = expression_location } =
+            match expression with
+            | Expression.Name (Ast.Expression.Name.Attribute attribute_access) ->
+                (* For each attribute access, check the base and determine whether the attribute has
+                   a user-provided model. *)
+                map_attribute_access ~location:expression_location ~attribute_access call_graph
+            | Expression.Call ({ Call.arguments; _ } as call) ->
+                add_shim_target ~debug ~expression_location ~call ~arguments call_graph
+                |> Option.value ~default:call_graph
+            | _ -> call_graph
+
+
+          let statement call_graph _ = call_graph
+        end)
+        in
+        Visitor.visit call_graph (Source.create [Node.create ~location (Statement.Define define)])
+    | _ -> call_graph
+  in
   let transform_call_graph _ callable call_graph =
     let call_indexer = CallGraph.Indexer.create () in
     let call_graph =
       if Target.is_decorated callable then
         transform_redirected_call_graph callable call_graph
       else
-        DefineCallGraph.map_target
-          ~f:
-            (CallableToDecoratorsMap.SharedMemory.redirect_to_decorated callables_to_decorators_map)
-          ~map_call_if:CallCallees.should_redirect_to_decorated
-          ~map_return_if:(fun _ -> false)
-          call_graph
+        call_graph
+        |> DefineCallGraph.map_target
+             ~f:
+               (CallableToDecoratorsMap.SharedMemory.redirect_to_decorated
+                  callables_to_decorators_map)
+             ~map_call_if:CallCallees.should_redirect_to_decorated
+             ~map_return_if:(fun _ -> false)
+        |> add_targets callable
     in
     call_graph
     |> DefineCallGraph.dedup_and_sort
     |> DefineCallGraph.filter_empty_attribute_access
+    |> DefineCallGraph.filter_empty_identifier
+    |> DefineCallGraph.filter_empty_format_string_stringify
     |> DefineCallGraph.regenerate_call_indices ~indexer:call_indexer
   in
   let method_has_overrides method_name =
@@ -4854,6 +5219,7 @@ let build_whole_program_call_graph_for_pyrefly
     ~scheduler_policies
     ~method_has_overrides
     ~store_shared_memory
+    ~attribute_targets
     ~skip_analysis_targets
     ~definitions
     ~create_dependency_for
@@ -4901,8 +5267,10 @@ let build_whole_program_call_graph
           ~scheduler
           ~scheduler_policies
           ~pyrefly_api
+          ~callables_to_definitions_map
           ~callables_to_decorators_map
           ~override_graph
+          ~attribute_targets
           ~store_shared_memory
           ~skip_analysis_targets
           ~definitions

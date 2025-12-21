@@ -77,81 +77,21 @@ let compute_define_call_graph
       definitions
   in
   let call_graph =
-    match pyre_api with
-    | PyrePysaApi.ReadOnly.Pyre1 _ ->
-        let source = TestHelper.source_from_qualifier ~pyre_api module_name in
-        let define =
-          find_define_exn
-            ~define_name:(Target.define_name_exn callable |> Reference.show)
-            ~module_name
-            source
-        in
-        CallGraphBuilder.call_graph_of_define
-          ~static_analysis_configuration
-          ~pyre_api
-          ~override_graph:
-            (Some
-               (Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory))
-          ~attribute_targets:
-            (object_targets |> List.map ~f:Target.from_regular |> Target.HashSet.of_list)
-          ~callables_to_definitions_map:
-            (CallablesSharedMemory.ReadOnly.read_only callables_to_definitions_map)
-          ~callables_to_decorators_map:
-            (CallableToDecoratorsMap.SharedMemory.read_only callables_to_decorators_map)
-          ~type_of_expression_shared_memory
-          ~check_invariants:true
-          ~qualifier:module_name
-          ~callable
-          ~define
-    | PyrePysaApi.ReadOnly.Pyrefly _ ->
-        let { CallGraph.SharedMemory.define_call_graphs; _ } =
-          CallGraphBuilder.build_whole_program_call_graph
-            ~scheduler
-            ~static_analysis_configuration
-            ~pyre_api
-            ~resolve_module_path:None
-            ~callables_to_definitions_map:
-              (CallablesSharedMemory.ReadOnly.read_only callables_to_definitions_map)
-            ~callables_to_decorators_map:
-              (CallableToDecoratorsMap.SharedMemory.read_only callables_to_decorators_map)
-            ~type_of_expression_shared_memory
-            ~override_graph:
-              (Some
-                 (Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory))
-            ~store_shared_memory:true
-            ~attribute_targets:
-              (object_targets |> List.map ~f:Target.from_regular |> Target.Set.of_list)
-            ~skip_analysis_targets:(Target.HashSet.create ())
-            ~check_invariants:true
-            ~definitions:[callable]
-            ~create_dependency_for:CallGraph.AllTargetsUseCase.Everything
-        in
-        let strip_builtins_from_string reference =
-          reference
-          |> Reference.create
-          |> Interprocedural.PyreflyApi.strip_builtins_prefix
-          |> Reference.show
-        in
-        let strip_builtins_from_target = function
-          | Target.Regular (Target.Regular.Method { class_name; method_name; kind }) ->
-              Target.Regular
-                (Target.Regular.Method
-                   { class_name = strip_builtins_from_string class_name; method_name; kind })
-          | target -> target
-        in
-        CallGraph.SharedMemory.ReadOnly.get
-          (CallGraph.SharedMemory.read_only define_call_graphs)
-          ~cache:false
-          ~callable
-        |> Option.value_exn
-        |> CallGraph.DefineCallGraph.map_target
-             ~f:strip_builtins_from_target
-             ~map_call_if:(fun _ -> true)
-             ~map_return_if:(fun _ -> true)
-        |> CallGraph.DefineCallGraph.map_receiver_class
-             ~f:strip_builtins_from_string
-             ~map_call_if:(fun _ -> true)
-             ~map_return_if:(fun _ -> true)
+    TestHelper.call_graph_of_callable
+      ~pyre_api
+      ~static_analysis_configuration
+      ~override_graph:
+        (Some (Interprocedural.OverrideGraph.SharedMemory.read_only override_graph_shared_memory))
+      ~object_targets:(List.map ~f:Target.from_regular object_targets)
+      ~callables_to_definitions_map:
+        (CallablesSharedMemory.ReadOnly.read_only callables_to_definitions_map)
+      ~callables_to_decorators_map:
+        (CallableToDecoratorsMap.SharedMemory.read_only callables_to_decorators_map)
+      ~type_of_expression_shared_memory
+      ~check_invariants:true
+      ~module_name
+      ~callable
+      ~normalize_to_pyre1:true
   in
   OverrideGraph.SharedMemory.cleanup override_graph_shared_memory;
   call_graph, callables_to_definitions_map, type_of_expression_shared_memory
@@ -175,7 +115,7 @@ let assert_call_graph_of_define
   let module_name, pyre_api, configuration =
     TestHelper.setup_single_py_file
       ~force_pyre1:skip_for_pyrefly
-      ~requires_type_of_expressions:false
+      ~requires_type_of_expressions:true
       ~file_name:"test.py"
       ~context
       ~source
@@ -301,6 +241,32 @@ let assert_higher_order_call_graph_of_define
     ~pp_diff:(Test.diff ~print:HigherOrderCallGraphForTest.pp)
     expected
     actual
+
+
+let class_identifier_without_constructors class_name =
+  ExpressionCallees.from_identifier
+    (IdentifierCallees.create
+       ~if_called:
+         (CallCallees.create
+            ~init_targets:
+              [
+                CallTarget.create_regular
+                  ~implicit_receiver:true
+                  ~return_type:(Some ReturnType.unknown)
+                  ~receiver_class:class_name
+                  (Target.Regular.Method
+                     { class_name = "object"; method_name = "__init__"; kind = Normal });
+              ]
+            ~new_targets:
+              [
+                CallTarget.create_regular
+                  ~return_type:(Some ReturnType.unknown)
+                  ~is_static_method:true
+                  (Target.Regular.Method
+                     { class_name = "object"; method_name = "__new__"; kind = Normal });
+              ]
+            ())
+       ())
 
 
 let test_call_graph_of_define =
@@ -614,6 +580,20 @@ let test_call_graph_of_define =
                         ]
                       ()) );
              ]
+           ~pyrefly_expected:
+             [
+               ( "5:2-5:7",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create
+                            ~implicit_receiver:true
+                            ~receiver_class:"test.D"
+                            (Target.create_override !&"test.C" "m");
+                        ]
+                      ()) );
+             ]
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
@@ -686,6 +666,37 @@ let test_call_graph_of_define =
            ~define_name:"test.foo"
            ~expected:
              [
+               ( "5:3-5:16",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create
+                            ~implicit_receiver:true
+                            ~return_type:(Some ReturnType.bool)
+                            ~receiver_class:"test.C"
+                            (Target.create_method !&"test.C" "__call__");
+                        ]
+                      ()) );
+             ]
+           ~pyrefly_expected:
+             [
+               ( "5:3-5:4|identifier|c",
+                 ExpressionCallees.from_identifier
+                   (IdentifierCallees.create
+                      ~if_called:
+                        (CallCallees.create
+                           ~call_targets:
+                             [
+                               CallTarget.create
+                                 ~implicit_receiver:true
+                                 ~implicit_dunder_call:true
+                                 ~return_type:(Some ReturnType.unknown)
+                                 ~receiver_class:"test.C"
+                                 (Target.create_method !&"test.C" "__call__");
+                             ]
+                           ())
+                      ()) );
                ( "5:3-5:16",
                  ExpressionCallees.from_call
                    (CallCallees.create
@@ -1035,6 +1046,39 @@ let test_call_graph_of_define =
                         ]
                       ()) );
              ]
+           ~pyrefly_expected:
+             [
+               "6:2-6:3|identifier|C", class_identifier_without_constructors "test.C";
+               ( "6:2-6:7",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~return_type:(Some ReturnType.integer)
+                            ~is_class_method:true
+                            ~receiver_class:"test.C"
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "f"; kind = Normal });
+                        ]
+                      ()) );
+               ( "7:2-7:7",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~return_type:(Some ReturnType.integer)
+                            ~is_class_method:true
+                            ~index:1
+                            ~receiver_class:"test.C"
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "f"; kind = Normal });
+                        ]
+                      ()) );
+             ]
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
@@ -1180,6 +1224,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
+           ~skip_for_pyrefly:false
            ~_migrated_to_pyrefly:true
            ~source:
              {|
@@ -1205,9 +1250,34 @@ let test_call_graph_of_define =
                         ]
                       ()) );
              ]
+           ~pyrefly_expected:
+             [
+               ( "6:2-6:9",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            (Target.Regular.Function { name = "builtins.repr"; kind = Normal });
+                        ]
+                      ()) );
+               ( "6:2-6:9|artificial-call|repr-call",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~receiver_class:"test.C"
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "__repr__"; kind = Normal });
+                        ]
+                      ()) );
+             ]
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
+           ~skip_for_pyrefly:false
            ~_migrated_to_pyrefly:false
            ~source:
              {|
@@ -1278,110 +1348,76 @@ let test_call_graph_of_define =
                            })
                       ()) );
              ]
-           ();
-      labeled_test_case __FUNCTION__ __LINE__
-      @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
-           ~source:
-             {|
-      from builtins import to_callable_target
-
-      @to_callable_target
-      def callable_target(arg):
-        pass
-
-      def foo():
-        callable_target.async_schedule(1)
-      |}
-           ~define_name:"test.foo"
-           ~expected:
+           ~pyrefly_expected:
              [
-               ( "9:2-9:17|artificial-attribute-access|qualification:test.callable_target",
-                 ExpressionCallees.from_attribute_access
-                   (AttributeAccessCallees.create
+               ( "7:10-7:11|identifier|f",
+                 ExpressionCallees.from_identifier
+                   (IdentifierCallees.create
                       ~if_called:
                         (CallCallees.create
                            ~call_targets:
                              [
                                CallTarget.create_regular
-                                 ~return_type:(Some ReturnType.integer)
-                                 (Target.Regular.Function
-                                    { name = "test.callable_target"; kind = Decorated });
+                                 (Target.Regular.Function { name = "test.f"; kind = Normal });
                              ]
                            ())
                       ()) );
-               ( "9:2-9:35",
+               ( "7:2-7:15",
                  ExpressionCallees.from_call
                    (CallCallees.create
+                      ~new_targets:
+                        [
+                          CallTarget.create_regular
+                            ~is_static_method:true
+                            (Target.Regular.Method
+                               {
+                                 class_name = "functools.partial";
+                                 method_name = "__new__";
+                                 kind = Normal;
+                               });
+                        ]
+                      ~init_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            (Target.Regular.Method
+                               { class_name = "object"; method_name = "__init__"; kind = Normal });
+                        ]
+                      ~higher_order_parameters:
+                        (HigherOrderParameterMap.from_list
+                           [
+                             {
+                               index = 0;
+                               call_targets =
+                                 [
+                                   CallTarget.create_regular
+                                     (Target.Regular.Function { name = "test.f"; kind = Normal });
+                                 ];
+                               unresolved = CallGraph.Unresolved.False;
+                             };
+                           ])
                       ~shim_target:
                         (Some
                            {
                              ShimTarget.call_targets =
                                [
                                  CallTarget.create_regular
-                                   (Target.Regular.Function
-                                      { name = "test.callable_target"; kind = Decorated });
+                                   (Target.Regular.Function { name = "test.f"; kind = Normal });
                                ];
                              decorated_targets = [];
                              argument_mapping =
                                {
-                                 ShimArgumentMapping.identifier = "async_task";
-                                 callee =
-                                   ShimArgumentMapping.Target.GetAttributeBase
-                                     {
-                                       inner = ShimArgumentMapping.Target.Callee;
-                                       attribute = "async_schedule";
-                                     };
+                                 ShimArgumentMapping.identifier = "functools.partial";
+                                 callee = ShimArgumentMapping.Target.Argument { index = 0 };
                                  arguments =
                                    [
                                      {
                                        ShimArgumentMapping.Argument.name = None;
-                                       value = ShimArgumentMapping.Target.Argument { index = 0 };
+                                       value = ShimArgumentMapping.Target.Argument { index = 1 };
                                      };
                                    ];
                                };
                            })
-                      ~unresolved:
-                        (Unresolved.True
-                           (Unresolved.BypassingDecorators Unresolved.CannotResolveExports))
-                      ()) );
-             ]
-           ();
-      labeled_test_case __FUNCTION__ __LINE__
-      @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
-           ~source:
-             {|
-      from builtins import to_callable_target
-
-      class Foo:
-        @to_callable_target
-        def callable_target(arg):
-          pass
-
-      def bar(foo: Foo):
-        foo.callable_target(1)
-      |}
-           ~define_name:"test.bar"
-           ~expected:
-             [
-               ( "10:2-10:24",
-                 ExpressionCallees.from_call
-                   (CallCallees.create
-                      ~call_targets:
-                        [
-                          CallTarget.create_regular
-                            ~implicit_receiver:true
-                            ~implicit_dunder_call:true
-                            ~return_type:(Some ReturnType.integer)
-                            ~receiver_class:"TestCallableTarget"
-                            (Target.Regular.Method
-                               {
-                                 class_name = "TestCallableTarget";
-                                 method_name = "__call__";
-                                 kind = Normal;
-                               });
-                        ]
                       ()) );
              ]
            ();
@@ -1495,6 +1531,21 @@ let test_call_graph_of_define =
                         ]
                       ()) );
              ]
+           ~pyrefly_expected:
+             [
+               "11:2-11:3|identifier|C", class_identifier_without_constructors "test.C";
+               ( "11:2-11:11",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~return_type:(Some ReturnType.integer)
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "f"; kind = Normal });
+                        ]
+                      ()) );
+             ]
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
@@ -1551,6 +1602,53 @@ let test_call_graph_of_define =
                                { class_name = "test.D"; method_name = "f"; kind = Normal });
                         ]
                       ()) );
+               ( "18:2-18:7",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~is_class_method:true
+                            ~receiver_class:"test.D"
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "g"; kind = Normal });
+                        ]
+                      ()) );
+             ]
+           ~pyrefly_expected:
+             [
+               "16:2-16:3|identifier|C", class_identifier_without_constructors "test.C";
+               ( "16:2-16:11",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~return_type:(Some ReturnType.integer)
+                            ~is_class_method:true
+                            ~receiver_class:"test.C"
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "f"; kind = Normal });
+                        ]
+                      ()) );
+               "17:2-17:3|identifier|D", class_identifier_without_constructors "test.D";
+               ( "17:2-17:7",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~return_type:(Some ReturnType.integer)
+                            ~is_class_method:true
+                            ~receiver_class:"test.D"
+                            (Target.Regular.Method
+                               { class_name = "test.D"; method_name = "f"; kind = Normal });
+                        ]
+                      ()) );
+               "18:2-18:3|identifier|D", class_identifier_without_constructors "test.D";
                ( "18:2-18:7",
                  ExpressionCallees.from_call
                    (CallCallees.create
@@ -1648,7 +1746,7 @@ let test_call_graph_of_define =
                              };
                            ])
                       ()) );
-               ( "9:6-9:9",
+               ( "9:6-9:9|identifier|bar",
                  ExpressionCallees.from_identifier
                    (IdentifierCallees.create
                       ~if_called:
@@ -1782,7 +1880,7 @@ let test_call_graph_of_define =
                              };
                            ])
                       ()) );
-               ( "13:6-13:9",
+               ( "13:6-13:9|identifier|foo",
                  ExpressionCallees.from_identifier
                    (IdentifierCallees.create
                       ~if_called:
@@ -1795,7 +1893,7 @@ let test_call_graph_of_define =
                              ]
                            ())
                       ()) );
-               ( "13:11-13:14",
+               ( "13:11-13:14|identifier|bar",
                  ExpressionCallees.from_identifier
                    (IdentifierCallees.create
                       ~if_called:
@@ -2015,7 +2113,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       from functools import lru_cache
@@ -2045,7 +2143,7 @@ let test_call_graph_of_define =
       (* Imprecise call graph due to `@lru_cache` and inner functions. *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       from functools import lru_cache
@@ -2079,7 +2177,7 @@ let test_call_graph_of_define =
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
            ~skip_for_pyrefly:false
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       from functools import lru_cache
@@ -2503,6 +2601,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
+           ~skip_for_pyrefly:false
            ~_migrated_to_pyrefly:true
            ~source:
              {|
@@ -2518,9 +2617,48 @@ let test_call_graph_of_define =
           d[s].foo()
       |}
            ~define_name:"test.calls_d_method"
+           ~object_targets:[Target.Regular.Object "test.d"]
            ~expected:
              [
                ( "11:2-11:3|identifier|$local_test$d",
+                 ExpressionCallees.from_identifier
+                   (IdentifierCallees.create
+                      ~global_targets:
+                        [
+                          CallTarget.create_regular
+                            ~return_type:None
+                            (Target.Regular.Object "test.d");
+                        ]
+                      ()) );
+               ( "11:2-11:6|artificial-call|subscript-get-item",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~receiver_class:"dict"
+                            (Target.Regular.Method
+                               { class_name = "dict"; method_name = "__getitem__"; kind = Normal });
+                        ]
+                      ()) );
+               ( "11:2-11:12",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~is_class_method:true
+                            ~receiver_class:"test.C"
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "foo"; kind = Normal });
+                        ]
+                      ()) );
+             ]
+           ~pyrefly_expected:
+             [
+               ( "11:2-11:3|identifier|d",
                  ExpressionCallees.from_identifier
                    (IdentifierCallees.create
                       ~global_targets:
@@ -2741,6 +2879,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
+           ~skip_for_pyrefly:false
            ~_migrated_to_pyrefly:true
            ~source:
              {|
@@ -2768,6 +2907,35 @@ let test_call_graph_of_define =
                           ~receiver_class:"str"
                           (Target.Regular.Method
                              { class_name = "str"; method_name = "__str__"; kind = Normal });
+                      ]) );
+               ( "7:18-7:23",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~receiver_class:"test.C"
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "m"; kind = Normal });
+                        ]
+                      ()) );
+             ]
+           ~pyrefly_expected:
+             [
+               ( "7:9-7:25|format-string-artificial",
+                 ExpressionCallees.from_format_string_artificial
+                   (FormatStringArtificialCallees.from_f_string_targets
+                      [CallTarget.create Target.ArtificialTargets.format_string]) );
+               ( "7:18-7:23|format-string-stringify",
+                 ExpressionCallees.from_format_string_stringify
+                   (FormatStringStringifyCallees.from_stringify_targets
+                      [
+                        CallTarget.create_regular
+                          ~implicit_receiver:true
+                          ~receiver_class:"str"
+                          (Target.Regular.Method
+                             { class_name = "str"; method_name = "__format__"; kind = Normal });
                       ]) );
                ( "7:18-7:23",
                  ExpressionCallees.from_call
@@ -3693,7 +3861,10 @@ let test_call_graph_of_define =
                      AttributeAccessCallees.property_targets = [];
                      global_targets = [];
                      is_attribute = false;
-                     if_called = CallCallees.empty;
+                     if_called =
+                       CallCallees.create
+                         ~unresolved:(Unresolved.True Unresolved.EmptyPyreflyTarget)
+                         ();
                    } );
              ]
            ();
@@ -4287,6 +4458,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
+           ~skip_for_pyrefly:false
            ~_migrated_to_pyrefly:true
            ~cmp:DefineCallGraphForTest.equal_ignoring_types
            ~source:{|
@@ -4296,7 +4468,56 @@ let test_call_graph_of_define =
            ~define_name:"test.foo"
            ~expected:
              [
-               ( "3:9-3:15|artificial-call|str-call-to-dunder-str",
+               ( "3:9-3:15|artificial-call|str-call-to-dunder-method",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~receiver_class:"Exception"
+                            (Target.Regular.Method
+                               {
+                                 class_name = "BaseException";
+                                 method_name = "__str__";
+                                 kind = Normal;
+                               });
+                        ]
+                      ()) );
+               ( "3:9-3:25|artificial-call|binary",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~receiver_class:"str"
+                            (Target.Regular.Method
+                               { class_name = "str"; method_name = "__add__"; kind = Normal });
+                        ]
+                      ()) );
+             ]
+           ~pyrefly_expected:
+             [
+               ( "3:9-3:15",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~new_targets:
+                        [
+                          CallTarget.create_regular
+                            ~is_static_method:true
+                            (Target.Regular.Method
+                               { class_name = "str"; method_name = "__new__"; kind = Normal });
+                        ]
+                      ~init_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            (Target.Regular.Method
+                               { class_name = "object"; method_name = "__init__"; kind = Normal });
+                        ]
+                      ()) );
+               ( "3:9-3:15|artificial-call|str-call-to-dunder-method",
                  ExpressionCallees.from_call
                    (CallCallees.create
                       ~call_targets:
@@ -4679,7 +4900,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
        import typing
@@ -4904,13 +5125,14 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
+           ~skip_for_pyrefly:false
            ~_migrated_to_pyrefly:false
            ~source:
              {|
       from abc import abstractclassmethod
       from typing import TypeVar, Generic
+      import functools
       TInput = TypeVar("TInput")
-
       class C(Generic[TInput]):
         @abstractclassmethod
         def f(cls, arg: TInput) -> TInput:
@@ -5033,6 +5255,317 @@ let test_call_graph_of_define =
                                    ~implicit_receiver:true
                                    ~is_class_method:true
                                    ~receiver_class:"test.C"
+                                   ~index:1
+                                   (Target.Regular.Method
+                                      { class_name = "test.C"; method_name = "h"; kind = Normal });
+                               ];
+                             decorated_targets = [];
+                             argument_mapping =
+                               {
+                                 ShimArgumentMapping.identifier = "functools.partial";
+                                 callee = ShimArgumentMapping.Target.Argument { index = 0 };
+                                 arguments =
+                                   [
+                                     {
+                                       ShimArgumentMapping.Argument.name = None;
+                                       value = ShimArgumentMapping.Target.Argument { index = 1 };
+                                     };
+                                   ];
+                               };
+                           })
+                      ()) );
+             ]
+           ~pyrefly_expected:
+             [
+               ( "15:4-15:14",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~is_class_method:true
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "f"; kind = Normal });
+                        ]
+                      ()) );
+               ( "15:4-15:7|identifier|cls",
+                 ExpressionCallees.from_identifier
+                   (IdentifierCallees.create
+                      ~if_called:
+                        (CallCallees.create
+                           ~new_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~is_static_method:true
+                                 (Target.Regular.Method
+                                    {
+                                      class_name = "object";
+                                      method_name = "__new__";
+                                      kind = Normal;
+                                    });
+                             ]
+                           ~init_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~implicit_receiver:true
+                                 ~receiver_class:"test.C"
+                                 (Target.Regular.Method
+                                    {
+                                      class_name = "object";
+                                      method_name = "__init__";
+                                      kind = Normal;
+                                    });
+                             ]
+                           ())
+                      ()) );
+               ( "16:22-16:25|identifier|cls",
+                 ExpressionCallees.from_identifier
+                   (IdentifierCallees.create
+                      ~if_called:
+                        (CallCallees.create
+                           ~new_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~is_static_method:true
+                                 (Target.Regular.Method
+                                    {
+                                      class_name = "object";
+                                      method_name = "__new__";
+                                      kind = Normal;
+                                    });
+                             ]
+                           ~init_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~implicit_receiver:true
+                                 ~receiver_class:"test.C"
+                                 (Target.Regular.Method
+                                    {
+                                      class_name = "object";
+                                      method_name = "__init__";
+                                      kind = Normal;
+                                    });
+                             ]
+                           ())
+                      ()) );
+               ( "16:22-16:27",
+                 ExpressionCallees.from_attribute_access
+                   (AttributeAccessCallees.create
+                      ~is_attribute:false
+                      ~if_called:
+                        (CallCallees.create
+                           ~call_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~implicit_receiver:true
+                                 ~is_class_method:true
+                                 (Target.Regular.Method
+                                    { class_name = "test.C"; method_name = "f"; kind = Normal });
+                             ]
+                           ())
+                      ()) );
+               ( "16:4-16:33",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~new_targets:
+                        [
+                          CallTarget.create_regular
+                            ~is_static_method:true
+                            (Target.Regular.Method
+                               {
+                                 class_name = "functools.partial";
+                                 method_name = "__new__";
+                                 kind = Normal;
+                               });
+                        ]
+                      ~init_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            (Target.Regular.Method
+                               { class_name = "object"; method_name = "__init__"; kind = Normal });
+                        ]
+                      ~higher_order_parameters:
+                        (HigherOrderParameterMap.from_list
+                           [
+                             {
+                               index = 0;
+                               call_targets =
+                                 [
+                                   CallTarget.create_regular
+                                     ~implicit_receiver:true
+                                     ~is_class_method:true
+                                     ~index:1
+                                     (Target.Regular.Method
+                                        { class_name = "test.C"; method_name = "f"; kind = Normal });
+                                 ];
+                               unresolved = CallGraph.Unresolved.False;
+                             };
+                           ])
+                      ~shim_target:
+                        (Some
+                           {
+                             ShimTarget.call_targets =
+                               [
+                                 CallTarget.create_regular
+                                   ~implicit_receiver:true
+                                   ~is_class_method:true
+                                   ~index:1
+                                   (Target.Regular.Method
+                                      { class_name = "test.C"; method_name = "f"; kind = Normal });
+                               ];
+                             decorated_targets = [];
+                             argument_mapping =
+                               {
+                                 ShimArgumentMapping.identifier = "functools.partial";
+                                 callee = ShimArgumentMapping.Target.Argument { index = 0 };
+                                 arguments =
+                                   [
+                                     {
+                                       ShimArgumentMapping.Argument.name = None;
+                                       value = ShimArgumentMapping.Target.Argument { index = 1 };
+                                     };
+                                   ];
+                               };
+                           })
+                      ()) );
+               ( "17:4-17:14",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~call_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~is_class_method:true
+                            (Target.Regular.Method
+                               { class_name = "test.C"; method_name = "h"; kind = Normal });
+                        ]
+                      ()) );
+               ( "17:4-17:7|identifier|cls",
+                 ExpressionCallees.from_identifier
+                   (IdentifierCallees.create
+                      ~if_called:
+                        (CallCallees.create
+                           ~new_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~is_static_method:true
+                                 (Target.Regular.Method
+                                    {
+                                      class_name = "object";
+                                      method_name = "__new__";
+                                      kind = Normal;
+                                    });
+                             ]
+                           ~init_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~implicit_receiver:true
+                                 ~receiver_class:"test.C"
+                                 (Target.Regular.Method
+                                    {
+                                      class_name = "object";
+                                      method_name = "__init__";
+                                      kind = Normal;
+                                    });
+                             ]
+                           ())
+                      ()) );
+               ( "18:22-18:25|identifier|cls",
+                 ExpressionCallees.from_identifier
+                   (IdentifierCallees.create
+                      ~if_called:
+                        (CallCallees.create
+                           ~new_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~is_static_method:true
+                                 (Target.Regular.Method
+                                    {
+                                      class_name = "object";
+                                      method_name = "__new__";
+                                      kind = Normal;
+                                    });
+                             ]
+                           ~init_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~implicit_receiver:true
+                                 ~receiver_class:"test.C"
+                                 (Target.Regular.Method
+                                    {
+                                      class_name = "object";
+                                      method_name = "__init__";
+                                      kind = Normal;
+                                    });
+                             ]
+                           ())
+                      ()) );
+               ( "18:22-18:27",
+                 ExpressionCallees.from_attribute_access
+                   (AttributeAccessCallees.create
+                      ~is_attribute:false
+                      ~if_called:
+                        (CallCallees.create
+                           ~call_targets:
+                             [
+                               CallTarget.create_regular
+                                 ~implicit_receiver:true
+                                 ~is_class_method:true
+                                 (Target.Regular.Method
+                                    { class_name = "test.C"; method_name = "h"; kind = Normal });
+                             ]
+                           ())
+                      ()) );
+               ( "18:4-18:33",
+                 ExpressionCallees.from_call
+                   (CallCallees.create
+                      ~new_targets:
+                        [
+                          CallTarget.create_regular
+                            ~is_static_method:true
+                            ~index:1
+                            (Target.Regular.Method
+                               {
+                                 class_name = "functools.partial";
+                                 method_name = "__new__";
+                                 kind = Normal;
+                               });
+                        ]
+                      ~init_targets:
+                        [
+                          CallTarget.create_regular
+                            ~implicit_receiver:true
+                            ~index:1
+                            (Target.Regular.Method
+                               { class_name = "object"; method_name = "__init__"; kind = Normal });
+                        ]
+                      ~higher_order_parameters:
+                        (HigherOrderParameterMap.from_list
+                           [
+                             {
+                               index = 0;
+                               call_targets =
+                                 [
+                                   CallTarget.create_regular
+                                     ~implicit_receiver:true
+                                     ~is_class_method:true
+                                     ~index:1
+                                     (Target.Regular.Method
+                                        { class_name = "test.C"; method_name = "h"; kind = Normal });
+                                 ];
+                               unresolved = CallGraph.Unresolved.False;
+                             };
+                           ])
+                      ~shim_target:
+                        (Some
+                           {
+                             ShimTarget.call_targets =
+                               [
+                                 CallTarget.create_regular
+                                   ~implicit_receiver:true
+                                   ~is_class_method:true
                                    ~index:1
                                    (Target.Regular.Method
                                       { class_name = "test.C"; method_name = "h"; kind = Normal });
@@ -5693,7 +6226,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       class Object:
@@ -5783,7 +6316,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       class Object:
@@ -5909,7 +6442,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:{|
       x = ""
       def foo():
@@ -5933,7 +6466,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       def outer():
@@ -5959,7 +6492,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
       def outer():
@@ -5984,7 +6517,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:{|
      def foo():
        return bar
@@ -6009,7 +6542,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:{|
      def foo():
        yield bar
@@ -6034,7 +6567,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
      class C:
@@ -6047,7 +6580,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:{|
      def foo():
        def inner(): ...
@@ -6069,7 +6602,7 @@ let test_call_graph_of_define =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
      from typing import Callable, Any
@@ -6407,7 +6940,7 @@ let test_call_graph_of_define_foo_and_bar =
     [
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source
            ~define_name:"test.foo"
            ~expected:
@@ -6539,7 +7072,7 @@ let test_call_graph_of_define_foo_and_bar =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source
            ~define_name:"test.bar"
            ~expected:
@@ -6580,57 +7113,7 @@ let test_call_graph_of_define_foo_and_bar =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
-           ~source:{|
-     def foo():
-       return bar
-     def bar(): ...
-  |}
-           ~define_name:"test.foo"
-           ~expected:
-             [
-               ( "3:9-3:12|artificial-attribute-access|qualification:test.bar",
-                 ExpressionCallees.from_attribute_access
-                   (AttributeAccessCallees.create
-                      ~if_called:
-                        (CallCallees.create
-                           ~call_targets:
-                             [
-                               CallTarget.create_regular
-                                 (Target.Regular.Function { name = "test.bar"; kind = Normal });
-                             ]
-                           ())
-                      ()) );
-             ]
-           ();
-      labeled_test_case __FUNCTION__ __LINE__
-      @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
-           ~source:{|
-     def foo():
-       yield bar
-     def bar(): ...
-  |}
-           ~define_name:"test.foo"
-           ~expected:
-             [
-               ( "3:8-3:11|artificial-attribute-access|qualification:test.bar",
-                 ExpressionCallees.from_attribute_access
-                   (AttributeAccessCallees.create
-                      ~if_called:
-                        (CallCallees.create
-                           ~call_targets:
-                             [
-                               CallTarget.create_regular
-                                 (Target.Regular.Function { name = "test.bar"; kind = Normal });
-                             ]
-                           ())
-                      ()) );
-             ]
-           ();
-      labeled_test_case __FUNCTION__ __LINE__
-      @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
      def foo(x):
@@ -6779,7 +7262,7 @@ let test_call_graph_of_define_foo_and_bar =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
      def decorator(f):
@@ -6809,7 +7292,7 @@ let test_call_graph_of_define_foo_and_bar =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
      class A:
@@ -6881,7 +7364,7 @@ let test_call_graph_of_define_foo_and_bar =
        * the callee has a body and is annotated. *)
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
      class A:
@@ -6929,7 +7412,7 @@ let test_call_graph_of_define_foo_and_bar =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
      from typing import Optional
@@ -6978,7 +7461,7 @@ let test_call_graph_of_define_foo_and_bar =
            ();
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_call_graph_of_define
-           ~_migrated_to_pyrefly:false
+           ~_migrated_to_pyrefly:true
            ~source:
              {|
      from typing import Optional
@@ -7273,7 +7756,7 @@ let test_higher_order_call_graph_of_define =
       @@ assert_higher_order_call_graph_of_define
            ~source:
              {|
-     from builtins import _test_sink
+     from pysa import _test_sink
      def foo(x):
        ... # stub
      def bar():
@@ -7325,7 +7808,7 @@ let test_higher_order_call_graph_of_define =
                       ~call_targets:
                         [
                           CallTarget.create_regular
-                            (Target.Regular.Function { name = "_test_sink"; kind = Normal });
+                            (Target.Regular.Function { name = "pysa._test_sink"; kind = Normal });
                         ]
                       ~higher_order_parameters:
                         (HigherOrderParameterMap.from_list
@@ -8769,7 +9252,7 @@ let test_resolve_decorator_callees =
                            (CallCallees.create
                               ~unresolved:(CallGraph.Unresolved.True UnexpectedCalleeExpression)
                               ()) );
-                       ( "8:22-8:25",
+                       ( "8:22-8:25|identifier|bar",
                          ExpressionCallees.from_identifier
                            (IdentifierCallees.create
                               ~if_called:

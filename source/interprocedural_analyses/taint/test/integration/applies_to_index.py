@@ -3,7 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink
+from pysa import _test_sink
+from typing import Any
 
 
 def only_applies_to_first():
@@ -51,7 +52,7 @@ def issue_only_with_a_key():
     _test_sink(d["b"])
 
 
-def only_applies_to_a_member():
+def only_applies_to_a_member() -> Any:
     ...
 
 

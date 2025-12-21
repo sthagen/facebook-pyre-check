@@ -2,39 +2,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_test_sink",
-    "filename": "builtins.pyi",
-    "callable_line": 618,
-    "sinks": [
-      {
-        "port": "formal(arg, position=0)",
-        "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "_test_source",
-    "filename": "builtins.pyi",
-    "callable_line": 619,
-    "sources": [
-      {
-        "port": "result",
-        "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "obscure_models.should_collapse_depth_zero",
     "filename": "obscure_models.py",
-    "callable_line": 84,
+    "callable_line": 85,
     "tito": [
       {
         "port": "formal(c, position=1)",
@@ -50,7 +20,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 85, "start": 11, "end": 12 } ],
+            "tito_positions": [ { "line": 86, "start": 11, "end": 12 } ],
             "tito": {}
           }
         ]
@@ -69,7 +39,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 85, "start": 21, "end": 24 } ],
+            "tito_positions": [ { "line": 86, "start": 21, "end": 24 } ],
             "tito": {}
           }
         ]
@@ -81,9 +51,9 @@
   "kind": "issue",
   "data": {
     "callable": "obscure_models.test_collapse_depth",
-    "callable_line": 88,
+    "callable_line": 89,
     "code": 5002,
-    "line": 91,
+    "line": 92,
     "start": 15,
     "end": 21,
     "filename": "obscure_models.py",
@@ -96,7 +66,7 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -109,8 +79,8 @@
               { "always-via": "tito" },
               { "always-via": "broadening" }
             ],
-            "tito_positions": [ { "line": 90, "start": 35, "end": 36 } ],
-            "origin": { "line": 89, "start": 14, "end": 28 }
+            "tito_positions": [ { "line": 91, "start": 35, "end": 36 } ],
+            "origin": { "line": 90, "start": 14, "end": 28 }
           }
         ]
       },
@@ -120,12 +90,14 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 91, "start": 15, "end": 21 },
-            "call_site": "91:4-91:22"
+            "origin": { "line": 92, "start": 15, "end": 21 },
+            "call_site": "92:4-92:22"
           }
         ]
       }
@@ -140,11 +112,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "obscure_models.test_collapse_depth:5002:0:Call|_test_sink|0|formal(arg):f0ca7f9778082758757c7a7dbe167245"
+    "master_handle": "obscure_models.test_collapse_depth:5002:0:Call|pysa._test_sink|0|formal(arg):5113baa50b8785a2d6ec43cebd422140"
   }
 }
 {
@@ -152,7 +124,7 @@
   "data": {
     "callable": "obscure_models.test_collapse_source",
     "filename": "obscure_models.py",
-    "callable_line": 73,
+    "callable_line": 74,
     "sinks": [
       {
         "port": "formal(c, position=0)",
@@ -160,7 +132,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
@@ -172,9 +146,9 @@
               { "always-via": "tito" },
               { "always-via": "broadening" }
             ],
-            "tito_positions": [ { "line": 75, "start": 8, "end": 9 } ],
-            "origin": { "line": 76, "start": 15, "end": 21 },
-            "call_site": "76:4-76:22"
+            "tito_positions": [ { "line": 76, "start": 8, "end": 9 } ],
+            "origin": { "line": 77, "start": 15, "end": 21 },
+            "call_site": "77:4-77:22"
           }
         ]
       }
@@ -185,9 +159,9 @@
   "kind": "issue",
   "data": {
     "callable": "obscure_models.test_collapse_source",
-    "callable_line": 73,
+    "callable_line": 74,
     "code": 5002,
-    "line": 76,
+    "line": 77,
     "start": 15,
     "end": 21,
     "filename": "obscure_models.py",
@@ -200,7 +174,7 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -213,8 +187,8 @@
               { "always-via": "tito" },
               { "always-via": "broadening" }
             ],
-            "tito_positions": [ { "line": 75, "start": 18, "end": 19 } ],
-            "origin": { "line": 74, "start": 14, "end": 28 }
+            "tito_positions": [ { "line": 76, "start": 18, "end": 19 } ],
+            "origin": { "line": 75, "start": 14, "end": 28 }
           }
         ]
       },
@@ -224,12 +198,14 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 76, "start": 15, "end": 21 },
-            "call_site": "76:4-76:22"
+            "origin": { "line": 77, "start": 15, "end": 21 },
+            "call_site": "77:4-77:22"
           }
         ]
       }
@@ -244,11 +220,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "obscure_models.test_collapse_source:5002:0:Call|_test_sink|0|formal(arg):1bf1490b324c61916d9733bdf8d4f1df"
+    "master_handle": "obscure_models.test_collapse_source:5002:0:Call|pysa._test_sink|0|formal(arg):2ebbbe04959e03e6c71aa41ece6cce0b"
   }
 }
 {
@@ -256,7 +232,7 @@
   "data": {
     "callable": "obscure_models.test_issue",
     "filename": "obscure_models.py",
-    "callable_line": 67,
+    "callable_line": 68,
     "sinks": [
       {
         "port": "formal(c, position=0)",
@@ -264,16 +240,18 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 69, "start": 8, "end": 9 } ],
-            "origin": { "line": 70, "start": 15, "end": 16 },
-            "call_site": "70:4-70:17"
+            "tito_positions": [ { "line": 70, "start": 8, "end": 9 } ],
+            "origin": { "line": 71, "start": 15, "end": 16 },
+            "call_site": "71:4-71:17"
           }
         ]
       }
@@ -284,9 +262,9 @@
   "kind": "issue",
   "data": {
     "callable": "obscure_models.test_issue",
-    "callable_line": 67,
+    "callable_line": 68,
     "code": 5002,
-    "line": 70,
+    "line": 71,
     "start": 15,
     "end": 16,
     "filename": "obscure_models.py",
@@ -299,7 +277,7 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -307,8 +285,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 69, "start": 18, "end": 19 } ],
-            "origin": { "line": 68, "start": 8, "end": 22 }
+            "tito_positions": [ { "line": 70, "start": 18, "end": 19 } ],
+            "origin": { "line": 69, "start": 8, "end": 22 }
           }
         ]
       },
@@ -318,12 +296,14 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 70, "start": 15, "end": 16 },
-            "call_site": "70:4-70:17"
+            "origin": { "line": 71, "start": 15, "end": 16 },
+            "call_site": "71:4-71:17"
           }
         ]
       }
@@ -333,11 +313,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "obscure_models.test_issue:5002:0:Call|_test_sink|0|formal(arg):b57d493c109f0dafb6696cad709c6bb8"
+    "master_handle": "obscure_models.test_issue:5002:0:Call|pysa._test_sink|0|formal(arg):4e2c7bb1c5f436727ad365e9a77ef99a"
   }
 }
 {
@@ -345,7 +325,7 @@
   "data": {
     "callable": "obscure_models.test_obscure",
     "filename": "obscure_models.py",
-    "callable_line": 35,
+    "callable_line": 36,
     "sources": [
       {
         "port": "result",
@@ -354,7 +334,7 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -362,8 +342,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 36, "start": 24, "end": 38 } ],
-            "origin": { "line": 36, "start": 24, "end": 38 }
+            "tito_positions": [ { "line": 37, "start": 24, "end": 38 } ],
+            "origin": { "line": 37, "start": 24, "end": 38 }
           }
         ]
       }
@@ -383,7 +363,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 36, "start": 11, "end": 12 } ],
+            "tito_positions": [ { "line": 37, "start": 11, "end": 12 } ],
             "tito": {}
           }
         ]
@@ -395,9 +375,9 @@
   "kind": "issue",
   "data": {
     "callable": "obscure_models.test_obscure_from_model",
-    "callable_line": 102,
+    "callable_line": 103,
     "code": 5002,
-    "line": 103,
+    "line": 104,
     "start": 15,
     "end": 49,
     "filename": "obscure_models.py",
@@ -410,7 +390,7 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -418,8 +398,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 103, "start": 34, "end": 48 } ],
-            "origin": { "line": 103, "start": 34, "end": 48 }
+            "tito_positions": [ { "line": 104, "start": 34, "end": 48 } ],
+            "origin": { "line": 104, "start": 34, "end": 48 }
           }
         ]
       },
@@ -429,12 +409,14 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 103, "start": 15, "end": 49 },
-            "call_site": "103:4-103:50"
+            "origin": { "line": 104, "start": 15, "end": 49 },
+            "call_site": "104:4-104:50"
           }
         ]
       }
@@ -444,11 +426,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "obscure_models.test_obscure_from_model:5002:0:Call|_test_sink|0|formal(arg):904e6d73bedf5d24bf9b6778064af1d6"
+    "master_handle": "obscure_models.test_obscure_from_model:5002:0:Call|pysa._test_sink|0|formal(arg):ffbbf9789b320e7a268bcde8b554546b"
   }
 }
 {
@@ -456,7 +438,7 @@
   "data": {
     "callable": "obscure_models.test_obscure_with_multiple_models",
     "filename": "obscure_models.py",
-    "callable_line": 59,
+    "callable_line": 60,
     "sources": [
       {
         "port": "result",
@@ -465,14 +447,14 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 60, "start": 45, "end": 59 } ],
-            "origin": { "line": 60, "start": 45, "end": 59 }
+            "tito_positions": [ { "line": 61, "start": 45, "end": 59 } ],
+            "origin": { "line": 61, "start": 45, "end": 59 }
           }
         ]
       }
@@ -484,7 +466,7 @@
   "data": {
     "callable": "obscure_models.test_obscure_with_skip_inlining",
     "filename": "obscure_models.py",
-    "callable_line": 43,
+    "callable_line": 44,
     "sources": [
       {
         "port": "result",
@@ -493,7 +475,7 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -501,8 +483,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 44, "start": 43, "end": 57 } ],
-            "origin": { "line": 44, "start": 43, "end": 57 }
+            "tito_positions": [ { "line": 45, "start": 43, "end": 57 } ],
+            "origin": { "line": 45, "start": 43, "end": 57 }
           }
         ]
       }
@@ -522,7 +504,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 44, "start": 11, "end": 12 } ],
+            "tito_positions": [ { "line": 45, "start": 11, "end": 12 } ],
             "tito": {}
           }
         ]
@@ -535,7 +517,7 @@
   "data": {
     "callable": "obscure_models.test_obscure_with_skip_obscure_and_tito",
     "filename": "obscure_models.py",
-    "callable_line": 55,
+    "callable_line": 56,
     "sources": [
       {
         "port": "result",
@@ -544,14 +526,14 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 56, "start": 51, "end": 65 } ],
-            "origin": { "line": 56, "start": 51, "end": 65 }
+            "tito_positions": [ { "line": 57, "start": 51, "end": 65 } ],
+            "origin": { "line": 57, "start": 51, "end": 65 }
           }
         ]
       }
@@ -563,7 +545,7 @@
   "data": {
     "callable": "obscure_models.test_obscure_with_skip_overrides",
     "filename": "obscure_models.py",
-    "callable_line": 39,
+    "callable_line": 40,
     "sources": [
       {
         "port": "result",
@@ -572,7 +554,7 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -580,8 +562,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 40, "start": 44, "end": 58 } ],
-            "origin": { "line": 40, "start": 44, "end": 58 }
+            "tito_positions": [ { "line": 41, "start": 44, "end": 58 } ],
+            "origin": { "line": 41, "start": 44, "end": 58 }
           }
         ]
       }
@@ -601,7 +583,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 40, "start": 11, "end": 12 } ],
+            "tito_positions": [ { "line": 41, "start": 11, "end": 12 } ],
             "tito": {}
           }
         ]
@@ -614,7 +596,7 @@
   "data": {
     "callable": "obscure_models.test_obscure_with_source",
     "filename": "obscure_models.py",
-    "callable_line": 47,
+    "callable_line": 48,
     "sources": [
       {
         "port": "result",
@@ -631,7 +613,7 @@
                 "kind": "UserControlled"
               }
             ],
-            "origin": { "line": 48, "start": 11, "end": 51 },
+            "origin": { "line": 49, "start": 11, "end": 51 },
             "receiver_interval": [ { "lower": 2, "upper": 3 } ],
             "is_self_call": false
           },
@@ -639,7 +621,7 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -647,8 +629,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 48, "start": 36, "end": 50 } ],
-            "origin": { "line": 48, "start": 36, "end": 50 }
+            "tito_positions": [ { "line": 49, "start": 36, "end": 50 } ],
+            "origin": { "line": 49, "start": 36, "end": 50 }
           }
         ]
       }
@@ -668,7 +650,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 48, "start": 11, "end": 12 } ],
+            "tito_positions": [ { "line": 49, "start": 11, "end": 12 } ],
             "tito": {}
           }
         ]
@@ -681,7 +663,7 @@
   "data": {
     "callable": "obscure_models.test_obscure_with_tito",
     "filename": "obscure_models.py",
-    "callable_line": 63,
+    "callable_line": 64,
     "sinks": [
       {
         "port": "formal(c, position=0)",
@@ -689,16 +671,18 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 64, "start": 15, "end": 16 } ],
-            "origin": { "line": 64, "start": 15, "end": 50 },
-            "call_site": "64:4-64:51"
+            "tito_positions": [ { "line": 65, "start": 15, "end": 16 } ],
+            "origin": { "line": 65, "start": 15, "end": 50 },
+            "call_site": "65:4-65:51"
           }
         ]
       }
@@ -709,9 +693,9 @@
   "kind": "issue",
   "data": {
     "callable": "obscure_models.test_obscure_with_tito",
-    "callable_line": 63,
+    "callable_line": 64,
     "code": 5002,
-    "line": 64,
+    "line": 65,
     "start": 15,
     "end": 50,
     "filename": "obscure_models.py",
@@ -724,7 +708,7 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -734,8 +718,8 @@
               { "always-via": "obscure:model" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 64, "start": 35, "end": 49 } ],
-            "origin": { "line": 64, "start": 35, "end": 49 }
+            "tito_positions": [ { "line": 65, "start": 35, "end": 49 } ],
+            "origin": { "line": 65, "start": 35, "end": 49 }
           }
         ]
       },
@@ -745,12 +729,14 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 64, "start": 15, "end": 50 },
-            "call_site": "64:4-64:51"
+            "origin": { "line": 65, "start": 15, "end": 50 },
+            "call_site": "65:4-65:51"
           }
         ]
       }
@@ -762,11 +748,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "obscure_models.test_obscure_with_tito:5002:0:Call|_test_sink|0|formal(arg):92ad60b8a716874f6e42658a1c86185f"
+    "master_handle": "obscure_models.test_obscure_with_tito:5002:0:Call|pysa._test_sink|0|formal(arg):40e334558ebc6ff4277d4b2cb5121b8f"
   }
 }
 {
@@ -774,7 +760,7 @@
   "data": {
     "callable": "obscure_models.test_sink_collapse",
     "filename": "obscure_models.py",
-    "callable_line": 79,
+    "callable_line": 80,
     "sinks": [
       {
         "port": "formal(c, position=1)",
@@ -782,7 +768,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
@@ -794,9 +782,9 @@
               { "always-via": "tito" },
               { "always-via": "broadening" }
             ],
-            "tito_positions": [ { "line": 80, "start": 8, "end": 9 } ],
-            "origin": { "line": 81, "start": 15, "end": 21 },
-            "call_site": "81:4-81:22"
+            "tito_positions": [ { "line": 81, "start": 8, "end": 9 } ],
+            "origin": { "line": 82, "start": 15, "end": 21 },
+            "call_site": "82:4-82:22"
           }
         ]
       },
@@ -806,7 +794,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
@@ -818,9 +808,9 @@
               { "always-via": "tito" },
               { "always-via": "broadening" }
             ],
-            "tito_positions": [ { "line": 80, "start": 18, "end": 21 } ],
-            "origin": { "line": 81, "start": 15, "end": 21 },
-            "call_site": "81:4-81:22"
+            "tito_positions": [ { "line": 81, "start": 18, "end": 21 } ],
+            "origin": { "line": 82, "start": 15, "end": 21 },
+            "call_site": "82:4-82:22"
           }
         ]
       }
@@ -832,7 +822,7 @@
   "data": {
     "callable": "obscure_models.test_skip_obscure_via_model_query",
     "filename": "obscure_models.py",
-    "callable_line": 94,
+    "callable_line": 95,
     "tito": [
       {
         "port": "formal(arg, position=0)",
@@ -851,9 +841,39 @@
 {
   "kind": "model",
   "data": {
+    "callable": "pysa._test_sink",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 4,
+    "sinks": [
+      {
+        "port": "formal(arg, position=0)",
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]
+      }
+    ],
+    "modes": [ "Obscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "pysa._test_source",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 5,
+    "sources": [
+      {
+        "port": "result",
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "declaration": null } ]
+      }
+    ],
+    "modes": [ "Obscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "obscure_models.C.obscure_with_multiple_models",
     "filename": "obscure_models.py",
-    "callable_line": 28,
+    "callable_line": 29,
     "tito": [
       {
         "port": "formal(y, position=2)",
@@ -873,7 +893,7 @@
   "data": {
     "callable": "obscure_models.C.obscure_with_skip_obscure_and_tito",
     "filename": "obscure_models.py",
-    "callable_line": 25,
+    "callable_line": 26,
     "tito": [
       {
         "port": "formal(y, position=2)",
@@ -893,7 +913,7 @@
   "data": {
     "callable": "obscure_models.C.obscure_with_source",
     "filename": "obscure_models.py",
-    "callable_line": 19,
+    "callable_line": 20,
     "sources": [
       {
         "port": "result",
@@ -910,7 +930,7 @@
   "data": {
     "callable": "obscure_models.C.obscure_with_tito",
     "filename": "obscure_models.py",
-    "callable_line": 31,
+    "callable_line": 32,
     "tito": [
       {
         "port": "formal(x, position=1)",

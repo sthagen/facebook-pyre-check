@@ -120,12 +120,15 @@ module Unresolved : sig
     | UnexpectedPyreflyTarget
     | EmptyPyreflyTarget
     | UnknownClassField
+    | ClassFieldOnlyExistInObject
     | UnsupportedFunctionTarget
     | UnexpectedDefiningClass
     | UnexpectedInitMethod
     | UnexpectedNewMethod
     | UnexpectedCalleeExpression
     | UnresolvedMagicDunderAttr
+    | UnresolvedMagicDunderAttrDueToNoBase
+    | UnresolvedMagicDunderAttrDueToNoAttribute
     | Mixed
 
   type t =
@@ -198,6 +201,13 @@ module ShimTarget : sig
   val map_target : f:(Target.t -> Target.t) -> t -> t
 
   val regenerate_call_indices : indexer:Indexer.t -> t -> t
+end
+
+module AllTargetsUseCase : sig
+  type t =
+    | TaintAnalysisDependency
+    | CallGraphDependency
+    | Everything
 end
 
 (** An aggregate of all possible callees at a call site. *)
@@ -276,6 +286,8 @@ module CallCallees : sig
   val should_redirect_to_decorated : t -> bool
 
   val regenerate_call_indices : indexer:Indexer.t -> t -> t
+
+  val all_targets : use_case:AllTargetsUseCase.t -> t -> Target.t list
 end
 
 (** An aggregrate of all possible callees for a given attribute access. *)
@@ -447,13 +459,6 @@ module DefineCallGraphForTest : sig
   val equal_ignoring_types : t -> t -> bool
 end
 
-module AllTargetsUseCase : sig
-  type t =
-    | TaintAnalysisDependency
-    | CallGraphDependency
-    | Everything
-end
-
 (** The call graph of a function or method definition. *)
 module DefineCallGraph : sig
   type t [@@deriving show, equal]
@@ -472,6 +477,11 @@ module DefineCallGraph : sig
   val copy : t -> t
 
   val merge : t -> t -> t
+
+  val resolve_expression
+    :  t ->
+    expression_identifier:ExpressionIdentifier.t ->
+    ExpressionCallees.t option
 
   val resolve_call
     :  t ->
@@ -625,6 +635,10 @@ module DefineCallGraph : sig
     t
 
   val filter_empty_attribute_access : t -> t
+
+  val filter_empty_identifier : t -> t
+
+  val filter_empty_format_string_stringify : t -> t
 
   val map_target
     :  f:(Target.t -> Target.t) ->

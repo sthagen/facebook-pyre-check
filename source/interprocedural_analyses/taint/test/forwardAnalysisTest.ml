@@ -13,7 +13,7 @@ open Taint
 open Interprocedural
 open TestHelper
 
-let assert_taint ?models ?models_source ~context source expect =
+let assert_taint ?models ?models_source ?(skip_for_pyrefly = false) ~context source expect =
   let handle = "qualifier.py" in
   let qualifier = Ast.Reference.create "qualifier" in
   let sources =
@@ -21,22 +21,21 @@ let assert_taint ?models ?models_source ~context source expect =
     | Some models_source -> [handle, source; "models.py", models_source]
     | None -> [handle, source]
   in
-  let project = Test.ScratchProject.setup ~context sources in
-  let configuration = Test.ScratchProject.configuration_of project in
+  let project =
+    Test.ScratchPyrePysaProject.setup
+      ~context
+      ~force_pyre1:skip_for_pyrefly
+      ~requires_type_of_expressions:true
+      sources
+  in
+  let configuration = Test.ScratchPyrePysaProject.configuration_of project in
   let static_analysis_configuration =
     Configuration.StaticAnalysis.create
       ~maximum_target_depth:Configuration.StaticAnalysis.default_maximum_target_depth
       configuration
       ()
   in
-  let pyre_api = Test.ScratchProject.pyre_pysa_read_only_api project in
-  let source =
-    PyrePysaEnvironment.ReadOnly.source_of_qualifier pyre_api qualifier
-    |> fun option -> Option.value_exn option
-  in
-  let pyre_api =
-    project |> Test.ScratchProject.pyre_pysa_read_only_api |> PyrePysaApi.ReadOnly.from_pyre1_api
-  in
+  let pyre_api = Test.ScratchPyrePysaProject.read_only_api project in
   let models =
     models >>| Test.trim_extra_indentation |> Option.value ~default:TestHelper.initial_models_source
   in
@@ -48,18 +47,24 @@ let assert_taint ?models ?models_source ~context source expect =
         ~taint_configuration:TaintConfiguration.Heap.default
         ~source_sink_filter:None
         ~definitions:None
-        ~stubs:
-          ([]
-          |> Interprocedural.Target.HashsetSharedMemory.from_heap
-          |> Interprocedural.Target.HashsetSharedMemory.read_only)
+        ~stubs:([] |> Target.HashsetSharedMemory.from_heap |> Target.HashsetSharedMemory.read_only)
         ~python_version:(ModelParser.PythonVersion.create ())
         ()
     in
-    let () = assert_bool "Error while parsing models." (List.is_empty errors) in
+    let errors = TestHelper.filter_unused_test_modules_errors errors in
+    let () =
+      if not (List.is_empty errors) then
+        assert_bool
+          (Format.sprintf
+             "The models shouldn't have any parsing errors:\n%s."
+             (errors |> List.map ~f:ModelVerificationError.display |> String.concat ~sep:"\n"))
+          false
+    in
     models
   in
-  let defines = source |> Preprocessing.defines |> List.rev in
-  let initial_callables = FetchCallables.from_qualifier ~configuration ~pyre_api ~qualifier in
+  let initial_callables =
+    Interprocedural.FetchCallables.from_qualifier ~configuration ~pyre_api ~qualifier
+  in
   let scheduler = Test.mock_scheduler () in
   let scheduler_policy = Scheduler.Policy.legacy_fixed_chunk_count () in
   let definitions_and_stubs =
@@ -79,20 +84,15 @@ let assert_taint ?models ?models_source ~context source expect =
         (Interprocedural.CallablesSharedMemory.ReadOnly.read_only callables_to_definitions_map)
       ()
   in
-  let analyze_and_store_in_order models define =
-    let define_name =
-      FunctionDefinition.qualified_name_of_define ~module_name:qualifier (Ast.Node.value define)
-    in
-    let call_target = Target.from_define ~define_name ~define:(Ast.Node.value define) in
-    let () = Log.log ~section:`Taint "Analyzing %a" Target.pp call_target in
+  let analyze_and_store_in_order models (callable, define) =
+    let () = Log.log ~section:`Taint "Analyzing %a" Target.pp callable in
     let call_graph_of_define =
-      CallGraphBuilder.call_graph_of_define
-        ~static_analysis_configuration
+      TestHelper.call_graph_of_callable
         ~pyre_api
+        ~static_analysis_configuration
         ~override_graph:
           (Some (OverrideGraph.SharedMemory.create () |> OverrideGraph.SharedMemory.read_only))
-        ~attribute_targets:
-          (models |> Registry.object_targets |> Target.Set.elements |> Target.HashSet.of_list)
+        ~object_targets:(models |> Registry.object_targets |> Target.Set.elements)
         ~callables_to_definitions_map:
           (Interprocedural.CallablesSharedMemory.ReadOnly.read_only callables_to_definitions_map)
         ~callables_to_decorators_map:
@@ -102,11 +102,13 @@ let assert_taint ?models ?models_source ~context source expect =
           |> Interprocedural.CallableToDecoratorsMap.SharedMemory.read_only)
         ~type_of_expression_shared_memory
         ~check_invariants:true
-        ~qualifier
-        ~callable:call_target
-        ~define
+        ~normalize_to_pyre1:false
+        ~module_name:qualifier
+        ~callable
     in
-    let cfg = Cfg.create define.value in
+    let cfg =
+      Cfg.create ~normalize_asserts:(PyrePysaApi.ReadOnly.is_pyre1 pyre_api) (Ast.Node.value define)
+    in
     let taint_configuration = TaintConfiguration.Heap.default in
     let forward, _errors, _ =
       ForwardAnalysis.run
@@ -120,7 +122,7 @@ let assert_taint ?models ?models_source ~context source expect =
           (GlobalConstants.SharedMemory.create () |> GlobalConstants.SharedMemory.read_only)
         ~type_of_expression_shared_memory
         ~qualifier
-        ~callable:call_target
+        ~callable
         ~define
         ~cfg
         ~call_graph_of_define
@@ -129,9 +131,25 @@ let assert_taint ?models ?models_source ~context source expect =
         ()
     in
     let model = { Model.empty_model with forward } in
-    Registry.set models ~target:call_target ~model
+    Registry.set models ~target:callable ~model
   in
-  let models = List.fold ~f:analyze_and_store_in_order ~init:initial_models defines in
+  let callable_and_defines =
+    let add_define callable =
+      let { Interprocedural.CallablesSharedMemory.DefineAndQualifier.define; _ } =
+        Interprocedural.CallablesSharedMemory.ReadOnly.get_define
+          (Interprocedural.CallablesSharedMemory.ReadOnly.read_only callables_to_definitions_map)
+          callable
+        |> PyrePysaApi.AstResult.value_exn ~message:"missing ast"
+      in
+      callable, define
+    in
+    Interprocedural.FetchCallables.get_definitions initial_callables
+    |> List.map ~f:add_define
+    |> List.sort
+         ~compare:(fun (_, { Ast.Node.location = left; _ }) (_, { Ast.Node.location = right; _ }) ->
+           Ast.Location.compare left right)
+  in
+  let models = List.fold ~f:analyze_and_store_in_order ~init:initial_models callable_and_defines in
   let get_model = Registry.get models in
   let get_errors _ = [] in
   Interprocedural.CallablesSharedMemory.ReadWrite.cleanup callables_to_definitions_map;
@@ -167,6 +185,8 @@ let test_simple_source context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def simple_source():
         return _test_source()
     |}
@@ -178,6 +198,8 @@ let test_simple_source context =
     |}
     ~models_source:"def custom_source() -> int: ..."
     {|
+      import models
+
       def simple_source():
         return models.custom_source()
     |}
@@ -192,6 +214,8 @@ let test_global_taint context =
        django.http.Request.GET: TaintSource[UserControlled] = ...
     |}
     {|
+      import django
+
       sink = 0
       def inferred_source(request: django.http.Request):
         sink = request.GET
@@ -248,6 +272,8 @@ let test_hardcoded_source context =
       django.http.Request.POST: TaintSource[UserControlled] = ...
     |}
     {|
+      import django
+
       def get(request: django.http.Request):
         return request.GET
       def post(request: django.http.Request):
@@ -267,9 +293,11 @@ let test_hardcoded_source context =
     ~models:
       {|
       django.http.Request.GET: TaintSource[UserControlled] = ...
-      def dict.__getitem__(self: TaintInTaintOut, __k): ...
+      def dict.__getitem__(self: TaintInTaintOut, __k, /): ...
     |}
     {|
+      import django
+
       def get_field(request: django.http.Request):
         return request.GET['field']
     |}
@@ -280,6 +308,8 @@ let test_hardcoded_source context =
       os.environ: TaintSource[UserControlled] = ...
     |}
     {|
+      import os
+
       def get_environment_variable():
         return os.environ
     |}
@@ -294,9 +324,11 @@ let test_hardcoded_source context =
     ~models:
       {|
       os.environ: TaintSource[UserControlled] = ...
-      def dict.__getitem__(self: TaintInTaintOut, __k): ...
+      def dict.__getitem__(self: TaintInTaintOut, __k, /): ...
     |}
     {|
+      import os
+
       def get_environment_variable_with_getitem():
         return os.environ['BAD']
     |}
@@ -307,25 +339,30 @@ let test_hardcoded_source context =
         "qualifier.get_environment_variable_with_getitem";
     ];
   assert_taint
+    ~context
     ~models:
       {|
       django.http.Request.GET: TaintSource[UserControlled] = ...
-      def dict.__getitem__(self: TaintInTaintOut, __k): ...
+      def dict.__getitem__(self: TaintInTaintOut, __k, /): ...
     |}
-    ~context
     {|
+      import django
+
       class Request(django.http.Request): ...
 
       def get_field(request: Request):
         return request.GET['field']
     |}
-    [outcome ~kind:`Function ~returns:[Sources.NamedSource "UserControlled"] "qualifier.get_field"]
+    [outcome ~kind:`Function ~returns:[Sources.NamedSource "UserControlled"] "qualifier.get_field"];
+  ()
 
 
 let test_local_copy context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def copy_source():
         var = _test_source()
         return var
@@ -337,6 +374,8 @@ let test_access_paths context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def access_downward_closed():
         o = { 'a': _test_source() }
         x = o.a
@@ -357,6 +396,8 @@ let test_access_paths context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def access_through_expression():
         return " ".join(_test_source())
     |}
@@ -372,6 +413,8 @@ let test_class_model context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       class Foo:
         def bar():
           return _test_source()
@@ -419,6 +462,8 @@ let test_class_model context =
       qualifier.Data.ATTRIBUTE: TaintSource[Test] = ...
     |}
     {|
+      import typing
+
       class Data:
         ATTRIBUTE = 1
       def optional(data: typing.Optional[Data]):
@@ -431,6 +476,8 @@ let test_apply_method_model_at_call_site context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       class Foo:
         def qux():
           return _test_source()
@@ -447,6 +494,8 @@ let test_apply_method_model_at_call_site context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       class Foo:
         def qux():
           return _test_source()
@@ -463,6 +512,8 @@ let test_apply_method_model_at_call_site context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       class Foo:
         def qux():
           return _test_source()
@@ -478,6 +529,8 @@ let test_apply_method_model_at_call_site context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       class Foo:
         def qux():
           return _test_source()
@@ -493,6 +546,8 @@ let test_apply_method_model_at_call_site context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       class Foo:
         def qux():
           return _test_source()
@@ -515,6 +570,8 @@ let test_apply_method_model_at_call_site context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       class Foo:
         def qux():
           return not_tainted()
@@ -543,6 +600,8 @@ let test_apply_method_model_at_call_site context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       class Indirect:
         def direct(self) -> Direct: ...
 
@@ -563,6 +622,8 @@ let test_apply_method_model_at_call_site context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       class Indirect:
         def direct(self) -> Direct: ...
 
@@ -585,6 +646,8 @@ let test_taint_in_taint_out_application context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source, _tito
+
       def simple_source():
         return _test_source()
 
@@ -597,6 +660,8 @@ let test_taint_in_taint_out_application context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def simple_source():
         return _test_source()
 
@@ -615,6 +680,8 @@ let test_dictionary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def dictionary_source():
         return {
           "a": _test_source(),
@@ -663,6 +730,8 @@ let test_dictionary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def dictionary_source():
         first = {
           "a": _test_source(),
@@ -674,6 +743,8 @@ let test_dictionary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def dictionary_source():
         first = {
           "a": _test_source(),
@@ -687,6 +758,8 @@ let test_dictionary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def dictionary_source():
         first = {
           "a": _test_source(),
@@ -700,6 +773,8 @@ let test_dictionary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def dictionary_source():
         d = { _test_source(): "a" }
         return d
@@ -710,6 +785,8 @@ let test_dictionary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def dictionary_source_keys_two():
         d = { _test_source(): "a" }
         return d[0]
@@ -720,6 +797,8 @@ let test_dictionary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def dictionary_source():
         d = { 1: x for x in [_test_source()] }
         return d
@@ -728,6 +807,8 @@ let test_dictionary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def dictionary_source():
         d = { x: 1 for x in [_test_source()] }
         return d
@@ -736,6 +817,8 @@ let test_dictionary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def dictionary_source():
         d = { x: 1 for x in [_test_source()] }
         return d[0]
@@ -747,6 +830,8 @@ let test_comprehensions context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_iterator():
           return [ x for x in _test_source() ]
 
@@ -791,6 +876,8 @@ let test_list context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_list():
           return [ 1, _test_source(), "foo" ]
 
@@ -840,6 +927,8 @@ let test_tuple context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_tuple():
           return ( 1, _test_source(), "foo" )
 
@@ -889,7 +978,9 @@ let test_asyncio_gather context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
       import asyncio
+
       def benign_through_asyncio():
         a, b = asyncio.gather(0, _test_source())
         return a
@@ -910,6 +1001,8 @@ let test_asyncio_gather context =
     ~context
     {|
       import foo
+      from pysa import _test_source
+
       def benign_through_asyncio():
         a, b = foo.asyncio.gather(0, _test_source())
         return a
@@ -931,6 +1024,8 @@ let test_lambda context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_lambda():
           return lambda x : x + _test_source()
     |}
@@ -938,6 +1033,8 @@ let test_lambda context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def optional_lambda():
         if 1 > 2:
           f = None
@@ -952,6 +1049,8 @@ let test_set context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_set():
           return { 1, _test_source(), "foo" }
 
@@ -974,6 +1073,8 @@ let test_starred context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source, _tito
+
       def source_in_starred():
           list = [ 1, _test_source(), "foo" ]
           return _tito( *list )
@@ -999,6 +1100,8 @@ let test_string context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def normal_string() -> str:
         return ""
 
@@ -1040,10 +1143,13 @@ let test_ternary context =
     ~context
     ~models:
       {|
-       def _test_source() -> TaintSource[Test]: ...
+       def pysa._test_source() -> TaintSource[Test]: ...
        django.http.Request.GET: TaintSource[UserControlled] = ...
     |}
     {|
+      from pysa import _test_source
+      import django
+
       def source_in_then(cond):
           return _test_source() if cond else None
 
@@ -1072,6 +1178,8 @@ let test_unary context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_unary():
           return not _test_source()
     |}
@@ -1082,6 +1190,8 @@ let test_parameter_default_values context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_default(totally_innocent=_test_source()):
         return totally_innocent
     |}
@@ -1089,6 +1199,8 @@ let test_parameter_default_values context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_default(benign, tainted=_test_source()):
         return benign
     |}
@@ -1099,6 +1211,8 @@ let test_walrus context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_walrus():
           return (x := _test_source())
     |}
@@ -1109,6 +1223,8 @@ let test_yield context =
   assert_taint
     ~context
     {|
+      from pysa import _test_source
+
       def source_in_yield():
           yield _test_source()
 
@@ -1126,10 +1242,12 @@ let test_construction context =
     ~context
     ~models:
       {|
-      def _test_source() -> TaintSource[Test]: ...
+      def pysa._test_source() -> TaintSource[Test]: ...
       def qualifier.Data.__init__(self, capture: TaintInTaintOut): ...
     |}
     {|
+      from pysa import _test_source
+
       class Data:
         def __init__(self, capture) -> None: ...
 
@@ -1175,6 +1293,7 @@ let test_composed_models context =
     |}
     ~models_source:"def composed_model(x, y, z): ..."
     {|
+      import models
     |}
     [
       outcome
@@ -1195,7 +1314,7 @@ let test_tito_side_effects context =
     ~context
     ~models:
       {|
-      def _test_source() -> TaintSource[Test]: ...
+      def pysa._test_source() -> TaintSource[Test]: ...
       def models.change_arg0(arg0, arg1: TaintInTaintOut[Updates[arg0]]): ...
       def models.change_arg1(arg0: TaintInTaintOut[Updates[arg1]], arg1): ...
       def qualifier.MyList.append(self, arg: TaintInTaintOut[Updates[self]]): ...
@@ -1206,6 +1325,9 @@ let test_tito_side_effects context =
       def change_arg1(arg0, arg1): ...
       |}
     {|
+      from pysa import _test_source
+      import models
+
       def test_from_1_to_0():
         x = 0
         models.change_arg0(x, _test_source())
@@ -1272,13 +1394,16 @@ let test_taint_in_taint_out_transform context =
     ~context
     ~models:
       {|
-      def _test_source() -> TaintSource[Test]: ...
+      def pysa._test_source() -> TaintSource[Test]: ...
       def models.test_transform(arg: TaintInTaintOut[Transform[TestTransform]]): ...
     |}
     ~models_source:{|
       def test_transform(arg): ...
     |}
     {|
+      from pysa import _test_source
+      import models
+
       def simple_source():
         return _test_source()
 
@@ -1305,7 +1430,7 @@ let test_taint_in_taint_out_transform context =
     ~context
     ~models:
       {|
-      def _test_source() -> TaintSource[Test]: ...
+      def pysa._test_source() -> TaintSource[Test]: ...
       def models.test_transform(arg: TaintInTaintOut[Transform[TestTransform]]): ...
       def models.demo_transform(arg: TaintInTaintOut[Transform[DemoTransform]]): ...
     |}
@@ -1314,6 +1439,9 @@ let test_taint_in_taint_out_transform context =
       def demo_transform(arg): ...
     |}
     {|
+      from pysa import _test_source
+      import models
+
       def simple_source():
         return _test_source()
 
@@ -1345,7 +1473,7 @@ let test_taint_in_taint_out_transform context =
     ~context
     ~models:
       {|
-      def _test_source() -> TaintSource[Test]: ...
+      def pysa._test_source() -> TaintSource[Test]: ...
       def models.test_transform(arg: TaintInTaintOut[Transform[TestTransform]]): ...
       def models.demo_transform(arg: TaintInTaintOut[Transform[DemoTransform]]): ...
     |}
@@ -1354,6 +1482,9 @@ let test_taint_in_taint_out_transform context =
       def demo_transform(arg): ...
     |}
     {|
+      from pysa import _test_source
+      import models
+
       def simple_source():
         return _test_source()
 

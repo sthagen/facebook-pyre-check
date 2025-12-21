@@ -2,9 +2,97 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_cookies",
+    "callable": "dictionary_delete.pop_key",
+    "filename": "dictionary_delete.py",
+    "callable_line": 34,
+    "tito": [
+      {
+        "port": "formal(my_dict, position=0)[key]",
+        "taint": [
+          {
+            "kinds": [ { "return_paths": { "": 4 }, "kind": "LocalReturn" } ],
+            "tito": {}
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "eval",
     "filename": "builtins.pyi",
-    "callable_line": 625,
+    "callable_line": 474,
+    "sinks": [
+      {
+        "port": "formal(source, position=0, positional_only)",
+        "taint": [
+          {
+            "kinds": [ { "kind": "RemoteCodeExecution" } ],
+            "declaration": null
+          }
+        ]
+      }
+    ],
+    "modes": [ "Obscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "getattr",
+    "filename": "builtins.pyi",
+    "callable_line": 476,
+    "sinks": [
+      {
+        "port": "formal(name, position=1, positional_only)",
+        "taint": [
+          { "kinds": [ { "kind": "GetAttr" } ], "declaration": null }
+        ]
+      }
+    ],
+    "tito": [
+      {
+        "port": "formal(default, position=2, positional_only)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "default" } ],
+                "return_paths": { "": 0 },
+                "kind": "LocalReturn"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      },
+      {
+        "port": "formal(o, position=0, positional_only)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "object" } ],
+                "return_paths": { "": 0 },
+                "kind": "LocalReturn"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      }
+    ],
+    "modes": [ "SkipObscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "pysa._cookies",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 8,
     "sources": [
       {
         "port": "result",
@@ -19,9 +107,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_rce",
-    "filename": "builtins.pyi",
-    "callable_line": 626,
+    "callable": "pysa._rce",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 9,
     "sinks": [
       {
         "port": "formal(argument, position=0)",
@@ -39,9 +127,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_sql",
-    "filename": "builtins.pyi",
-    "callable_line": 627,
+    "callable": "pysa._sql",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 10,
     "sinks": [
       {
         "port": "formal(argument, position=0)",
@@ -54,9 +142,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_test_sink",
-    "filename": "builtins.pyi",
-    "callable_line": 618,
+    "callable": "pysa._test_sink",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 4,
     "sinks": [
       {
         "port": "formal(arg, position=0)",
@@ -79,9 +167,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_test_source",
-    "filename": "builtins.pyi",
-    "callable_line": 619,
+    "callable": "pysa._test_source",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 5,
     "sources": [
       {
         "port": "result",
@@ -104,9 +192,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_tito",
-    "filename": "builtins.pyi",
-    "callable_line": 623,
+    "callable": "pysa._tito",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 6,
     "tito": [
       {
         "port": "formal(**kwargs)",
@@ -133,9 +221,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_user_controlled",
-    "filename": "builtins.pyi",
-    "callable_line": 624,
+    "callable": "pysa._user_controlled",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 7,
     "sources": [
       {
         "port": "result",
@@ -150,9 +238,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "copy",
-    "filename": "builtins.pyi",
-    "callable_line": 629,
+    "callable": "pysa.copy",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 12,
     "tito": [
       {
         "port": "formal(obj, position=0)",
@@ -176,95 +264,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "dictionary_delete.pop_key",
-    "filename": "dictionary_delete.py",
-    "callable_line": 34,
-    "tito": [
-      {
-        "port": "formal(my_dict, position=0)[key]",
-        "taint": [
-          {
-            "kinds": [ { "return_paths": { "": 4 }, "kind": "LocalReturn" } ],
-            "tito": {}
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "eval",
-    "filename": "builtins.pyi",
-    "callable_line": 474,
-    "sinks": [
-      {
-        "port": "formal(arg, position=0)",
-        "taint": [
-          {
-            "kinds": [ { "kind": "RemoteCodeExecution" } ],
-            "declaration": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "getattr",
-    "filename": "builtins.pyi",
-    "callable_line": 476,
-    "sinks": [
-      {
-        "port": "formal(name, position=1)",
-        "taint": [
-          { "kinds": [ { "kind": "GetAttr" } ], "declaration": null }
-        ]
-      }
-    ],
-    "tito": [
-      {
-        "port": "formal(default, position=2)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "default" } ],
-                "return_paths": { "": 0 },
-                "kind": "LocalReturn"
-              }
-            ],
-            "tito": {}
-          }
-        ]
-      },
-      {
-        "port": "formal(o, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "object" } ],
-                "return_paths": { "": 0 },
-                "kind": "LocalReturn"
-              }
-            ],
-            "tito": {}
-          }
-        ]
-      }
-    ],
-    "modes": [ "SkipObscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "Obj{ClassWithSinkAttribute.attribute}",
+    "callable": "Obj{pysa.ClassWithSinkAttribute.attribute}",
     "sinks": [
       {
         "port": "formal($global, position=0)",
@@ -276,7 +276,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Obj{taint._global_sink}",
+    "callable": "Obj{pysa._global_sink}",
     "sinks": [
       {
         "port": "formal($global, position=0)",

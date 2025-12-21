@@ -2,9 +2,78 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_cookies",
+    "callable": "eval",
     "filename": "builtins.pyi",
-    "callable_line": 625,
+    "callable_line": 474,
+    "sinks": [
+      {
+        "port": "formal(source, position=0, positional_only)",
+        "taint": [
+          {
+            "kinds": [ { "kind": "RemoteCodeExecution" } ],
+            "declaration": null
+          }
+        ]
+      }
+    ],
+    "modes": [ "Obscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "getattr",
+    "filename": "builtins.pyi",
+    "callable_line": 476,
+    "sinks": [
+      {
+        "port": "formal(name, position=1, positional_only)",
+        "taint": [
+          { "kinds": [ { "kind": "GetAttr" } ], "declaration": null }
+        ]
+      }
+    ],
+    "tito": [
+      {
+        "port": "formal(default, position=2, positional_only)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "default" } ],
+                "return_paths": { "": 0 },
+                "kind": "LocalReturn"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      },
+      {
+        "port": "formal(o, position=0, positional_only)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "object" } ],
+                "return_paths": { "": 0 },
+                "kind": "LocalReturn"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      }
+    ],
+    "modes": [ "SkipObscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "pysa._cookies",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 8,
     "sources": [
       {
         "port": "result",
@@ -19,9 +88,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_rce",
-    "filename": "builtins.pyi",
-    "callable_line": 626,
+    "callable": "pysa._rce",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 9,
     "sinks": [
       {
         "port": "formal(argument, position=0)",
@@ -39,9 +108,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_sql",
-    "filename": "builtins.pyi",
-    "callable_line": 627,
+    "callable": "pysa._sql",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 10,
     "sinks": [
       {
         "port": "formal(argument, position=0)",
@@ -54,9 +123,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_test_sink",
-    "filename": "builtins.pyi",
-    "callable_line": 618,
+    "callable": "pysa._test_sink",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 4,
     "sinks": [
       {
         "port": "formal(arg, position=0)",
@@ -79,9 +148,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_test_source",
-    "filename": "builtins.pyi",
-    "callable_line": 619,
+    "callable": "pysa._test_source",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 5,
     "sources": [
       {
         "port": "result",
@@ -104,9 +173,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_tito",
-    "filename": "builtins.pyi",
-    "callable_line": 623,
+    "callable": "pysa._tito",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 6,
     "tito": [
       {
         "port": "formal(**kwargs)",
@@ -133,9 +202,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_user_controlled",
-    "filename": "builtins.pyi",
-    "callable_line": 624,
+    "callable": "pysa._user_controlled",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 7,
     "sources": [
       {
         "port": "result",
@@ -150,9 +219,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "copy",
-    "filename": "builtins.pyi",
-    "callable_line": 629,
+    "callable": "pysa.copy",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 12,
     "tito": [
       {
         "port": "formal(obj, position=0)",
@@ -174,81 +243,12 @@
   }
 }
 {
-  "kind": "model",
-  "data": {
-    "callable": "eval",
-    "filename": "builtins.pyi",
-    "callable_line": 474,
-    "sinks": [
-      {
-        "port": "formal(arg, position=0)",
-        "taint": [
-          {
-            "kinds": [ { "kind": "RemoteCodeExecution" } ],
-            "declaration": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "getattr",
-    "filename": "builtins.pyi",
-    "callable_line": 476,
-    "sinks": [
-      {
-        "port": "formal(name, position=1)",
-        "taint": [
-          { "kinds": [ { "kind": "GetAttr" } ], "declaration": null }
-        ]
-      }
-    ],
-    "tito": [
-      {
-        "port": "formal(default, position=2)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "default" } ],
-                "return_paths": { "": 0 },
-                "kind": "LocalReturn"
-              }
-            ],
-            "tito": {}
-          }
-        ]
-      },
-      {
-        "port": "formal(o, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "object" } ],
-                "return_paths": { "": 0 },
-                "kind": "LocalReturn"
-              }
-            ],
-            "tito": {}
-          }
-        ]
-      }
-    ],
-    "modes": [ "SkipObscure" ]
-  }
-}
-{
   "kind": "issue",
   "data": {
     "callable": "supers.attribute_B_not_overwritten",
-    "callable_line": 80,
+    "callable_line": 81,
     "code": 5002,
-    "line": 81,
+    "line": 82,
     "start": 4,
     "end": 7,
     "filename": "supers.py",
@@ -262,17 +262,17 @@
               {
                 "features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "length": 1,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 81, "start": 4, "end": 5 },
+              "position": { "line": 82, "start": 4, "end": 5 },
               "resolves_to": [ "supers.A.__init__" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "81:4-81:7"
+              "call_site": "82:4-82:7"
             }
           }
         ]
@@ -284,16 +284,18 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "length": 2,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 81, "start": 4, "end": 7 },
+              "position": { "line": 82, "start": 4, "end": 7 },
               "resolves_to": [ "supers.B.g1" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "81:4-81:12"
+              "call_site": "82:4-82:12"
             },
             "receiver_interval": [ { "lower": 3, "upper": 6 } ],
             "is_self_call": false
@@ -317,9 +319,9 @@
   "kind": "issue",
   "data": {
     "callable": "supers.attribute_C_not_overwritten",
-    "callable_line": 105,
+    "callable_line": 106,
     "code": 5002,
-    "line": 106,
+    "line": 107,
     "start": 4,
     "end": 7,
     "filename": "supers.py",
@@ -333,17 +335,17 @@
               {
                 "features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "length": 1,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 106, "start": 4, "end": 5 },
+              "position": { "line": 107, "start": 4, "end": 5 },
               "resolves_to": [ "supers.A.__init__" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "106:4-106:7"
+              "call_site": "107:4-107:7"
             }
           }
         ]
@@ -355,16 +357,18 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "length": 2,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 106, "start": 4, "end": 7 },
+              "position": { "line": 107, "start": 4, "end": 7 },
               "resolves_to": [ "supers.C.g1", "supers.D.g1" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "106:4-106:12"
+              "call_site": "107:4-107:12"
             },
             "receiver_interval": [ { "lower": 7, "upper": 10 } ],
             "is_self_call": false
@@ -388,9 +392,9 @@
   "kind": "issue",
   "data": {
     "callable": "supers.attribute_D_not_overwritten",
-    "callable_line": 115,
+    "callable_line": 116,
     "code": 5002,
-    "line": 117,
+    "line": 118,
     "start": 4,
     "end": 5,
     "filename": "supers.py",
@@ -404,17 +408,17 @@
               {
                 "features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "length": 1,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 116, "start": 8, "end": 9 },
+              "position": { "line": 117, "start": 8, "end": 9 },
               "resolves_to": [ "supers.A.__init__" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "116:8-116:11"
+              "call_site": "117:8-117:11"
             }
           }
         ]
@@ -426,16 +430,18 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "length": 2,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 117, "start": 4, "end": 5 },
+              "position": { "line": 118, "start": 4, "end": 5 },
               "resolves_to": [ "supers.D.g1" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "117:4-117:10"
+              "call_site": "118:4-118:10"
             },
             "receiver_interval": [ { "lower": 8, "upper": 9 } ],
             "is_self_call": false
@@ -460,7 +466,7 @@
   "data": {
     "callable": "supers.A.__init__",
     "filename": "supers.py",
-    "callable_line": 10,
+    "callable_line": 11,
     "sources": [
       {
         "port": "formal(self, position=0)[attribute]",
@@ -470,12 +476,12 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 11, "start": 25, "end": 39 },
+            "origin": { "line": 12, "start": 25, "end": 39 },
             "caller_interval": [ { "lower": 2, "upper": 11 } ],
             "is_self_call": false
           }
@@ -489,7 +495,7 @@
   "data": {
     "callable": "supers.A.f1",
     "filename": "supers.py",
-    "callable_line": 13,
+    "callable_line": 14,
     "sinks": [
       {
         "port": "formal(self, position=0)[attribute]",
@@ -498,14 +504,16 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 14, "start": 19, "end": 33 },
+            "origin": { "line": 15, "start": 19, "end": 33 },
             "caller_interval": [ { "lower": 2, "upper": 11 } ],
             "is_self_call": false,
-            "call_site": "14:8-14:34"
+            "call_site": "15:8-15:34"
           }
         ]
       }
@@ -517,7 +525,7 @@
   "data": {
     "callable": "supers.A.f2",
     "filename": "supers.py",
-    "callable_line": 16,
+    "callable_line": 17,
     "sinks": [
       {
         "port": "formal(x, position=1)",
@@ -526,14 +534,16 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 17, "start": 19, "end": 20 },
+            "origin": { "line": 18, "start": 19, "end": 20 },
             "caller_interval": [ { "lower": 2, "upper": 11 } ],
             "is_self_call": false,
-            "call_site": "17:8-17:21"
+            "call_site": "18:8-18:21"
           }
         ]
       }
@@ -545,7 +555,7 @@
   "data": {
     "callable": "supers.A.f3",
     "filename": "supers.py",
-    "callable_line": 19,
+    "callable_line": 20,
     "sources": [
       {
         "port": "result",
@@ -555,12 +565,12 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 20, "start": 15, "end": 29 },
+            "origin": { "line": 21, "start": 15, "end": 29 },
             "caller_interval": [ { "lower": 2, "upper": 11 } ],
             "is_self_call": false
           }
@@ -574,7 +584,7 @@
   "data": {
     "callable": "supers.B.f4",
     "filename": "supers.py",
-    "callable_line": 33,
+    "callable_line": 34,
     "sources": [
       {
         "port": "result",
@@ -584,12 +594,12 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 34, "start": 15, "end": 29 },
+            "origin": { "line": 35, "start": 15, "end": 29 },
             "caller_interval": [ { "lower": 3, "upper": 6 } ],
             "is_self_call": false
           }
@@ -603,7 +613,7 @@
   "data": {
     "callable": "supers.B.f5",
     "filename": "supers.py",
-    "callable_line": 36,
+    "callable_line": 37,
     "sinks": [
       {
         "port": "formal(x, position=1)",
@@ -612,14 +622,16 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 37, "start": 26, "end": 27 },
+            "origin": { "line": 38, "start": 26, "end": 27 },
             "caller_interval": [ { "lower": 3, "upper": 6 } ],
             "is_self_call": false,
-            "call_site": "37:15-37:28"
+            "call_site": "38:15-38:28"
           }
         ]
       }
@@ -639,7 +651,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 37, "start": 26, "end": 27 } ],
+            "tito_positions": [ { "line": 38, "start": 26, "end": 27 } ],
             "tito": {
               "caller_interval": [ { "lower": 3, "upper": 6 } ],
               "is_self_call": false
@@ -655,7 +667,7 @@
   "data": {
     "callable": "supers.B.g1",
     "filename": "supers.py",
-    "callable_line": 39,
+    "callable_line": 40,
     "sinks": [
       {
         "port": "formal(self, position=0)[attribute]",
@@ -669,10 +681,10 @@
               }
             ],
             "call": {
-              "position": { "line": 40, "start": 8, "end": 22 },
+              "position": { "line": 41, "start": 8, "end": 22 },
               "resolves_to": [ "supers.A.f1" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "40:8-40:27"
+              "call_site": "41:8-41:27"
             },
             "caller_interval": [ { "lower": 3, "upper": 6 } ],
             "receiver_interval": [ { "lower": 2, "upper": 11 } ],
@@ -687,10 +699,10 @@
               }
             ],
             "call": {
-              "position": { "line": 41, "start": 8, "end": 15 },
+              "position": { "line": 42, "start": 8, "end": 15 },
               "resolves_to": [ "supers.A.f1" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "41:8-41:20"
+              "call_site": "42:8-42:20"
             },
             "caller_interval": [ { "lower": 3, "upper": 6 } ],
             "receiver_interval": [ { "lower": 2, "upper": 11 } ],
@@ -705,9 +717,9 @@
   "kind": "issue",
   "data": {
     "callable": "supers.B.g1",
-    "callable_line": 39,
+    "callable_line": 40,
     "code": 5002,
-    "line": 42,
+    "line": 43,
     "start": 19,
     "end": 31,
     "filename": "supers.py",
@@ -721,14 +733,14 @@
               {
                 "features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "length": 1,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 42, "start": 19, "end": 31 },
+              "position": { "line": 43, "start": 19, "end": 31 },
               "resolves_to": [ "supers.A.f3" ],
               "port": "result"
             },
@@ -745,16 +757,18 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "length": 1,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 42, "start": 19, "end": 31 },
+              "position": { "line": 43, "start": 19, "end": 31 },
               "resolves_to": [ "supers.A.f2" ],
               "port": "formal(x, position=1)",
-              "call_site": "42:8-42:32"
+              "call_site": "43:8-43:32"
             },
             "caller_interval": [ { "lower": 3, "upper": 6 } ],
             "receiver_interval": [ { "lower": 2, "upper": 11 } ],
@@ -779,9 +793,9 @@
   "kind": "issue",
   "data": {
     "callable": "supers.B.g4",
-    "callable_line": 52,
+    "callable_line": 53,
     "code": 5002,
-    "line": 53,
+    "line": 54,
     "start": 16,
     "end": 25,
     "filename": "supers.py",
@@ -795,14 +809,14 @@
               {
                 "features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "length": 1,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 53, "start": 16, "end": 25 },
+              "position": { "line": 54, "start": 16, "end": 25 },
               "resolves_to": [ "supers.B.f4" ],
               "port": "result"
             },
@@ -819,16 +833,18 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "length": 1,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 53, "start": 16, "end": 25 },
+              "position": { "line": 54, "start": 16, "end": 25 },
               "resolves_to": [ "supers.B.f5" ],
               "port": "formal(x, position=1)",
-              "call_site": "53:8-53:26"
+              "call_site": "54:8-54:26"
             },
             "caller_interval": [ { "lower": 3, "upper": 6 } ],
             "receiver_interval": [ { "lower": 3, "upper": 6 } ],
@@ -854,7 +870,7 @@
   "data": {
     "callable": "supers.C.g1",
     "filename": "supers.py",
-    "callable_line": 60,
+    "callable_line": 61,
     "sinks": [
       {
         "port": "formal(self, position=0)[attribute]",
@@ -868,10 +884,10 @@
               }
             ],
             "call": {
-              "position": { "line": 61, "start": 15, "end": 22 },
+              "position": { "line": 62, "start": 15, "end": 22 },
               "resolves_to": [ "supers.A.f1" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "61:15-61:27"
+              "call_site": "62:15-62:27"
             },
             "caller_interval": [ { "lower": 7, "upper": 10 } ],
             "receiver_interval": [ { "lower": 2, "upper": 11 } ],
@@ -887,7 +903,7 @@
   "data": {
     "callable": "supers.D.g1",
     "filename": "supers.py",
-    "callable_line": 65,
+    "callable_line": 66,
     "sinks": [
       {
         "port": "formal(self, position=0)[attribute]",
@@ -901,10 +917,10 @@
               }
             ],
             "call": {
-              "position": { "line": 66, "start": 8, "end": 15 },
+              "position": { "line": 67, "start": 8, "end": 15 },
               "resolves_to": [ "supers.A.f1" ],
               "port": "formal(self, position=0)[attribute]",
-              "call_site": "66:8-66:20"
+              "call_site": "67:8-67:20"
             },
             "caller_interval": [ { "lower": 8, "upper": 9 } ],
             "receiver_interval": [ { "lower": 7, "upper": 10 } ],
@@ -1025,7 +1041,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Obj{ClassWithSinkAttribute.attribute}",
+    "callable": "Obj{pysa.ClassWithSinkAttribute.attribute}",
     "sinks": [
       {
         "port": "formal($global, position=0)",
@@ -1037,7 +1053,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Obj{taint._global_sink}",
+    "callable": "Obj{pysa._global_sink}",
     "sinks": [
       {
         "port": "formal($global, position=0)",

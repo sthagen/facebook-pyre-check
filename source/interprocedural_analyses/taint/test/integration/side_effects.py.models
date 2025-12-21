@@ -2,9 +2,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_test_sink",
-    "filename": "builtins.pyi",
-    "callable_line": 618,
+    "callable": "pysa._test_sink",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 4,
     "sinks": [
       {
         "port": "formal(arg, position=0)",
@@ -27,9 +27,9 @@
 {
   "kind": "model",
   "data": {
-    "callable": "_test_source",
-    "filename": "builtins.pyi",
-    "callable_line": 619,
+    "callable": "pysa._test_source",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 5,
     "sources": [
       {
         "port": "result",
@@ -54,7 +54,7 @@
   "data": {
     "callable": "side_effects.change_arg0",
     "filename": "side_effects.py",
-    "callable_line": 62,
+    "callable_line": 74,
     "tito": [
       {
         "port": "formal(arg1, position=1)",
@@ -79,7 +79,7 @@
   "data": {
     "callable": "side_effects.change_arg1",
     "filename": "side_effects.py",
-    "callable_line": 66,
+    "callable_line": 78,
     "tito": [
       {
         "port": "formal(arg0, position=0)",
@@ -104,7 +104,7 @@
   "data": {
     "callable": "side_effects.dict_to_sink_via_side_effect",
     "filename": "side_effects.py",
-    "callable_line": 53,
+    "callable_line": 65,
     "sinks": [
       {
         "port": "formal(y, position=0)",
@@ -113,14 +113,16 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 55, "start": 26, "end": 27 } ],
-            "origin": { "line": 56, "start": 15, "end": 16 },
-            "call_site": "56:4-56:17"
+            "tito_positions": [ { "line": 67, "start": 26, "end": 27 } ],
+            "origin": { "line": 68, "start": 15, "end": 16 },
+            "call_site": "68:4-68:17"
           }
         ]
       }
@@ -132,7 +134,7 @@
   "data": {
     "callable": "side_effects.test_from_0_to_1",
     "filename": "side_effects.py",
-    "callable_line": 15,
+    "callable_line": 27,
     "sources": [
       {
         "port": "result",
@@ -142,7 +144,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -152,8 +154,8 @@
               { "always-type": "scalar" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 17, "start": 16, "end": 30 } ],
-            "origin": { "line": 17, "start": 16, "end": 30 }
+            "tito_positions": [ { "line": 29, "start": 16, "end": 30 } ],
+            "origin": { "line": 29, "start": 16, "end": 30 }
           }
         ]
       }
@@ -165,7 +167,7 @@
   "data": {
     "callable": "side_effects.test_from_1_to_0",
     "filename": "side_effects.py",
-    "callable_line": 9,
+    "callable_line": 21,
     "sources": [
       {
         "port": "result",
@@ -175,7 +177,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -185,8 +187,8 @@
               { "always-type": "scalar" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 11, "start": 19, "end": 33 } ],
-            "origin": { "line": 11, "start": 19, "end": 33 }
+            "tito_positions": [ { "line": 23, "start": 19, "end": 33 } ],
+            "origin": { "line": 23, "start": 19, "end": 33 }
           }
         ]
       }
@@ -198,7 +200,7 @@
   "data": {
     "callable": "side_effects.test_from_1_to_0_nested",
     "filename": "side_effects.py",
-    "callable_line": 21,
+    "callable_line": 33,
     "sources": [
       {
         "port": "result",
@@ -208,7 +210,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -218,8 +220,8 @@
               { "first-field": "foo" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 23, "start": 23, "end": 37 } ],
-            "origin": { "line": 23, "start": 23, "end": 37 }
+            "tito_positions": [ { "line": 35, "start": 23, "end": 37 } ],
+            "origin": { "line": 35, "start": 23, "end": 37 }
           }
         ]
       }
@@ -231,7 +233,7 @@
   "data": {
     "callable": "side_effects.test_list_append",
     "filename": "side_effects.py",
-    "callable_line": 33,
+    "callable_line": 45,
     "sources": [
       {
         "port": "result",
@@ -241,14 +243,14 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 35, "start": 13, "end": 27 } ],
-            "origin": { "line": 35, "start": 13, "end": 27 }
+            "tito_positions": [ { "line": 47, "start": 13, "end": 27 } ],
+            "origin": { "line": 47, "start": 13, "end": 27 }
           }
         ]
       }
@@ -260,7 +262,7 @@
   "data": {
     "callable": "side_effects.to_sink_via_side_effect",
     "filename": "side_effects.py",
-    "callable_line": 47,
+    "callable_line": 59,
     "sinks": [
       {
         "port": "formal(y, position=0)",
@@ -269,14 +271,16 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 49, "start": 19, "end": 20 } ],
-            "origin": { "line": 50, "start": 15, "end": 16 },
-            "call_site": "50:4-50:17"
+            "tito_positions": [ { "line": 61, "start": 19, "end": 20 } ],
+            "origin": { "line": 62, "start": 15, "end": 16 },
+            "call_site": "62:4-62:17"
           }
         ]
       }
@@ -288,7 +292,7 @@
   "data": {
     "callable": "side_effects.MyList.append",
     "filename": "side_effects.py",
-    "callable_line": 71,
+    "callable_line": 17,
     "tito": [
       {
         "port": "formal(arg, position=1)",

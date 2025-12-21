@@ -85,6 +85,11 @@ module JsonUtil = struct
     | json -> Error (FormatError.UnexpectedJsonType { json; message = "expected a list" })
 
 
+  let as_string = function
+    | `String string -> Ok string
+    | json -> Error (FormatError.UnexpectedJsonType { json; message = "expected a string" })
+
+
   let get_optional_string_member json key =
     match Yojson.Safe.Util.member key json with
     | `String value -> Ok (Some value)
@@ -424,8 +429,14 @@ module PyreflyTarget = struct
         >>| List.map ~f:from_json
         >>= Result.all
         >>| fun subset -> OverrideSubset { base_method; subset }
-    | `Assoc [("FormatString", `Null)] -> Ok FormatString
+    | `String "FormatString" -> Ok FormatString
     | _ -> Error (FormatError.UnexpectedJsonType { json; message = "Unknown type of target" })
+end
+
+module ModuleIdSharedMemoryKey = struct
+  type t = ModuleId.t [@@deriving compare]
+
+  let to_string module_id = string_of_int (ModuleId.to_int module_id)
 end
 
 module GlobalCallableIdSharedMemoryKey = struct
@@ -515,7 +526,9 @@ module ProjectFile = struct
     type t = {
       module_id: ModuleId.t;
       module_name: Reference.t;
-      module_path: ModulePath.t;
+      absolute_source_path: ModulePath.t;
+          (* Filesystem path to the source file for the module, as seen by the analyzer *)
+      relative_source_path: string option; (* Relative path from a root or search path *)
       info_filename: ModuleInfoFilename.t option;
       is_test: bool;
       is_interface: bool;
@@ -534,7 +547,9 @@ module ProjectFile = struct
       JsonUtil.get_object_member json "source_path"
       >>= fun source_path ->
       ModulePath.from_json (`Assoc source_path)
-      >>= fun module_path ->
+      >>= fun absolute_source_path ->
+      JsonUtil.get_optional_string_member json "relative_source_path"
+      >>= fun relative_source_path ->
       JsonUtil.get_optional_bool_member ~default:false json "is_test"
       >>= fun is_test ->
       JsonUtil.get_optional_bool_member ~default:false json "is_interface"
@@ -544,7 +559,8 @@ module ProjectFile = struct
       {
         module_id = ModuleId.from_int module_id;
         module_name = Reference.create module_name;
-        module_path;
+        absolute_source_path;
+        relative_source_path;
         info_filename = Option.map ~f:ModuleInfoFilename.create info_filename;
         is_test;
         is_interface;
@@ -596,41 +612,48 @@ module ProjectFile = struct
     | Error error -> raise (PyreflyFileFormatError { path; error = Error.FormatError error })
 end
 
+module ClassWithModifiers = struct
+  type t = {
+    class_name: GlobalClassId.t;
+    modifiers: Pyre1Api.TypeModifier.t list;
+  }
+  [@@deriving equal, show]
+
+  let from_json json =
+    let open Core.Result.Monad_infix in
+    JsonUtil.get_object_member json "class"
+    >>= fun class_name ->
+    GlobalClassId.from_json (`Assoc class_name)
+    >>= fun class_name ->
+    JsonUtil.get_optional_list_member json "modifiers"
+    >>| List.map ~f:JsonUtil.as_string
+    >>= Result.all
+    >>| List.map ~f:(fun modifier ->
+            match Pyre1Api.TypeModifier.from_string modifier with
+            | Some modifier -> Ok modifier
+            | None ->
+                Error
+                  (FormatError.UnexpectedJsonType
+                     { json = `String modifier; message = "expected a modifier" }))
+    >>= Result.all
+    >>| fun modifiers -> { class_name; modifiers }
+end
+
 module ClassNamesResult = struct
   type t = {
-    class_names: GlobalClassId.t list;
-    stripped_coroutine: bool;
-    stripped_optional: bool;
-    stripped_readonly: bool;
-    unbound_type_variable: bool;
+    classes: ClassWithModifiers.t list;
     is_exhaustive: bool;
   }
   [@@deriving equal, show]
 
   let from_json json =
     let open Core.Result.Monad_infix in
-    JsonUtil.get_list_member json "class_names"
-    >>| List.map ~f:GlobalClassId.from_json
+    JsonUtil.get_list_member json "classes"
+    >>| List.map ~f:ClassWithModifiers.from_json
     >>= Result.all
-    >>= fun class_names ->
-    JsonUtil.get_optional_bool_member ~default:false json "stripped_coroutine"
-    >>= fun stripped_coroutine ->
-    JsonUtil.get_optional_bool_member ~default:false json "stripped_optional"
-    >>= fun stripped_optional ->
-    JsonUtil.get_optional_bool_member ~default:false json "stripped_readonly"
-    >>= fun stripped_readonly ->
-    JsonUtil.get_optional_bool_member ~default:false json "unbound_type_variable"
-    >>= fun unbound_type_variable ->
+    >>= fun classes ->
     JsonUtil.get_optional_bool_member ~default:false json "is_exhaustive"
-    >>| fun is_exhaustive ->
-    {
-      class_names;
-      stripped_coroutine;
-      stripped_optional;
-      stripped_readonly;
-      unbound_type_variable;
-      is_exhaustive;
-    }
+    >>| fun is_exhaustive -> { classes; is_exhaustive }
 
 
   let from_optional_json = function
@@ -679,26 +702,23 @@ module JsonType = struct
   let to_pysa_type { string; scalar_properties; class_names } =
     let class_names =
       match class_names with
-      | Some
-          {
-            ClassNamesResult.class_names;
-            stripped_coroutine;
-            stripped_optional;
-            stripped_readonly;
-            unbound_type_variable;
-            is_exhaustive;
-          } ->
+      | Some { ClassNamesResult.classes; is_exhaustive } ->
           Some
             {
-              PyreflyType.ClassNamesFromType.class_names =
+              PyreflyType.ClassNamesFromType.classes =
                 List.map
-                  ~f:(fun { GlobalClassId.module_id; local_class_id } ->
-                    ModuleId.to_int module_id, LocalClassId.to_int local_class_id)
-                  class_names;
-              stripped_coroutine;
-              stripped_optional;
-              stripped_readonly;
-              unbound_type_variable;
+                  ~f:
+                    (fun {
+                           ClassWithModifiers.class_name =
+                             { GlobalClassId.module_id; local_class_id };
+                           modifiers;
+                         } ->
+                    {
+                      PyreflyType.ClassWithModifiers.module_id = ModuleId.to_int module_id;
+                      class_id = LocalClassId.to_int local_class_id;
+                      modifiers;
+                    })
+                  classes;
               is_exhaustive;
             }
       | None -> None
@@ -1309,7 +1329,7 @@ module ModuleCallGraphs = struct
       receiver_class: GlobalClassId.t option;
       is_class_method: bool;
       is_static_method: bool;
-      return_type: ScalarTypeProperties.t option;
+      return_type: ScalarTypeProperties.t;
     }
 
     let from_json json =
@@ -1332,8 +1352,8 @@ module ModuleCallGraphs = struct
       JsonUtil.get_optional_bool_member ~default:false json "is_static_method"
       >>= fun is_static_method ->
       (match JsonUtil.get_optional_member json "return_type" with
-      | Some return_type -> parse_scalar_type_properties return_type >>| Option.some
-      | None -> Ok None)
+      | Some return_type -> parse_scalar_type_properties return_type
+      | None -> Ok ScalarTypeProperties.none)
       >>| fun return_type ->
       {
         target;
@@ -1403,6 +1423,20 @@ module ModuleCallGraphs = struct
       >>| Map.of_alist_exn
   end
 
+  module JsonGlobalVariable = struct
+    type t = {
+      module_id: ModuleId.t;
+      name: string;
+    }
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      JsonUtil.get_int_member json "module_id"
+      >>= fun module_id ->
+      JsonUtil.get_string_member json "name"
+      >>| fun name -> { module_id = ModuleId.from_int module_id; name }
+  end
+
   module JsonCallCallees = struct
     type t = {
       call_targets: JsonCallTarget.t list;
@@ -1444,6 +1478,7 @@ module ModuleCallGraphs = struct
       if_called: JsonCallCallees.t;
       property_setters: JsonCallTarget.t list;
       property_getters: JsonCallTarget.t list;
+      global_targets: JsonGlobalVariable.t list;
     }
 
     let from_json json =
@@ -1459,17 +1494,28 @@ module ModuleCallGraphs = struct
       >>= fun property_setters ->
       JsonUtil.get_optional_list_member json "property_getters"
       >>= parse_call_target_list
-      >>| fun property_getters -> { if_called; property_setters; property_getters }
+      >>= fun property_getters ->
+      JsonUtil.get_optional_list_member json "global_targets"
+      >>| List.map ~f:JsonGlobalVariable.from_json
+      >>= Result.all
+      >>| fun global_targets -> { if_called; property_setters; property_getters; global_targets }
   end
 
   module JsonIdentifierCallees = struct
-    type t = { if_called: JsonCallCallees.t }
+    type t = {
+      if_called: JsonCallCallees.t;
+      global_targets: JsonGlobalVariable.t list;
+    }
 
     let from_json json =
       let open Core.Result.Monad_infix in
       JsonUtil.get_member json "if_called"
       >>= JsonCallCallees.from_json
-      >>| fun if_called -> { if_called }
+      >>= fun if_called ->
+      JsonUtil.get_optional_list_member json "global_targets"
+      >>| List.map ~f:JsonGlobalVariable.from_json
+      >>= Result.all
+      >>| fun global_targets -> { if_called; global_targets }
   end
 
   module JsonDefineCallees = struct
@@ -1485,12 +1531,48 @@ module ModuleCallGraphs = struct
       >>| fun define_targets -> { define_targets }
   end
 
+  module JsonFormatStringArtificialCallees = struct
+    type t = { targets: JsonCallTarget.t list }
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      let parse_call_target_list targets =
+        targets |> List.map ~f:JsonCallTarget.from_json |> Result.all
+      in
+      JsonUtil.get_list_member json "targets"
+      >>= parse_call_target_list
+      >>| fun targets -> { targets }
+  end
+
+  module JsonFormatStringStringifyCallees = struct
+    type t = {
+      targets: JsonCallTarget.t list;
+      unresolved: CallGraph.Unresolved.t;
+    }
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      let parse_call_target_list targets =
+        targets |> List.map ~f:JsonCallTarget.from_json |> Result.all
+      in
+      JsonUtil.get_optional_list_member json "targets"
+      >>= parse_call_target_list
+      >>= fun targets ->
+      JsonUtil.get_optional_member json "unresolved"
+      |> (function
+           | Some json -> JsonUnresolved.from_json json
+           | None -> Ok CallGraph.Unresolved.False)
+      >>| fun unresolved -> { targets; unresolved }
+  end
+
   module JsonExpressionCallees = struct
     type t =
       | Call of JsonCallCallees.t
       | Identifier of JsonIdentifierCallees.t
       | AttributeAccess of JsonAttributeAccessCallees.t
       | Define of JsonDefineCallees.t
+      | FormatStringArtificial of JsonFormatStringArtificialCallees.t
+      | FormatStringStringify of JsonFormatStringStringifyCallees.t
 
     let from_json json =
       let open Core.Result.Monad_infix in
@@ -1505,6 +1587,12 @@ module ModuleCallGraphs = struct
           >>| fun attribute_access_callees -> AttributeAccess attribute_access_callees
       | `Assoc [("Define", define_callees)] ->
           JsonDefineCallees.from_json define_callees >>| fun define_callees -> Define define_callees
+      | `Assoc [("FormatStringArtificial", format_string_callees)] ->
+          JsonFormatStringArtificialCallees.from_json format_string_callees
+          >>| fun format_string_callees -> FormatStringArtificial format_string_callees
+      | `Assoc [("FormatStringStringify", format_string_callees)] ->
+          JsonFormatStringStringifyCallees.from_json format_string_callees
+          >>| fun format_string_callees -> FormatStringStringify format_string_callees
       | _ ->
           Error (FormatError.UnexpectedJsonType { json; message = "expected expression callees" })
   end
@@ -1569,12 +1657,59 @@ module ModuleCallGraphs = struct
     | Error error -> raise (PyreflyFileFormatError { path; error = Error.FormatError error })
 end
 
+(* Set of type errors parsed from pyrefly. This represents the
+   `pyrefly::report::pysa::PysaTypeErrorsFile` rust type. *)
+module TypeErrors = struct
+  module JsonError = struct
+    type t = {
+      module_id: ModuleId.t;
+      location: Location.t;
+      kind: string;
+      message: string;
+    }
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      JsonUtil.get_int_member json "module_id"
+      >>= fun module_id ->
+      JsonUtil.get_string_member json "location"
+      >>= parse_location
+      >>= fun location ->
+      JsonUtil.get_string_member json "kind"
+      >>= fun kind ->
+      JsonUtil.get_string_member json "message"
+      >>| fun message -> { module_id = ModuleId.from_int module_id; location; kind; message }
+  end
+
+  type t = { errors: JsonError.t list }
+
+  let from_json json =
+    let open Core.Result.Monad_infix in
+    JsonUtil.check_object json
+    >>= fun _ ->
+    JsonUtil.check_format_version ~expected:1 json
+    >>= fun () ->
+    JsonUtil.get_list_member json "errors"
+    >>= fun errors -> List.map ~f:JsonError.from_json errors |> Result.all
+
+
+  let from_path_exn ~pyrefly_directory =
+    let path = pyrefly_directory |> PyrePath.append ~element:"errors.json" in
+    let () = Log.debug "Parsing pyrefly type errors file %a" PyrePath.pp path in
+    let json = JsonUtil.read_json_file_exn path in
+    match from_json json with
+    | Ok errors -> { errors }
+    | Error error -> raise (PyreflyFileFormatError { path; error = Error.FormatError error })
+end
+
 (* Information about a module, stored in shared memory. *)
 module ModuleInfosSharedMemory = struct
   module Module = struct
     type t = {
       module_id: ModuleId.t;
-      source_path: ArtifactPath.t option (* The path of source code as seen by the analyzer. *);
+      absolute_source_path: ArtifactPath.t option;
+          (* Filesystem path to the source file for the module, as seen by the analyzer *)
+      relative_source_path: string option; (* Relative path from a root or search path *)
       pyrefly_info_filename: ModuleInfoFilename.t option;
       is_test: bool; (* Is this a test file? *)
       is_stub: bool; (* Is this a stub file (e.g, `a.pyi`)? *)
@@ -1879,6 +2014,22 @@ module ModuleGlobalsSharedMemory =
       let description = "pyrefly global variables in module"
     end)
 
+module ModuleIdToQualifierSharedMemory = struct
+  include
+    Hack_parallel.Std.SharedMemory.FirstClass.WithCache.Make
+      (ModuleIdSharedMemoryKey)
+      (struct
+        type t = ModuleQualifier.t
+
+        let prefix = Hack_parallel.Std.Prefix.make ()
+
+        let description = "pyrefly module id to module qualified"
+      end)
+
+  let get_module_qualifier handle module_id =
+    module_id |> get handle |> assert_shared_memory_key_exists "unknown module id"
+end
+
 module ClassIdToQualifiedNameSharedMemory = struct
   include
     Hack_parallel.Std.SharedMemory.FirstClass.WithCache.Make
@@ -1995,7 +2146,9 @@ module ReadWrite = struct
     type t = {
       module_id: ModuleId.t;
       module_name: Reference.t;
-      source_path: ArtifactPath.t option; (* The path of source code as seen by the analyzer. *)
+      absolute_source_path: ArtifactPath.t option;
+          (* Filesystem path to the source file for the module, as seen by the analyzer *)
+      relative_source_path: string option; (* Relative path from a root or search path *)
       pyrefly_info_filename: ModuleInfoFilename.t option;
       is_test: bool;
       is_stub: bool;
@@ -2007,7 +2160,8 @@ module ReadWrite = struct
         {
           ProjectFile.Module.module_id;
           module_name;
-          module_path;
+          absolute_source_path;
+          relative_source_path;
           info_filename;
           is_test;
           is_interface;
@@ -2017,7 +2171,8 @@ module ReadWrite = struct
       {
         module_id;
         module_name;
-        source_path = ModulePath.artifact_file_path ~pyrefly_directory module_path;
+        absolute_source_path = ModulePath.artifact_file_path ~pyrefly_directory absolute_source_path;
+        relative_source_path;
         pyrefly_info_filename = info_filename;
         is_test;
         is_stub = is_interface;
@@ -2037,6 +2192,7 @@ module ReadWrite = struct
     module_callables_shared_memory: ModuleCallablesSharedMemory.t;
     module_classes_shared_memory: ModuleClassesSharedMemory.t;
     module_globals_shared_memory: ModuleGlobalsSharedMemory.t;
+    module_id_to_qualifier_shared_memory: ModuleIdToQualifierSharedMemory.t;
     class_id_to_qualified_name_shared_memory: ClassIdToQualifiedNameSharedMemory.t;
     callable_id_to_qualified_name_shared_memory: CallableIdToQualifiedNameSharedMemory.t;
     callable_ast_shared_memory: CallableAstSharedMemory.t;
@@ -2084,8 +2240,8 @@ module ReadWrite = struct
               find_shortest_unique_prefix ~prefix_length:(prefix_length + 1) modules_with_path
           in
           modules
-          |> List.map ~f:(fun ({ ProjectFile.Module.module_path; _ } as module_info) ->
-                 List.rev (module_path_elements module_path), module_info)
+          |> List.map ~f:(fun ({ ProjectFile.Module.absolute_source_path; _ } as module_info) ->
+                 List.rev (module_path_elements absolute_source_path), module_info)
           |> find_shortest_unique_prefix ~prefix_length:1
           |> List.map ~f:(fun (path, module_info) ->
                  ( ModuleQualifier.create ~path:(Some path) module_name,
@@ -2121,7 +2277,8 @@ module ReadWrite = struct
                       {
                         Module.module_id = last_module_id;
                         module_name = module_head;
-                        source_path = None;
+                        absolute_source_path = None;
+                        relative_source_path = None;
                         pyrefly_info_filename = None;
                         is_test = false;
                         is_stub = false;
@@ -2174,27 +2331,41 @@ module ReadWrite = struct
   let write_module_infos_to_shared_memory ~qualifier_to_module_map =
     let timer = Timer.start () in
     let () = Log.info "Writing modules to shared memory..." in
-    let handle = ModuleInfosSharedMemory.create () in
+    let module_infos_shared_memory = ModuleInfosSharedMemory.create () in
+    let module_id_to_qualifier_shared_memory = ModuleIdToQualifierSharedMemory.create () in
     let () =
       Map.to_alist qualifier_to_module_map
       |> List.iter
            ~f:(fun
                 ( qualifier,
-                  { Module.module_id; source_path; pyrefly_info_filename; is_test; is_stub; _ } )
+                  {
+                    Module.module_id;
+                    absolute_source_path;
+                    relative_source_path;
+                    pyrefly_info_filename;
+                    is_test;
+                    is_stub;
+                    _;
+                  } )
               ->
              ModuleInfosSharedMemory.add
-               handle
+               module_infos_shared_memory
                qualifier
                {
                  ModuleInfosSharedMemory.Module.module_id;
-                 source_path;
+                 absolute_source_path;
+                 relative_source_path;
                  pyrefly_info_filename;
                  is_test;
                  is_stub;
-               })
+               };
+             ModuleIdToQualifierSharedMemory.add
+               module_id_to_qualifier_shared_memory
+               module_id
+               qualifier)
     in
     Log.info "Wrote modules to shared memory: %.3fs" (Timer.stop_in_sec timer);
-    handle
+    module_infos_shared_memory, module_id_to_qualifier_shared_memory
 
 
   let parse_source_files
@@ -2566,13 +2737,17 @@ module ReadWrite = struct
       match module_info, callables, classes with
       | _, None, _ -> ()
       | _, _, None -> ()
-      | { ModuleInfosSharedMemory.Module.source_path = None; _ }, Some _, Some _ ->
+      | { ModuleInfosSharedMemory.Module.absolute_source_path = None; _ }, Some _, Some _ ->
           failwith "unexpected: no source path for module with callables"
       | { ModuleInfosSharedMemory.Module.is_test = true; _ }, Some callables, Some classes ->
           let () = store_callable_asts callables AstResult.TestFile in
           let () = store_class_decorators classes AstResult.TestFile in
           ()
-      | ( { ModuleInfosSharedMemory.Module.source_path = Some source_path; is_test = false; _ },
+      | ( {
+            ModuleInfosSharedMemory.Module.absolute_source_path = Some source_path;
+            is_test = false;
+            _;
+          },
           Some callables,
           Some classes ) -> (
           let load_result =
@@ -3378,17 +3553,21 @@ module ReadWrite = struct
   let create_from_directory ~scheduler ~scheduler_policies ~configuration pyrefly_directory =
     let qualifier_to_module_map, object_class_id = parse_modules ~pyrefly_directory in
 
-    let module_infos_shared_memory = write_module_infos_to_shared_memory ~qualifier_to_module_map in
+    let module_infos_shared_memory, module_id_to_qualifier_shared_memory =
+      write_module_infos_to_shared_memory ~qualifier_to_module_map
+    in
 
     let qualifiers_shared_memory =
       let handle = QualifiersSharedMemory.create () in
       let qualifiers =
         qualifier_to_module_map
         |> Map.to_alist
-        |> List.map ~f:(fun (module_qualifier, { Module.source_path; pyrefly_info_filename; _ }) ->
+        |> List.map
+             ~f:(fun (module_qualifier, { Module.absolute_source_path; pyrefly_info_filename; _ })
+                ->
                {
                  QualifiersSharedMemory.Value.module_qualifier;
-                 has_source = Option.is_some source_path;
+                 has_source = Option.is_some absolute_source_path;
                  has_info = Option.is_some pyrefly_info_filename;
                })
       in
@@ -3449,6 +3628,7 @@ module ReadWrite = struct
       module_callables_shared_memory;
       module_classes_shared_memory;
       module_globals_shared_memory;
+      module_id_to_qualifier_shared_memory;
       class_id_to_qualified_name_shared_memory;
       callable_id_to_qualified_name_shared_memory;
       callable_ast_shared_memory;
@@ -3535,6 +3715,7 @@ module ReadWrite = struct
         module_callables_shared_memory;
         module_classes_shared_memory;
         module_globals_shared_memory;
+        module_id_to_qualifier_shared_memory;
         class_id_to_qualified_name_shared_memory;
         callable_id_to_qualified_name_shared_memory;
         callable_ast_shared_memory;
@@ -3588,6 +3769,7 @@ module ReadWrite = struct
         |> assert_shared_memory_key_exists "missing module info"
       in
       ModuleInfosSharedMemory.remove module_infos_shared_memory module_qualifier;
+      ModuleIdToQualifierSharedMemory.remove module_id_to_qualifier_shared_memory module_id;
       let () =
         if Option.is_some pyrefly_info_filename then
           ModuleCallablesSharedMemory.get module_callables_shared_memory module_qualifier
@@ -3637,6 +3819,7 @@ module ReadOnly = struct
     callable_define_signature_shared_memory: CallableDefineSignatureSharedMemory.t;
     callable_undecorated_signatures_shared_memory: CallableUndecoratedSignaturesSharedMemory.t;
     type_of_expressions_shared_memory: TypeOfExpressionsSharedMemory.t option;
+    module_id_to_qualifier_shared_memory: ModuleIdToQualifierSharedMemory.t;
     class_id_to_qualified_name_shared_memory: ClassIdToQualifiedNameSharedMemory.t;
     callable_id_to_qualified_name_shared_memory: CallableIdToQualifiedNameSharedMemory.t;
     object_class: FullyQualifiedName.t;
@@ -3658,6 +3841,7 @@ module ReadOnly = struct
         callable_define_signature_shared_memory;
         callable_undecorated_signatures_shared_memory;
         type_of_expressions_shared_memory;
+        module_id_to_qualifier_shared_memory;
         class_id_to_qualified_name_shared_memory;
         callable_id_to_qualified_name_shared_memory;
         object_class;
@@ -3679,6 +3863,7 @@ module ReadOnly = struct
       callable_define_signature_shared_memory;
       callable_undecorated_signatures_shared_memory;
       type_of_expressions_shared_memory;
+      module_id_to_qualifier_shared_memory;
       class_id_to_qualified_name_shared_memory;
       callable_id_to_qualified_name_shared_memory;
       object_class;
@@ -3690,13 +3875,21 @@ module ReadOnly = struct
       module_infos_shared_memory
       (ModuleQualifier.from_reference_unchecked qualifier)
     |> assert_shared_memory_key_exists "missing module info for qualifier"
-    |> fun { ModuleInfosSharedMemory.Module.source_path; _ } -> source_path
+    |> fun { ModuleInfosSharedMemory.Module.absolute_source_path; _ } -> absolute_source_path
 
 
   let absolute_source_path_of_qualifier api qualifier =
     (* TODO(T225700656): We currently return the artifact path, it should be translated back into a
        source path by buck *)
     artifact_path_of_qualifier api qualifier >>| ArtifactPath.raw >>| PyrePath.absolute
+
+
+  let relative_path_of_qualifier { module_infos_shared_memory; _ } qualifier =
+    ModuleInfosSharedMemory.get
+      module_infos_shared_memory
+      (ModuleQualifier.from_reference_unchecked qualifier)
+    |> assert_shared_memory_key_exists "missing module info for qualifier"
+    |> fun { ModuleInfosSharedMemory.Module.relative_source_path; _ } -> relative_source_path
 
 
   (* Return all qualifiers with source code *)
@@ -4091,9 +4284,14 @@ module ReadOnly = struct
 
 
   let instantiate_call_graph
-      ({ callable_id_to_qualified_name_shared_memory; class_id_to_qualified_name_shared_memory; _ }
-      as api)
+      ({
+         module_id_to_qualifier_shared_memory;
+         callable_id_to_qualified_name_shared_memory;
+         class_id_to_qualified_name_shared_memory;
+         _;
+       } as api)
       ~method_has_overrides
+      ~attribute_targets
       ~callable
       json_call_graph
     =
@@ -4188,9 +4386,24 @@ module ReadOnly = struct
               >>| Ast.Reference.show;
             is_class_method;
             is_static_method;
-            return_type;
+            return_type = Some return_type;
           })
         targets
+    in
+    let instantiate_global_target { JsonGlobalVariable.module_id; name } =
+      let module_qualifier =
+        ModuleIdToQualifierSharedMemory.get_module_qualifier
+          module_id_to_qualifier_shared_memory
+          module_id
+      in
+      let object_target =
+        Reference.create ~prefix:(ModuleQualifier.to_reference module_qualifier) name
+        |> Target.create_object
+      in
+      if Target.Set.mem object_target attribute_targets then
+        Some (CallTarget.create ~return_type:None object_target)
+      else
+        None
     in
     let instantiate_higher_order_parameter
         { JsonHigherOrderParameter.index; call_targets; unresolved }
@@ -4227,23 +4440,25 @@ module ReadOnly = struct
         recognized_call = CallGraph.CallCallees.RecognizedCall.False;
       }
     in
-    let instantiate_identifier_callees { JsonIdentifierCallees.if_called } =
-      (* TODO(T225700656): Support global targets, non local targets. *)
+    let instantiate_identifier_callees { JsonIdentifierCallees.if_called; global_targets } =
+      (* TODO(T225700656): Support non local targets. *)
       let if_called = instantiate_call_callees if_called in
-      { IdentifierCallees.global_targets = []; nonlocal_targets = []; if_called }
+      let global_targets = List.filter_map ~f:instantiate_global_target global_targets in
+      { IdentifierCallees.global_targets; nonlocal_targets = []; if_called }
     in
     let instantiate_attribute_access_callees
-        { JsonAttributeAccessCallees.if_called; property_setters; property_getters }
+        { JsonAttributeAccessCallees.if_called; property_setters; property_getters; global_targets }
       =
-      (* TODO(T225700656): Support global targets, is_attribute, etc.. *)
+      (* TODO(T225700656): Support is_attribute, etc.. *)
       let if_called = instantiate_call_callees if_called in
+      let global_targets = List.filter_map ~f:instantiate_global_target global_targets in
       {
         AttributeAccessCallees.property_targets =
           List.append property_setters property_getters
           |> List.map ~f:instantiate_call_target
           |> List.concat;
-        global_targets = [];
-        is_attribute = false;
+        global_targets;
+        is_attribute = not (List.is_empty global_targets);
         if_called;
       }
     in
@@ -4252,6 +4467,20 @@ module ReadOnly = struct
         CallGraph.DefineCallees.define_targets =
           define_targets |> List.map ~f:instantiate_call_target |> List.concat;
         decorated_targets = [];
+      }
+    in
+    let instantiate_format_string_artificial_callees { JsonFormatStringArtificialCallees.targets } =
+      {
+        CallGraph.FormatStringArtificialCallees.targets =
+          targets |> List.map ~f:instantiate_call_target |> List.concat;
+      }
+    in
+    let instantiate_format_string_stringify_callees
+        { JsonFormatStringStringifyCallees.targets; unresolved = _ }
+      =
+      {
+        CallGraph.FormatStringStringifyCallees.targets =
+          targets |> List.map ~f:instantiate_call_target |> List.concat;
       }
     in
     let instantiate_expression_callees = function
@@ -4263,6 +4492,12 @@ module ReadOnly = struct
           ExpressionCallees.AttributeAccess (instantiate_attribute_access_callees callees)
       | JsonExpressionCallees.Define callees ->
           ExpressionCallees.Define (instantiate_define_callees callees)
+      | JsonExpressionCallees.FormatStringArtificial callees ->
+          ExpressionCallees.FormatStringArtificial
+            (instantiate_format_string_artificial_callees callees)
+      | JsonExpressionCallees.FormatStringStringify callees ->
+          ExpressionCallees.FormatStringStringify
+            (instantiate_format_string_stringify_callees callees)
     in
     let instantiate_call_edge expression_identifier callees call_graph =
       let callees = instantiate_expression_callees callees in
@@ -4284,6 +4519,7 @@ module ReadOnly = struct
       ~scheduler_policies
       ~method_has_overrides
       ~store_shared_memory
+      ~attribute_targets
       ~skip_analysis_targets
       ~definitions
       ~create_dependency_for
@@ -4392,7 +4628,12 @@ module ReadOnly = struct
               Format.asprintf "Could not find call graph for `%a`" Target.pp callable |> failwith
           | Some call_graph ->
               let call_graph =
-                instantiate_call_graph api ~method_has_overrides ~callable call_graph
+                instantiate_call_graph
+                  api
+                  ~method_has_overrides
+                  ~attribute_targets
+                  ~callable
+                  call_graph
                 |> transform_call_graph api callable
               in
               let define_call_graphs =
@@ -4440,7 +4681,6 @@ module ReadOnly = struct
         ~inputs:(Map.to_alist module_definitions_map)
         ()
     in
-    (* TODO(T225700656): Parse decorated call graphs. *)
     Log.info "Parsed call graphs from pyrefly: %.3fs" (Timer.stop_in_sec timer);
     Statistics.performance
       ~name:"Parsed call graphs from pyrefly"
@@ -4449,6 +4689,47 @@ module ReadOnly = struct
       ();
     let define_call_graphs = CallGraph.SharedMemory.from_add_only define_call_graphs in
     { CallGraph.SharedMemory.whole_program_call_graph; define_call_graphs }
+
+
+  let parse_type_errors
+      { pyrefly_directory; module_id_to_qualifier_shared_memory; module_infos_shared_memory; _ }
+    =
+    let instantiate_error
+        {
+          TypeErrors.JsonError.module_id;
+          location =
+            {
+              start = { line = start_line; column = start_column };
+              stop = { line = stop_line; column = stop_column };
+            };
+          kind;
+          message;
+        }
+      =
+      let module_qualifier =
+        ModuleIdToQualifierSharedMemory.get_module_qualifier
+          module_id_to_qualifier_shared_memory
+          module_id
+      in
+      let { ModuleInfosSharedMemory.Module.relative_source_path; _ } =
+        ModuleInfosSharedMemory.get module_infos_shared_memory module_qualifier
+        |> assert_shared_memory_key_exists "invalid module id"
+      in
+      {
+        Analysis.AnalysisError.Instantiated.line = start_line;
+        column = start_column;
+        stop_line;
+        stop_column;
+        path = Option.value ~default:"?" relative_source_path;
+        code = 0;
+        name = kind;
+        description = message;
+        concise_description = message;
+        define = "";
+      }
+    in
+    let { TypeErrors.errors } = TypeErrors.from_path_exn ~pyrefly_directory in
+    List.map ~f:instantiate_error errors
 
 
   let get_type_of_expression { type_of_expressions_shared_memory; _ } ~qualifier ~location =
@@ -4481,38 +4762,26 @@ module ReadOnly = struct
           failwith "ReadOnly.Type.get_class_names: trying to use a pyre1 type with a pyrefly API."
       | Some { PyreflyType.class_names = None; _ } ->
           Analysis.PyrePysaEnvironment.ClassNamesFromType.not_a_class
-      | Some
-          {
-            PyreflyType.class_names =
-              Some
+      | Some { PyreflyType.class_names = Some { classes; is_exhaustive }; _ } ->
+          let get_class_with_modifiers
+              { Pyre1Api.PyreflyType.ClassWithModifiers.module_id; class_id; modifiers }
+            =
+            let class_name =
+              ClassIdToQualifiedNameSharedMemory.get
+                class_id_to_qualified_name_shared_memory
                 {
-                  class_names;
-                  stripped_coroutine;
-                  stripped_optional;
-                  stripped_readonly;
-                  unbound_type_variable;
-                  is_exhaustive;
-                };
-            _;
-          } ->
-          let get_class_name (module_id, class_id) =
-            ClassIdToQualifiedNameSharedMemory.get
-              class_id_to_qualified_name_shared_memory
-              {
-                GlobalClassId.module_id = ModuleId.from_int module_id;
-                local_class_id = LocalClassId.from_int class_id;
-              }
-            |> assert_shared_memory_key_exists "missing class id"
-            |> FullyQualifiedName.to_reference
-            |> Reference.show
+                  GlobalClassId.module_id = ModuleId.from_int module_id;
+                  local_class_id = LocalClassId.from_int class_id;
+                }
+              |> assert_shared_memory_key_exists "missing class id"
+              |> FullyQualifiedName.to_reference
+              |> Reference.show
+            in
+            { Pyre1Api.ClassWithModifiers.class_name; modifiers }
           in
           {
-            Analysis.PyrePysaEnvironment.ClassNamesFromType.class_names =
-              List.map ~f:get_class_name class_names;
-            stripped_coroutine;
-            stripped_optional;
-            stripped_readonly;
-            unbound_type_variable;
+            Analysis.PyrePysaEnvironment.ClassNamesFromType.classes =
+              List.map ~f:get_class_with_modifiers classes;
             is_exhaustive;
           }
 
@@ -4645,7 +4914,6 @@ let builtins_symbols =
       "KeyboardInterrupt";
       "len";
       "list";
-      "locals";
       "map";
       "max";
       "memoryview";
@@ -4893,6 +5161,7 @@ module InContext = struct
         api: ReadOnly.t;
         module_qualifier: ModuleQualifier.t;
         define_name: Ast.Reference.t;
+        call_graph: CallGraph.DefineCallGraph.t;
       }
     | StatementScope of {
         api: ReadOnly.t;
@@ -4900,31 +5169,39 @@ module InContext = struct
         (* Define name of the function. Note that this might be a decorated target, which is not
            visible by pyrefly. *)
         define_name: Ast.Reference.t;
+        call_graph: CallGraph.DefineCallGraph.t;
         statement_key: int;
       }
 
-  let create_at_function_scope api ~module_qualifier ~define_name =
+  let create_at_function_scope api ~module_qualifier ~define_name ~call_graph =
     FunctionScope
       {
         api;
         module_qualifier = ModuleQualifier.from_reference_unchecked module_qualifier;
         define_name;
+        call_graph;
       }
 
 
-  let create_at_statement_scope api ~module_qualifier ~define_name ~statement_key =
+  let create_at_statement_scope api ~module_qualifier ~define_name ~call_graph ~statement_key =
     StatementScope
       {
         api;
         module_qualifier = ModuleQualifier.from_reference_unchecked module_qualifier;
         define_name;
         statement_key;
+        call_graph;
       }
 
 
   let pyre_api = function
     | FunctionScope { api; _ } -> api
     | StatementScope { api; _ } -> api
+
+
+  let call_graph = function
+    | FunctionScope { call_graph; _ } -> call_graph
+    | StatementScope { call_graph; _ } -> call_graph
 
 
   let is_global _ ~reference:_ =

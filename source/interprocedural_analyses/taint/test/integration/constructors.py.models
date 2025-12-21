@@ -1,61 +1,11 @@
 @generated
 {
-  "kind": "model",
-  "data": {
-    "callable": "_test_sink",
-    "filename": "builtins.pyi",
-    "callable_line": 618,
-    "sinks": [
-      {
-        "port": "formal(arg, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "special_sink" } ],
-                "kind": "Test"
-              }
-            ],
-            "declaration": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "_test_source",
-    "filename": "builtins.pyi",
-    "callable_line": 619,
-    "sources": [
-      {
-        "port": "result",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "special_source" } ],
-                "kind": "Test"
-              }
-            ],
-            "declaration": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
   "kind": "issue",
   "data": {
     "callable": "constructors.test_both_new_and_init_callgraph",
-    "callable_line": 74,
+    "callable_line": 75,
     "code": 5002,
-    "line": 75,
+    "line": 76,
     "start": 4,
     "end": 18,
     "filename": "constructors.py",
@@ -69,14 +19,14 @@
               {
                 "features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "length": 1,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 75, "start": 4, "end": 20 },
+              "position": { "line": 76, "start": 4, "end": 20 },
               "resolves_to": [ "constructors.BothNewAndInit.__new__" ],
               "port": "result[foo]"
             }
@@ -90,16 +40,18 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "length": 1,
                 "kind": "Test"
               }
             ],
             "call": {
-              "position": { "line": 75, "start": 4, "end": 18 },
+              "position": { "line": 76, "start": 4, "end": 18 },
               "resolves_to": [ "constructors.BothNewAndInit.__init__" ],
               "port": "formal(self, position=0)[foo]",
-              "call_site": "75:4-75:20"
+              "call_site": "76:4-76:20"
             }
           }
         ]
@@ -121,9 +73,9 @@
   "kind": "issue",
   "data": {
     "callable": "constructors.test_class_stub",
-    "callable_line": 113,
+    "callable_line": 114,
     "code": 5002,
-    "line": 115,
+    "line": 116,
     "start": 15,
     "end": 40,
     "filename": "constructors.py",
@@ -137,7 +89,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -145,8 +97,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 115, "start": 25, "end": 39 } ],
-            "origin": { "line": 115, "start": 25, "end": 39 }
+            "tito_positions": [ { "line": 116, "start": 25, "end": 39 } ],
+            "origin": { "line": 116, "start": 25, "end": 39 }
           }
         ]
       },
@@ -157,12 +109,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 115, "start": 15, "end": 40 },
-            "call_site": "115:4-115:41"
+            "origin": { "line": 116, "start": 15, "end": 40 },
+            "call_site": "116:4-116:41"
           }
         ]
       }
@@ -175,11 +129,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_class_stub:5002:0:Call|_test_sink|0|formal(arg):7f0f3f50bbd309337b7c7d7b91c0eee3"
+    "master_handle": "constructors.test_class_stub:5002:0:Call|pysa._test_sink|0|formal(arg):a3fce930ad36ccab50039e5b5cfe1ec0"
   }
 }
 {
@@ -238,9 +192,9 @@
   "kind": "issue",
   "data": {
     "callable": "constructors.test_constructor_with_source_model",
-    "callable_line": 122,
+    "callable_line": 123,
     "code": 5002,
-    "line": 123,
+    "line": 124,
     "start": 15,
     "end": 43,
     "filename": "constructors.py",
@@ -261,8 +215,8 @@
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 123, "start": 15, "end": 41 },
-            "call_site": "123:15-123:43"
+            "origin": { "line": 124, "start": 15, "end": 41 },
+            "call_site": "124:15-124:43"
           }
         ]
       },
@@ -273,12 +227,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 123, "start": 15, "end": 43 },
-            "call_site": "123:4-123:44"
+            "origin": { "line": 124, "start": 15, "end": 43 },
+            "call_site": "124:4-124:44"
           }
         ]
       }
@@ -286,20 +242,20 @@
     "features": [ { "always-via": "special_sink" } ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_constructor_with_source_model:5002:0:Call|_test_sink|0|formal(arg):8c5200d74ea429666d8d658e4ec2fa51"
+    "master_handle": "constructors.test_constructor_with_source_model:5002:0:Call|pysa._test_sink|0|formal(arg):733a925f9141bb4b8aff4756916ed6dd"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "constructors.test_constructor_with_source_model",
-    "callable_line": 122,
+    "callable_line": 123,
     "code": 5002,
-    "line": 125,
+    "line": 126,
     "start": 15,
     "end": 16,
     "filename": "constructors.py",
@@ -320,8 +276,8 @@
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 124, "start": 8, "end": 34 },
-            "call_site": "124:8-124:36"
+            "origin": { "line": 125, "start": 8, "end": 34 },
+            "call_site": "125:8-125:36"
           }
         ]
       },
@@ -332,12 +288,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 125, "start": 15, "end": 16 },
-            "call_site": "125:4-125:17"
+            "origin": { "line": 126, "start": 15, "end": 16 },
+            "call_site": "126:4-126:17"
           }
         ]
       }
@@ -345,20 +303,20 @@
     "features": [ { "always-via": "special_sink" } ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 1,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_constructor_with_source_model:5002:0:Call|_test_sink|1|formal(arg):e69090c082132f164d7cfca46e47e98d"
+    "master_handle": "constructors.test_constructor_with_source_model:5002:0:Call|pysa._test_sink|1|formal(arg):7785c961c2aaf6b885d9c8ebd2142e4f"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "constructors.test_constructor_with_tito_model",
-    "callable_line": 138,
+    "callable_line": 139,
     "code": 5002,
-    "line": 141,
+    "line": 142,
     "start": 15,
     "end": 66,
     "filename": "constructors.py",
@@ -372,14 +330,14 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 141, "start": 51, "end": 65 } ],
-            "origin": { "line": 141, "start": 51, "end": 65 }
+            "tito_positions": [ { "line": 142, "start": 51, "end": 65 } ],
+            "origin": { "line": 142, "start": 51, "end": 65 }
           }
         ]
       },
@@ -390,12 +348,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 141, "start": 15, "end": 66 },
-            "call_site": "141:4-141:67"
+            "origin": { "line": 142, "start": 15, "end": 66 },
+            "call_site": "142:4-142:67"
           }
         ]
       }
@@ -407,20 +367,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 2,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_constructor_with_tito_model:5002:0:Call|_test_sink|2|formal(arg):1b97bba813031fb3ed1c69a9ce44d4b0"
+    "master_handle": "constructors.test_constructor_with_tito_model:5002:0:Call|pysa._test_sink|2|formal(arg):31712fcb14e37f5f0bd3ee1744ae86ef"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "constructors.test_constructor_with_tito_model_query",
-    "callable_line": 154,
+    "callable_line": 156,
     "code": 5002,
-    "line": 156,
+    "line": 158,
     "start": 15,
     "end": 69,
     "filename": "constructors.py",
@@ -434,7 +394,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -444,8 +404,8 @@
               { "first-field": "a" },
               { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 156, "start": 48, "end": 62 } ],
-            "origin": { "line": 156, "start": 48, "end": 62 }
+            "tito_positions": [ { "line": 158, "start": 48, "end": 62 } ],
+            "origin": { "line": 158, "start": 48, "end": 62 }
           }
         ]
       },
@@ -456,12 +416,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 156, "start": 15, "end": 69 },
-            "call_site": "156:4-156:70"
+            "origin": { "line": 158, "start": 15, "end": 69 },
+            "call_site": "158:4-158:70"
           }
         ]
       }
@@ -475,20 +437,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 1,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_constructor_with_tito_model_query:5002:0:Call|_test_sink|1|formal(arg):909fd9e1795e274940d312c28cebba99"
+    "master_handle": "constructors.test_constructor_with_tito_model_query:5002:0:Call|pysa._test_sink|1|formal(arg):7300cabfbfc13d20b939e8474810ec78"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "constructors.test_init_model",
-    "callable_line": 94,
+    "callable_line": 95,
     "code": 5002,
-    "line": 95,
+    "line": 96,
     "start": 15,
     "end": 49,
     "filename": "constructors.py",
@@ -502,14 +464,14 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 95, "start": 34, "end": 48 } ],
-            "origin": { "line": 95, "start": 34, "end": 48 }
+            "tito_positions": [ { "line": 96, "start": 34, "end": 48 } ],
+            "origin": { "line": 96, "start": 34, "end": 48 }
           }
         ]
       },
@@ -520,12 +482,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 95, "start": 15, "end": 49 },
-            "call_site": "95:4-95:50"
+            "origin": { "line": 96, "start": 15, "end": 49 },
+            "call_site": "96:4-96:50"
           }
         ]
       }
@@ -537,20 +501,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_init_model:5002:0:Call|_test_sink|0|formal(arg):9e258ccacfc28f224c0cca3688f8673f"
+    "master_handle": "constructors.test_init_model:5002:0:Call|pysa._test_sink|0|formal(arg):a556812749705d75c19e4e58329cdafe"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "constructors.test_new_model",
-    "callable_line": 104,
+    "callable_line": 105,
     "code": 5002,
-    "line": 105,
+    "line": 106,
     "start": 15,
     "end": 48,
     "filename": "constructors.py",
@@ -564,14 +528,14 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 105, "start": 33, "end": 47 } ],
-            "origin": { "line": 105, "start": 33, "end": 47 }
+            "tito_positions": [ { "line": 106, "start": 33, "end": 47 } ],
+            "origin": { "line": 106, "start": 33, "end": 47 }
           }
         ]
       },
@@ -582,12 +546,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 105, "start": 15, "end": 48 },
-            "call_site": "105:4-105:49"
+            "origin": { "line": 106, "start": 15, "end": 48 },
+            "call_site": "106:4-106:49"
           }
         ]
       }
@@ -599,11 +565,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_new_model:5002:0:Call|_test_sink|0|formal(arg):d7ead6cd5897c782f267664d724ca714"
+    "master_handle": "constructors.test_new_model:5002:0:Call|pysa._test_sink|0|formal(arg):c1e2564cc45f6cf6556925c5f597ff2a"
   }
 }
 {
@@ -626,7 +592,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -642,7 +608,9 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "length": 1,
                 "kind": "Test"
               }
@@ -673,9 +641,9 @@
   "kind": "issue",
   "data": {
     "callable": "constructors.test_parent_with_no_constructor",
-    "callable_line": 184,
+    "callable_line": 186,
     "code": 5002,
-    "line": 185,
+    "line": 187,
     "start": 15,
     "end": 58,
     "filename": "constructors.py",
@@ -689,7 +657,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -697,8 +665,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 185, "start": 39, "end": 53 } ],
-            "origin": { "line": 185, "start": 39, "end": 53 }
+            "tito_positions": [ { "line": 187, "start": 39, "end": 53 } ],
+            "origin": { "line": 187, "start": 39, "end": 53 }
           }
         ]
       },
@@ -709,12 +677,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 185, "start": 15, "end": 58 },
-            "call_site": "185:4-185:59"
+            "origin": { "line": 187, "start": 15, "end": 58 },
+            "call_site": "187:4-187:59"
           }
         ]
       }
@@ -727,20 +697,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_parent_with_no_constructor:5002:0:Call|_test_sink|0|formal(arg):5cc383db8846587af077fc830e0b5b9e"
+    "master_handle": "constructors.test_parent_with_no_constructor:5002:0:Call|pysa._test_sink|0|formal(arg):0b3afe0f51aae6fdb772bf89b2a73607"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "constructors.test_parent_with_no_constructor",
-    "callable_line": 184,
+    "callable_line": 186,
     "code": 5002,
-    "line": 186,
+    "line": 188,
     "start": 15,
     "end": 58,
     "filename": "constructors.py",
@@ -754,7 +724,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -762,8 +732,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 186, "start": 43, "end": 57 } ],
-            "origin": { "line": 186, "start": 43, "end": 57 }
+            "tito_positions": [ { "line": 188, "start": 43, "end": 57 } ],
+            "origin": { "line": 188, "start": 43, "end": 57 }
           }
         ]
       },
@@ -774,12 +744,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 186, "start": 15, "end": 58 },
-            "call_site": "186:4-186:59"
+            "origin": { "line": 188, "start": 15, "end": 58 },
+            "call_site": "188:4-188:59"
           }
         ]
       }
@@ -792,20 +764,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 1,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_parent_with_no_constructor:5002:0:Call|_test_sink|1|formal(arg):7d5592c559e9df2ef218c58ab05e85a8"
+    "master_handle": "constructors.test_parent_with_no_constructor:5002:0:Call|pysa._test_sink|1|formal(arg):a6b48333596aca145f41cd35b4959fc9"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "constructors.test_parent_with_obscure_constructor",
-    "callable_line": 170,
+    "callable_line": 172,
     "code": 5002,
-    "line": 171,
+    "line": 173,
     "start": 15,
     "end": 63,
     "filename": "constructors.py",
@@ -819,7 +791,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -827,8 +799,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 171, "start": 44, "end": 58 } ],
-            "origin": { "line": 171, "start": 44, "end": 58 }
+            "tito_positions": [ { "line": 173, "start": 44, "end": 58 } ],
+            "origin": { "line": 173, "start": 44, "end": 58 }
           }
         ]
       },
@@ -839,12 +811,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 171, "start": 15, "end": 63 },
-            "call_site": "171:4-171:64"
+            "origin": { "line": 173, "start": 15, "end": 63 },
+            "call_site": "173:4-173:64"
           }
         ]
       }
@@ -857,20 +831,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_parent_with_obscure_constructor:5002:0:Call|_test_sink|0|formal(arg):b72ebd3243216d9055b4508433de1bcc"
+    "master_handle": "constructors.test_parent_with_obscure_constructor:5002:0:Call|pysa._test_sink|0|formal(arg):0a3ef95b5512b13c372983a1ad2bcb06"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "constructors.test_parent_with_obscure_constructor",
-    "callable_line": 170,
+    "callable_line": 172,
     "code": 5002,
-    "line": 172,
+    "line": 174,
     "start": 15,
     "end": 63,
     "filename": "constructors.py",
@@ -884,7 +858,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -892,8 +866,8 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 172, "start": 48, "end": 62 } ],
-            "origin": { "line": 172, "start": 48, "end": 62 }
+            "tito_positions": [ { "line": 174, "start": 48, "end": 62 } ],
+            "origin": { "line": 174, "start": 48, "end": 62 }
           }
         ]
       },
@@ -904,12 +878,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 172, "start": 15, "end": 63 },
-            "call_site": "172:4-172:64"
+            "origin": { "line": 174, "start": 15, "end": 63 },
+            "call_site": "174:4-174:64"
           }
         ]
       }
@@ -922,11 +898,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 1,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_parent_with_obscure_constructor:5002:0:Call|_test_sink|1|formal(arg):82f2b7abfeeef9a582ecbc2e2fe465c2"
+    "master_handle": "constructors.test_parent_with_obscure_constructor:5002:0:Call|pysa._test_sink|1|formal(arg):83ad7a4f34784addd0f72f3766fc10db"
   }
 }
 {
@@ -949,7 +925,7 @@
               {
                 "features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "length": 1,
                 "kind": "Test"
@@ -974,7 +950,9 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
@@ -992,11 +970,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "constructors.test_source_in_constructor:5002:0:Call|_test_sink|0|formal(arg):6d9328ed3aed34a22d60639ca4c5022d"
+    "master_handle": "constructors.test_source_in_constructor:5002:0:Call|pysa._test_sink|0|formal(arg):e1bec82b6da5ae824a5a07052424595f"
   }
 }
 {
@@ -1007,7 +985,7 @@
     "callable_line": 474,
     "sinks": [
       {
-        "port": "formal(arg, position=0)",
+        "port": "formal(source, position=0, positional_only)",
         "taint": [
           {
             "kinds": [ { "kind": "RemoteCodeExecution" } ],
@@ -1022,9 +1000,59 @@
 {
   "kind": "model",
   "data": {
+    "callable": "pysa._test_sink",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 4,
+    "sinks": [
+      {
+        "port": "formal(arg, position=0)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      }
+    ],
+    "modes": [ "Obscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "pysa._test_source",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 5,
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      }
+    ],
+    "modes": [ "Obscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "constructors.BaseConstructor.__init__",
     "filename": "constructors.py",
-    "callable_line": 79,
+    "callable_line": 80,
     "sources": [
       {
         "port": "formal(self, position=0)[x]",
@@ -1034,12 +1062,12 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 80, "start": 17, "end": 31 },
+            "origin": { "line": 81, "start": 17, "end": 31 },
             "caller_interval": [ { "lower": 2, "upper": 5 } ],
             "is_self_call": false
           }
@@ -1062,7 +1090,9 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1091,7 +1121,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
@@ -1117,7 +1147,9 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1155,7 +1187,7 @@
   "data": {
     "callable": "constructors.ConstructorTitoModelQuery.__init__",
     "filename": "constructors.py",
-    "callable_line": 145,
+    "callable_line": 146,
     "tito": [
       {
         "port": "formal(b, position=2)",
@@ -1195,7 +1227,7 @@
   "data": {
     "callable": "constructors.ConstructorWithSourceModel.__init__",
     "filename": "constructors.py",
-    "callable_line": 119,
+    "callable_line": 120,
     "sources": [
       {
         "port": "formal(self, position=0)",
@@ -1209,7 +1241,7 @@
   "data": {
     "callable": "constructors.ConstructorWithTitoModel.__init__",
     "filename": "constructors.py",
-    "callable_line": 129,
+    "callable_line": 130,
     "tito": [
       {
         "port": "formal(value, position=1)",
@@ -1233,7 +1265,7 @@
   "data": {
     "callable": "constructors.DerivedConstructor.__init__",
     "filename": "constructors.py",
-    "callable_line": 84,
+    "callable_line": 85,
     "sources": [
       {
         "port": "formal(self, position=0)[x]",
@@ -1247,10 +1279,10 @@
               }
             ],
             "call": {
-              "position": { "line": 85, "start": 8, "end": 15 },
+              "position": { "line": 86, "start": 8, "end": 15 },
               "resolves_to": [ "constructors.BaseConstructor.__init__" ],
               "port": "formal(self, position=0)[x]",
-              "call_site": "85:8-85:26"
+              "call_site": "86:8-86:26"
             },
             "caller_interval": [ { "lower": 3, "upper": 4 } ],
             "receiver_interval": [ { "lower": 2, "upper": 5 } ],
@@ -1285,7 +1317,7 @@
   "data": {
     "callable": "constructors.DerivedConstructorTitoModelQuery.__init__",
     "filename": "constructors.py",
-    "callable_line": 150,
+    "callable_line": 152,
     "tito": [
       {
         "port": "formal(b, position=2)",
@@ -1299,7 +1331,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 151, "start": 28, "end": 29 } ],
+            "tito_positions": [ { "line": 153, "start": 28, "end": 29 } ],
             "tito": {
               "caller_interval": [ { "lower": 15, "upper": 16 } ],
               "is_self_call": false
@@ -1319,7 +1351,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 151, "start": 25, "end": 26 } ],
+            "tito_positions": [ { "line": 153, "start": 25, "end": 26 } ],
             "tito": {
               "caller_interval": [ { "lower": 15, "upper": 16 } ],
               "is_self_call": false
@@ -1335,7 +1367,7 @@
   "data": {
     "callable": "constructors.DerivedConstructorWithTitoModel.__init__",
     "filename": "constructors.py",
-    "callable_line": 134,
+    "callable_line": 135,
     "tito": [
       {
         "port": "formal(b, position=2)",
@@ -1349,7 +1381,7 @@
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
-            "tito_positions": [ { "line": 135, "start": 25, "end": 26 } ],
+            "tito_positions": [ { "line": 136, "start": 25, "end": 26 } ],
             "tito": {
               "caller_interval": [ { "lower": 21, "upper": 22 } ],
               "is_self_call": false
@@ -1365,7 +1397,7 @@
   "data": {
     "callable": "constructors.InitWithModel.__init__",
     "filename": "constructors.py",
-    "callable_line": 90,
+    "callable_line": 91,
     "tito": [
       {
         "port": "formal(tito, position=1)",
@@ -1390,7 +1422,7 @@
   "data": {
     "callable": "constructors.NewWithModel.__new__",
     "filename": "constructors.py",
-    "callable_line": 100,
+    "callable_line": 101,
     "tito": [
       {
         "port": "formal(tito, position=1)",
@@ -1410,7 +1442,7 @@
   "data": {
     "callable": "constructors.ParentWithNoConstructor.__init__",
     "filename": "constructors.py",
-    "callable_line": 180,
+    "callable_line": 182,
     "tito": [
       {
         "port": "formal(b, position=2)",
@@ -1426,7 +1458,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 181, "start": 28, "end": 29 } ],
+            "tito_positions": [ { "line": 183, "start": 28, "end": 29 } ],
             "tito": {
               "caller_interval": [ { "lower": 31, "upper": 32 } ],
               "is_self_call": false
@@ -1448,7 +1480,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 181, "start": 25, "end": 26 } ],
+            "tito_positions": [ { "line": 183, "start": 25, "end": 26 } ],
             "tito": {
               "caller_interval": [ { "lower": 31, "upper": 32 } ],
               "is_self_call": false
@@ -1479,7 +1511,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 181, "start": 8, "end": 15 } ],
+            "tito_positions": [ { "line": 183, "start": 8, "end": 15 } ],
             "tito": {
               "caller_interval": [ { "lower": 31, "upper": 32 } ],
               "is_self_call": false
@@ -1495,7 +1527,7 @@
   "data": {
     "callable": "constructors.ParentWithObscureConstructor.__init__",
     "filename": "constructors.py",
-    "callable_line": 166,
+    "callable_line": 168,
     "tito": [
       {
         "port": "formal(b, position=2)",
@@ -1511,7 +1543,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 167, "start": 28, "end": 29 } ],
+            "tito_positions": [ { "line": 169, "start": 28, "end": 29 } ],
             "tito": {
               "caller_interval": [ { "lower": 11, "upper": 12 } ],
               "is_self_call": false
@@ -1533,7 +1565,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 167, "start": 25, "end": 26 } ],
+            "tito_positions": [ { "line": 169, "start": 25, "end": 26 } ],
             "tito": {
               "caller_interval": [ { "lower": 11, "upper": 12 } ],
               "is_self_call": false
@@ -1564,7 +1596,7 @@
             "local_features": [
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
-            "tito_positions": [ { "line": 167, "start": 8, "end": 15 } ],
+            "tito_positions": [ { "line": 169, "start": 8, "end": 15 } ],
             "tito": {
               "caller_interval": [ { "lower": 11, "upper": 12 } ],
               "is_self_call": false
@@ -1580,7 +1612,7 @@
   "data": {
     "callable": "constructors.SanitizeParameterTaintInTaintOut.__init__",
     "filename": "constructors.py",
-    "callable_line": 214,
+    "callable_line": 216,
     "tito": [
       {
         "port": "formal(foo, position=1)",
@@ -1610,7 +1642,7 @@
   "data": {
     "callable": "constructors.SanitizeReturn.__init__",
     "filename": "constructors.py",
-    "callable_line": 203,
+    "callable_line": 205,
     "tito": [
       {
         "port": "formal(foo, position=1)",
@@ -1635,7 +1667,7 @@
   "data": {
     "callable": "constructors.SanitizeSingleTraceSource.__init__",
     "filename": "constructors.py",
-    "callable_line": 192,
+    "callable_line": 194,
     "global_sanitizer": { "sources": [ "Test" ] }
   }
 }
@@ -1644,7 +1676,7 @@
   "data": {
     "callable": "constructors.SanitizeTaintInTaintOut.__init__",
     "filename": "constructors.py",
-    "callable_line": 209,
+    "callable_line": 211,
     "tito": [
       {
         "port": "formal(foo, position=1)",
@@ -1671,7 +1703,7 @@
   "data": {
     "callable": "constructors.SanitizeTitoKindSpecific.__init__",
     "filename": "constructors.py",
-    "callable_line": 197,
+    "callable_line": 199,
     "sources": [
       {
         "port": "formal(self, position=0)[bar]",
@@ -1681,12 +1713,12 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 199, "start": 19, "end": 33 },
+            "origin": { "line": 201, "start": 19, "end": 33 },
             "caller_interval": [ { "lower": 46, "upper": 47 } ],
             "is_self_call": false
           }
@@ -1763,7 +1795,7 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "eval", "port": "leaf:arg" } ],
+                "leaves": [ { "name": "eval", "port": "leaf:source" } ],
                 "kind": "RemoteCodeExecution"
               }
             ],
@@ -1842,7 +1874,7 @@
               {
                 "local_features": [ { "always-via": "special_source" } ],
                 "leaves": [
-                  { "name": "_test_source", "port": "leaf:return" }
+                  { "name": "pysa._test_source", "port": "leaf:return" }
                 ],
                 "kind": "Test"
               }

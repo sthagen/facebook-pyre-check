@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
+from pysa import _test_sink, _test_source
 from typing import List
 
 
@@ -67,7 +67,9 @@ def test_getattr() -> None:
 
 
 def test_bypass_private() -> None:
-    _test_sink(Simple(private=_test_source())._Simple__value)  # Error.
+    # pyrefly: ignore[missing-attribute]
+    _test_sink(Simple(private=_test_source())._Simple__value)  # Error. 
+    # pyrefly: ignore[missing-attribute]
     _test_sink(Simple(public=_test_source())._Simple__value)  # No error.
     # pyre-ignore
     _test_sink(Simple(private=_test_source()).__value)  # No error.

@@ -1242,8 +1242,7 @@ and Origin : sig
     | MatchValueComparisonEquals
     | MatchConditionWithGuard
     | ResolveStrCall
-    | StrCallToDunderStr (* `str(x)` is turned into `x.__str__()` *)
-    | StrCallToDunderRepr (* `str(x)` is turned into `x.__repr__()` *)
+    | StrCallToDunderMethod (* `str(x)` is turned into `x.__str__()` or `x.__repr__()` *)
     | ReprCall (* `repr(x)` is turned into `x.__repr__()` *)
     | AbsCall (* `abs(x)` is turned into `x.__abs__()` *)
     | IterCall (* `iter(x)` is turned into `x.__iter__()` *)
@@ -1371,8 +1370,7 @@ end = struct
     | MatchValueComparisonEquals
     | MatchConditionWithGuard
     | ResolveStrCall
-    | StrCallToDunderStr
-    | StrCallToDunderRepr
+    | StrCallToDunderMethod
     | ReprCall
     | AbsCall
     | IterCall
@@ -1430,8 +1428,7 @@ end = struct
       | InIter
       | InGetItem
       | InGetItemEq
-      | StrCallToDunderStr
-      | StrCallToDunderRepr
+      | StrCallToDunderMethod
       | ReprCall
       | AbsCall
       | IterCall
@@ -1528,8 +1525,7 @@ end = struct
     | MatchValueComparisonEquals -> Format.fprintf formatter "match-value-comparison-equals"
     | MatchConditionWithGuard -> Format.fprintf formatter "match-condition-with-guard"
     | ResolveStrCall -> Format.fprintf formatter "resolve-str-call"
-    | StrCallToDunderStr -> Format.fprintf formatter "str-call-to-dunder-str"
-    | StrCallToDunderRepr -> Format.fprintf formatter "str-call-to-dunder-repr"
+    | StrCallToDunderMethod -> Format.fprintf formatter "str-call-to-dunder-method"
     | ReprCall -> Format.fprintf formatter "repr-call"
     | AbsCall -> Format.fprintf formatter "abs-call"
     | IterCall -> Format.fprintf formatter "iter-call"
@@ -1635,8 +1631,7 @@ end = struct
     | "match-value-comparison-equals" -> Ok MatchValueComparisonEquals
     | "match-condition-with-guard" -> Ok MatchConditionWithGuard
     | "resolve-str-call" -> Ok ResolveStrCall
-    | "str-call-to-dunder-str" -> Ok StrCallToDunderStr
-    | "str-call-to-dunder-repr" -> Ok StrCallToDunderRepr
+    | "str-call-to-dunder-method" -> Ok StrCallToDunderMethod
     | "repr-call" -> Ok ReprCall
     | "abs-call" -> Ok AbsCall
     | "iter-call" -> Ok IterCall
@@ -1653,6 +1648,12 @@ end = struct
     | "for-test-purpose" -> Ok ForTestPurpose
     | "for-type-checking" -> Ok ForTypeChecking
     | "return-statement" -> Ok PysaReturnShim
+    | _ when String.is_substring str ~substring:">" ->
+        let index = Option.value_exn (String.rfindi str ~f:(fun _ c -> Char.equal c '>')) in
+        let tail_str = String.prefix str index in
+        let head_str = String.suffix str (String.length str - index - 1) in
+        kind_from_json tail_str
+        >>= fun tail -> kind_from_json head_str >>= fun head -> Ok (Nested { head; tail })
     | _ when String.is_prefix str ~prefix:"chained-assign:" ->
         strip_prefix ~prefix:"chained-assign:" str
         |> parse_int
@@ -1729,12 +1730,6 @@ end = struct
         strip_prefix ~prefix:"pysa-higher-order-parameter:" str
         |> parse_int
         >>= fun index -> Ok (PysaHigherOrderParameter index)
-    | _ when String.is_substring str ~substring:">" ->
-        let index = Option.value_exn (String.rfindi str ~f:(fun _ c -> Char.equal c '>')) in
-        let tail_str = String.prefix str index in
-        let head_str = String.suffix str (String.length str - index - 1) in
-        kind_from_json tail_str
-        >>= fun tail -> kind_from_json head_str >>= fun head -> Ok (Nested { head; tail })
     | _ -> Error (Format.sprintf "Unknown origin kind: `%s`" str)
 
 
@@ -3409,12 +3404,12 @@ let map_origin ~f ({ Node.value; location } as expression) =
   | _ -> expression
 
 
-let negate ({ Node.location; value } as node) =
+let negate ~normalize ({ Node.location; value } as node) =
   match value with
   | UnaryOperator { UnaryOperator.operator = UnaryOperator.Not; operand; origin = _ } -> operand
   | ComparisonOperator
       { ComparisonOperator.operator = ComparisonOperator.IsNot; left; right; origin = base_origin }
-    ->
+    when normalize ->
       {
         Node.location;
         value =
@@ -3427,7 +3422,8 @@ let negate ({ Node.location; value } as node) =
             };
       }
   | ComparisonOperator
-      { ComparisonOperator.operator = ComparisonOperator.Is; left; right; origin = base_origin } ->
+      { ComparisonOperator.operator = ComparisonOperator.Is; left; right; origin = base_origin }
+    when normalize ->
       {
         Node.location;
         value =
@@ -3495,8 +3491,8 @@ let rec normalize { Node.location; value } =
             BooleanOperator
               {
                 BooleanOperator.operator = BooleanOperator.inverse operator;
-                left = normalize (negate left);
-                right = normalize (negate right);
+                left = normalize (negate ~normalize:true left);
+                right = normalize (negate ~normalize:true right);
                 origin =
                   Some
                     (Origin.create

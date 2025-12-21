@@ -48,6 +48,7 @@ let assert_fixpoint
     initialize
       ?models_source
       ~find_missing_flows:missing_flows
+      ~force_pyre1:true
       ~taint_configuration
       ~handle
       ~context
@@ -136,7 +137,7 @@ let test_obscure context =
       def test_obscure.obscure(x): ...
     |}
     {|
-      from builtins import _test_source, _test_sink, _user_controlled
+      from pysa import _test_source, _test_sink, _user_controlled
 
       def obscure(x): ...
 
@@ -210,7 +211,7 @@ let test_type context =
     ~missing_flows:Configuration.MissingFlowKind.Type
     ~handle:"test_type.py"
     {|
-      from builtins import _test_source, _test_sink, _user_controlled
+      from pysa import _test_source, _test_sink, _user_controlled
 
       def to_unknown_callee_x(x, y, f):
         f(x)

@@ -331,12 +331,15 @@ module Unresolved = struct
     | UnexpectedPyreflyTarget
     | EmptyPyreflyTarget
     | UnknownClassField
+    | ClassFieldOnlyExistInObject
     | UnsupportedFunctionTarget
     | UnexpectedDefiningClass
     | UnexpectedInitMethod
     | UnexpectedNewMethod
     | UnexpectedCalleeExpression
     | UnresolvedMagicDunderAttr
+    | UnresolvedMagicDunderAttrDueToNoBase
+    | UnresolvedMagicDunderAttrDueToNoAttribute
     | Mixed
   [@@deriving equal, show, to_yojson]
 
@@ -371,12 +374,15 @@ module Unresolved = struct
     | "UnexpectedPyreflyTarget" -> Some UnexpectedPyreflyTarget
     | "EmptyPyreflyTarget" -> Some EmptyPyreflyTarget
     | "UnknownClassField" -> Some UnknownClassField
+    | "ClassFieldOnlyExistInObject" -> Some ClassFieldOnlyExistInObject
     | "UnsupportedFunctionTarget" -> Some UnsupportedFunctionTarget
     | "UnexpectedDefiningClass" -> Some UnexpectedDefiningClass
     | "UnexpectedInitMethod" -> Some UnexpectedInitMethod
     | "UnexpectedNewMethod" -> Some UnexpectedNewMethod
     | "UnexpectedCalleeExpression" -> Some UnexpectedCalleeExpression
     | "UnresolvedMagicDunderAttr" -> Some UnresolvedMagicDunderAttr
+    | "UnresolvedMagicDunderAttrDueToNoBase" -> Some UnresolvedMagicDunderAttrDueToNoBase
+    | "UnresolvedMagicDunderAttrDueToNoAttribute" -> Some UnresolvedMagicDunderAttrDueToNoAttribute
     | "Mixed" -> Some Mixed
     | _ -> None
 
@@ -1195,6 +1201,10 @@ module IdentifierCallees = struct
     { global_targets; nonlocal_targets; if_called }
 
 
+  let empty = { global_targets = []; nonlocal_targets = []; if_called = CallCallees.empty }
+
+  let is_empty identifier_callees = equal identifier_callees empty
+
   let dedup_and_sort { global_targets; nonlocal_targets; if_called } =
     {
       global_targets = CallTarget.dedup_and_sort global_targets;
@@ -1297,6 +1307,8 @@ end
 (** Implicit callees for any expression that is stringified. *)
 module FormatStringStringifyCallees = struct
   type t = { targets: CallTarget.t list } [@@deriving equal, show { with_path = false }]
+
+  let is_empty { targets } = List.is_empty targets
 
   let dedup_and_sort { targets } = { targets = CallTarget.dedup_and_sort targets }
 
@@ -1505,6 +1517,16 @@ module ExpressionCallees = struct
 
   let is_empty_attribute_access_callees = function
     | AttributeAccess callees -> AttributeAccessCallees.is_empty callees
+    | _ -> false
+
+
+  let is_empty_identifier = function
+    | Identifier callees -> IdentifierCallees.is_empty callees
+    | _ -> false
+
+
+  let is_empty_format_string_stringify = function
+    | FormatStringStringify callees -> FormatStringStringifyCallees.is_empty callees
     | _ -> false
 
 
@@ -1982,6 +2004,16 @@ module DefineCallGraph = struct
   let filter_empty_attribute_access =
     ExpressionIdentifier.Map.filter (fun _ callees ->
         not (ExpressionCallees.is_empty_attribute_access_callees callees))
+
+
+  let filter_empty_identifier =
+    ExpressionIdentifier.Map.filter (fun _ callees ->
+        not (ExpressionCallees.is_empty_identifier callees))
+
+
+  let filter_empty_format_string_stringify =
+    ExpressionIdentifier.Map.filter (fun _ callees ->
+        not (ExpressionCallees.is_empty_format_string_stringify callees))
 
 
   let update_expression_callees ~f = ExpressionIdentifier.Map.map f

@@ -44,6 +44,8 @@ module Regular : sig
 
   val override_to_method : t -> t
 
+  val define_name : t -> Reference.t option
+
   val define_name_exn : t -> Reference.t
 
   val create_derived_override_exn : at_type:Reference.t -> t -> t
@@ -248,7 +250,7 @@ module HashsetSharedMemory : sig
 
   type t
 
-  val cleanup : t -> unit
+  val cleanup : clean_old:bool -> t -> unit
 
   val from_heap : target list -> t
 

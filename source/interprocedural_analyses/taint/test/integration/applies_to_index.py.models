@@ -1,61 +1,11 @@
 @generated
 {
-  "kind": "model",
-  "data": {
-    "callable": "_test_sink",
-    "filename": "builtins.pyi",
-    "callable_line": 618,
-    "sinks": [
-      {
-        "port": "formal(arg, position=0)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "special_sink" } ],
-                "kind": "Test"
-              }
-            ],
-            "declaration": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "_test_source",
-    "filename": "builtins.pyi",
-    "callable_line": 619,
-    "sources": [
-      {
-        "port": "result",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "special_source" } ],
-                "kind": "Test"
-              }
-            ],
-            "declaration": null
-          }
-        ]
-      }
-    ],
-    "modes": [ "Obscure" ]
-  }
-}
-{
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_only_with_a_key",
-    "callable_line": 48,
+    "callable_line": 49,
     "code": 5002,
-    "line": 50,
+    "line": 51,
     "start": 15,
     "end": 21,
     "filename": "applies_to_index.py",
@@ -79,7 +29,7 @@
             "local_features": [
               { "has": "first-index" }, { "first-index": "a" }
             ],
-            "origin": { "line": 49, "start": 8, "end": 31 }
+            "origin": { "line": 50, "start": 8, "end": 31 }
           }
         ]
       },
@@ -90,12 +40,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 50, "start": 15, "end": 21 },
-            "call_site": "50:4-50:22"
+            "origin": { "line": 51, "start": 15, "end": 21 },
+            "call_site": "51:4-51:22"
           }
         ]
       }
@@ -107,20 +59,20 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "applies_to_index.issue_only_with_a_key:5002:0:Call|_test_sink|0|formal(arg):76c5bfa4202be200a69fe5dce0318d74"
+    "master_handle": "applies_to_index.issue_only_with_a_key:5002:0:Call|pysa._test_sink|0|formal(arg):cc2260fe3c722a7929a33809eb7e68d4"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_only_with_first",
-    "callable_line": 21,
+    "callable_line": 22,
     "code": 5002,
-    "line": 23,
+    "line": 24,
     "start": 15,
     "end": 20,
     "filename": "applies_to_index.py",
@@ -141,7 +93,7 @@
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 22, "start": 22, "end": 45 }
+            "origin": { "line": 23, "start": 22, "end": 45 }
           }
         ]
       },
@@ -152,12 +104,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 23, "start": 15, "end": 20 },
-            "call_site": "23:4-23:21"
+            "origin": { "line": 24, "start": 15, "end": 20 },
+            "call_site": "24:4-24:21"
           }
         ]
       }
@@ -165,11 +119,11 @@
     "features": [ { "always-via": "special_sink" } ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "applies_to_index.issue_only_with_first:5002:0:Call|_test_sink|0|formal(arg):1b20364f53d3dcf69a13dac6b9528240"
+    "master_handle": "applies_to_index.issue_only_with_first:5002:0:Call|pysa._test_sink|0|formal(arg):9a1a7a936d51b9723722957b292f0093"
   }
 }
 {
@@ -177,7 +131,7 @@
   "data": {
     "callable": "applies_to_index.issue_only_with_nested_first",
     "filename": "applies_to_index.py",
-    "callable_line": 33,
+    "callable_line": 34,
     "sources": [
       {
         "port": "result[0][1]",
@@ -194,7 +148,7 @@
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 41, "start": 11, "end": 35 }
+            "origin": { "line": 42, "start": 11, "end": 35 }
           }
         ]
       }
@@ -205,9 +159,9 @@
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_only_with_nested_first",
-    "callable_line": 33,
+    "callable_line": 34,
     "code": 5002,
-    "line": 37,
+    "line": 38,
     "start": 15,
     "end": 20,
     "filename": "applies_to_index.py",
@@ -228,7 +182,7 @@
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 34, "start": 20, "end": 44 }
+            "origin": { "line": 35, "start": 20, "end": 44 }
           }
         ]
       },
@@ -239,12 +193,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 37, "start": 15, "end": 20 },
-            "call_site": "37:4-37:21"
+            "origin": { "line": 38, "start": 15, "end": 20 },
+            "call_site": "38:4-38:21"
           }
         ]
       }
@@ -252,20 +208,20 @@
     "features": [ { "always-via": "special_sink" } ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "applies_to_index.issue_only_with_nested_first:5002:0:Call|_test_sink|0|formal(arg):12cbde4c9bc98dd60c8e3b1c36ce01b2"
+    "master_handle": "applies_to_index.issue_only_with_nested_first:5002:0:Call|pysa._test_sink|0|formal(arg):d77ffee405ba00a8f0c648236f0280b2"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_only_with_second",
-    "callable_line": 27,
+    "callable_line": 28,
     "code": 5002,
-    "line": 30,
+    "line": 31,
     "start": 15,
     "end": 20,
     "filename": "applies_to_index.py",
@@ -286,7 +242,7 @@
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 28, "start": 22, "end": 46 }
+            "origin": { "line": 29, "start": 22, "end": 46 }
           }
         ]
       },
@@ -297,12 +253,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 30, "start": 15, "end": 20 },
-            "call_site": "30:4-30:21"
+            "origin": { "line": 31, "start": 15, "end": 20 },
+            "call_site": "31:4-31:21"
           }
         ]
       }
@@ -310,20 +268,20 @@
     "features": [ { "always-via": "special_sink" } ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 1,
       "parameter": "formal(arg)"
     },
-    "master_handle": "applies_to_index.issue_only_with_second:5002:0:Call|_test_sink|1|formal(arg):c5de4b94ea7f50b90ee29115d6498c79"
+    "master_handle": "applies_to_index.issue_only_with_second:5002:0:Call|pysa._test_sink|1|formal(arg):d463070f9def94c3133e1b5cda5795fa"
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_with_member",
-    "callable_line": 58,
+    "callable_line": 59,
     "code": 5002,
-    "line": 60,
+    "line": 61,
     "start": 15,
     "end": 18,
     "filename": "applies_to_index.py",
@@ -347,7 +305,7 @@
             "local_features": [
               { "has": "first-field" }, { "first-field": "a" }
             ],
-            "origin": { "line": 59, "start": 8, "end": 34 }
+            "origin": { "line": 60, "start": 8, "end": 34 }
           }
         ]
       },
@@ -358,12 +316,14 @@
             "kinds": [
               {
                 "local_features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink", "port": "leaf:arg" } ],
+                "leaves": [
+                  { "name": "pysa._test_sink", "port": "leaf:arg" }
+                ],
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 60, "start": 15, "end": 18 },
-            "call_site": "60:4-60:19"
+            "origin": { "line": 61, "start": 15, "end": 18 },
+            "call_site": "61:4-61:19"
           }
         ]
       }
@@ -375,11 +335,11 @@
     ],
     "sink_handle": {
       "kind": "Call",
-      "callee": "_test_sink",
+      "callee": "pysa._test_sink",
       "index": 0,
       "parameter": "formal(arg)"
     },
-    "master_handle": "applies_to_index.issue_with_member:5002:0:Call|_test_sink|0|formal(arg):4e6c314b245358eeea77b64cace8721b"
+    "master_handle": "applies_to_index.issue_with_member:5002:0:Call|pysa._test_sink|0|formal(arg):1d67f081ace3a04a0e101ec4a6080c3c"
   }
 }
 {
@@ -387,7 +347,7 @@
   "data": {
     "callable": "applies_to_index.only_applies_to_a_key",
     "filename": "applies_to_index.py",
-    "callable_line": 44,
+    "callable_line": 45,
     "sources": [
       {
         "port": "result[a]",
@@ -401,7 +361,7 @@
   "data": {
     "callable": "applies_to_index.only_applies_to_a_member",
     "filename": "applies_to_index.py",
-    "callable_line": 54,
+    "callable_line": 55,
     "sources": [
       {
         "port": "result[a]",
@@ -416,7 +376,7 @@
   "data": {
     "callable": "applies_to_index.only_applies_to_first",
     "filename": "applies_to_index.py",
-    "callable_line": 9,
+    "callable_line": 10,
     "sources": [
       {
         "port": "result[0]",
@@ -430,7 +390,7 @@
   "data": {
     "callable": "applies_to_index.only_applies_to_nested",
     "filename": "applies_to_index.py",
-    "callable_line": 17,
+    "callable_line": 18,
     "sources": [
       {
         "port": "result[0][1]",
@@ -444,7 +404,7 @@
   "data": {
     "callable": "applies_to_index.only_applies_to_second",
     "filename": "applies_to_index.py",
-    "callable_line": 13,
+    "callable_line": 14,
     "sources": [
       {
         "port": "result[1]",
@@ -458,7 +418,7 @@
   "data": {
     "callable": "applies_to_index.tito",
     "filename": "applies_to_index.py",
-    "callable_line": 64,
+    "callable_line": 65,
     "tito": [
       {
         "port": "formal(x, position=0)[a]",
@@ -470,5 +430,55 @@
         ]
       }
     ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "pysa._test_sink",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 4,
+    "sinks": [
+      {
+        "port": "formal(arg, position=0)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      }
+    ],
+    "modes": [ "Obscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "pysa._test_source",
+    "filename": "pysa/__init__.pyi",
+    "callable_line": 5,
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "declaration": null
+          }
+        ]
+      }
+    ],
+    "modes": [ "Obscure" ]
   }
 }

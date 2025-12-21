@@ -3,11 +3,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from builtins import _test_sink, _test_source
-from typing import Dict, Optional, Union, TypeVar
+from pysa import _test_sink, _test_source
+from typing import Any, Dict, Optional, Union, TypeVar
 
 
-def tito(x):
+def tito(x) -> Any:
     ...  # Type stubs are treated as taint-in-taint-out with collapse depth 0.
 
 
