@@ -1565,6 +1565,32 @@ module ModuleCallGraphs = struct
       >>| fun unresolved -> { targets; unresolved }
   end
 
+  module JsonReturnShimCallees = struct
+    type t = {
+      targets: JsonCallTarget.t list;
+      arguments: CallGraph.ReturnShimCallees.argument_mapping list;
+    }
+
+    let parse_argument_mapping = function
+      | `String "ReturnExpression" -> Ok CallGraph.ReturnShimCallees.ReturnExpression
+      | `String "ReturnExpressionElement" -> Ok CallGraph.ReturnShimCallees.ReturnExpressionElement
+      | argument_mapping ->
+          Error
+            (FormatError.UnexpectedJsonType
+               { json = argument_mapping; message = "Unknown argument mapping" })
+
+
+    let from_json json =
+      let open Core.Result.Monad_infix in
+      let parse_list ~parse_element list = list |> List.map ~f:parse_element |> Result.all in
+      JsonUtil.get_optional_list_member json "targets"
+      >>= parse_list ~parse_element:JsonCallTarget.from_json
+      >>= fun targets ->
+      JsonUtil.get_optional_list_member json "arguments"
+      >>= parse_list ~parse_element:parse_argument_mapping
+      >>| fun arguments -> { targets; arguments }
+  end
+
   module JsonExpressionCallees = struct
     type t =
       | Call of JsonCallCallees.t
@@ -1573,6 +1599,7 @@ module ModuleCallGraphs = struct
       | Define of JsonDefineCallees.t
       | FormatStringArtificial of JsonFormatStringArtificialCallees.t
       | FormatStringStringify of JsonFormatStringStringifyCallees.t
+      | Return of JsonReturnShimCallees.t
 
     let from_json json =
       let open Core.Result.Monad_infix in
@@ -1593,6 +1620,9 @@ module ModuleCallGraphs = struct
       | `Assoc [("FormatStringStringify", format_string_callees)] ->
           JsonFormatStringStringifyCallees.from_json format_string_callees
           >>| fun format_string_callees -> FormatStringStringify format_string_callees
+      | `Assoc [("Return", return_callees)] ->
+          JsonReturnShimCallees.from_json return_callees
+          >>| fun return_shim_callees -> Return return_shim_callees
       | _ ->
           Error (FormatError.UnexpectedJsonType { json; message = "expected expression callees" })
   end
@@ -1888,10 +1918,10 @@ module CallableMetadata = struct
     is_classmethod: bool;
     is_property_getter: bool;
     is_property_setter: bool;
-    is_toplevel: bool;
-    is_class_toplevel: bool;
-    is_stub: bool;
-    is_def_statement: bool;
+    is_toplevel: bool; (* Is this the body of a module? *)
+    is_class_toplevel: bool; (* Is this the body of a class? *)
+    is_stub: bool; (* Is this a stub definition, e.g `def foo(): ...` *)
+    is_def_statement: bool; (* Is this associated with a `def ..` statement? *)
     parent_is_class: bool;
     captures: string list;
   }
@@ -2768,12 +2798,29 @@ module ReadWrite = struct
                 priority = 0;
               }
           in
+          let open Result.Monad_infix in
+          let {
+            Configuration.Analysis.python_version =
+              { Configuration.PythonVersion.major; minor; micro };
+            system_platform;
+            _;
+          }
+            =
+            configuration
+          in
+          let sys_platform = Option.value system_platform ~default:"linux" in
           let parse_result =
             Analysis.Parsing.parse_result_of_load_result
               ~controls
               ~post_process:false
               pyre1_module_path
               load_result
+            >>| Analysis.Preprocessing.replace_version_specific_code
+                  ~major_version:major
+                  ~minor_version:minor
+                  ~micro_version:micro
+            >>| Analysis.Preprocessing.replace_platform_specific_code ~sys_platform
+            >>| Analysis.Preprocessing.mangle_private_attributes
           in
           match parse_result with
           | Ok ({ Source.module_path; _ } as source) ->
@@ -3142,7 +3189,15 @@ module ReadWrite = struct
         =
         let sofar = qualified_definition :: sofar in
         match definition with
-        | Definition.Class { local_class_id; name_location; _ } ->
+        | Definition.Class
+            {
+              local_class_id;
+              name_location;
+              (* Don't add a toplevel define for synthesized classes, such as `MyTuple =
+                 namedtuple('MyTuple', ['x', 'y'])` *)
+              is_synthesized = false;
+              _;
+            } ->
             {
               QualifiedDefinition.definition =
                 Definition.Function
@@ -3290,6 +3345,7 @@ module ReadWrite = struct
             qualified_name :: callables, classes
         | Class
             {
+              name = class_name;
               local_class_id;
               name_location;
               is_synthesized;
@@ -3329,6 +3385,12 @@ module ReadWrite = struct
                           declaration_kind;
                         }
                       ->
+                     let name =
+                       if Identifier.is_private_name name then
+                         Identifier.mangle_private_name ~class_name name
+                       else
+                         name
+                     in
                      ( name,
                        {
                          ClassField.type_ = JsonType.to_pysa_type type_;
@@ -4513,6 +4575,13 @@ module ReadOnly = struct
           targets |> List.map ~f:instantiate_call_target |> List.concat;
       }
     in
+    let instantiate_return_shim_callees { JsonReturnShimCallees.targets; arguments } =
+      {
+        CallGraph.ReturnShimCallees.call_targets =
+          targets |> List.map ~f:instantiate_call_target |> List.concat;
+        arguments;
+      }
+    in
     let instantiate_expression_callees = function
       | JsonExpressionCallees.Call callees ->
           ExpressionCallees.Call (instantiate_call_callees callees)
@@ -4528,6 +4597,8 @@ module ReadOnly = struct
       | JsonExpressionCallees.FormatStringStringify callees ->
           ExpressionCallees.FormatStringStringify
             (instantiate_format_string_stringify_callees callees)
+      | JsonExpressionCallees.Return callees ->
+          ExpressionCallees.Return (instantiate_return_shim_callees callees)
     in
     let instantiate_call_edge expression_identifier callees call_graph =
       let callees = instantiate_expression_callees callees in
