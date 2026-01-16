@@ -40,12 +40,7 @@
           {
             "kinds": [
               {
-                "features": [
-                  { "always-via": "default" },
-                  { "always-type": "integer" },
-                  { "always-type": "bool" },
-                  { "always-type": "scalar" }
-                ],
+                "features": [ { "always-via": "default" } ],
                 "return_paths": { "": 0 },
                 "kind": "LocalReturn"
               }
@@ -78,7 +73,7 @@
   "data": {
     "callable": "first_index.alternate_fields",
     "filename": "first_index.py",
-    "callable_line": 11,
+    "callable_line": 12,
     "sources": [
       {
         "port": "result",
@@ -96,7 +91,7 @@
             "local_features": [
               { "has": "first-index" }, { "first-index": "a" }
             ],
-            "origin": { "line": 12, "start": 14, "end": 28 }
+            "origin": { "line": 13, "start": 14, "end": 28 }
           },
           {
             "kinds": [
@@ -111,7 +106,7 @@
             "local_features": [
               { "has": "first-index" }, { "first-index": "b" }
             ],
-            "origin": { "line": 12, "start": 35, "end": 49 }
+            "origin": { "line": 13, "start": 35, "end": 49 }
           }
         ]
       }
@@ -122,9 +117,9 @@
   "kind": "issue",
   "data": {
     "callable": "first_index.alternate_fields",
-    "callable_line": 11,
+    "callable_line": 12,
     "code": 5002,
-    "line": 17,
+    "line": 18,
     "start": 15,
     "end": 16,
     "filename": "first_index.py",
@@ -146,7 +141,7 @@
             "local_features": [
               { "has": "first-index" }, { "first-index": "a" }
             ],
-            "origin": { "line": 12, "start": 14, "end": 28 }
+            "origin": { "line": 13, "start": 14, "end": 28 }
           },
           {
             "kinds": [
@@ -161,7 +156,7 @@
             "local_features": [
               { "has": "first-index" }, { "first-index": "b" }
             ],
-            "origin": { "line": 12, "start": 35, "end": 49 }
+            "origin": { "line": 13, "start": 35, "end": 49 }
           }
         ]
       },
@@ -178,8 +173,8 @@
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 17, "start": 15, "end": 16 },
-            "call_site": "17:4-17:17"
+            "origin": { "line": 18, "start": 15, "end": 16 },
+            "call_site": "18:4-18:17"
           }
         ]
       }
@@ -205,7 +200,7 @@
   "data": {
     "callable": "first_index.local_fields",
     "filename": "first_index.py",
-    "callable_line": 21,
+    "callable_line": 22,
     "sources": [
       {
         "port": "result",
@@ -229,7 +224,7 @@
               { "first-index": "d" }
             ],
             "call": {
-              "position": { "line": 22, "start": 8, "end": 26 },
+              "position": { "line": 23, "start": 8, "end": 26 },
               "resolves_to": [ "first_index.alternate_fields" ],
               "port": "result"
             }
@@ -244,7 +239,7 @@
   "data": {
     "callable": "first_index.local_fields_hop",
     "filename": "first_index.py",
-    "callable_line": 30,
+    "callable_line": 31,
     "sources": [
       {
         "port": "result",
@@ -268,7 +263,7 @@
               { "first-index": "e" }
             ],
             "call": {
-              "position": { "line": 31, "start": 8, "end": 22 },
+              "position": { "line": 32, "start": 8, "end": 22 },
               "resolves_to": [ "first_index.local_fields" ],
               "port": "result"
             }

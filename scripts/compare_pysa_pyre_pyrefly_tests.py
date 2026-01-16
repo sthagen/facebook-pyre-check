@@ -81,11 +81,22 @@ CALLABLE_MAPPING = {
     "builtins.getattr": CallableMapping(name="getattr", line=476),
     "builtins.list.append": CallableMapping(name="list.append", line=422),
     "builtins.dict.__setitem__": CallableMapping(name="dict.__setitem__", line=399),
+    "builtins.dict.get": CallableMapping(name="dict.get", line=401),
+    "builtins.str.__add__": CallableMapping(name="str.__add__", line=353),
     "typing.Mapping.__getitem__": CallableMapping(
         name="typing.Mapping.__getitem__", line=131
     ),
     "typing.Mapping.get": CallableMapping(name="typing.Mapping.get", line=135),
     "typing.Mapping.update": CallableMapping(name="typing.Mapping.update", line=155),
+}
+
+
+STRIP_STDLIB_CALLABLES = {
+    "ast._Attributes.__init__",
+    "_ssl._Cipher.__init__",
+    "ssl._Cipher.__init__",
+    "_ssl._CertInfo.__init__",
+    "functools._CacheParameters.__init__",
 }
 
 
@@ -110,7 +121,7 @@ def normalize_pyrefly_model(model: dict[str, Any]) -> object:
 
     callable_name = model["data"]["callable"]
     # Remove default models for the standard library.
-    if callable_name == "ast._Attributes.__init__":
+    if callable_name in STRIP_STDLIB_CALLABLES:
         return None
 
     # pyre and pyrefly use different typeshed. Update standard library callable
@@ -141,7 +152,11 @@ def normalize_pyrefly_models(path: Path) -> str:
     return "\n".join(lines)
 
 
-def compare_models(test_file: Path, temporary_directory: Path) -> None:
+def compare_models(
+    test_file: Path,
+    temporary_directory: Path,
+    compare_passing: bool,
+) -> None:
     """
     Compare .py.models and .py.pyrefly.models files for a given test file.
     """
@@ -152,6 +167,17 @@ def compare_models(test_file: Path, temporary_directory: Path) -> None:
         raise AssertionError(f"Missing pyre models for test {test_file.name}")
     if not pyrefly_models_path.exists():
         raise AssertionError(f"Missing pyrefly models for test {test_file.name}")
+
+    passing_file_path = test_file.with_suffix(".py.pyrefly.passing")
+    marked_as_passing = (
+        passing_file_path.exists() and json.loads(passing_file_path.read_text()) == True
+    )
+    if marked_as_passing:
+        if not compare_passing:
+            print(f"Test {test_file.name} is marked as passing (skipping comparison)")
+            return
+        else:
+            print(f"Test {test_file.name} is marked as passing")
 
     pyre_normalized_models_path = temporary_directory / (
         test_file.name + ".pyre.models"
@@ -203,6 +229,11 @@ def main() -> int:
         action="store_true",
         help="Pause after each comparison",
     )
+    parser.add_argument(
+        "--compare-passing",
+        action="store_true",
+        help="Compare tests marked as passing (.pyrefly.passing file exists)",
+    )
 
     parsed = parser.parse_args()
 
@@ -231,7 +262,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as temporary_directory:
         for test_file in test_files:
-            compare_models(test_file, Path(temporary_directory))
+            compare_models(test_file, Path(temporary_directory), parsed.compare_passing)
             if parsed.interactive:
                 print("[Press enter to continue] ", end="")
                 input()
