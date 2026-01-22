@@ -413,6 +413,34 @@ let get_qualified_local_identifier ~qualifier name =
   Format.asprintf "$local_%s$%s" qualifier name
 
 
+let get_unqualified_local_identifier name =
+  match String.is_prefix name ~prefix:"$local_", String.rindex name '$' with
+  | true, Some index when index > 0 ->
+      let qualifier =
+        String.sub name ~pos:7 ~len:(index - 7)
+        |> String.substr_replace_all ~pattern:"?" ~with_:"."
+        |> Reference.create
+      in
+      let name = String.drop_prefix name (index + 1) in
+      Some (qualifier, name)
+  | _ -> None
+
+
+let get_qualified_parameter name =
+  let parameter_prefix = "$parameter$" in
+  if String.is_prefix name ~prefix:parameter_prefix then
+    name
+  else
+    parameter_prefix ^ name
+
+
+let get_unqualified_parameter name =
+  if String.is_prefix name ~prefix:"$parameter$" then
+    Some (String.drop_prefix name 11)
+  else
+    None
+
+
 module Qualify = struct
   type alias = { name: Reference.t }
 
@@ -781,16 +809,7 @@ module Qualify = struct
 
 
   and qualify_argument { Call.Argument.name; value } ~qualify_strings ~scope =
-    let name =
-      let rename identifier =
-        let parameter_prefix = "$parameter$" in
-        if String.is_prefix identifier ~prefix:parameter_prefix then
-          identifier
-        else
-          parameter_prefix ^ identifier
-      in
-      name >>| Node.map ~f:rename
-    in
+    let name = name >>| Node.map ~f:get_qualified_parameter in
     { Call.Argument.name; value = qualify_expression ~qualify_strings ~scope value }
 
 
@@ -976,7 +995,19 @@ module Qualify = struct
           explore_single_target ~force_local ~scope name
       | _ -> scope
     in
-    let rec explore_aliases ({ module_name; parent; aliases; _ } as scope) { Node.value; _ } =
+    let explore_expression scope expression =
+      let fold_walrus_operator ~folder ~state:scope { WalrusOperator.target; value; _ } =
+        let scope = explore_target ~scope target in
+        let scope = Ast.Expression.Folder.fold ~folder ~state:scope target in
+        let scope = Ast.Expression.Folder.fold ~folder ~state:scope value in
+        scope
+      in
+      let folder =
+        Ast.Expression.Folder.create_with_uniform_location_fold ~fold_walrus_operator ()
+      in
+      Ast.Expression.Folder.fold ~folder ~state:scope expression
+    in
+    let rec explore_statement ({ module_name; parent; aliases; _ } as scope) { Node.value; _ } =
       match value with
       | Statement.Assign
           {
@@ -992,8 +1023,15 @@ module Qualify = struct
                 ~key:target_name
                 ~data:(global_alias ~module_name ~parent ~name:target_name);
           }
-      | Statement.Assign { Assign.target; _ }
-      | Statement.AugmentedAssign { AugmentedAssign.target; _ } ->
+      | Statement.Assign { Assign.target; value; _ } ->
+          let scope =
+            match value with
+            | Some value -> explore_expression scope value
+            | None -> scope
+          in
+          explore_target ~scope target
+      | Statement.AugmentedAssign { AugmentedAssign.target; value; _ } ->
+          let scope = explore_expression scope value in
           explore_target ~scope target
       | Statement.Class { Class.name; _ } ->
           let class_name = Reference.show name in
@@ -1007,11 +1045,16 @@ module Qualify = struct
           }
       | Statement.Define { Define.signature = { name; _ }; _ } ->
           qualify_function_name ~scope name |> fst
-      | Statement.If { If.body; orelse; _ } ->
-          let scope = List.fold body ~init:scope ~f:explore_aliases in
-          List.fold orelse ~init:scope ~f:explore_aliases
-      | Statement.Import { Import.from = Some { Node.value = from; _ }; imports }
-        when not (String.equal (Reference.show from) "builtins") ->
+      | Statement.Delete expressions -> List.fold expressions ~init:scope ~f:explore_expression
+      | Statement.Expression expression -> explore_expression scope expression
+      | Statement.If { If.test; body; orelse; _ } ->
+          let scope = explore_expression scope test in
+          let scope = List.fold body ~init:scope ~f:explore_statement in
+          List.fold orelse ~init:scope ~f:explore_statement
+      | Statement.Import { Import.from = Some { Node.value = from; _ }; imports = _ }
+        when String.equal (Reference.show from) "builtins" ->
+          scope
+      | Statement.Import { Import.from = Some { Node.value = from; _ }; imports } ->
           let import aliases { Node.value = { Import.name; alias }; _ } =
             match alias with
             | Some alias ->
@@ -1034,12 +1077,44 @@ module Qualify = struct
             | None -> aliases
           in
           { scope with aliases = List.fold imports ~init:aliases ~f:import }
-      | Statement.For { For.target; body; orelse; _ } ->
+      | Statement.Match { Match.subject; cases } ->
+          let scope = explore_expression scope subject in
+          let explore_pattern scope = function
+            | Match.Pattern.MatchValue expression -> explore_expression scope expression
+            | _ -> scope
+          in
+          let explore_case scope { Match.Case.pattern = { Node.value = pattern; _ }; guard; body } =
+            let scope = explore_pattern scope pattern in
+            let scope =
+              match guard with
+              | Some guard -> explore_expression scope guard
+              | None -> scope
+            in
+            List.fold body ~init:scope ~f:explore_statement
+          in
+          List.fold cases ~init:scope ~f:explore_case
+      | Statement.Raise { Raise.expression; from } ->
+          let scope =
+            match expression with
+            | Some expression -> explore_expression scope expression
+            | None -> scope
+          in
+          let scope =
+            match from with
+            | Some from -> explore_expression scope from
+            | None -> scope
+          in
+          scope
+      | Statement.Return { Return.expression = Some expression; _ } ->
+          explore_expression scope expression
+      | Statement.Return { Return.expression = None; _ } -> scope
+      | Statement.For { For.target; body; orelse; iterator; _ } ->
+          let scope = explore_expression scope iterator in
           let scope = explore_target ~force_local:true ~scope target in
-          let scope = List.fold body ~init:scope ~f:explore_aliases in
-          List.fold orelse ~init:scope ~f:explore_aliases
+          let scope = List.fold body ~init:scope ~f:explore_statement in
+          List.fold orelse ~init:scope ~f:explore_statement
       | Statement.Try { Try.body; handlers; orelse; finally; handles_exception_group = _ } ->
-          let scope = List.fold body ~init:scope ~f:explore_aliases in
+          let scope = List.fold body ~init:scope ~f:explore_statement in
           let scope =
             let explore_handler scope { Try.Handler.name; body; _ } =
               let scope =
@@ -1047,28 +1122,36 @@ module Qualify = struct
                 | Some { Node.value = name; _ } -> explore_single_target ~scope name
                 | None -> scope
               in
-              List.fold body ~init:scope ~f:explore_aliases
+              List.fold body ~init:scope ~f:explore_statement
             in
             List.fold handlers ~init:scope ~f:explore_handler
           in
-          let scope = List.fold orelse ~init:scope ~f:explore_aliases in
-          List.fold finally ~init:scope ~f:explore_aliases
+          let scope = List.fold orelse ~init:scope ~f:explore_statement in
+          List.fold finally ~init:scope ~f:explore_statement
       | Statement.With { With.items; body; _ } ->
-          let explore_with_item scope (_, alias) =
+          let explore_with_item scope (item, alias) =
+            let scope = explore_expression scope item in
             match alias with
             | Some alias -> explore_target ~force_local:true ~scope alias
             | None -> scope
           in
           let scope = List.fold items ~init:scope ~f:explore_with_item in
-          List.fold body ~init:scope ~f:explore_aliases
-      | Statement.While { While.body; orelse; _ } ->
-          let scope = List.fold body ~init:scope ~f:explore_aliases in
-          List.fold orelse ~init:scope ~f:explore_aliases
+          List.fold body ~init:scope ~f:explore_statement
+      | Statement.While { While.test; body; orelse; _ } ->
+          let scope = explore_expression scope test in
+          let scope = List.fold body ~init:scope ~f:explore_statement in
+          List.fold orelse ~init:scope ~f:explore_statement
       | Statement.TypeAlias { name; _ } -> explore_target ~scope name
-      | _ -> scope
+      | Statement.Break
+      | Statement.Continue
+      | Statement.Pass
+      | Statement.Assert _
+      | Statement.Global _
+      | Statement.Nonlocal _ ->
+          scope
     in
     let scope = List.fold statements ~init:scope ~f:explore_locals in
-    List.fold statements ~init:scope ~f:explore_aliases
+    List.fold statements ~init:scope ~f:explore_statement
 
 
   let rec qualify_statements ~scope statements = List.map statements ~f:(qualify_statement ~scope)

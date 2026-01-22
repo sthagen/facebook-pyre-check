@@ -1736,7 +1736,7 @@ module IdentifierReference = struct
         reference: Reference.t;
         export_name: PyrePysaLogic.ModuleExport.Name.t option;
       }
-    | Nonlocal of Reference.t
+    | Nonlocal of Identifier.t
 end
 
 let as_identifier_reference ~define_name ~pyre_in_context expression =
@@ -1751,7 +1751,7 @@ let as_identifier_reference ~define_name ~pyre_in_context expression =
         define_name
         >>= fun define_name ->
         if CallResolution.is_nonlocal ~pyre_in_context ~define:define_name reference then
-          Some (IdentifierReference.Nonlocal (Reference.delocalize reference))
+          Some (IdentifierReference.Nonlocal identifier)
         else
           None
   | Name name -> (
@@ -1877,10 +1877,15 @@ let resolve_callable_targets_from_global_identifiers ~define_name ~pyre_in_conte
 
 
 let resolve_identifier ~define_name ~pyre_in_context ~identifier =
+  let pyre_api =
+    match PyrePysaApi.InContext.pyre_api pyre_in_context with
+    | PyrePysaApi.ReadOnly.Pyre1 pyre_api -> pyre_api
+    | _ -> failwith "unreachable"
+  in
   let expression =
     Expression.Name (Name.Identifier identifier) |> Node.create_with_default_location
   in
-  let global_targets, nonlocal_targets =
+  let global_targets, captured_variables =
     expression
     |> as_identifier_reference ~define_name ~pyre_in_context
     |> Option.filter ~f:(Fn.non is_builtin_reference)
@@ -1899,24 +1904,23 @@ let resolve_identifier ~define_name ~pyre_in_context ~identifier =
           | Nonlocal nonlocal ->
               ( [],
                 [
-                  CallTargetBuilder.create_with_default_index
-                    ~implicit_dunder_call:false
-                    ~return_type:None
-                    (Target.create_object nonlocal);
+                  Analysis.PyrePysaEnvironment.ReadOnly.get_captured_variable_from_nonlocal_target
+                    pyre_api
+                    nonlocal;
                 ] ))
     |> Option.value ~default:([], [])
   in
   let callable_targets =
     resolve_callable_targets_from_global_identifiers ~define_name ~pyre_in_context expression
   in
-  match global_targets, nonlocal_targets, callable_targets with
+  match global_targets, captured_variables, callable_targets with
   | [], [], [] -> None
   | _ ->
       (* Exist at least a non-empty list. *)
       Some
         {
           IdentifierCallees.global_targets;
-          nonlocal_targets;
+          captured_variables;
           if_called = CallCallees.create ~call_targets:callable_targets ();
         }
 
@@ -3003,11 +3007,9 @@ module HigherOrderCallGraph = struct
 
     let empty = bottom
 
-    let create_root_from_identifier identifier = TaintAccessPath.Root.Variable identifier
-
-    let initialize_from_roots ~callables_to_definitions_map alist =
+    let initialize_from_roots ~pyre_api ~callables_to_definitions_map alist =
       alist
-      |> List.map ~f:(fun (root, target) ->
+      |> List.filter_map ~f:(fun (root, target) ->
              (* ASTs use `TaintAccessPath.parameter_prefix` to distinguish local variables from
                 parameters, but using parameters from the define does not result in creating
                 parameterized targets whose parameter names contain
@@ -3016,37 +3018,54 @@ module HigherOrderCallGraph = struct
                 `TaintAccessPath.Root`, so that we can look up the value bound to an `Identifier`
                 easily. *)
              let root =
-               match TaintAccessPath.Root.parameter_name root with
-               | Some name ->
-                   name
-                   |> TaintAccessPath.Root.prepend_parameter_prefix
-                   |> create_root_from_identifier
-               | None -> root
+               match root with
+               | TaintAccessPath.Root.PositionalParameter { name; _ }
+               | TaintAccessPath.Root.NamedParameter { name } -> (
+                   match pyre_api with
+                   | PyrePysaApi.ReadOnly.Pyre1 _ ->
+                       Some
+                         (TaintAccessPath.Root.Variable
+                            (TaintAccessPath.Root.prepend_parameter_prefix name))
+                   | PyrePysaApi.ReadOnly.Pyrefly _ -> Some (TaintAccessPath.Root.Variable name))
+               | TaintAccessPath.Root.CapturedVariable captured_variable ->
+                   Some
+                     (PyrePysaApi.ReadOnly.state_root_of_captured_variable
+                        pyre_api
+                        captured_variable)
+               | TaintAccessPath.Root.Variable _ ->
+                   failwith "unexpected variable root in parameterized target"
+               | _ -> None
              in
-             let is_class_method, is_static_method =
-               CallablesSharedMemory.ReadOnly.get_method_kind callables_to_definitions_map target
-             in
-             ( root,
-               target
-               |> CallTarget.create
-                    ~implicit_receiver:
-                      (is_implicit_receiver
-                         ~is_static_method
-                         ~is_class_method
-                         ~explicit_receiver:false
-                         target)
-                    ~is_class_method
-                    ~is_static_method
-               |> CallTarget.Set.singleton ))
+             match root with
+             | None -> None
+             | Some root ->
+                 let is_class_method, is_static_method =
+                   CallablesSharedMemory.ReadOnly.get_method_kind
+                     callables_to_definitions_map
+                     target
+                 in
+                 Some
+                   ( root,
+                     target
+                     |> CallTarget.create
+                          ~implicit_receiver:
+                            (is_implicit_receiver
+                               ~is_static_method
+                               ~is_class_method
+                               ~explicit_receiver:false
+                               target)
+                          ~is_class_method
+                          ~is_static_method
+                     |> CallTarget.Set.singleton ))
       |> of_list
 
 
-    let initialize_from_callable ~callables_to_definitions_map = function
+    let initialize_from_callable ~pyre_api ~callables_to_definitions_map = function
       | Target.Regular _ -> bottom
       | Target.Parameterized { parameters; _ } ->
           parameters
           |> Target.ParameterMap.to_alist
-          |> initialize_from_roots ~callables_to_definitions_map
+          |> initialize_from_roots ~pyre_api ~callables_to_definitions_map
   end
 
   module MakeTransferFunction (Context : sig
@@ -3680,6 +3699,7 @@ module HigherOrderCallGraph = struct
         match unresolved with
         | Unresolved.True (BypassingDecorators UnknownIdentifierCallee)
         | Unresolved.True (BypassingDecorators UnknownCallCallee)
+        | Unresolved.True UnexpectedPyreflyTarget
           when not (CallTarget.Set.is_bottom callee_return_values) ->
             Unresolved.False
         | _ -> unresolved
@@ -3912,7 +3932,9 @@ module HigherOrderCallGraph = struct
               |> Option.value ~default:CallTarget.Set.bottom
             in
             let callables_from_variable =
-              State.get (State.create_root_from_identifier identifier) state
+              State.get
+                (PyrePysaApi.InContext.root_of_identifier pyre_in_context ~location ~identifier)
+                state
             in
             CallTarget.Set.join global_callables callables_from_variable, state
         | Name (Name.Attribute attribute_access) ->
@@ -4076,7 +4098,7 @@ module HigherOrderCallGraph = struct
           let callees, state =
             analyze_expression ~pyre_in_context ~state ~expression:default_value
           in
-          let root = parameter_name |> State.create_root_from_identifier in
+          let root = TaintAccessPath.Root.Variable parameter_name in
           store_callees ~weak:true ~root ~callees state
 
 
@@ -4092,7 +4114,9 @@ module HigherOrderCallGraph = struct
         in
         match Node.value statement with
         | Statement.Assign { Assign.target; value = Some value; _ } -> (
-            match TaintAccessPath.of_expression ~self_variable target with
+            match
+              PyrePysaApi.InContext.access_path_of_expression pyre_in_context ~self_variable target
+            with
             | None -> state
             | Some { root; path } ->
                 let callees, state = analyze_expression ~pyre_in_context ~state ~expression:value in
@@ -4102,7 +4126,9 @@ module HigherOrderCallGraph = struct
                 let strong_update = TaintAccessPath.Path.is_empty path in
                 store_callees ~weak:(not strong_update) ~root ~callees state)
         | Assign { Assign.target; value = None; _ } -> (
-            match TaintAccessPath.of_expression ~self_variable target with
+            match
+              PyrePysaApi.InContext.access_path_of_expression pyre_in_context ~self_variable target
+            with
             | None -> state
             | Some { root; path } ->
                 let strong_update = TaintAccessPath.Path.is_empty path in
@@ -4157,12 +4183,16 @@ module HigherOrderCallGraph = struct
               | Some captures ->
                   let parameters_roots, parameters_targets =
                     captures
-                    |> List.filter_map ~f:(fun name ->
-                           let captured = State.create_root_from_identifier name in
-                           log "Inner function captures `%a`" TaintAccessPath.Root.pp captured;
+                    |> List.filter_map ~f:(fun captured_variable ->
+                           let variable =
+                             PyrePysaApi.InContext.propagate_captured_variable
+                               pyre_in_context
+                               captured_variable
+                           in
+                           log "Inner function captures `%a`" TaintAccessPath.Root.pp variable;
                            let parameter_targets =
                              state
-                             |> State.get captured
+                             |> State.get variable
                              |> CallTarget.Set.elements
                              |> List.map ~f:CallTarget.target
                            in
@@ -4172,7 +4202,8 @@ module HigherOrderCallGraph = struct
                            if List.is_empty parameter_targets then
                              None
                            else
-                             Some (captured, parameter_targets))
+                             let root = TaintAccessPath.Root.CapturedVariable captured_variable in
+                             Some (root, parameter_targets))
                     |> List.unzip
                   in
                   if List.is_empty parameters_targets then
@@ -4205,7 +4236,7 @@ module HigherOrderCallGraph = struct
             in
             store_callees
               ~weak:false
-              ~root:(name |> Reference.show |> State.create_root_from_identifier)
+              ~root:(TaintAccessPath.Root.Variable (Reference.show name))
               ~callees:(CallTarget.Set.of_list callees)
               state
         | Delete expressions ->
@@ -4946,7 +4977,8 @@ let build_whole_program_call_graph_for_pyrefly
           | PyrePysaApi.TypeModifier.Coroutine
           | PyrePysaApi.TypeModifier.Awaitable
           | PyrePysaApi.TypeModifier.ReadOnly
-          | PyrePysaApi.TypeModifier.TypeVariableBound ->
+          | PyrePysaApi.TypeModifier.TypeVariableBound
+          | PyrePysaApi.TypeModifier.TypeVariableConstraint ->
               true
           | PyrePysaApi.TypeModifier.Type -> false
         in
@@ -4987,7 +5019,7 @@ let build_whole_program_call_graph_for_pyrefly
             >>| List.map ~f:Reference.create
             >>| List.map ~f:Target.create_object
             >>| List.filter ~f:(fun target -> Target.Set.mem target attribute_targets)
-            >>| List.map ~f:(fun target -> CallGraph.CallTarget.create target)
+            >>| List.map ~f:CallGraph.CallTarget.create
             |> Option.value ~default:[]
           in
           if not (List.is_empty targets) then
@@ -5281,14 +5313,17 @@ let build_whole_program_call_graph_for_pyrefly
           in
           List.fold ~f:add_case_targets ~init:call_graph cases
         in
-        let module Visitor = Ast.Visit.Make (struct
+        let module NodeVisitor = Ast.Visit.MakeNodeVisitor (struct
           type t = DefineCallGraph.t
 
           let debug =
             Ast.Statement.Define.dump define || Ast.Statement.Define.dump_call_graph define
 
 
-          let expression call_graph { Node.value = expression; location = expression_location } =
+          let visit_expression
+              call_graph
+              { Node.value = expression; location = expression_location }
+            =
             match expression with
             | Expression.Name (Ast.Expression.Name.Attribute attribute_access) ->
                 (* For each attribute access, check the base and determine whether the attribute has
@@ -5300,14 +5335,31 @@ let build_whole_program_call_graph_for_pyrefly
             | _ -> call_graph
 
 
-          let statement call_graph { Node.value = statement; location = _ } =
+          let visit_statement call_graph { Node.value = statement; location = _ } =
             match statement with
             | Statement.Try try_ -> add_try_handler_targets ~try_ call_graph
             | Statement.Match match_ -> add_match_targets ~match_ call_graph
             | _ -> call_graph
+
+
+          let node state = function
+            | Ast.Visit.Expression expression -> visit_expression state expression
+            | Ast.Visit.Statement statement -> visit_statement state statement
+            | _ -> state
+
+
+          let visit_statement_children _ _ = true
+
+          let visit_expression_children _ _ = true
+
+          let visit_format_string_children _ _ = true
+
+          let visit_expression_based_on_parent ~parent_expression:_ _ = true
         end)
         in
-        Visitor.visit call_graph (Source.create [Node.create ~location (Statement.Define define)])
+        NodeVisitor.visit
+          call_graph
+          (Source.create [Node.create ~location (Statement.Define define)])
     | _ -> call_graph
   in
   let transform_call_graph _ callable call_graph =

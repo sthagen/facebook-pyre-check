@@ -38,6 +38,7 @@ module TypeModifier : sig
     | Coroutine (* Coroutine[.., T] *)
     | Awaitable (* Awaitable[T] *)
     | TypeVariableBound (* TypeVar(.., bound=T) *)
+    | TypeVariableConstraint (* TypeVar("T", ..., ...) *)
     | ReadOnly (* ReadOnly[T] *)
     | Type (* type[T] *)
   [@@deriving equal, compare, show]
@@ -253,7 +254,17 @@ module ReadOnly : sig
 
   val get_define_body : t -> Ast.Reference.t -> Ast.Statement.Define.t Ast.Node.t option
 
-  val get_callable_captures : t -> Ast.Reference.t -> string list
+  val get_captured_variable_from_nonlocal_target
+    :  t ->
+    Ast.Identifier.t ->
+    TaintAccessPath.CapturedVariable.t
+
+  val get_captures_from_define
+    :  t ->
+    Ast.Statement.Define.t ->
+    TaintAccessPath.CapturedVariable.t list
+
+  val get_callable_captures : t -> Ast.Reference.t -> TaintAccessPath.CapturedVariable.t list
 
   val get_callable_return_annotations
     :  t ->

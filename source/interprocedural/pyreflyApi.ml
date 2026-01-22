@@ -756,6 +756,23 @@ module ClassFieldDeclarationKind = struct
              { json = `String s; message = "expected declaration kind" })
 end
 
+module CapturedVariable = struct
+  type t = {
+    name: string;
+    outer_function: GlobalCallableId.t;
+  }
+  [@@deriving equal, show]
+
+  let from_json json =
+    let open Core.Result.Monad_infix in
+    JsonUtil.get_string_member json "name"
+    >>= fun name ->
+    JsonUtil.get_object_member json "outer_function"
+    >>= fun outer_function ->
+    GlobalCallableId.from_json (`Assoc outer_function)
+    >>| fun outer_function -> { name; outer_function }
+end
+
 (* Information from pyrefly about all definitions in a given module, stored as a
    `<root>/definitions/<module>:<id>.json` file. This matches the
    `pyrefly::report::pysa::PysaModuleDefinitions` rust type. *)
@@ -873,14 +890,6 @@ module ModuleDefinitionsFile = struct
       >>| (fun bindings -> `Assoc bindings)
       >>= JsonType.from_json
       >>| fun return_annotation -> { parameters; return_annotation }
-  end
-
-  module CapturedVariable = struct
-    type t = { name: string } [@@deriving equal, show]
-
-    let from_json json =
-      let open Core.Result.Monad_infix in
-      JsonUtil.get_string_member json "name" >>| fun name -> { name }
   end
 
   let parse_decorator_callees bindings =
@@ -1505,6 +1514,7 @@ module ModuleCallGraphs = struct
     type t = {
       if_called: JsonCallCallees.t;
       global_targets: JsonGlobalVariable.t list;
+      captured_variables: CapturedVariable.t list;
     }
 
     let from_json json =
@@ -1515,7 +1525,11 @@ module ModuleCallGraphs = struct
       JsonUtil.get_optional_list_member json "global_targets"
       >>| List.map ~f:JsonGlobalVariable.from_json
       >>= Result.all
-      >>| fun global_targets -> { if_called; global_targets }
+      >>= fun global_targets ->
+      JsonUtil.get_optional_list_member json "captured_variables"
+      >>| List.map ~f:CapturedVariable.from_json
+      >>= Result.all
+      >>| fun captured_variables -> { if_called; global_targets; captured_variables }
   end
 
   module JsonDefineCallees = struct
@@ -1923,7 +1937,6 @@ module CallableMetadata = struct
     is_stub: bool; (* Is this a stub definition, e.g `def foo(): ...` *)
     is_def_statement: bool; (* Is this associated with a `def ..` statement? *)
     parent_is_class: bool;
-    captures: string list;
   }
   [@@deriving show]
 end
@@ -1948,6 +1961,7 @@ module CallableMetadataSharedMemory = struct
       defining_class: GlobalClassId.t option;
       (* The list of callees for each decorator *)
       decorator_callees: GlobalCallableId.t list Location.SerializableMap.t;
+      captured_variables: CapturedVariable.t list;
     }
   end
 
@@ -3327,16 +3341,13 @@ module ReadWrite = struct
                     is_stub;
                     is_def_statement;
                     parent_is_class = Option.is_some defining_class;
-                    captures =
-                      List.map
-                        ~f:(fun { ModuleDefinitionsFile.CapturedVariable.name } -> name)
-                        captured_variables;
                   };
                 name;
                 local_function_id;
                 overridden_base_method;
                 defining_class;
                 decorator_callees;
+                captured_variables;
               };
             CallableIdToQualifiedNameSharedMemory.add
               callable_id_to_qualified_name_shared_memory
@@ -4151,12 +4162,27 @@ module ReadOnly = struct
     >>| FullyQualifiedName.to_reference
 
 
-  let get_callable_captures { callable_metadata_shared_memory; _ } define_name =
+  let get_callable_captures
+      { callable_metadata_shared_memory; callable_id_to_qualified_name_shared_memory; _ }
+      define_name
+    =
     CallableMetadataSharedMemory.get
       callable_metadata_shared_memory
       (FullyQualifiedName.from_reference_unchecked define_name)
     |> assert_shared_memory_key_exists "missing callable metadata"
-    |> fun { CallableMetadataSharedMemory.Value.metadata = { captures; _ }; _ } -> captures
+    |> fun { CallableMetadataSharedMemory.Value.captured_variables; _ } ->
+    List.map
+      ~f:(fun { CapturedVariable.name; outer_function } ->
+        AccessPath.CapturedVariable.FromFunction
+          {
+            name;
+            defining_function =
+              CallableIdToQualifiedNameSharedMemory.get
+                callable_id_to_qualified_name_shared_memory
+                outer_function
+              |> FullyQualifiedName.to_reference;
+          })
+      captured_variables
 
 
   let get_callable_return_annotations
@@ -4497,6 +4523,17 @@ module ReadOnly = struct
       else
         None
     in
+    let instantiate_captured_variable { CapturedVariable.name; outer_function } =
+      AccessPath.CapturedVariable.FromFunction
+        {
+          name;
+          defining_function =
+            CallableIdToQualifiedNameSharedMemory.get
+              callable_id_to_qualified_name_shared_memory
+              outer_function
+            |> FullyQualifiedName.to_reference;
+        }
+    in
     let instantiate_higher_order_parameter
         { JsonHigherOrderParameter.index; call_targets; unresolved }
       =
@@ -4532,11 +4569,13 @@ module ReadOnly = struct
         recognized_call = CallGraph.CallCallees.RecognizedCall.False;
       }
     in
-    let instantiate_identifier_callees { JsonIdentifierCallees.if_called; global_targets } =
-      (* TODO(T225700656): Support non local targets. *)
+    let instantiate_identifier_callees
+        { JsonIdentifierCallees.if_called; global_targets; captured_variables }
+      =
       let if_called = instantiate_call_callees if_called in
       let global_targets = List.filter_map ~f:instantiate_global_target global_targets in
-      { IdentifierCallees.global_targets; nonlocal_targets = []; if_called }
+      let captured_variables = List.map ~f:instantiate_captured_variable captured_variables in
+      { IdentifierCallees.global_targets; captured_variables; if_called }
     in
     let instantiate_attribute_access_callees
         { JsonAttributeAccessCallees.if_called; property_setters; property_getters; global_targets }
@@ -4947,7 +4986,10 @@ module ReadOnly = struct
 
     let dataclass_ordered_attributes api class_summary =
       get_ordered_fields_with_predicate api class_summary ~predicate:(function
-          | Some ClassFieldDeclarationKind.DeclaredByAnnotation -> true
+          | Some ClassFieldDeclarationKind.DeclaredByAnnotation
+          | Some ClassFieldDeclarationKind.AssignedInBody ->
+              (* Fields may be initialized via assignments. *)
+              true
           | _ -> false)
 
 
@@ -5300,9 +5342,19 @@ module InContext = struct
     | StatementScope { api; _ } -> api
 
 
+  let define_name = function
+    | FunctionScope { define_name; _ } -> define_name
+    | StatementScope { define_name; _ } -> define_name
+
+
   let call_graph = function
     | FunctionScope { call_graph; _ } -> call_graph
     | StatementScope { call_graph; _ } -> call_graph
+
+
+  let module_qualifier = function
+    | FunctionScope { module_qualifier; _ } -> ModuleQualifier.to_reference module_qualifier
+    | StatementScope { module_qualifier; _ } -> ModuleQualifier.to_reference module_qualifier
 
 
   let is_global _ ~reference:_ =
@@ -5334,14 +5386,26 @@ module InContext = struct
     failwith "unimplemented: PyreflyApi.InContext.fallback_attribute"
 
 
-  let module_qualifier = function
-    | FunctionScope { module_qualifier; _ } -> ModuleQualifier.to_reference module_qualifier
-    | StatementScope { module_qualifier; _ } -> ModuleQualifier.to_reference module_qualifier
+  let root_of_identifier pyrefly_in_context ~location ~identifier =
+    match
+      CallGraph.DefineCallGraph.resolve_identifier
+        ~location
+        ~identifier
+        (call_graph pyrefly_in_context)
+    with
+    | Some { CallGraph.IdentifierCallees.captured_variables = captured_variable :: _; _ } ->
+        AccessPath.Root.CapturedVariable captured_variable
+    | _ -> AccessPath.Root.Variable identifier
 
 
-  let define_name = function
-    | FunctionScope { define_name; _ } -> define_name
-    | StatementScope { define_name; _ } -> define_name
+  let propagate_captured_variable pyrefly_in_context ~defining_function ~name =
+    if Reference.equal defining_function (define_name pyrefly_in_context) then
+      (* We have reached the function that originated the variable. We should treat it as a regular
+         variable now. *)
+      AccessPath.Root.Variable name
+    else
+      AccessPath.Root.CapturedVariable
+        (AccessPath.CapturedVariable.FromFunction { name; defining_function })
 end
 
 (* Exposed for testing purposes *)

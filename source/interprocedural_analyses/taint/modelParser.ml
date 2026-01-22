@@ -970,6 +970,7 @@ let paths_for_source_or_sink ~pyre_api ~kind ~root ~root_annotations ~features =
       | PyrePysaApi.TypeModifier.ReadOnly ->
           true
       | PyrePysaApi.TypeModifier.TypeVariableBound
+      | PyrePysaApi.TypeModifier.TypeVariableConstraint
       | PyrePysaApi.TypeModifier.Type ->
           false
     in
@@ -3725,7 +3726,7 @@ let create_model_from_signature
                 ~f:(fun annotations captured_variable ->
                   ModelAnnotation.ParameterAnnotation
                     {
-                      root = AccessPath.Root.CapturedVariable { name = captured_variable };
+                      root = AccessPath.Root.CapturedVariable captured_variable;
                       annotation;
                       generation_if_source;
                     }

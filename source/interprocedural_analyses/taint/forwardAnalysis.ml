@@ -622,7 +622,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
       (* Add features to arguments. *)
       let state =
-        match AccessPath.of_expression ~self_variable argument with
+        match
+          PyrePysaApi.InContext.access_path_of_expression pyre_in_context ~self_variable argument
+        with
         | Some { AccessPath.root; path } ->
             let breadcrumbs_to_add =
               List.fold
@@ -697,6 +699,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let call_effects, state =
       let captures_taint, captured_arguments_matches =
         CallModel.match_captures
+          ~pyre_in_context
           ~model:taint_model
           ~captures_taint:initial_state.taint
           ~location:call_location
@@ -777,7 +780,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~expression:argument
           ~interval:FunctionContext.caller_class_interval
         |> check_flow_to_global ~location:argument.Node.location ~source_tree;
-        let access_path = AccessPath.of_expression ~self_variable argument in
+        let access_path =
+          PyrePysaApi.InContext.access_path_of_expression pyre_in_context ~self_variable argument
+        in
         log
           "Propagating taint to argument `%a`: %a"
           Expression.pp
@@ -806,32 +811,47 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let apply_captured_variable_side_effects state =
       let propagate_captured_variables state root =
         match root with
-        | AccessPath.Root.CapturedVariable { name = variable } ->
-            (* TODO(T225700656): Handle captured variable propagation *)
-            let nonlocal_reference = Reference.delocalize (Reference.create variable) in
-            let is_prefix =
-              Reference.is_prefix ~prefix:FunctionContext.define_name nonlocal_reference
-            in
+        | AccessPath.Root.CapturedVariable captured_variable ->
             (* Treat any function call, even those that wrap a closure write, as a closure write *)
+            let taint =
+              ForwardState.read ~root ~path:[] forward.generations
+              |> ForwardState.Tree.apply_call
+                   ~pyre_in_context
+                   ~type_of_expression_shared_memory:
+                     FunctionContext.type_of_expression_shared_memory
+                   ~call_site
+                   ~location:call_location
+                   ~callee:target
+                   ~arguments
+                   ~port:root
+                   ~is_class_method
+                   ~is_static_method
+                   ~call_info_intervals
+            in
             let state =
               (* TODO(T169657906): Programatically decide between weak and strong storing of
                  taint *)
               store_taint
                 ~weak:true
-                ~root:(AccessPath.Root.captured_variable_to_variable root)
+                ~root:
+                  (PyrePysaApi.InContext.propagate_captured_variable
+                     pyre_in_context
+                     captured_variable)
                 ~path:[]
-                (ForwardState.read ~root ~path:[] forward.generations)
+                taint
                 state
             in
+            (* TODO(T225700656): Improve handling of captured variable propagation. *)
+            let is_prefix =
+              match captured_variable with
+              | AccessPath.CapturedVariable.FromFunction { defining_function; _ } ->
+                  Reference.is_prefix ~prefix:FunctionContext.define_name defining_function
+              | AccessPath.CapturedVariable.Pyre1Parameter _ -> false
+            in
             (* Propagate captured variable taint up until the function where the nonlocal variable
-               is initialized *)
+               is initialized. This is only necessary for Pyre1. *)
             if not is_prefix then
-              store_taint
-                ~weak:true
-                ~root
-                ~path:[]
-                (ForwardState.read ~root ~path:[] forward.generations)
-                state
+              store_taint ~weak:true ~root ~path:[] taint state
             else
               state
         | _ -> state
@@ -2047,7 +2067,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
            Name
              (Name.Attribute
                {
-                 base = { Node.value = Name (Name.Identifier identifier); _ } as base;
+                 base =
+                   { Node.value = Name (Name.Identifier identifier); location = base_location } as
+                   base;
                  attribute = "update";
                  _;
                });
@@ -2059,10 +2081,14 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     }
       when CallGraph.CallCallees.is_mapping_method callees
            && Option.is_some (Dictionary.string_literal_keys entries) ->
-        let entries = Option.value_exn (Dictionary.string_literal_keys entries) in
-        let taint =
-          ForwardState.read ~root:(AccessPath.Root.Variable identifier) ~path:[] state.taint
+        let base_root =
+          PyrePysaApi.InContext.root_of_identifier
+            pyre_in_context
+            ~location:base_location
+            ~identifier
         in
+        let entries = Option.value_exn (Dictionary.string_literal_keys entries) in
+        let taint = ForwardState.read ~root:base_root ~path:[] state.taint in
         let override_taint_from_update (taint, state) (key, value) =
           let value_taint, state =
             analyze_expression ~pyre_in_context ~state ~is_result_used:true ~expression:value
@@ -2092,7 +2118,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~expression:base
           ~interval:FunctionContext.caller_class_interval
         |> check_flow_to_global ~location:base.Node.location ~source_tree:taint;
-        let state = store_taint ~root:(AccessPath.Root.Variable identifier) ~path:[] taint state in
+        let state = store_taint ~root:base_root ~path:[] taint state in
         taint, state
     | {
      callee =
@@ -2101,7 +2127,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
            Name
              (Name.Attribute
                {
-                 base = { Node.value = Name (Name.Identifier identifier); _ } as base;
+                 base =
+                   { Node.value = Name (Name.Identifier identifier); location = base_location } as
+                   base;
                  attribute = "update";
                  _;
                });
@@ -2117,9 +2145,13 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                    FunctionContext.type_of_expression_shared_memory
                    ~pyre_in_context
                    argument) ->
-        let base_taint =
-          ForwardState.read ~root:(AccessPath.Root.Variable identifier) ~path:[] state.taint
+        let base_root =
+          PyrePysaApi.InContext.root_of_identifier
+            pyre_in_context
+            ~location:base_location
+            ~identifier
         in
+        let base_taint = ForwardState.read ~root:base_root ~path:[] state.taint in
         let argument_taint, state =
           analyze_expression ~pyre_in_context ~state ~is_result_used:true ~expression:argument
         in
@@ -2139,7 +2171,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~expression:base
           ~interval:FunctionContext.caller_class_interval
         |> check_flow_to_global ~location:base.Node.location ~source_tree:taint;
-        let state = store_taint ~root:(AccessPath.Root.Variable identifier) ~path:[] taint state in
+        let state = store_taint ~root:base_root ~path:[] taint state in
         taint, state
     | {
      callee =
@@ -2148,7 +2180,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
            Name
              (Name.Attribute
                {
-                 base = { Node.value = Name (Name.Identifier identifier); _ };
+                 base = { Node.value = Name (Name.Identifier identifier); location = base_location };
                  attribute = "pop";
                  _;
                });
@@ -2165,9 +2197,13 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
      origin = _;
     }
       when CallGraph.CallCallees.is_mapping_method callees ->
-        let taint =
-          ForwardState.read ~root:(AccessPath.Root.Variable identifier) ~path:[] state.taint
+        let base_root =
+          PyrePysaApi.InContext.root_of_identifier
+            pyre_in_context
+            ~location:base_location
+            ~identifier
         in
+        let taint = ForwardState.read ~root:base_root ~path:[] state.taint in
         let new_taint =
           ForwardState.Tree.assign
             ~weak:false
@@ -2175,9 +2211,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             [Abstract.TreeDomain.Label.Index value]
             ~subtree:ForwardState.Tree.bottom
         in
-        let new_state =
-          store_taint ~root:(AccessPath.Root.Variable identifier) ~path:[] new_taint state
-        in
+        let new_state = store_taint ~root:base_root ~path:[] new_taint state in
         let key_taint =
           ForwardState.Tree.read [Abstract.TreeDomain.Label.Index value] taint
           |> add_type_breadcrumbs
@@ -2842,7 +2876,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           in
 
           let local_taint =
-            let root = AccessPath.Root.Variable identifier in
+            let root =
+              PyrePysaApi.InContext.root_of_identifier pyre_in_context ~location ~identifier
+            in
             ForwardState.read ~root ~path:[] state.taint
             |> ForwardState.Tree.add_local_type_breadcrumbs
                  ~pyre_in_context
@@ -3020,37 +3056,35 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~expression:target
           ~interval:FunctionContext.caller_class_interval
         |> check_flow_to_global ~location ~source_tree;
-        (* Check flows to nonlocals. *)
+        (* Check flows to captured variables. *)
         let state =
-          let nonlocal_target_identifier =
+          let captured_variable =
             match Node.value target with
             | Expression.Name (Name.Identifier identifier) ->
                 FunctionContext.call_graph_of_define
                 |> CallGraph.DefineCallGraph.resolve_identifier
                      ~location:(Node.location target)
                      ~identifier
-                >>| (fun { nonlocal_targets; _ } -> nonlocal_targets)
-                >>| Fn.non List.is_empty
-                >>| (fun has_nonlocal_targets -> Option.some_if has_nonlocal_targets identifier)
-                |> Option.value ~default:None
+                >>| (fun { captured_variables; _ } -> captured_variables)
+                >>= List.hd
             (* TODO(T168869049): Handle class attribute writes *)
             | _ -> None
           in
-
-          match nonlocal_target_identifier with
+          match captured_variable with
           | None -> state
-          | Some identifier ->
+          | Some captured_variable ->
               (* Propagate taint for nonlocal assignment. *)
               store_taint
                 ~weak
-                ~root:(AccessPath.Root.CapturedVariable { name = identifier })
+                ~root:(AccessPath.Root.CapturedVariable captured_variable)
                 ~path:fields
                 (ForwardState.Tree.add_local_breadcrumb (Features.captured_variable ()) taint)
                 state
         in
         (* Propagate taint for assignment. *)
         let access_path =
-          AccessPath.of_expression ~self_variable target >>| AccessPath.extend ~path:fields
+          PyrePysaApi.InContext.access_path_of_expression pyre_in_context ~self_variable target
+          >>| AccessPath.extend ~path:fields
         in
         store_taint_option ~weak access_path taint state
 
@@ -3176,7 +3210,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     | Assign
         { value = Some { Node.value = Expression.Constant Constant.NoneLiteral; _ }; target; _ }
       -> (
-        match AccessPath.of_expression ~self_variable target with
+        match
+          PyrePysaApi.InContext.access_path_of_expression pyre_in_context ~self_variable target
+        with
         | Some { AccessPath.root; path } ->
             (* We need to take some care to ensure we clear existing taint, without adding new
                taint. *)
@@ -3251,7 +3287,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     | Define define -> analyze_definition ~define state
     | Delete expressions ->
         let process_expression state expression =
-          match AccessPath.of_expression ~self_variable expression with
+          match
+            PyrePysaApi.InContext.access_path_of_expression
+              pyre_in_context
+              ~self_variable
+              expression
+          with
           | Some { AccessPath.root; path } ->
               { taint = ForwardState.assign ~root ~path ForwardState.Tree.bottom state.taint }
           | _ -> state
@@ -3354,18 +3395,21 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     in
     let add_captured_variables_paramater_sources state =
       let store_captured_variable_taint state root =
-        if AccessPath.Root.is_captured_variable root then
-          (* The origin for captured variables taint is at the inner function boundry due to there
-             being no explicit parameter to mark as location *)
-          (* TODO(T184561320): Pull in location of `nonlocal` statement if present *)
-          let taint = apply_call ~location:define_location ~root in
-          store_taint
-            ~root:(AccessPath.Root.captured_variable_to_variable root)
-            ~path:[]
-            taint
-            state
-        else
-          state
+        match root with
+        | AccessPath.Root.CapturedVariable captured_variable ->
+            (* The origin for captured variables taint is at the inner function boundry due to there
+               being no explicit parameter to mark as location *)
+            (* TODO(T184561320): Pull in location of `nonlocal` statement if present *)
+            let taint = apply_call ~location:define_location ~root in
+            store_taint
+              ~root:
+                (PyrePysaApi.InContext.state_root_of_captured_variable
+                   pyre_in_context
+                   captured_variable)
+              ~path:[]
+              taint
+              state
+        | _ -> state
       in
       List.fold ~init:state ~f:store_captured_variable_taint (ForwardState.roots parameter_sources)
     in

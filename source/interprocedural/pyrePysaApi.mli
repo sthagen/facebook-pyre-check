@@ -18,6 +18,7 @@ module ClassNamesFromType = Analysis.PyrePysaEnvironment.ClassNamesFromType
 module PysaType = Analysis.PyrePysaEnvironment.PysaType
 module PyreClassSummary = Analysis.ClassSummary
 module AstResult = Analysis.PyrePysaEnvironment.AstResult
+module TaintAccessPath = Analysis.TaintAccessPath
 
 (* Abstraction for information about a class, provided from Pyre1 or Pyrefly and used by Pysa. See
    `ReadOnly.ClassSummary` for more functions. *)
@@ -178,7 +179,12 @@ module ReadOnly : sig
     method_name:string ->
     Ast.Reference.t option
 
-  val get_callable_captures : t -> Ast.Reference.t -> string list
+  val get_captured_variable_from_nonlocal_target
+    :  t ->
+    Ast.Identifier.t ->
+    TaintAccessPath.CapturedVariable.t
+
+  val get_callable_captures : t -> Ast.Reference.t -> TaintAccessPath.CapturedVariable.t list
 
   val get_callable_return_annotations
     :  t ->
@@ -189,8 +195,8 @@ module ReadOnly : sig
   val get_callable_parameter_annotations
     :  t ->
     define_name:Ast.Reference.t ->
-    Analysis.TaintAccessPath.NormalizedParameter.t list ->
-    (Analysis.TaintAccessPath.NormalizedParameter.t * PysaType.t list) list
+    TaintAccessPath.NormalizedParameter.t list ->
+    (TaintAccessPath.NormalizedParameter.t * PysaType.t list) list
 
   val annotation_parser : t -> Analysis.AnnotatedCallable.annotation_parser
 
@@ -234,6 +240,13 @@ module ReadOnly : sig
     bool
 
   val generic_parameters_as_variables : t -> string -> Type.Variable.t list option
+
+  (* Turn a captured variable root into a root for the state. Used to assign user provided sources
+     for captured variables at the beginning of the forward analysis. *)
+  val state_root_of_captured_variable
+    :  t ->
+    TaintAccessPath.CapturedVariable.t ->
+    TaintAccessPath.Root.t
 
   val decorated_define : t -> Ast.Statement.Define.t Ast.Node.t -> Ast.Statement.Define.t Ast.Node.t
 
@@ -327,6 +340,32 @@ module InContext : sig
   val module_qualifier : t -> Ast.Reference.t
 
   val define_name : t -> Ast.Reference.t
+
+  val root_of_identifier
+    :  t ->
+    location:Ast.Location.t ->
+    identifier:Ast.Identifier.t ->
+    TaintAccessPath.Root.t
+
+  val access_path_of_expression
+    :  t ->
+    self_variable:TaintAccessPath.Root.t option ->
+    Ast.Expression.t ->
+    TaintAccessPath.t option
+
+  (* Propagate a captured variable from a callee to a caller. Return the new root representing that
+     variable in the caller. *)
+  val propagate_captured_variable
+    :  t ->
+    TaintAccessPath.CapturedVariable.t ->
+    TaintAccessPath.Root.t
+
+  (* Turn a captured variable root into a root for the state. Used to assign user provided sources
+     for captured variables at the beginning of the forward analysis. *)
+  val state_root_of_captured_variable
+    :  t ->
+    TaintAccessPath.CapturedVariable.t ->
+    TaintAccessPath.Root.t
 end
 
 module ModelQueries : sig

@@ -63,7 +63,7 @@ module ArgumentMatches = struct
   [@@deriving show]
 end
 
-let match_captures ~model ~captures_taint ~location =
+let match_captures ~pyre_in_context ~model ~captures_taint ~location =
   let sink_capture_roots =
     model.Model.backward.sink_taint
     |> BackwardState.roots
@@ -77,17 +77,36 @@ let match_captures ~model ~captures_taint ~location =
     |> AccessPath.Root.Set.of_list
   in
   let make_taint_with_argument_match capture_root =
-    let name =
+    let captured_variable =
       match capture_root with
-      | AccessPath.Root.CapturedVariable { name; _ } -> name
+      | AccessPath.Root.CapturedVariable captured_variable -> captured_variable
       | _ -> failwith "unreachable"
+    in
+    let capture_caller_root =
+      PyrePysaApi.InContext.propagate_captured_variable pyre_in_context captured_variable
     in
     let expression =
       (* captured variables are not present at call site, so location of call expression instead of
          location of assignment that introduces taint is used *)
-      Node.create ~location (Expression.Name (Name.Identifier name))
+      match capture_caller_root with
+      | AccessPath.Root.Variable name ->
+          Node.create ~location (Expression.Name (Name.Identifier name))
+      | AccessPath.Root.CapturedVariable (AccessPath.CapturedVariable.Pyre1Parameter { name }) ->
+          Node.create
+            ~location
+            (Expression.Name (Name.Identifier (Analysis.Preprocessing.get_qualified_parameter name)))
+      | AccessPath.Root.CapturedVariable
+          (AccessPath.CapturedVariable.FromFunction { name; defining_function }) ->
+          Node.create
+            ~location
+            (Expression.Name
+               (Name.Identifier
+                  (Analysis.Preprocessing.get_qualified_local_identifier
+                     ~qualifier:defining_function
+                     name)))
+      | _ -> failwith "unreachable"
     in
-    let taint = ForwardState.read ~root:(AccessPath.Root.Variable name) ~path:[] captures_taint in
+    let taint = ForwardState.read ~root:capture_caller_root ~path:[] captures_taint in
     let argument_match =
       {
         ArgumentMatches.argument = expression;
