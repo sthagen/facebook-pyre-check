@@ -470,7 +470,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       }
     in
     let convert_tito_path_to_taint
-        ~argument
+        ~argument_location
         ~argument_taint
         ~tito_roots
         ~sink_trees
@@ -484,10 +484,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       in
       let taint_to_propagate =
         ForwardState.Tree.read argument_access_path argument_taint
-        |> ForwardState.Tree.transform
-             Features.TitoPositionSet.Element
-             Add
-             ~f:argument.Node.location
+        |> ForwardState.Tree.transform Features.TitoPositionSet.Element Add ~f:argument_location
         |> ForwardState.Tree.add_local_breadcrumbs breadcrumbs
         |> ForwardState.Tree.apply_class_intervals_for_tito
              ~is_class_method
@@ -544,7 +541,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
            ~init:accumulated_tito
     in
     let convert_tito_tree_to_taint
-        ~argument
+        ~argument_location
         ~argument_taint
         ~sink_trees
         ~kind
@@ -556,7 +553,13 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           BackwardState.Tree.Path
           tito_tree
           ~init:ForwardState.Tree.empty
-          ~f:(convert_tito_path_to_taint ~argument ~argument_taint ~tito_roots ~sink_trees ~kind)
+          ~f:
+            (convert_tito_path_to_taint
+               ~argument_location
+               ~argument_taint
+               ~tito_roots
+               ~sink_trees
+               ~kind)
       in
       CallEffects.add call_effects ~kind:(Sinks.discard_transforms kind) ~taint:tito_tree
     in
@@ -566,6 +569,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         ( argument_taint,
           {
             CallModel.ArgumentMatches.argument;
+            location = argument_location;
             generation_source_matches;
             sink_matches;
             tito_matches;
@@ -579,7 +583,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~step
           ~call_target:(Some target)
           ~location:call_location
-          ~argument:(Some argument)
+          ~argument:(Some (CallModel.ArgumentMatches.expression_for_logging argument))
           ~f
       in
       let sink_trees =
@@ -590,7 +594,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
               ~transform_non_leaves:(fun _ tree -> tree)
               ~model:taint_model
               ~call_site
-              ~location:argument.Node.location
+              ~location:argument_location
               ~call_target
               ~arguments
               ~sink_matches
@@ -616,15 +620,23 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         track_apply_call_step ApplyTitoForArgument (fun () ->
             CallModel.TaintInTaintOutMap.fold
               ~init:call_effects
-              ~f:(convert_tito_tree_to_taint ~argument ~argument_taint ~sink_trees)
+              ~f:(convert_tito_tree_to_taint ~argument_location ~argument_taint ~sink_trees)
               taint_in_taint_out_map)
       in
 
       (* Add features to arguments. *)
       let state =
-        match
-          PyrePysaApi.InContext.access_path_of_expression pyre_in_context ~self_variable argument
-        with
+        let access_path =
+          match argument with
+          | CallModel.ArgumentMatches.Expression argument ->
+              PyrePysaApi.InContext.access_path_of_expression
+                pyre_in_context
+                ~self_variable
+                argument
+          | CallModel.ArgumentMatches.CapturedVariable { state_root; _ } ->
+              Some { AccessPath.root = state_root; path = [] }
+        in
+        match access_path with
         | Some { AccessPath.root; path } ->
             let breadcrumbs_to_add =
               List.fold
@@ -651,9 +663,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         track_apply_call_step CheckIssuesForArgument (fun () ->
             List.iter sink_trees ~f:(fun { SinkTreeWithHandle.sink_tree; handle; _ } ->
                 let location =
-                  Location.with_module
-                    ~module_reference:FunctionContext.qualifier
-                    argument.Node.location
+                  Location.with_module ~module_reference:FunctionContext.qualifier argument_location
                 in
                 (* Check for issues. *)
                 check_flow ~location ~sink_handle:handle ~source_tree:argument_taint ~sink_tree;
@@ -680,7 +690,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                   ~type_of_expression_shared_memory:FunctionContext.type_of_expression_shared_memory
                   ~model:taint_model
                   ~call_site
-                  ~location:argument.Node.location
+                  ~location:argument_location
                   ~call_target
                   ~arguments
                   ~is_class_method
@@ -702,7 +712,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~pyre_in_context
           ~model:taint_model
           ~captures_taint:initial_state.taint
-          ~location:call_location
+          ~call_location
       in
       arguments_matches @ captured_arguments_matches
       |> List.zip_exn (arguments_taint @ captures_taint)
@@ -811,7 +821,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let apply_captured_variable_side_effects state =
       let propagate_captured_variables state root =
         match root with
-        | AccessPath.Root.CapturedVariable captured_variable ->
+        | AccessPath.Root.CapturedVariable captured_variable -> (
             (* Treat any function call, even those that wrap a closure write, as a closure write *)
             let taint =
               ForwardState.read ~root ~path:[] forward.generations
@@ -841,19 +851,21 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                 taint
                 state
             in
-            (* TODO(T225700656): Improve handling of captured variable propagation. *)
-            let is_prefix =
-              match captured_variable with
-              | AccessPath.CapturedVariable.FromFunction { defining_function; _ } ->
-                  Reference.is_prefix ~prefix:FunctionContext.define_name defining_function
-              | AccessPath.CapturedVariable.Pyre1Parameter _ -> false
-            in
-            (* Propagate captured variable taint up until the function where the nonlocal variable
-               is initialized. This is only necessary for Pyre1. *)
-            if not is_prefix then
-              store_taint ~weak:true ~root ~path:[] taint state
-            else
-              state
+            match pyre_in_context with
+            | PyrePysaApi.InContext.Pyrefly _ -> state
+            | PyrePysaApi.InContext.Pyre1 _ ->
+                (* Propagate captured variable taint up until the function where the nonlocal
+                   variable is initialized. This is only necessary for Pyre1. *)
+                let is_prefix =
+                  match captured_variable with
+                  | AccessPath.CapturedVariable.FromFunction { defining_function; _ } ->
+                      Reference.is_prefix ~prefix:FunctionContext.define_name defining_function
+                  | AccessPath.CapturedVariable.Pyre1Parameter _ -> false
+                in
+                if not is_prefix then
+                  store_taint ~weak:true ~root ~path:[] taint state
+                else
+                  state)
         | _ -> state
       in
       List.fold ~init:state ~f:propagate_captured_variables (ForwardState.roots forward.generations)
@@ -3057,29 +3069,34 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~interval:FunctionContext.caller_class_interval
         |> check_flow_to_global ~location ~source_tree;
         (* Check flows to captured variables. *)
-        let state =
-          let captured_variable =
-            match Node.value target with
-            | Expression.Name (Name.Identifier identifier) ->
-                FunctionContext.call_graph_of_define
-                |> CallGraph.DefineCallGraph.resolve_identifier
-                     ~location:(Node.location target)
-                     ~identifier
-                >>| (fun { captured_variables; _ } -> captured_variables)
-                >>= List.hd
-            (* TODO(T168869049): Handle class attribute writes *)
-            | _ -> None
-          in
+        let captured_variable =
+          match Node.value target with
+          | Expression.Name (Name.Identifier identifier) ->
+              FunctionContext.call_graph_of_define
+              |> CallGraph.DefineCallGraph.resolve_identifier
+                   ~location:(Node.location target)
+                   ~identifier
+              >>| (fun { captured_variables; _ } -> captured_variables)
+              >>= List.hd
+          (* TODO(T168869049): Handle class attribute writes *)
+          | _ -> None
+        in
+        let taint =
           match captured_variable with
-          | None -> state
-          | Some captured_variable ->
+          | Some _ -> ForwardState.Tree.add_local_breadcrumb (Features.captured_variable ()) taint
+          | _ -> taint
+        in
+        let state =
+          match captured_variable with
+          | Some captured_variable when PyrePysaApi.InContext.is_pyre1 pyre_in_context ->
               (* Propagate taint for nonlocal assignment. *)
               store_taint
                 ~weak
                 ~root:(AccessPath.Root.CapturedVariable captured_variable)
                 ~path:fields
-                (ForwardState.Tree.add_local_breadcrumb (Features.captured_variable ()) taint)
+                taint
                 state
+          | _ -> state
         in
         (* Propagate taint for assignment. *)
         let access_path =
@@ -3448,7 +3465,7 @@ let extract_source_model
     ~taint_configuration:
       {
         TaintConfiguration.Heap.analysis_model_constraints =
-          { maximum_model_source_tree_width; maximum_trace_length; _ };
+          { maximum_model_source_tree_width; maximum_trace_length; maximum_capture_trace_length; _ };
         source_sink_filter;
         _;
       }
@@ -3474,6 +3491,7 @@ let extract_source_model
         ~global_maximum:(maximum_trace_length >>| decrement)
         ~maximum_per_kind:(fun source ->
           source |> SourceSinkFilter.maximum_source_distance source_sink_filter >>| decrement)
+        ~maximum_capture_length:(maximum_capture_trace_length >>| decrement)
         tree
     in
     if apply_broadening then
