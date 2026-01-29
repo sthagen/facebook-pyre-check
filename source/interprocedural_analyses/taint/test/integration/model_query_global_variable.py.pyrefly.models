@@ -59,9 +59,9 @@
   "kind": "issue",
   "data": {
     "callable": "model_query_global_variable.f",
-    "callable_line": 13,
+    "callable_line": 14,
     "code": 1000,
-    "line": 14,
+    "line": 15,
     "start": 15,
     "end": 22,
     "filename": "model_query_global_variable.py",
@@ -79,7 +79,7 @@
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 14, "start": 15, "end": 22 }
+            "origin": { "line": 15, "start": 15, "end": 22 }
           }
         ]
       },
@@ -95,8 +95,8 @@
                 "kind": "Test"
               }
             ],
-            "origin": { "line": 14, "start": 15, "end": 22 },
-            "call_site": "14:4-14:23"
+            "origin": { "line": 15, "start": 15, "end": 22 },
+            "call_site": "15:4-15:23"
           }
         ]
       }
@@ -281,7 +281,7 @@
     "filename": "*",
     "tito": [
       {
-        "port": "formal(**kwargs, excluded=[lineno,col_offset,end_lineno,end_col_offset])",
+        "port": "formal(**kwargs, excluded=[col_offset,end_col_offset,end_lineno,lineno])",
         "taint": [
           {
             "kinds": [
@@ -441,6 +441,51 @@
       }
     ],
     "model_generators": [ "get_hello_world" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Obj{model_query_global_variable.typed_global_callable}",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          { "kinds": [ { "kind": "SelectCallable" } ], "declaration": null }
+        ]
+      }
+    ],
+    "model_generators": [ "get_callables" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Obj{model_query_global_variable.typed_global_dict}",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          { "kinds": [ { "kind": "SelectDict" } ], "declaration": null }
+        ]
+      }
+    ],
+    "model_generators": [ "get_typed_dict" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Obj{model_query_global_variable.typed_global_lambda}",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          { "kinds": [ { "kind": "SelectCallable" } ], "declaration": null }
+        ]
+      }
+    ],
+    "model_generators": [ "get_callables" ]
   }
 }
 {

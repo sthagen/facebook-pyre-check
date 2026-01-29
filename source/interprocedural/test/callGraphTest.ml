@@ -3868,7 +3868,7 @@ let test_call_graph_of_define =
                      is_attribute = true;
                      if_called =
                        CallCallees.create
-                         ~unresolved:(Unresolved.True Unresolved.EmptyPyreflyTarget)
+                         ~unresolved:(Unresolved.True Unresolved.EmptyPyreflyCallTarget)
                          ();
                    } );
              ]
@@ -5290,6 +5290,7 @@ let test_call_graph_of_define =
                           CallTarget.create_regular
                             ~implicit_receiver:true
                             ~is_class_method:true
+                            ~receiver_class:"test.C"
                             (Target.Regular.Method
                                { class_name = "test.C"; method_name = "f"; kind = Normal });
                         ]
@@ -5357,7 +5358,7 @@ let test_call_graph_of_define =
                ( "16:22-16:27",
                  ExpressionCallees.from_attribute_access
                    (AttributeAccessCallees.create
-                      ~is_attribute:true
+                      ~is_attribute:false
                       ~if_called:
                         (CallCallees.create
                            ~call_targets:
@@ -5365,6 +5366,7 @@ let test_call_graph_of_define =
                                CallTarget.create_regular
                                  ~implicit_receiver:true
                                  ~is_class_method:true
+                                 ~receiver_class:"test.C"
                                  (Target.Regular.Method
                                     { class_name = "test.C"; method_name = "f"; kind = Normal });
                              ]
@@ -5402,6 +5404,7 @@ let test_call_graph_of_define =
                                      ~implicit_receiver:true
                                      ~is_class_method:true
                                      ~index:1
+                                     ~receiver_class:"test.C"
                                      (Target.Regular.Method
                                         { class_name = "test.C"; method_name = "f"; kind = Normal });
                                  ];
@@ -5417,6 +5420,7 @@ let test_call_graph_of_define =
                                    ~implicit_receiver:true
                                    ~is_class_method:true
                                    ~index:1
+                                   ~receiver_class:"test.C"
                                    (Target.Regular.Method
                                       { class_name = "test.C"; method_name = "f"; kind = Normal });
                                ];
@@ -5443,6 +5447,7 @@ let test_call_graph_of_define =
                           CallTarget.create_regular
                             ~implicit_receiver:true
                             ~is_class_method:true
+                            ~receiver_class:"test.C"
                             (Target.Regular.Method
                                { class_name = "test.C"; method_name = "h"; kind = Normal });
                         ]
@@ -5510,7 +5515,7 @@ let test_call_graph_of_define =
                ( "18:22-18:27",
                  ExpressionCallees.from_attribute_access
                    (AttributeAccessCallees.create
-                      ~is_attribute:true
+                      ~is_attribute:false
                       ~if_called:
                         (CallCallees.create
                            ~call_targets:
@@ -5518,6 +5523,7 @@ let test_call_graph_of_define =
                                CallTarget.create_regular
                                  ~implicit_receiver:true
                                  ~is_class_method:true
+                                 ~receiver_class:"test.C"
                                  (Target.Regular.Method
                                     { class_name = "test.C"; method_name = "h"; kind = Normal });
                              ]
@@ -5557,6 +5563,7 @@ let test_call_graph_of_define =
                                      ~implicit_receiver:true
                                      ~is_class_method:true
                                      ~index:1
+                                     ~receiver_class:"test.C"
                                      (Target.Regular.Method
                                         { class_name = "test.C"; method_name = "h"; kind = Normal });
                                  ];
@@ -5572,6 +5579,7 @@ let test_call_graph_of_define =
                                    ~implicit_receiver:true
                                    ~is_class_method:true
                                    ~index:1
+                                   ~receiver_class:"test.C"
                                    (Target.Regular.Method
                                       { class_name = "test.C"; method_name = "h"; kind = Normal });
                                ];

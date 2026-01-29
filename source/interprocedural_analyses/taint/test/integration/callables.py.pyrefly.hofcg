@@ -4,12 +4,8 @@ Higher order call graphs
   "callable": "callables.$toplevel",
   "returned_callables": [],
   "calls": {
-    "13:14-13:36": {
-      "call": { "unresolved": [ "UnexpectedPyreflyTarget" ] }
-    },
-    "14:15-14:38": {
-      "call": { "unresolved": [ "UnexpectedPyreflyTarget" ] }
-    },
+    "13:14-13:36": { "call": { "unresolved": [ "EmptyPyreflyCallTarget" ] } },
+    "14:15-14:38": { "call": { "unresolved": [ "EmptyPyreflyCallTarget" ] } },
     "17:29-17:63|artificial-call|subscript-get-item": {
       "call": { "unresolved": [ "UnresolvedMagicDunderAttrDueToNoBase" ] }
     },
@@ -39,12 +35,8 @@ Higher order call graphs
     "29:29-29:78|artificial-call|subscript-get-item": {
       "call": { "unresolved": [ "UnresolvedMagicDunderAttr" ] }
     },
-    "37:14-37:36": {
-      "call": { "unresolved": [ "UnexpectedPyreflyTarget" ] }
-    },
-    "38:15-38:38": {
-      "call": { "unresolved": [ "UnexpectedPyreflyTarget" ] }
-    },
+    "37:14-37:36": { "call": { "unresolved": [ "EmptyPyreflyCallTarget" ] } },
+    "38:15-38:38": { "call": { "unresolved": [ "EmptyPyreflyCallTarget" ] } },
     "41:20-41:54|artificial-call|subscript-get-item": {
       "call": { "unresolved": [ "UnresolvedMagicDunderAttrDueToNoBase" ] }
     }
@@ -54,7 +46,7 @@ Higher order call graphs
   "callable": "callables.async_execute_event_processor",
   "returned_callables": [],
   "calls": {
-    "56:18-56:40": {
+    "55:18-55:40": {
       "call": {
         "calls": [
           {
@@ -65,7 +57,7 @@ Higher order call graphs
         ]
       }
     },
-    "56:18-56:40|artificial-call|for-iter": {
+    "55:18-55:40|artificial-call|for-iter": {
       "call": {
         "calls": [
           {
@@ -78,7 +70,7 @@ Higher order call graphs
         ]
       }
     },
-    "56:18-56:40|artificial-call|for-next": {
+    "55:18-55:40|artificial-call|for-next": {
       "call": {
         "calls": [
           {
@@ -91,7 +83,7 @@ Higher order call graphs
         ]
       }
     },
-    "57:20-57:67": {
+    "56:20-56:67": {
       "call": {
         "new_calls": [
           {
@@ -112,14 +104,14 @@ Higher order call graphs
         ]
       }
     },
-    "57:42-57:56": {
+    "56:42-56:56": {
       "call": {
         "calls": [
           { "target": "pysa._test_source", "index": 0, "return_type": [] }
         ]
       }
     },
-    "58:14-58:35": {
+    "57:14-57:35": {
       "call": {
         "calls": [
           {
@@ -132,7 +124,7 @@ Higher order call graphs
         ]
       }
     },
-    "59:14-59:44": {
+    "58:14-58:44": {
       "call": {
         "calls": [
           {
@@ -201,7 +193,7 @@ Higher order call graphs
         }
       }
     },
-    "48:12-48:26|identifier|processor_type": {
+    "47:12-47:26|identifier|processor_type": {
       "identifier": {
         "if_called": {
           "new_calls": [
