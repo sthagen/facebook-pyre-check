@@ -774,6 +774,145 @@
 {
   "kind": "model",
   "data": {
+    "callable": "decimal.DecimalTuple.__init__",
+    "filename": "*",
+    "tito": [
+      {
+        "port": "formal(exponent, position=3)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[exponent]": 999999 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      },
+      {
+        "port": "formal(digits, position=2)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[digits]": 999999 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      },
+      {
+        "port": "formal(sign, position=1)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[sign]": 999999 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "importlib.metadata.EntryPoint.__init__",
+    "filename": "*",
+    "tito": [
+      {
+        "port": "formal(dist, position=2)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[dist]": 999999 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      },
+      {
+        "port": "formal(pattern, position=1)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[pattern]": 999999 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "importlib.metadata._EntryPointBase.__init__",
+    "filename": "*",
+    "tito": [
+      {
+        "port": "formal(group, position=3)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[group]": 999999 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      },
+      {
+        "port": "formal(value, position=2)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[value]": 999999 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      },
+      {
+        "port": "formal(name, position=1)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "[name]": 999999 },
+                "kind": "ParameterUpdate[formal(self, position=0)]"
+              }
+            ],
+            "tito": {}
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "overrides.A.__init__",
     "filename": "overrides.py",
     "callable_line": 32,
@@ -1221,33 +1360,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Overrides{overrides.A.__init__}",
-    "tito": [
-      {
-        "port": "formal(arg, position=1)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 1,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 11, "upper": 12 } ],
-              "is_self_call": false
-            }
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "Overrides{overrides.A.methodA}",
     "sinks": [
       {
@@ -1330,61 +1442,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Overrides{overrides.B.__init__}",
-    "tito": [
-      {
-        "port": "formal(arg, position=1)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 1,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 13, "upper": 20 } ],
-              "is_self_call": false
-            }
-          },
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 1,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 14, "upper": 19 } ],
-              "is_self_call": false
-            }
-          },
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 2,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 15, "upper": 18 } ],
-              "is_self_call": false
-            }
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "Overrides{overrides.B.classMethod}",
     "sinks": [
       {
@@ -1444,84 +1501,6 @@
             "origin": { "line": -1, "start": -1, "end": -1 },
             "caller_interval": [ { "lower": 15, "upper": 18 } ],
             "is_self_call": false
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "Overrides{overrides.Base.__init__}",
-    "tito": [
-      {
-        "port": "formal(arg, position=1)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "tito": {}
-          },
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 1,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 11, "upper": 12 } ],
-              "is_self_call": false
-            }
-          },
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 1,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 13, "upper": 20 } ],
-              "is_self_call": false
-            }
-          },
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 1,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 14, "upper": 19 } ],
-              "is_self_call": false
-            }
-          },
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 2,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 15, "upper": 18 } ],
-              "is_self_call": false
-            }
           }
         ]
       }
@@ -1682,47 +1661,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "Overrides{overrides.C.__init__}",
-    "tito": [
-      {
-        "port": "formal(arg, position=1)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 1,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 14, "upper": 19 } ],
-              "is_self_call": false
-            }
-          },
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 2,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 15, "upper": 18 } ],
-              "is_self_call": false
-            }
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "Overrides{overrides.C.methodA}",
     "sinks": [
       {
@@ -1752,33 +1690,6 @@
           {
             "kinds": [ { "return_paths": { "": 4 }, "kind": "LocalReturn" } ],
             "tito": {}
-          }
-        ]
-      }
-    ]
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "Overrides{overrides.D.__init__}",
-    "tito": [
-      {
-        "port": "formal(arg, position=1)",
-        "taint": [
-          {
-            "kinds": [
-              {
-                "return_paths": { "[r]": 3 },
-                "length": 2,
-                "kind": "ParameterUpdate[formal(self, position=0)]"
-              }
-            ],
-            "local_features": [ { "always-via": "tito" } ],
-            "tito": {
-              "caller_interval": [ { "lower": 15, "upper": 18 } ],
-              "is_self_call": false
-            }
           }
         ]
       }

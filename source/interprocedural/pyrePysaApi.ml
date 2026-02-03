@@ -56,6 +56,8 @@ module ReadWrite = struct
     =
     match pyrefly_results with
     | Some pyrefly_results ->
+        (* This is required by CallableToDecoratorsMap *)
+        let () = Analysis.DecoratorPreprocessing.setup_preprocessing decorator_configuration in
         Pyrefly
           (PyreflyApi.ReadWrite.create_from_directory
              ~scheduler
@@ -375,12 +377,7 @@ module ReadOnly = struct
   let named_tuple_attributes api class_name =
     match api with
     | Pyre1 pyre_api -> Pyre1Api.ReadOnly.named_tuple_attributes pyre_api class_name
-    | Pyrefly pyrefly_api ->
-        let class_summary = PyreflyApi.ReadOnly.get_class_summary pyrefly_api class_name in
-        if PyreflyApi.ReadOnly.ClassSummary.is_named_tuple pyrefly_api class_summary then
-          Some (PyreflyApi.ReadOnly.ClassSummary.named_tuple_attributes pyrefly_api class_summary)
-        else
-          None
+    | Pyrefly pyrefly_api -> PyreflyApi.ReadOnly.named_tuple_attributes pyrefly_api class_name
 
 
   let resolve_expression_to_type_info = function
