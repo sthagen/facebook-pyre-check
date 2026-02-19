@@ -59,7 +59,7 @@ module CallableMetadata : sig
     is_property_setter: bool;
     is_toplevel: bool; (* Is this the body of a module? *)
     is_class_toplevel: bool; (* Is this the body of a class? *)
-    is_stub: bool; (* Is this a stub definition, e.g `def foo(): ...` *)
+    is_stub_define: bool; (* Is this a stub definition, e.g `def foo(): ...` *)
     is_def_statement: bool; (* Is this associated with a `def ..` statement? *)
     parent_is_class: bool;
   }
@@ -130,6 +130,8 @@ module ReadOnly : sig
 
   val get_callable_metadata : t -> Ast.Reference.t -> CallableMetadata.t
 
+  val is_stub_like_callable : t -> Ast.Reference.t -> bool
+
   val get_callable_return_annotations
     :  t ->
     define_name:Ast.Reference.t ->
@@ -169,6 +171,9 @@ module ReadOnly : sig
 
   (* Is this a stub module, i.e a `.pyi` file. *)
   val is_stub_qualifier : t -> Ast.Reference.t -> bool
+
+  (* Is this an internal module (within the project's source directories). *)
+  val is_internal_qualifier : t -> Ast.Reference.t -> bool
 
   (* Return the AST for the given function *)
   val get_define_opt : t -> Ast.Reference.t -> Ast.Statement.Define.t Ast.Node.t AstResult.t
@@ -360,6 +365,7 @@ module ModulePath : sig
     | Namespace of PyrePath.t
     | Memory of PyrePath.t
     | BundledTypeshed of PyrePath.t
+    | BundledTypeshedThirdParty of PyrePath.t
   [@@deriving compare, equal, show]
 end
 
@@ -382,6 +388,7 @@ module ProjectFile : sig
       is_test: bool;
       is_interface: bool;
       is_init: bool;
+      is_internal: bool;
     }
     [@@deriving equal, show]
   end
@@ -594,6 +601,7 @@ module Testing : sig
       pyrefly_info_filename: ModuleInfoFilename.t option;
       is_test: bool;
       is_stub: bool;
+      is_internal: bool;
     }
     [@@deriving compare, equal, show]
   end
