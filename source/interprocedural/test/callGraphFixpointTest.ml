@@ -96,6 +96,7 @@ let assert_higher_order_call_graph_fixpoint
       ~store_shared_memory:true
       ~attribute_targets:Target.Set.empty
       ~skip_analysis_targets
+      ~skip_call_higher_order_functions:(Target.HashSet.create ())
       ~definitions
       ~callables_to_definitions_map:
         (CallablesSharedMemory.ReadOnly.read_only callables_to_definitions_map)
@@ -128,6 +129,7 @@ let assert_higher_order_call_graph_fixpoint
       ~override_graph_shared_memory
       ~skip_analysis_targets
       ~called_when_parameter
+      ~skip_inlining_higher_order_functions:(Target.HashSet.create ())
       ~callables_to_definitions_map
       ~callables_to_decorators_map
       ~type_of_expression_shared_memory

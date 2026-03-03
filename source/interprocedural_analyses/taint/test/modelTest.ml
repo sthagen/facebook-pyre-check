@@ -2847,6 +2847,34 @@ let test_modes context =
           "test.taint";
       ]
     ();
+  assert_model
+    ~context
+    ~model_source:{|
+      @SkipInliningHigherOrderFunctions
+      def test.taint(x): ... |}
+    ~expected_skipped_overrides:[]
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_modes:(Model.ModeSet.of_list [SkipInliningHigherOrderFunctions; Obscure])
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~context
+    ~model_source:{|
+      @SkipCallHigherOrderFunctions
+      def test.taint(x): ... |}
+    ~expected_skipped_overrides:[]
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_modes:(Model.ModeSet.of_list [SkipCallHigherOrderFunctions; Obscure])
+          "test.taint";
+      ]
+    ();
   ()
 
 

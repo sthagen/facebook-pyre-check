@@ -369,6 +369,10 @@ module Mode = struct
     | InferArgumentTito (* Infer taint propagation between arguments. *)
     | CalledWhenParameter
       (* When a callable is passed as parameters at any call site, always treat as being called. *)
+    | SkipInliningHigherOrderFunctions
+      (* Skip inlining this function in the higher order function fixpoint. *)
+    | SkipCallHigherOrderFunctions
+      (* Skip the implicit call to higher order parameters for this function. *)
   [@@deriving compare, equal]
 
   let pp formatter = function
@@ -383,6 +387,9 @@ module Mode = struct
     | InferSelfTito -> Format.fprintf formatter "InferSelfTito"
     | InferArgumentTito -> Format.fprintf formatter "InferArgumentTito"
     | CalledWhenParameter -> Format.fprintf formatter "CalledWhenParameter"
+    | SkipInliningHigherOrderFunctions ->
+        Format.fprintf formatter "SkipInliningHigherOrderFunctions"
+    | SkipCallHigherOrderFunctions -> Format.fprintf formatter "SkipCallHigherOrderFunctions"
 
 
   let show = Format.asprintf "%a" pp
@@ -401,6 +408,8 @@ module Mode = struct
     | "CalledWhenParameter" -> Some CalledWhenParameter
     | "InferSelfTito" -> Some InferSelfTito
     | "InferArgumentTito" -> Some InferArgumentTito
+    | "SkipInliningHigherOrderFunctions" -> Some SkipInliningHigherOrderFunctions
+    | "SkipCallHigherOrderFunctions" -> Some SkipCallHigherOrderFunctions
     | _ -> None
 end
 

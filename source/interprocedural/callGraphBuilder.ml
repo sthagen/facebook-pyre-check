@@ -1932,6 +1932,7 @@ let resolve_callees
     ~pyre_in_context
     ~callables_to_definitions_map
     ~override_graph
+    ~skip_call_higher_order_functions
     ~caller
     ~location
     ~call:({ Call.callee; arguments; origin = _ } as call)
@@ -2069,7 +2070,13 @@ let resolve_callees
             }
       | _ -> None
     in
-    if Option.is_none shim_target then
+    if
+      (not (List.is_empty regular_callees.call_targets))
+      && List.for_all regular_callees.call_targets ~f:(fun { CallTarget.target; _ } ->
+             Core.Hash_set.mem skip_call_higher_order_functions target)
+    then
+      HigherOrderParameterMap.empty
+    else if Option.is_none shim_target then
       List.filter_mapi arguments ~f:get_higher_order_function_targets
       |> HigherOrderParameterMap.from_list
     else (* disable higher order parameters if call is shimmed *)
@@ -2233,6 +2240,7 @@ module CallGraphBuilder = struct
       override_graph: OverrideGraph.SharedMemory.ReadOnly.t option;
       missing_flow_type_analysis: MissingFlowTypeAnalysis.t option;
       attribute_targets: Target.HashSet.t;
+      skip_call_higher_order_functions: Target.HashSet.t;
       callables_to_definitions_map: CallablesSharedMemory.ReadOnly.t;
       callables_to_decorators_map: CallableToDecoratorsMap.SharedMemory.ReadOnly.t;
       type_of_expression_shared_memory: TypeOfExpressionSharedMemory.t;
@@ -2262,6 +2270,7 @@ module CallGraphBuilder = struct
               callable;
               callables_to_definitions_map;
               override_graph;
+              skip_call_higher_order_functions;
               missing_flow_type_analysis;
               _;
             };
@@ -2276,6 +2285,7 @@ module CallGraphBuilder = struct
       ~pyre_in_context
       ~callables_to_definitions_map
       ~override_graph
+      ~skip_call_higher_order_functions
       ~caller:callable
       ~location
       ~call
@@ -3092,6 +3102,8 @@ module HigherOrderCallGraph = struct
 
     val called_when_parameter : Target.HashSet.t
 
+    val skip_inlining_higher_order_functions : Target.HashSet.t
+
     val profiler : CallGraphProfiler.t
 
     val maximum_target_depth : int
@@ -3390,60 +3402,73 @@ module HigherOrderCallGraph = struct
               | Target.Regular regular -> regular, Target.ParameterMap.empty
               | Target.Parameterized { regular; parameters } -> regular, parameters
             in
-            let formal_arguments =
-              callee_regular |> Target.from_regular |> formal_arguments_if_non_stub
-            in
-            let parameter_targets, arguments =
-              match ImplicitArgument.implicit_argument ~is_implicit_new:false callee_target with
-              | ImplicitArgument.Callee ->
-                  ( None :: parameter_targets,
-                    { Call.Argument.name = None; value = call.Call.callee } :: arguments )
-              | ImplicitArgument.CalleeBase ->
-                  let { Node.value = call_expression; location } = call.Call.callee in
-                  let self =
-                    match call_expression with
-                    | Expression.Name (Name.Attribute { base; _ }) -> base
-                    | _ ->
-                        (* Default to a placeholder self if we don't understand/retain information
-                           of what self is. *)
-                        Expression.Constant Constant.NoneLiteral |> Node.create ~location
-                  in
-                  ( None :: parameter_targets,
-                    { Call.Argument.name = None; value = self } :: arguments )
-              | ImplicitArgument.None -> parameter_targets, arguments
-            in
-            log
-              "Formal arguments of callee regular `%a`: `%a`"
-              Target.Regular.pp
-              callee_regular
-              TaintAccessPath.Root.List.pp
-              (Option.value ~default:[] formal_arguments);
-            let parameters =
-              formal_arguments
-              >>| TaintAccessPath.match_actuals_to_formals arguments
-              >>| List.zip_exn parameter_targets
-              >>| List.filter_map ~f:create_parameter_target_excluding_args_kwargs
-              >>| Target.ParameterMap.of_alist_exn
-              |> Option.value ~default:Target.ParameterMap.empty
-              |> Target.ParameterMap.union
-                   (fun _ _ right ->
-                     (* The formal argument should shadow variables from the closure that share the
-                        same name. *)
-                     Some right)
-                   closure
-            in
-            log "Parameter targets: %a" (Target.ParameterMap.pp Target.pp_pretty) parameters;
-            if Target.ParameterMap.is_empty parameters then
+            if
+              Core.Hash_set.mem
+                Context.skip_inlining_higher_order_functions
+                (Target.from_regular callee_regular)
+            then
+              let () =
+                log
+                  "Callable `%a` is marked as @SkipInliningHigherOrderFunctions"
+                  Target.pp_pretty_with_kind
+                  (Target.from_regular callee_regular)
+              in
               None
             else
-              Target.Parameterized { regular = callee_regular; parameters }
-              |> validate_target
-              >>| fun target ->
-              {
-                callee_target with
-                CallTarget.target;
-                implicit_receiver = recompute_implicit_receiver callee_target;
-              }
+              let formal_arguments =
+                callee_regular |> Target.from_regular |> formal_arguments_if_non_stub
+              in
+              let parameter_targets, arguments =
+                match ImplicitArgument.implicit_argument ~is_implicit_new:false callee_target with
+                | ImplicitArgument.Callee ->
+                    ( None :: parameter_targets,
+                      { Call.Argument.name = None; value = call.Call.callee } :: arguments )
+                | ImplicitArgument.CalleeBase ->
+                    let { Node.value = call_expression; location } = call.Call.callee in
+                    let self =
+                      match call_expression with
+                      | Expression.Name (Name.Attribute { base; _ }) -> base
+                      | _ ->
+                          (* Default to a placeholder self if we don't understand/retain information
+                             of what self is. *)
+                          Expression.Constant Constant.NoneLiteral |> Node.create ~location
+                    in
+                    ( None :: parameter_targets,
+                      { Call.Argument.name = None; value = self } :: arguments )
+                | ImplicitArgument.None -> parameter_targets, arguments
+              in
+              log
+                "Formal arguments of callee regular `%a`: `%a`"
+                Target.Regular.pp
+                callee_regular
+                TaintAccessPath.Root.List.pp
+                (Option.value ~default:[] formal_arguments);
+              let parameters =
+                formal_arguments
+                >>| TaintAccessPath.match_actuals_to_formals arguments
+                >>| List.zip_exn parameter_targets
+                >>| List.filter_map ~f:create_parameter_target_excluding_args_kwargs
+                >>| Target.ParameterMap.of_alist_exn
+                |> Option.value ~default:Target.ParameterMap.empty
+                |> Target.ParameterMap.union
+                     (fun _ _ right ->
+                       (* The formal argument should shadow variables from the closure that share
+                          the same name. *)
+                       Some right)
+                     closure
+              in
+              log "Parameter targets: %a" (Target.ParameterMap.pp Target.pp_pretty) parameters;
+              if Target.ParameterMap.is_empty parameters then
+                None
+              else
+                Target.Parameterized { regular = callee_regular; parameters }
+                |> validate_target
+                >>| fun target ->
+                {
+                  callee_target with
+                  CallTarget.target;
+                  implicit_receiver = recompute_implicit_receiver callee_target;
+                }
         | _ -> None
       in
       (* Treat an empty list as a single element list so that in each result of the cartesian
@@ -4368,6 +4393,7 @@ let higher_order_call_graph_of_define
     ~type_of_expression_shared_memory
     ~skip_analysis_targets
     ~called_when_parameter
+    ~skip_inlining_higher_order_functions
     ~qualifier
     ~callable
     ~define
@@ -4403,6 +4429,8 @@ let higher_order_call_graph_of_define
     let skip_analysis_targets = skip_analysis_targets
 
     let called_when_parameter = called_when_parameter
+
+    let skip_inlining_higher_order_functions = skip_inlining_higher_order_functions
 
     let profiler = profiler
 
@@ -4481,6 +4509,7 @@ let call_graph_of_define
     ~pyre_api
     ~override_graph
     ~attribute_targets
+    ~skip_call_higher_order_functions
     ~callables_to_definitions_map
     ~callables_to_decorators_map
     ~type_of_expression_shared_memory
@@ -4513,6 +4542,7 @@ let call_graph_of_define
         || Ast.Statement.Define.dump_call_graph (Node.value define);
       override_graph;
       attribute_targets;
+      skip_call_higher_order_functions;
       callables_to_definitions_map;
       callables_to_decorators_map;
       type_of_expression_shared_memory;
@@ -4598,6 +4628,7 @@ let call_graph_of_callable
     ~pyre_api
     ~override_graph
     ~attribute_targets
+    ~skip_call_higher_order_functions
     ~callables_to_definitions_map
     ~callables_to_decorators_map
     ~type_of_expression_shared_memory
@@ -4611,6 +4642,7 @@ let call_graph_of_callable
         ~pyre_api
         ~override_graph
         ~attribute_targets
+        ~skip_call_higher_order_functions
         ~callables_to_decorators_map
         ~callables_to_definitions_map
         ~type_of_expression_shared_memory
@@ -4663,6 +4695,7 @@ let call_graph_of_decorated_callable
         debug;
         override_graph;
         attribute_targets = Target.HashSet.create ();
+        skip_call_higher_order_functions = Target.HashSet.create ();
         callables_to_definitions_map;
         callables_to_decorators_map;
         type_of_expression_shared_memory;
@@ -4778,6 +4811,7 @@ let build_whole_program_call_graph_for_pyre1
     ~store_shared_memory
     ~attribute_targets
     ~skip_analysis_targets
+    ~skip_call_higher_order_functions
     ~check_invariants
     ~definitions
     ~create_dependency_for
@@ -4816,6 +4850,7 @@ let build_whole_program_call_graph_for_pyre1
                 ~pyre_api
                 ~override_graph
                 ~attribute_targets
+                ~skip_call_higher_order_functions
                 ~callables_to_decorators_map
                 ~callables_to_definitions_map
                 ~type_of_expression_shared_memory
@@ -4948,6 +4983,7 @@ let build_whole_program_call_graph_for_pyrefly
     ~store_shared_memory
     ~attribute_targets
     ~skip_analysis_targets
+    ~skip_call_higher_order_functions
     ~definitions
     ~create_dependency_for
   =
@@ -5528,6 +5564,8 @@ let build_whole_program_call_graph_for_pyrefly
     in
     call_graph
     |> DefineCallGraph.dedup_and_sort
+    |> DefineCallGraph.strip_higher_order_parameters
+         ~should_strip:(Core.Hash_set.mem skip_call_higher_order_functions)
     |> DefineCallGraph.filter_empty_attribute_access
     |> DefineCallGraph.filter_empty_identifier
     |> DefineCallGraph.filter_empty_format_string_stringify
@@ -5574,6 +5612,7 @@ let build_whole_program_call_graph
     ~store_shared_memory
     ~attribute_targets
     ~skip_analysis_targets
+    ~skip_call_higher_order_functions
     ~check_invariants
     ~definitions
     ~create_dependency_for
@@ -5592,6 +5631,7 @@ let build_whole_program_call_graph
           ~store_shared_memory
           ~attribute_targets
           ~skip_analysis_targets
+          ~skip_call_higher_order_functions
           ~check_invariants
           ~definitions
           ~create_dependency_for
@@ -5607,6 +5647,7 @@ let build_whole_program_call_graph
           ~attribute_targets
           ~store_shared_memory
           ~skip_analysis_targets
+          ~skip_call_higher_order_functions
           ~definitions
           ~create_dependency_for
   in
