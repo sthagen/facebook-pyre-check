@@ -3926,7 +3926,17 @@ module HigherOrderCallGraph = struct
         | DictionaryComprehension comprehension ->
             analyze_dictionary_comprehension ~pyre_in_context ~state comprehension
         | Generator comprehension -> analyze_comprehension ~pyre_in_context ~state comprehension
-        | Lambda { parameters = _; body } ->
+        | Lambda { parameters; body } ->
+            let state =
+              List.fold
+                parameters
+                ~init:state
+                ~f:(fun state { Node.value = { Parameter.value; _ }; _ } ->
+                  match value with
+                  | Some default_value ->
+                      analyze_expression ~pyre_in_context ~state ~expression:default_value |> snd
+                  | None -> state)
+            in
             let _, state = analyze_expression ~pyre_in_context ~state ~expression:body in
             CallTarget.Set.bottom, state
         | List list ->
@@ -4186,18 +4196,24 @@ module HigherOrderCallGraph = struct
         in
         match Node.value statement with
         | Statement.Assign { Assign.target; value = Some value; _ } -> (
+            let callees, state = analyze_expression ~pyre_in_context ~state ~expression:value in
+            let _target_callees, state =
+              analyze_expression ~pyre_in_context ~state ~expression:target
+            in
             match
               PyrePysaApi.InContext.access_path_of_expression pyre_in_context ~self_variable target
             with
             | None -> state
             | Some { root; path } ->
-                let callees, state = analyze_expression ~pyre_in_context ~state ~expression:value in
                 (* For now, we ignore the path entirely. Thus, we should only perform strong updates
                    when writing to an empty path. E.g, `x = foo` should be strong update, `x.foo =
                    bar` should be a weak update. *)
                 let strong_update = TaintAccessPath.Path.is_empty path in
                 store_callees ~weak:(not strong_update) ~root ~callees state)
         | Assign { Assign.target; value = None; _ } -> (
+            let _target_callees, state =
+              analyze_expression ~pyre_in_context ~state ~expression:target
+            in
             match
               PyrePysaApi.InContext.access_path_of_expression pyre_in_context ~self_variable target
             with
