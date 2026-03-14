@@ -930,16 +930,39 @@ let shim_for_call ~pyre_in_context ~callables_to_definitions_map call =
   match shim_special_calls_for_pyre1 call with
   | Some shim -> Some shim
   | None ->
+      let pyre_api = PyrePysaApi.InContext.pyre_api pyre_in_context in
+      let callable_exists name =
+        CallablesSharedMemory.ReadOnly.callable_from_reference callables_to_definitions_map name
+        |> Option.is_some
+      in
       SpecialCallResolution.shim_calls_for_pyre1
         ~resolve_expression_to_type:
           (CallResolution.resolve_ignoring_errors ~pyre_in_context ~callables_to_definitions_map)
+        ~class_mro:(PyrePysaApi.ReadOnly.class_mro pyre_api)
+        ~callable_exists
         call
 
 
-let shim_for_call_for_pyrefly ~callees ~nested_callees ~arguments =
+let shim_for_call_for_pyrefly
+    ~pyrefly_api
+    ~callables_to_definitions_map
+    ~callees
+    ~nested_callees
+    ~arguments
+  =
   match shim_special_calls_for_pyrefly ~callees ~arguments with
   | Some identified_callee -> Some identified_callee
-  | None -> SpecialCallResolution.shim_calls_for_pyrefly ~callees ~nested_callees ~arguments
+  | None ->
+      let callable_exists name =
+        CallablesSharedMemory.ReadOnly.callable_from_reference callables_to_definitions_map name
+        |> Option.is_some
+      in
+      SpecialCallResolution.shim_calls_for_pyrefly
+        ~class_mro:(PyreflyApi.ReadOnly.class_mro pyrefly_api)
+        ~callable_exists
+        ~callees
+        ~nested_callees
+        ~arguments
 
 
 let create_shim_callee_expression ~debug ~callable ~location ~call shim =
@@ -5211,6 +5234,8 @@ let build_whole_program_call_graph_for_pyrefly
               original_call_callees
           in
           shim_for_call_for_pyrefly
+            ~pyrefly_api
+            ~callables_to_definitions_map
             ~callees:(fetch_special_call_targets original_call_callees)
             ~nested_callees
             ~arguments
@@ -5618,13 +5643,17 @@ let build_whole_program_call_graph_for_pyrefly
     |> DefineCallGraph.filter_empty_format_string_stringify
     |> DefineCallGraph.regenerate_call_indices ~indexer:call_indexer
   in
-  let method_has_overrides method_name =
+  let overrides_exist target =
     match override_graph with
     | Some override_graph ->
-        OverrideGraph.SharedMemory.ReadOnly.overrides_exist
-          override_graph
-          (Target.Regular (Target.Regular.Method method_name))
+        OverrideGraph.SharedMemory.ReadOnly.overrides_exist override_graph target
     | None -> false
+  in
+  let get_overriding_types target =
+    match override_graph with
+    | Some override_graph ->
+        OverrideGraph.SharedMemory.ReadOnly.get_overriding_types override_graph ~member:target
+    | None -> None
   in
   let global_is_string_literal global =
     GlobalConstants.SharedMemory.ReadOnly.mem global_constants global
@@ -5633,7 +5662,8 @@ let build_whole_program_call_graph_for_pyrefly
     pyrefly_api
     ~scheduler
     ~scheduler_policies
-    ~method_has_overrides
+    ~overrides_exist
+    ~get_overriding_types
     ~global_is_string_literal
     ~store_shared_memory
     ~attribute_targets
