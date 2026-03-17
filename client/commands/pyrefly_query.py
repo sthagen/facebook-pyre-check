@@ -13,6 +13,7 @@ from typing import Optional
 
 from .. import (
     backend_arguments,
+    command_arguments,
     frontend_configuration,
     log,
 )
@@ -22,38 +23,10 @@ from .analyze import (
     _flush_log_file,
     _get_server_start_command,
     _run_pyrefly,
+    create_analyze_arguments,
 )
 
 LOG: logging.Logger = logging.getLogger(__name__)
-
-
-def _create_configuration_arguments(
-    configuration: frontend_configuration.Base,
-) -> backend_arguments.BaseArguments:
-    """
-    Create analyze arguments from just the frontend configuration,
-    using defaults for all analyze-specific options.
-    """
-    log_directory = configuration.get_log_directory()
-    return backend_arguments.BaseArguments(
-        log_path=str(log_directory),
-        global_root=str(configuration.get_global_root()),
-        checked_directory_allowlist=[],
-        checked_directory_blocklist=[],
-        debug=False,
-        excludes=[],
-        extensions=[],
-        relative_local_root=None,
-        memory_profiling_output=None,
-        number_of_workers=configuration.get_number_of_workers(),
-        parallel=True,
-        profiling_output=None,
-        python_version=configuration.get_python_version(),
-        shared_memory=configuration.get_shared_memory(),
-        remote_logging=None,
-        search_paths=[],
-        source_paths=backend_arguments.SimpleSourcePath(elements=[]),
-    )
 
 
 def _run_pyrefly_query_command(
@@ -63,7 +36,11 @@ def _run_pyrefly_query_command(
     configuration: frontend_configuration.Base,
     output_file: Optional[str],
 ) -> commands.ExitCode:
-    configuration_arguments = _create_configuration_arguments(configuration)
+    configuration_arguments = create_analyze_arguments(
+        configuration,
+        analyze_arguments=command_arguments.AnalyzeArguments(),
+        pyrefly_results=pyrefly_results,
+    )
     with (
         backend_arguments.temporary_argument_file(
             configuration_arguments
@@ -74,8 +51,6 @@ def _run_pyrefly_query_command(
         pyrefly_query_command = [
             pyre_binary,
             "pyrefly-query",
-            "--pyrefly-results",
-            pyrefly_results,
             "--query",
             query,
             "--configuration-file",
