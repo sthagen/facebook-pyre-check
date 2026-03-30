@@ -7,22 +7,6 @@
 
 module PyrePysaLogic = Analysis.PyrePysaLogic
 
-module PythonVersion : sig
-  include module type of Configuration.PythonVersion
-
-  val parse_from_tuple : Ast.Expression.Expression.t list -> (t, string) result
-
-  val from_configuration_version : Configuration.PythonVersion.t -> t
-
-  val from_configuration : Configuration.Analysis.t -> t
-
-  val compare_with
-    :  t ->
-    Ast.Expression.ComparisonOperator.operator ->
-    t ->
-    (bool, Ast.Expression.ComparisonOperator.operator) result
-end
-
 val get_model_sources : paths:PyrePath.t list -> (PyrePath.t * string) list
 
 val parse
@@ -32,7 +16,7 @@ val parse
   taint_configuration:TaintConfiguration.Heap.t ->
   source_sink_filter:SourceSinkFilter.t option ->
   callables_to_definitions_map:Interprocedural.CallablesSharedMemory.ReadOnly.t option ->
-  python_versions:PythonVersion.t list ->
+  all_sys_infos:Analysis.PyrePysaEnvironment.SysInfo.t list ->
   unit ->
   ModelParseResult.t
 

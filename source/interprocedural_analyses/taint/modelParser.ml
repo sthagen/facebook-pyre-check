@@ -21,9 +21,21 @@ open Domains
 open ModelParseResult
 module PyrePysaLogic = Analysis.PyrePysaLogic
 
-module PythonVersion = struct
-  (* Not putting the functions there to prevent circular dependency errors *)
-  include Configuration.PythonVersion
+module SystemCondition = struct
+  type t =
+    | PythonVersionCondition of {
+        operator: ComparisonOperator.operator;
+        version: Configuration.PythonVersion.t;
+      }
+    | PlatformCondition of {
+        operator: ComparisonOperator.operator;
+        platform: string;
+      }
+    | UsingPyrefly
+    | UsingPyre1
+    | And of t * t
+    | Or of t * t
+    | Not of t
 
   let parse_from_tuple tuple =
     let parse_element = function
@@ -35,31 +47,118 @@ module PythonVersion = struct
       | None -> None
     in
     let open Core.Result in
-    (* we need at least a single value to emulate python tuple comparison *)
     Option.value ~default:(Error "The tuple must not be empty") (parse_element (List.nth tuple 0))
     >>= fun major ->
     Option.value ~default:(Ok 0) (parse_element (List.nth tuple 1))
     >>= fun minor ->
     Option.value ~default:(Ok 0) (parse_element (List.nth tuple 2))
-    >>| fun micro -> { major; minor; micro }
+    >>| fun micro -> { Configuration.PythonVersion.major; minor; micro }
 
 
-  let from_configuration_version = Fn.id
+  let rec parse expression =
+    match Node.value expression with
+    | Expression.ComparisonOperator
+        {
+          left =
+            {
+              Node.value =
+                Name
+                  (Name.Attribute
+                    {
+                      base = { Node.value = Name (Name.Identifier "sys"); _ };
+                      attribute = "version";
+                      _;
+                    });
+              _;
+            };
+          operator;
+          right = { Node.value = Tuple tuple; _ };
+          origin = _;
+        } -> (
+        match parse_from_tuple tuple with
+        | Error error -> Error (ModelVerificationError.UnsupportedVersionConstant error)
+        | Ok version -> Ok (PythonVersionCondition { operator; version }))
+    | Expression.ComparisonOperator
+        {
+          left =
+            {
+              Node.value =
+                Name
+                  (Name.Attribute
+                    {
+                      base = { Node.value = Name (Name.Identifier "sys"); _ };
+                      attribute = "platform";
+                      _;
+                    });
+              _;
+            };
+          operator;
+          right =
+            { Node.value = Constant (Constant.String { StringLiteral.value = platform; _ }); _ };
+          origin = _;
+        } ->
+        Ok (PlatformCondition { operator; platform })
+    | Expression.Name (Name.Identifier "USING_PYREFLY") -> Ok UsingPyrefly
+    | Expression.Name (Name.Identifier "USING_PYRE1") -> Ok UsingPyre1
+    | Expression.BooleanOperator
+        { BooleanOperator.left; operator = BooleanOperator.And; right; origin = _ } ->
+        let open Result in
+        parse left
+        >>= fun left_condition ->
+        parse right >>| fun right_condition -> And (left_condition, right_condition)
+    | Expression.BooleanOperator
+        { BooleanOperator.left; operator = BooleanOperator.Or; right; origin = _ } ->
+        let open Result in
+        parse left
+        >>= fun left_condition ->
+        parse right >>| fun right_condition -> Or (left_condition, right_condition)
+    | Expression.UnaryOperator { UnaryOperator.operator = UnaryOperator.Not; operand; origin = _ }
+      ->
+        parse operand |> Result.map ~f:(fun condition -> Not condition)
+    | _ -> Error (ModelVerificationError.UnsupportedIfCondition expression)
 
-  let from_configuration { Configuration.Analysis.python_version; _ } = python_version
 
   let compare_with left operator right =
     match operator with
-    | ComparisonOperator.Equals -> Ok (equal left right)
-    | NotEquals -> Ok (not (equal left right))
-    | GreaterThan -> Ok (compare left right > 0)
-    | GreaterThanOrEquals -> Ok (compare left right >= 0)
-    | LessThan -> Ok (compare left right < 0)
-    | LessThanOrEquals -> Ok (compare left right <= 0)
+    | ComparisonOperator.Equals -> Ok (Configuration.PythonVersion.equal left right)
+    | NotEquals -> Ok (not (Configuration.PythonVersion.equal left right))
+    | GreaterThan -> Ok (Configuration.PythonVersion.compare left right > 0)
+    | GreaterThanOrEquals -> Ok (Configuration.PythonVersion.compare left right >= 0)
+    | LessThan -> Ok (Configuration.PythonVersion.compare left right < 0)
+    | LessThanOrEquals -> Ok (Configuration.PythonVersion.compare left right <= 0)
     | In -> Error ComparisonOperator.In
     | NotIn -> Error ComparisonOperator.NotIn
     | Is -> Error ComparisonOperator.Is
     | IsNot -> Error ComparisonOperator.IsNot
+
+
+  let rec evaluate ~pyre_api sys_info condition =
+    let open Analysis.PyrePysaEnvironment.SysInfo in
+    match condition with
+    | PythonVersionCondition { operator; version = test_version } -> (
+        match compare_with sys_info.python_version operator test_version with
+        | Ok result -> Ok result
+        | Error unsupported ->
+            Error (ModelVerificationError.UnsupportedComparisonOperator unsupported))
+    | PlatformCondition { operator; platform = test_platform } -> (
+        let actual_platform = Option.value sys_info.platform ~default:"linux" in
+        match operator with
+        | ComparisonOperator.Equals -> Ok (String.equal actual_platform test_platform)
+        | ComparisonOperator.NotEquals -> Ok (not (String.equal actual_platform test_platform))
+        | unsupported -> Error (ModelVerificationError.UnsupportedPlatformComparison unsupported))
+    | UsingPyrefly -> Ok (PyrePysaApi.ReadOnly.is_pyrefly pyre_api)
+    | UsingPyre1 -> Ok (PyrePysaApi.ReadOnly.is_pyre1 pyre_api)
+    | And (left, right) ->
+        let open Result in
+        evaluate ~pyre_api sys_info left
+        >>= fun left_result ->
+        evaluate ~pyre_api sys_info right >>| fun right_result -> left_result && right_result
+    | Or (left, right) ->
+        let open Result in
+        evaluate ~pyre_api sys_info left
+        >>= fun left_result ->
+        evaluate ~pyre_api sys_info right >>| fun right_result -> left_result || right_result
+    | Not inner -> evaluate ~pyre_api sys_info inner |> Result.map ~f:not
 end
 
 let model_verification_error ~path ~location kind = { ModelVerificationError.kind; path; location }
@@ -4138,7 +4237,7 @@ let rec parse_statement
     ~taint_configuration
     ~source_sink_filter
     ~callables_to_definitions_map
-    ~python_versions
+    ~all_sys_infos
     statement
   =
   let open Core.Result in
@@ -4384,7 +4483,7 @@ let rec parse_statement
                        ~taint_configuration
                        ~source_sink_filter
                        ~callables_to_definitions_map
-                       ~python_versions)
+                       ~all_sys_infos)
             >>| List.concat
             >>| List.partition_result
             >>| (fun (results, errors) ->
@@ -4488,123 +4587,35 @@ let rec parse_statement
       |> function
       | Ok parsed_statements_list -> parsed_statements_list
       | Error errors_list -> List.map ~f:(fun error -> Error error) errors_list)
-  | {
-   Node.value =
-     If
-       {
-         If.body;
-         If.test =
-           {
-             Node.value =
-               ComparisonOperator
-                 {
-                   left =
-                     {
-                       Node.value =
-                         Name
-                           (Name.Attribute
-                             {
-                               base = { Node.value = Name (Name.Identifier "sys"); _ };
-                               attribute = "version";
-                               _;
-                             });
-                       _;
-                     };
-                   operator;
-                   right = { Node.value = Tuple tuple; _ };
-                   origin = _;
-                 };
-             _;
-           };
-         If.orelse;
-       };
-   location;
-  } -> (
-      let perform_comparison test_version =
-        match
-          List.map python_versions ~f:(fun python_version ->
-              PythonVersion.compare_with python_version operator test_version)
-          |> Result.all
-        with
-        | Error unsupported_operator ->
-            [
-              Error
-                (model_verification_error
-                   ~path
-                   ~location
-                   (UnsupportedComparisonOperator unsupported_operator));
-            ]
-        | Ok results ->
-            let any_true = List.exists results ~f:Fn.id in
-            let any_false = List.exists results ~f:not in
-            let parse_branch statements =
-              statements
-              |> List.map
-                   ~f:
-                     (parse_statement
-                        ~pyre_api
-                        ~path
-                        ~taint_configuration
-                        ~source_sink_filter
-                        ~callables_to_definitions_map
-                        ~python_versions)
-              |> List.concat
-            in
-            let if_results = if any_true then parse_branch body else [] in
-            let else_results = if any_false then parse_branch orelse else [] in
-            if_results @ else_results
-      in
-      PythonVersion.parse_from_tuple tuple
-      |> function
-      | Error error ->
-          [Error (model_verification_error ~path ~location (UnsupportedVersionConstant error))]
-      | Ok test_version -> perform_comparison test_version)
-  | {
-   Node.value =
-     If { If.test = { Node.value = Name (Name.Identifier "USING_PYREFLY"); _ }; If.body; If.orelse };
-   _;
-  } ->
-      let statements =
-        if PyrePysaApi.ReadOnly.is_pyrefly pyre_api then
-          body
-        else
-          orelse
-      in
-      statements
-      |> List.map
-           ~f:
-             (parse_statement
-                ~pyre_api
-                ~path
-                ~taint_configuration
-                ~source_sink_filter
-                ~callables_to_definitions_map
-                ~python_versions)
-      |> List.concat
-  | {
-   Node.value =
-     If { If.test = { Node.value = Name (Name.Identifier "USING_PYRE1"); _ }; If.body; If.orelse };
-   _;
-  } ->
-      let statements =
-        if PyrePysaApi.ReadOnly.is_pyre1 pyre_api then
-          body
-        else
-          orelse
-      in
-      statements
-      |> List.map
-           ~f:
-             (parse_statement
-                ~pyre_api
-                ~path
-                ~taint_configuration
-                ~source_sink_filter
-                ~callables_to_definitions_map
-                ~python_versions)
-      |> List.concat
-  | { Node.value = If { If.test; _ }; location } ->
-      [Error (model_verification_error ~path ~location (UnsupportedIfCondition test))]
+  | { Node.value = If { If.test; If.body; If.orelse }; location } -> (
+      match SystemCondition.parse test with
+      | Error error_kind -> [Error (model_verification_error ~path ~location error_kind)]
+      | Ok condition -> (
+          match
+            List.map all_sys_infos ~f:(fun sys_info ->
+                SystemCondition.evaluate ~pyre_api sys_info condition)
+            |> Result.all
+          with
+          | Error error_kind -> [Error (model_verification_error ~path ~location error_kind)]
+          | Ok results ->
+              let any_true = List.exists results ~f:Fn.id in
+              let any_false = List.exists results ~f:not in
+              let parse_branch statements =
+                statements
+                |> List.map
+                     ~f:
+                       (parse_statement
+                          ~pyre_api
+                          ~path
+                          ~taint_configuration
+                          ~source_sink_filter
+                          ~callables_to_definitions_map
+                          ~all_sys_infos)
+                |> List.concat
+              in
+              let if_results = if any_true then parse_branch body else [] in
+              let else_results = if any_false then parse_branch orelse else [] in
+              if_results @ else_results))
   | { Node.location; _ } ->
       [Error (model_verification_error ~path ~location (UnexpectedStatement statement))]
 
@@ -4631,7 +4642,7 @@ let create
     ~taint_configuration
     ~source_sink_filter
     ~callables_to_definitions_map
-    ~python_versions
+    ~all_sys_infos
     source
   =
   let open Core.Result in
@@ -4648,7 +4659,7 @@ let create
                     ~taint_configuration
                     ~source_sink_filter
                     ~callables_to_definitions_map
-                    ~python_versions)
+                    ~all_sys_infos)
           |> List.concat
           |> List.partition_result
         in
@@ -4772,7 +4783,7 @@ let parse
     ~taint_configuration
     ~source_sink_filter
     ~callables_to_definitions_map
-    ~python_versions
+    ~all_sys_infos
     ()
   =
   let new_models_and_queries, errors =
@@ -4782,7 +4793,7 @@ let parse
       ~taint_configuration
       ~source_sink_filter
       ~callables_to_definitions_map
-      ~python_versions
+      ~all_sys_infos
       source
     |> List.partition_result
   in
