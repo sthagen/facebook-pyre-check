@@ -64,6 +64,8 @@ module CallableMetadata : sig
     parent_is_class: bool;
   }
   [@@deriving show]
+
+  val get_method_kind : t -> Analysis.PyrePysaEnvironment.MethodKind.t option
 end
 
 module PysaClassSummary : sig
@@ -134,7 +136,11 @@ module ReadOnly : sig
 
   val get_callable_metadata : t -> Ast.Reference.t -> CallableMetadata.t
 
+  val get_callable_metadata_opt : t -> Ast.Reference.t -> CallableMetadata.t option
+
   val is_stub_like_callable : t -> Ast.Reference.t -> bool
+
+  val is_stub_like_callable_opt : t -> Ast.Reference.t -> bool option
 
   val get_callable_return_annotations
     :  t ->
@@ -157,6 +163,11 @@ module ReadOnly : sig
     :  t ->
     Ast.Reference.t ->
     Analysis.TaintAccessPath.CapturedVariable.t list
+
+  val get_callable_captures_opt
+    :  t ->
+    Ast.Reference.t ->
+    Analysis.TaintAccessPath.CapturedVariable.t list option
 
   val get_callable_decorator_callees
     :  t ->
@@ -181,6 +192,11 @@ module ReadOnly : sig
 
   (* Return the AST for the given function *)
   val get_define_opt : t -> Ast.Reference.t -> Ast.Statement.Define.t Ast.Node.t AstResult.t
+
+  val get_callable_signature_opt
+    :  t ->
+    Ast.Reference.t ->
+    Analysis.PyrePysaEnvironment.CallableSignature.t option
 
   val get_undecorated_signatures
     :  t ->
@@ -416,32 +432,7 @@ module LocalFunctionId : sig
 end
 
 (* Exposed for testing purposes *)
-module ClassWithModifiers : sig
-  type t = {
-    class_name: GlobalClassId.t;
-    modifiers: Analysis.PyrePysaEnvironment.TypeModifier.t list;
-  }
-  [@@deriving equal, show]
-end
-
-(* Exposed for testing purposes *)
-module ClassNamesResult : sig
-  type t = {
-    classes: ClassWithModifiers.t list;
-    is_exhaustive: bool;
-  }
-  [@@deriving equal, show]
-end
-
-(* Exposed for testing purposes *)
-module JsonType : sig
-  type t = {
-    string: string;
-    scalar_properties: Analysis.PyrePysaEnvironment.ScalarTypeProperties.t;
-    class_names: ClassNamesResult.t option;
-  }
-  [@@deriving equal, show]
-end
+module PyreflyType = Analysis.PyrePysaEnvironment.PyreflyType
 
 (* Exposed for testing purposes *)
 module ClassFieldDeclarationKind : sig
@@ -477,26 +468,26 @@ module ModuleDefinitionsFile : sig
     type t =
       | PosOnly of {
           name: string option;
-          annotation: JsonType.t;
+          annotation: PyreflyType.t;
           required: bool;
         }
       | Pos of {
           name: string;
-          annotation: JsonType.t;
+          annotation: PyreflyType.t;
           required: bool;
         }
       | VarArg of {
           name: string option;
-          annotation: JsonType.t;
+          annotation: PyreflyType.t;
         }
       | KwOnly of {
           name: string;
-          annotation: JsonType.t;
+          annotation: PyreflyType.t;
           required: bool;
         }
       | Kwargs of {
           name: string option;
-          annotation: JsonType.t;
+          annotation: PyreflyType.t;
         }
     [@@deriving equal, show]
   end
@@ -512,7 +503,7 @@ module ModuleDefinitionsFile : sig
   module FunctionSignature : sig
     type t = {
       parameters: FunctionParameters.t;
-      return_annotation: JsonType.t;
+      return_annotation: PyreflyType.t;
     }
     [@@deriving equal, show]
   end
@@ -547,10 +538,10 @@ module ModuleDefinitionsFile : sig
     [@@deriving equal, show]
   end
 
-  module JsonClassField : sig
+  module PyreflyClassField : sig
     type t = {
       name: string;
-      type_: JsonType.t;
+      type_: PyreflyType.t;
       explicit_annotation: string option;
       location: Ast.Location.t option;
       declaration_kind: ClassFieldDeclarationKind.t option;
@@ -570,7 +561,7 @@ module ModuleDefinitionsFile : sig
       is_dataclass: bool;
       is_named_tuple: bool;
       is_typed_dict: bool;
-      fields: JsonClassField.t list;
+      fields: PyreflyClassField.t list;
       decorator_callees: GlobalCallableId.t list Ast.Location.SerializableMap.t;
     }
     [@@deriving equal, show]
