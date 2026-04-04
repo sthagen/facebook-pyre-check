@@ -26,6 +26,7 @@ end
 module Error : sig
   type t =
     | InvalidJsonError of string
+    | InvalidCapnpError of string
     | IOError of string
     | FormatError of FormatError.t
   [@@deriving show]
@@ -182,10 +183,8 @@ module ProjectFile : sig
     [@@deriving equal, show]
   end
 
-  module ModuleMap : Map.S with type Key.t = ModuleId.t
-
   type t = {
-    modules: Module.t ModuleMap.t;
+    modules: Module.t list;
     builtin_module_ids: ModuleId.t list;
     object_class_refs: GlobalClassId.t list;
     dict_class_refs: GlobalClassId.t list;
@@ -347,9 +346,32 @@ module ModuleDefinitionsFile : sig
 end
 
 module ModuleTypeOfExpressions : sig
+  module LocalTypeId : sig
+    type t [@@deriving equal]
+
+    val of_int : int -> t
+
+    val to_index : t -> int
+  end
+
+  module TypeAtLocation : sig
+    type t = {
+      location: Ast.Location.t;
+      type_: LocalTypeId.t;
+    }
+  end
+
+  module FunctionTypeOfExpressions : sig
+    type t = {
+      function_id: LocalFunctionId.t;
+      types: PyreflyType.t array;
+      locations: TypeAtLocation.t list;
+    }
+  end
+
   type t = {
     module_id: ModuleId.t;
-    type_of_expression: PyreflyType.t Ast.Location.Map.t;
+    functions: FunctionTypeOfExpressions.t list;
   }
 end
 
@@ -384,9 +406,7 @@ module ModuleCallGraphs : sig
   end
 
   module PyreflyHigherOrderParameterMap : sig
-    module Map : Data_structures.SerializableMap.S with type key = int
-
-    type t = PyreflyHigherOrderParameter.t Map.t
+    type t = PyreflyHigherOrderParameter.t list
 
     val empty : t
 
@@ -461,8 +481,15 @@ module ModuleCallGraphs : sig
       | Return of PyreflyReturnShimCallees.t
   end
 
+  module CallGraphEdge : sig
+    type t = {
+      expression_identifier: ExpressionIdentifier.t;
+      callees: PyreflyExpressionCallees.t;
+    }
+  end
+
   module PyreflyCallGraph : sig
-    type t = PyreflyExpressionCallees.t ExpressionIdentifier.Map.t
+    type t = CallGraphEdge.t list
   end
 
   type t = {

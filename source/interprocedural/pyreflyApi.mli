@@ -26,6 +26,7 @@ end
 module Error : sig
   type t =
     | InvalidJsonError of string
+    | InvalidCapnpError of string
     | IOError of string
     | FormatError of FormatError.t
   [@@deriving show]
@@ -247,7 +248,7 @@ module ReadOnly : sig
 
   val get_type_of_expression
     :  t ->
-    qualifier:Ast.Reference.t ->
+    define_name:Ast.Reference.t ->
     location:Ast.Location.t ->
     PysaType.t option
 

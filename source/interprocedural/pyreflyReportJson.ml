@@ -311,13 +311,7 @@ module ProjectFile = struct
   let from_json json =
     let open Core.Result.Monad_infix in
     let parse_modules modules =
-      modules
-      |> List.map ~f:snd
-      |> List.map ~f:Module.from_json
-      |> Result.all
-      >>| List.map ~f:(fun ({ PyreflyReport.ProjectFile.Module.module_id; _ } as module_) ->
-              module_id, module_)
-      >>| PyreflyReport.ProjectFile.ModuleMap.of_alist_exn
+      modules |> List.map ~f:snd |> List.map ~f:Module.from_json |> Result.all
     in
     JsonUtil.check_object json
     >>= fun _ ->
@@ -791,13 +785,37 @@ end
 module ModuleTypeOfExpressions = struct
   let from_json json =
     let open Core.Result.Monad_infix in
-    let parse_type_of_expression type_of_expression =
-      type_of_expression
-      |> List.map ~f:(fun (location, type_) ->
-             PyreflyReport.parse_location location
-             >>= fun location -> PyreflyType.from_json type_ >>| fun type_ -> location, type_)
+    let parse_function_type_of_expressions (function_id_string, function_json) =
+      PyreflyReport.LocalFunctionId.from_string function_id_string
+      >>= fun function_id ->
+      JsonUtil.check_object function_json
+      >>= fun _ ->
+      JsonUtil.get_list_member function_json "type_table"
+      >>= fun type_table_json ->
+      type_table_json
+      |> List.map ~f:PyreflyType.from_json
       |> Result.all
-      >>| Location.Map.of_alist_exn
+      >>= fun type_table ->
+      let types = Array.of_list type_table in
+      JsonUtil.get_object_member function_json "locations"
+      >>= fun locations_entries ->
+      locations_entries
+      |> List.map ~f:(fun (location_str, type_id_json) ->
+             PyreflyReport.parse_location location_str
+             >>= fun location ->
+             JsonUtil.as_int type_id_json
+             >>| fun type_id ->
+             {
+               PyreflyReport.ModuleTypeOfExpressions.TypeAtLocation.location;
+               type_ = PyreflyReport.ModuleTypeOfExpressions.LocalTypeId.of_int type_id;
+             })
+      |> Result.all
+      >>| fun locations ->
+      {
+        PyreflyReport.ModuleTypeOfExpressions.FunctionTypeOfExpressions.function_id;
+        types;
+        locations;
+      }
     in
     JsonUtil.check_object json
     >>= fun _ ->
@@ -805,12 +823,15 @@ module ModuleTypeOfExpressions = struct
     >>= fun () ->
     JsonUtil.get_int_member json "module_id"
     >>= fun module_id ->
-    JsonUtil.get_object_member json "type_of_expression"
-    >>= parse_type_of_expression
-    >>| fun type_of_expression ->
+    JsonUtil.get_object_member json "functions"
+    >>= fun functions_entries ->
+    functions_entries
+    |> List.map ~f:parse_function_type_of_expressions
+    |> Result.all
+    >>| fun functions_list ->
     {
       PyreflyReport.ModuleTypeOfExpressions.module_id = PyreflyReport.ModuleId.from_int module_id;
-      type_of_expression;
+      functions = functions_list;
     }
 
 
@@ -918,12 +939,9 @@ module ModuleCallGraphs = struct
       let open Core.Result.Monad_infix in
       json
       |> JsonUtil.check_object
-      >>| List.map ~f:(fun (index, higher_order_parameter) ->
-              let index = int_of_string index in
-              PyreflyHigherOrderParameter.from_json higher_order_parameter
-              >>| fun higher_order_parameter -> index, higher_order_parameter)
+      >>| List.map ~f:(fun (_index, higher_order_parameter) ->
+              PyreflyHigherOrderParameter.from_json higher_order_parameter)
       >>= Result.all
-      >>| PyreflyReport.ModuleCallGraphs.PyreflyHigherOrderParameterMap.Map.of_alist_exn
   end
 
   module PyreflyGlobalVariable = struct
@@ -1142,9 +1160,9 @@ module ModuleCallGraphs = struct
               >>| ExpressionIdentifier.map_location ~f:PyreflyReport.fixup_location
               >>= fun expression_identifier ->
               PyreflyExpressionCallees.from_json expression_callees
-              >>| fun expression_callees -> expression_identifier, expression_callees)
+              >>| fun callees ->
+              { PyreflyReport.ModuleCallGraphs.CallGraphEdge.expression_identifier; callees })
       >>= Result.all
-      >>| ExpressionIdentifier.Map.of_alist_exn
   end
 
   let from_json json =
