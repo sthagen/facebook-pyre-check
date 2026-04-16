@@ -1024,11 +1024,188 @@ let test_decorator_factories =
 
              reveal_type(foo)
             |}
-           [
-             "Invalid decoration [56]: Pyre was not able to infer the type of argument `3 + 4` to \
-              decorator factory `test.decorator_factory`.";
-             "Revealed type [-1]: Revealed type for `test.foo` is `typing.Any`.";
-           ];
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* int * int — the original motivating case, e.g. 60 * 10 *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(timeout: int) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(60 * 10)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* float + float *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: float) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(1.0 + 2.5)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* str + str concatenation *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: str) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory("hello" + " world")
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* int / int — Python 3 true division returns float *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: float) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(10 / 3)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* int + float → float, standard Python numeric tower *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: float) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(1 + 2.5)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* float * int → float *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: float) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(2.5 * 3)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* str * int → str, Python string repetition. str.__mul__(SupportsIndex) -> str is modeled in
+         typeshed builtins, so this resolves cleanly with no errors. *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: str) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory("abc" * 3)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* int * str → str, Python string repetition (reversed operands) *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: str) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(3 * "abc")
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* Negative int (-1) *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: int) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(-1)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* Negative float (-1.5) *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: float) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(-1.5)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* Bitwise invert (~255) *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: int) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(~255)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+      (* not True → bool *)
+      labeled_test_case __FUNCTION__ __LINE__
+      @@ assert_type_errors
+           {|
+             from typing import Callable
+
+             def decorator_factory(x: bool) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
+             @decorator_factory(not True)
+             def foo(name: str) -> int:
+                 return len(name)
+
+             reveal_type(foo)
+            |}
+           ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
       labeled_test_case __FUNCTION__ __LINE__
       @@ assert_type_errors
            {|
