@@ -489,6 +489,9 @@ def _run_analyze_command(
             elif return_code == 12:
                 # error is printed in the binary.
                 return commands.ExitCode.PYREFLY_FILE_FORMAT_ERROR
+            elif return_code == 13:
+                # error is printed in the binary.
+                return commands.ExitCode.NO_SOURCE_FILES_TO_ANALYZE
             else:
                 LOG.error(f"Pyre exited with non-zero return code: {return_code}.")
                 return commands.ExitCode.FAILURE
@@ -621,7 +624,7 @@ def _run_pyrefly(
                 str(pyrefly_binary_path),
                 "buck-check",
                 "--verbose",
-                "--show-progress-bar",
+                "--progress-bar=simple",
                 source_db_path,
                 "--report-pysa",
                 pyrefly_results,
@@ -633,6 +636,7 @@ def _run_pyrefly(
                 str(pyrefly_binary_path),
                 "check",
                 "--verbose",
+                "--progress-bar=simple",
                 "--report-pysa",
                 pyrefly_results,
                 "--output-format",
