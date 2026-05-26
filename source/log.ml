@@ -15,6 +15,7 @@ open Core
 type section =
   [ `Check
   | `Debug
+  | `DecoratorError
   | `Dependencies
   | `DependencyGraph
   | `Dump
@@ -26,10 +27,13 @@ type section =
   | `Info
   | `Interprocedural
   | `Memory
+  | `ParameterizedTarget
   | `Performance
   | `Progress
   | `Protocols
   | `Server
+  | `SkippedOverride
+  | `SkipAnalysis
   | `CallGraph
   | `Taint
   | `Warning
@@ -38,6 +42,7 @@ type section =
 let section_to_string = function
   | `Check -> "Check"
   | `Debug -> "Debug"
+  | `DecoratorError -> "DecoratorError"
   | `Dependencies -> "Dependencies"
   | `DependencyGraph -> "DependencyGraph"
   | `Dump -> "Dump"
@@ -49,10 +54,13 @@ let section_to_string = function
   | `Infer -> "Infer"
   | `Interprocedural -> "Interprocedural"
   | `Memory -> "Memory"
+  | `ParameterizedTarget -> "ParameterizedTarget"
   | `Performance -> "Performance"
   | `Progress -> "Progress"
   | `Protocols -> "Protocols"
   | `Server -> "Server"
+  | `SkippedOverride -> "SkippedOverride"
+  | `SkipAnalysis -> "SkipAnalysis"
   | `CallGraph -> "CallGraph"
   | `Taint -> "Taint"
   | `Warning -> "Warning"
@@ -61,14 +69,14 @@ let section_to_string = function
 module GlobalState = struct
   let enabled =
     String.Hash_set.of_list
-      ["Dump"; "Error"; "Info"; "Memory"; "Progress"; "Performance"; "Warning"]
+      ["Dump"; "Error"; "Info"; "Memory"; "Progress"; "Performance"; "SkippedOverride"; "Warning"]
 
 
   let initialize ~debug ~sections =
     if debug then
       Hash_set.add enabled "Debug";
     let handle_section section =
-      let normalize section = String.lowercase section |> String.capitalize in
+      let normalize section = String.capitalize section in
       match String.chop_prefix ~prefix:"-" section with
       | Some section -> normalize section |> Hash_set.remove enabled
       | None -> normalize section |> Hash_set.add enabled

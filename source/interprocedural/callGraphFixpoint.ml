@@ -290,62 +290,103 @@ let log_decorated_targets_if_no_returned_callables
     ~callables_to_decorators_map
     state
   =
-  let open Data_structures in
-  let merge_decorator_counts _ left_count right_count = Some (left_count + right_count) in
-  let log_and_count_if_no_returned_callables ~readonly_state so_far callable =
-    let open Option in
-    callable
-    |> get_model_from_readonly_state ~readonly_state ~drop_decorated_targets:false
-    >>| (fun { CallGraphBuilder.HigherOrderCallGraph.returned_callables; _ } ->
-          if CallGraph.CallTarget.Set.is_bottom returned_callables then (
-            let decorator_expressions =
-              Target.set_kind Target.Normal callable
-              |> CallableToDecoratorsMap.SharedMemory.ReadOnly.get_decorators
-                   callables_to_decorators_map
-              |> Option.value ~default:[]
-              |> List.map ~f:Ast.Expression.show
-            in
-            Log.info
-              "Failed to apply decorators for `%a`, which may lead to false negatives. Consider \
-               skipping one of these decorators: [%s]"
-              Target.pp_pretty
-              callable
-              (String.concat ~sep:"; " decorator_expressions);
-            decorator_expressions
-            |> List.sort_and_group ~compare:String.compare
-            |> List.filter_map ~f:(function
-                   | [] -> None
-                   | decorator :: _ as decorators -> Some (decorator, List.length decorators))
-            |> SerializableStringMap.of_alist_exn
-            |> SerializableStringMap.union merge_decorator_counts so_far)
-          else
-            so_far)
-    |> Option.value ~default:so_far
-  in
-  let readonly_state = Fixpoint.State.read_only state in
-  let decorator_counts =
-    Scheduler.map_reduce
-      scheduler
-      ~policy:scheduler_policy
-      ~initial:SerializableStringMap.empty
-      ~map:
-        (List.fold
-           ~init:SerializableStringMap.empty
-           ~f:(log_and_count_if_no_returned_callables ~readonly_state))
-      ~reduce:(SerializableStringMap.union merge_decorator_counts)
-      ~inputs:(state |> Fixpoint.State.targets |> List.filter ~f:Target.is_decorated)
-      ()
-  in
-  if not (SerializableStringMap.is_empty decorator_counts) then (
-    Log.info "Top frequent decorators that potentially lead to failing to apply decorators:";
-    let sorted_decorator_counts =
-      decorator_counts
-      |> SerializableStringMap.to_alist
-      |> List.sort ~compare:(fun (_, left_count) (_, right_count) ->
-             Int.compare right_count left_count)
+  if not (Log.is_enabled `DecoratorError) then
+    ()
+  else
+    let open Data_structures in
+    let merge_decorator_counts _ left_count right_count = Some (left_count + right_count) in
+    let log_and_count_if_no_returned_callables ~readonly_state so_far callable =
+      let open Option in
+      callable
+      |> get_model_from_readonly_state ~readonly_state ~drop_decorated_targets:false
+      >>| (fun { CallGraphBuilder.HigherOrderCallGraph.returned_callables; _ } ->
+            if CallGraph.CallTarget.Set.is_bottom returned_callables then (
+              let decorator_expressions =
+                Target.set_kind Target.Normal callable
+                |> CallableToDecoratorsMap.SharedMemory.ReadOnly.get_decorators
+                     callables_to_decorators_map
+                |> Option.value ~default:[]
+                |> List.map ~f:Ast.Expression.show
+              in
+              Log.log
+                ~section:`DecoratorError
+                "Failed to apply decorators for `%a`, which may lead to false negatives. Consider \
+                 skipping one of these decorators: [%s]"
+                Target.pp_pretty
+                callable
+                (String.concat ~sep:"; " decorator_expressions);
+              decorator_expressions
+              |> List.sort_and_group ~compare:String.compare
+              |> List.filter_map ~f:(function
+                     | [] -> None
+                     | decorator :: _ as decorators -> Some (decorator, List.length decorators))
+              |> SerializableStringMap.of_alist_exn
+              |> SerializableStringMap.union merge_decorator_counts so_far)
+            else
+              so_far)
+      |> Option.value ~default:so_far
     in
-    List.take sorted_decorator_counts 10
-    |> List.iter ~f:(fun (decorator, count) -> Log.info "Decorator %s: %d times" decorator count))
+    let readonly_state = Fixpoint.State.read_only state in
+    let decorator_counts =
+      Scheduler.map_reduce
+        scheduler
+        ~policy:scheduler_policy
+        ~initial:SerializableStringMap.empty
+        ~map:
+          (List.fold
+             ~init:SerializableStringMap.empty
+             ~f:(log_and_count_if_no_returned_callables ~readonly_state))
+        ~reduce:(SerializableStringMap.union merge_decorator_counts)
+        ~inputs:(state |> Fixpoint.State.targets |> List.filter ~f:Target.is_decorated)
+        ()
+    in
+    if not (SerializableStringMap.is_empty decorator_counts) then (
+      Log.log
+        ~section:`DecoratorError
+        "Top frequent decorators that potentially lead to failing to apply decorators:";
+      let sorted_decorator_counts =
+        decorator_counts
+        |> SerializableStringMap.to_alist
+        |> List.sort ~compare:(fun (_, left_count) (_, right_count) ->
+               Int.compare right_count left_count)
+      in
+      List.take sorted_decorator_counts 10
+      |> List.iter ~f:(fun (decorator, count) ->
+             Log.log ~section:`DecoratorError "Decorator %s: %d times" decorator count))
+
+
+let log_most_common_parameterized_target_base state =
+  if not (Log.is_enabled `ParameterizedTarget) then
+    ()
+  else
+    let targets = Fixpoint.State.targets state in
+    let parameterized_versions = Target.HashMap.create () in
+    List.iter targets ~f:(fun target ->
+        if Target.is_parameterized target then begin
+          let base = Target.strip_parameters target in
+          let target_string = Target.show_pretty target in
+          Hashtbl.update parameterized_versions base ~f:(function
+              | None -> String.Set.singleton target_string
+              | Some set -> Set.add set target_string)
+        end);
+    let sorted =
+      Hashtbl.to_alist parameterized_versions
+      |> List.sort ~compare:(fun (_, versions1) (_, versions2) ->
+             Int.compare (Set.length versions2) (Set.length versions1))
+    in
+    Log.log ~section:`ParameterizedTarget "Top targets with the most parameterized versions:";
+    List.take sorted 100
+    |> List.iter ~f:(fun (base, versions) ->
+           let count = Set.length versions in
+           Log.log
+             ~section:`ParameterizedTarget
+             "  %a: %d parameterized versions"
+             Target.pp_pretty
+             base
+             count;
+           Set.to_list versions
+           |> Fn.flip List.take 3
+           |> List.iter ~f:(fun version -> Log.log ~section:`ParameterizedTarget "    %s" version))
 
 
 let compute
@@ -476,6 +517,7 @@ let compute
       ~filename_prefix:"higher-order-call-graph"
       ~callables:(analyzed_callables fixpoint)
   in
+  log_most_common_parameterized_target_base state;
   log_decorated_targets_if_no_returned_callables
     ~scheduler
     ~scheduler_policy

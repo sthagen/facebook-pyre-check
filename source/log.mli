@@ -21,6 +21,7 @@ end
 type section =
   [ `Check
   | `Debug
+  | `DecoratorError
   | `Dependencies
   | `DependencyGraph
   | `Dump
@@ -32,10 +33,13 @@ type section =
   | `Infer
   | `Interprocedural
   | `Memory
+  | `ParameterizedTarget
   | `Performance
   | `Progress
   | `Protocols
   | `Server
+  | `SkippedOverride
+  | `SkipAnalysis
   | `CallGraph
   | `Taint
   | `Warning
