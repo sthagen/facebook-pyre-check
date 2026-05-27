@@ -163,10 +163,16 @@ end = struct
   include T
 
   let create ~module_qualifier ~local_name ~add_module_separator =
-    let () =
-      (* Sanity check *)
+    let local_name =
       if List.exists local_name ~f:(fun s -> String.contains s '#' || String.contains s ':') then
-        failwith "unexpected: local name contains an invalid character (`:#`)"
+        let escape_special_characters s =
+          s
+          |> String.substr_replace_all ~pattern:":" ~with_:"\\x3a"
+          |> String.substr_replace_all ~pattern:"#" ~with_:"\\x23"
+        in
+        List.map local_name ~f:escape_special_characters
+      else
+        local_name
     in
     if not add_module_separator then
       Reference.combine
@@ -1899,8 +1905,16 @@ module ReadWrite = struct
                 decorator_callees;
               };
             let fields =
+              (* When the user declares both `__x` and `_ClassName__x` in a class body, pyrefly
+                 emits them as separate fields. After mangling, both map to `_ClassName__x`, so we
+                 skip the private-name entry to avoid duplicates. *)
+              let original_field_names =
+                fields
+                |> List.map ~f:(fun { ModuleDefinitionsFile.PyreflyClassField.name; _ } -> name)
+                |> String.Set.of_list
+              in
               fields
-              |> List.map
+              |> List.filter_map
                    ~f:(fun
                         {
                           ModuleDefinitionsFile.PyreflyClassField.name;
@@ -1912,10 +1926,16 @@ module ReadWrite = struct
                       ->
                      let name =
                        if Identifier.is_private_name name then
-                         Identifier.mangle_private_name ~class_name name
+                         let mangled_name = Identifier.mangle_private_name ~class_name name in
+                         if Set.mem original_field_names mangled_name then
+                           None
+                         else
+                           Some mangled_name
                        else
-                         name
+                         Some name
                      in
+                     name
+                     >>| fun name ->
                      ( name,
                        {
                          ClassField.type_ = PysaType.from_pyrefly_type type_;
@@ -4009,6 +4029,16 @@ let target_symbolic_name reference =
       name
     in
     List.map ~f:strip_suffix reference
+  in
+  let reference =
+    let unescape_special_characters s =
+      s
+      |> String.substr_replace_all ~pattern:"\\x3a" ~with_:":"
+      |> String.substr_replace_all ~pattern:"\\x23" ~with_:"#"
+      |> String.substr_replace_all ~pattern:"\\x24" ~with_:"$"
+      |> String.substr_replace_all ~pattern:"\\x40" ~with_:"@"
+    in
+    List.map ~f:unescape_special_characters reference
   in
   Reference.create_from_list reference
 
