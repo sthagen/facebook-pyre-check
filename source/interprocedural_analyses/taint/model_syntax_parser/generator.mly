@@ -16,7 +16,7 @@
   (* This weird-looking empty module definition is to work around a nasty issue when *)
   (* using menhir infer mode with dune: https://github.com/ocaml/dune/issues/2450 *)
   [@@@warning "-60"]
-  module PyreMenhirParser = struct end
+  module PysaModelSyntaxParser = struct end
   [@@@warning "+60"]
 
   let with_decorators decorators decoratee =
@@ -152,13 +152,15 @@
     | [] -> Expression.Constant
               (AstExpression.Constant.String {
                    AstExpression.StringLiteral.value = "";
-                   kind = AstExpression.StringLiteral.String
+                   kind = AstExpression.StringLiteral.String;
+                   qualified_expression = None;
               })
     | [ { Substring.kind = Substring.Kind.Literal; value; _ } ] ->
        Expression.Constant
          (AstExpression.Constant.String {
               AstExpression.StringLiteral.value;
-              kind = AstExpression.StringLiteral.String
+              kind = AstExpression.StringLiteral.String;
+              qualified_expression = None;
          })
     | _ as pieces ->
        let is_all_literal = List.for_all ~f:(fun { Substring.kind; _ } ->
@@ -175,7 +177,8 @@
           Expression.Constant
             (AstExpression.Constant.String {
                  AstExpression.StringLiteral.value;
-                 kind = AstExpression.StringLiteral.String
+                 kind = AstExpression.StringLiteral.String;
+                 qualified_expression = None;
             })
         else
           Expression.FormatString pieces
