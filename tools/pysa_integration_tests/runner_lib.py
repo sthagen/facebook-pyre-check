@@ -58,6 +58,13 @@ class ExitCode(enum.IntEnum):
     TEST_MODEL_VERIFICATION_ERROR = 31
 
 
+class RunFrom(enum.Enum):
+    PYRE_IN_PATH = "pyre-in-path"
+    PYTHON_PACKAGE = "python-package"
+    INTERNAL_BUCK = "internal-buck"
+    OSS_BUCK = "oss-buck"
+
+
 def is_test_function(define: str, code: int) -> bool:
     return f"test_{code}_" in define
 
@@ -209,8 +216,7 @@ def run_pysa(
     isolation_prefix: Optional[str] = None,
     repository_root: Optional[Path] = None,
     excludes: Optional[Sequence[str]] = None,
-    run_from_source: bool = False,
-    run_from_buck: bool = False,
+    run_from: RunFrom = RunFrom.PYRE_IN_PATH,
     typeshed: Optional[Path] = None,
     compact_ocaml_heap: bool = False,
     check_invariants: bool = False,
@@ -223,22 +229,33 @@ def run_pysa(
     error_help: Optional[str] = None,
     use_pyrefly: bool = False,
     skip_buck_dependencies: bool = False,
+    show_type_errors: bool = False,
+    debug_pyrefly_report: bool = False,
 ) -> str:
     """Run pysa for the given test and produce a list of errors in JSON."""
-    if run_from_source:
+    if run_from == RunFrom.PYRE_IN_PATH:
+        command = ["pyre"]
+    elif run_from == RunFrom.PYTHON_PACKAGE:
         command = [
             "python",
             "-mpyre-check.client.pyre",
         ]
-    elif run_from_buck:
+    elif run_from == RunFrom.INTERNAL_BUCK:
         command = [
             "buck",
             "run",
             "fbcode//tools/pyre/facebook/client:pysa",
             "--",
         ]
+    elif run_from == RunFrom.OSS_BUCK:
+        command = [
+            "buck",
+            "run",
+            "fbcode//tools/pyre/client:pyre",
+            "--",
+        ]
     else:
-        command = ["pyre"]
+        raise ValueError(f"Unexpected run_from value: {run_from}")
 
     command.append("--noninteractive")
 
@@ -263,6 +280,12 @@ def run_pysa(
 
     if use_pyrefly:
         command.append("--use-pyrefly")
+
+    if show_type_errors:
+        command.append("--show-type-errors")
+
+    if debug_pyrefly_report:
+        command.append("--debug-pyrefly-report")
 
     if skip_buck_dependencies:
         command.append("--skip-buck-dependencies")

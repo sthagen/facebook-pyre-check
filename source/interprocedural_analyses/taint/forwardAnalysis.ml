@@ -41,7 +41,6 @@ open Pyre
 open Domains
 module CallGraph = Interprocedural.CallGraph
 module CallGraphBuilder = Interprocedural.CallGraphBuilder
-module CallResolution = Interprocedural.CallResolution
 module AccessPath = Analysis.TaintAccessPath
 module PyrePysaApi = Interprocedural.PyrePysaApi
 module PyrePysaLogic = Analysis.PyrePysaLogic
@@ -2581,12 +2580,19 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         let location =
           Node.location callee |> Location.with_module ~module_reference:FunctionContext.qualifier
         in
+        let revealed_type =
+          Interprocedural.TypeOfExpressionSharedMemory.compute_or_retrieve_pysa_type
+            FunctionContext.type_of_expression_shared_memory
+            ~pyre_in_context
+            expression
+        in
         Log.dump
-          "%a: Revealed type for %s: %s"
+          "%a: Revealed type for %s: %a"
           Location.WithModule.pp
           location
           (Transform.sanitize_expression expression |> Expression.show)
-          (CallResolution.resolve_ignoring_untracked ~pyre_in_context expression |> Type.show);
+          PyrePysaApi.PysaType.pp_concise
+          revealed_type;
         ForwardState.Tree.bottom, state
     | _ ->
         apply_callees
@@ -3709,7 +3715,7 @@ let run
 
     let callable = callable
 
-    let debug = Statement.Define.dump define.value
+    let debug = Interprocedural.PysaDump.should_dump_taint ~define:define.value ~callable
 
     let profiler = profiler
 
@@ -3743,7 +3749,10 @@ let run
   in
   let module State = State (FunctionContext) in
   let module Fixpoint = PyrePysaLogic.Fixpoint.Make (State) in
-  if FunctionContext.debug || Statement.Define.dump_call_graph define.value then
+  if
+    FunctionContext.debug
+    || Interprocedural.PysaDump.should_dump_call_graph ~define:define.value ~callable
+  then
     Log.dump
       "Call graph of `%a`:@,%a"
       Reference.pp

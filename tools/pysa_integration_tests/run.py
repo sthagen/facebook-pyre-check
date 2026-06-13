@@ -30,8 +30,7 @@ def main(
     filter_issues: bool,
     skip_model_verification: bool,
     skip_model_verification_with_pyrefly: bool,
-    run_from_source: bool,
-    run_from_buck: bool,
+    run_from: test_runner_lib.RunFrom,
     passthrough_args: Optional[List[str]],
     save_results_to: Optional[Path],
     typeshed: Optional[Path],
@@ -41,6 +40,8 @@ def main(
     ignore_positions: bool,
     write_actual_results_on_failure: bool,
     use_pyrefly: bool,
+    show_type_errors: bool,
+    debug_pyrefly_report: bool,
 ) -> None:
     """
     Entry point function to run a full end-to-end integration test.
@@ -67,14 +68,15 @@ def main(
     pysa_results = test_runner_lib.run_pysa(
         passthrough_args=passthrough_args,
         skip_model_verification=skip_model_verification,
-        run_from_source=run_from_source,
-        run_from_buck=run_from_buck,
+        run_from=run_from,
         save_results_to=save_results_to,
         typeshed=typeshed,
         compact_ocaml_heap=compact_ocaml_heap,
         check_invariants=check_invariants,
         use_pyrefly=use_pyrefly,
         working_directory=working_directory,
+        show_type_errors=show_type_errors,
+        debug_pyrefly_report=debug_pyrefly_report,
     )
 
     test_result_directory = (
@@ -109,14 +111,20 @@ if __name__ == "__main__":
         help="Skip model verification when using pyrefly",
     )
     parser.add_argument(
+        "--run-from",
+        choices=[run_from.value for run_from in test_runner_lib.RunFrom],
+        default=test_runner_lib.RunFrom.PYRE_IN_PATH.value,
+        help="How to run pysa: `pyre-in-path` (default; uses the `pyre` client on PATH), `python-package` (open source setup, runs `python -mpyre-check.client.pyre`), `internal-buck` (runs `buck run fbcode//tools/pyre/facebook/client:pysa`), or `oss-buck` (runs `buck run fbcode//tools/pyre/client:pyre`).",
+    )
+    parser.add_argument(
         "--run-from-source",
         action="store_true",
-        help="Run pysa from source with the open source setup",
+        help="Deprecated alias for --run-from=python-package",
     )
     parser.add_argument(
         "--run-from-buck",
         action="store_true",
-        help="Run pysa from buck with `buck run fbcode//tools/pyre/facebook/client:pysa`",
+        help="Deprecated alias for --run-from=internal-buck",
     )
     parser.add_argument(
         "--require-pyre-env",
@@ -167,15 +175,31 @@ if __name__ == "__main__":
         default=False,
         help="Use pyrefly as the type checker, instead of pyre1",
     )
+    parser.add_argument(
+        "--show-type-errors",
+        action="store_true",
+        default=False,
+        help="Show type errors from Pyrefly",
+    )
+    parser.add_argument(
+        "--debug-pyrefly-report",
+        action="store_true",
+        default=False,
+        help="Preserve the Pyrefly report directory and use JSON output format for debugging.",
+    )
 
     parsed: argparse.Namespace = parser.parse_args()
+    run_from = test_runner_lib.RunFrom(parsed.run_from)
+    if parsed.run_from_source:
+        run_from = test_runner_lib.RunFrom.PYTHON_PACKAGE
+    elif parsed.run_from_buck:
+        run_from = test_runner_lib.RunFrom.INTERNAL_BUCK
     main(
         working_directory=parsed.working_directory or Path(os.getcwd()),
         filter_issues=parsed.filter_issues,
         skip_model_verification=parsed.skip_model_verification,
         skip_model_verification_with_pyrefly=parsed.skip_model_verification_with_pyrefly,
-        run_from_source=parsed.run_from_source,
-        run_from_buck=parsed.run_from_buck,
+        run_from=run_from,
         passthrough_args=parsed.passthrough_args,
         save_results_to=parsed.save_results_to,
         typeshed=parsed.typeshed,
@@ -185,4 +209,6 @@ if __name__ == "__main__":
         ignore_positions=parsed.ignore_positions,
         write_actual_results_on_failure=parsed.write_actual_results_on_failure,
         use_pyrefly=parsed.use_pyrefly,
+        show_type_errors=parsed.show_type_errors,
+        debug_pyrefly_report=parsed.debug_pyrefly_report,
     )

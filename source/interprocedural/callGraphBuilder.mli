@@ -119,7 +119,7 @@ module HigherOrderCallGraph : sig
     val initialize_from_roots
       :  pyre_api:PyrePysaApi.ReadOnly.t ->
       callables_to_definitions_map:CallablesSharedMemory.ReadOnly.t ->
-      (Analysis.TaintAccessPath.Root.t * Target.t) list ->
+      (Analysis.TaintAccessPath.Root.t * Target.ParameterValue.t) list ->
       t
 
     val initialize_from_callable
@@ -131,8 +131,6 @@ module HigherOrderCallGraph : sig
 end
 
 val default_scheduler_policy : Scheduler.Policy.t
-
-val debug_higher_order_call_graph : Ast.Statement.Define.t -> bool
 
 val higher_order_call_graph_of_define
   :  define_call_graph:CallGraph.DefineCallGraph.t ->
