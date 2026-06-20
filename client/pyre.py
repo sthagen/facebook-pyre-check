@@ -453,8 +453,13 @@ def pyre(
 @click.option(
     "--use-pyrefly",
     is_flag=True,
-    default=False,
-    help="Whether to run Pysa with Pyrefly.",
+    default=True,
+    help="Use pyrefly as the type checker, instead of pyre (now the default, kept for backwards compatibility).",
+)
+@click.option(
+    "--use-pyre1",
+    is_flag=True,
+    help="Use Pyre1 instead of Pyrefly for type checking.",
 )
 @click.option(
     "--pyrefly-binary",
@@ -682,6 +687,7 @@ def analyze(
     save_results_to: Optional[str],
     output_format: Optional[str],
     use_pyrefly: bool,
+    use_pyre1: bool,
     pyrefly_binary: Optional[str],
     show_type_errors: bool,
     skip_buck_dependencies: bool,
@@ -778,7 +784,7 @@ def analyze(
                 if output_format is not None
                 else None
             ),
-            use_pyrefly=use_pyrefly,
+            use_pyrefly=not use_pyre1,
             pyrefly_binary=pyrefly_binary,
             show_type_errors=show_type_errors,
             skip_buck_dependencies=skip_buck_dependencies,
@@ -1494,9 +1500,11 @@ def report(
         command_argument, Path(".")
     )
     paths: Optional[Sequence[Path]] = [Path(d) for d in files_and_directories]
+    # pyrefly: ignore [bad-argument-type]
     paths = None if len(paths) == 0 else paths
     return commands.report.run(
         frontend_configuration.OpenSource(configuration),
+        # pyrefly: ignore [bad-argument-type]
         paths=paths,
     )
 
@@ -1516,9 +1524,11 @@ def report_any_expressions(
         command_argument, Path(".")
     )
     paths: Optional[Sequence[Path]] = [Path(d) for d in files_and_directories]
+    # pyrefly: ignore [bad-argument-type]
     paths = None if len(paths) == 0 else paths
     return commands.report_any_expressions.run(
         frontend_configuration.OpenSource(configuration),
+        # pyrefly: ignore [bad-argument-type]
         paths=paths,
     )
 
@@ -1562,10 +1572,12 @@ def statistics(
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration(command_argument, Path("."))
     paths: Optional[Sequence[Path]] = [Path(d) for d in files_and_directories]
+    # pyrefly: ignore [bad-argument-type]
     paths = None if len(paths) == 0 else paths
     return commands.statistics.run(
         configuration,
         command_arguments.StatisticsArguments(
+            # pyrefly: ignore [bad-argument-type]
             paths=paths,
             log_identifier=command_argument.log_identifier,
             log_results=log_results,

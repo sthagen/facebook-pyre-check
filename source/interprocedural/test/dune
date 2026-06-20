@@ -15,6 +15,9 @@
   globalConstantsTest
   pyreflyApiTest
   pyrePysaApiTest)
+ (deps
+  (env_var PYREFLY_BINARY)
+  %{workspace_root}/pyrefly.exe)
  (preprocess
   (pps
    ppx_deriving.eq

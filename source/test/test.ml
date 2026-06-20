@@ -3545,6 +3545,21 @@ module ScratchProject = struct
       artifact_paths
 end
 
+let find_pyre_source_code_root () =
+  match Stdlib.Sys.getenv_opt "PYRE_CODE_ROOT" with
+  | Some pyre_root_string -> PyrePath.create_absolute pyre_root_string
+  | None -> (
+      let current_directory = PyrePath.current_working_directory () in
+      match
+        PyrePath.search_upwards
+          ~target:"source"
+          ~target_type:PyrePath.FileType.Directory
+          ~root:current_directory
+      with
+      | Some pyre_root -> pyre_root
+      | None -> failwith "Could not find pyre source code root")
+
+
 module ScratchPyreflyProject = struct
   type t = {
     api: Interprocedural.PyreflyApi.ReadWrite.t;
@@ -3553,10 +3568,17 @@ module ScratchPyreflyProject = struct
 
   let find_pyrefly_binary () =
     match Stdlib.Sys.getenv_opt "PYREFLY_BINARY" with
-    | Some ""
-    | None ->
-        None
-    | Some _ as result -> result
+    | Some path when not (String.equal path "") -> path
+    | _ ->
+        let pyre_root = find_pyre_source_code_root () in
+        let binary = PyrePath.create_relative ~root:pyre_root ~relative:"source/pyrefly.exe" in
+        if Stdlib.Sys.file_exists (PyrePath.absolute binary) then
+          PyrePath.absolute binary
+        else
+          failwith
+            "Could not find source/pyrefly.exe; run ./facebook/scripts/setup.sh --local (Meta) or \
+             ./scripts/setup.sh --local (OSS) before 'make'. Alternatively, set the PYREFLY_BINARY \
+             environment variable."
 
 
   let setup
@@ -3565,6 +3587,7 @@ module ScratchPyreflyProject = struct
       ~requires_type_of_expressions
       ~python_version
       ?(external_sources = [])
+      ?search_paths
       sources
     =
     let local_root = bracket_tmpdir context |> PyrePath.create_absolute in
@@ -3590,6 +3613,14 @@ module ScratchPyreflyProject = struct
            (PyrePath.create_relative ~root:local_root ~relative:"pyrefly.toml"))
     in
     let result_directory = bracket_tmpdir context |> PyrePath.create_absolute in
+    let extra_search_paths =
+      match search_paths with
+      | None -> []
+      | Some search_paths ->
+          List.map search_paths ~f:(fun search_path ->
+              PyrePath.create_relative ~root:local_root ~relative:search_path
+              |> Format.asprintf "--search-path=%a" PyrePath.pp)
+    in
     let arguments =
       [
         "check";
@@ -3600,13 +3631,14 @@ module ScratchPyreflyProject = struct
           python_version.Configuration.PythonVersion.major
           python_version.minor
           python_version.micro;
-        "--search-path";
-        PyrePath.absolute external_root;
-        "--report-pysa";
-        PyrePath.absolute result_directory;
-        "--report-pysa-format=capnp";
-        PyrePath.absolute local_root;
+        Format.asprintf "--search-path=%a" PyrePath.pp external_root;
       ]
+      @ extra_search_paths
+      @ [
+          Format.asprintf "--report-pysa=%a" PyrePath.pp result_directory;
+          "--report-pysa-format=capnp";
+          PyrePath.absolute local_root;
+        ]
     in
     Log.info "Running command: %s" (Stdlib.Filename.quote_command pyrefly_binary arguments);
     let stdout_channel, stdin_channel, stderr_channel =
@@ -3623,6 +3655,7 @@ module ScratchPyreflyProject = struct
     let configuration =
       Configuration.Analysis.create
         ~parallel:false
+        ~local_root
         ~source_paths:[]
         ~search_paths:[]
         ~python_version
@@ -3674,7 +3707,9 @@ module ScratchPyrePysaProject : sig
     requires_type_of_expressions:bool ->
     ?use_cache:bool ->
     ?force_pyre1:bool ->
+    ?force_pyrefly:bool ->
     ?external_sources:(string * string) list ->
+    ?search_paths:string list ->
     ?decorator_preprocessing_configuration:PyrePysaLogic.DecoratorPreprocessing.Configuration.t ->
     (string * string) list ->
     t
@@ -3700,11 +3735,13 @@ end = struct
     module T = struct
       type t = {
         force_pyre1: bool;
+        force_pyrefly: bool;
         requires_type_of_expressions: bool;
         decorator_preprocessing_configuration:
           PyrePysaLogic.DecoratorPreprocessing.Configuration.t option;
         external_sources: string String.Map.t;
         sources: string String.Map.t;
+        search_paths: string list;
       }
       [@@deriving compare, equal, sexp]
     end
@@ -3773,23 +3810,18 @@ end = struct
 
   let global_cache = ProjectCache.create ()
 
-  let pyrefly_binary =
-    lazy
-      (match ScratchPyreflyProject.find_pyrefly_binary () with
-      | Some path ->
-          let () = Log.dump "Found PYREFLY_BINARY=`%s`, running tests using pyrefly" path in
-          Some path
-      | None -> None)
-
+  let pyrefly_binary = lazy (ScratchPyreflyProject.find_pyrefly_binary ())
 
   let setup_without_cache
       ~context
       {
         ProjectInputs.force_pyre1;
+        force_pyrefly;
         requires_type_of_expressions;
         decorator_preprocessing_configuration;
         external_sources;
         sources;
+        search_paths;
       }
     =
     let timer = Timer.start () in
@@ -3802,30 +3834,42 @@ end = struct
       | None -> ()
     in
     let result =
-      match Lazy.force pyrefly_binary with
-      | Some pyrefly_binary when not force_pyre1 ->
-          let project =
-            ScratchPyreflyProject.setup
-              ~context
-              ~pyrefly_binary
-              ~requires_type_of_expressions
-              ~python_version:default_python_version
-              ~external_sources
-              sources
-          in
-          let pyrefly_api = ScratchPyreflyProject.pyre_pysa_read_only_api project in
-          Pyrefly { project; pyrefly_api }
-      | _ ->
-          let project =
-            ScratchProject.setup
-              ~context
-              ~python_version:default_python_version
-              ~external_sources
-              sources
-          in
-          let _, errors = ScratchProject.build_type_environment_and_postprocess project in
-          let pyre_api = ScratchProject.pyre_pysa_read_only_api project in
-          Pyre1 { project; pyre_api; errors }
+      if force_pyre1 && force_pyrefly then
+        failwith "force_pyre1 and force_pyrefly cannot be true at the same time"
+      else if (not force_pyre1) && not force_pyrefly then
+        failwith "select at least one backing using force_pyre1 or force_pyrefly"
+      else if force_pyrefly then
+        let pyrefly_binary = Lazy.force pyrefly_binary in
+        let project =
+          ScratchPyreflyProject.setup
+            ~context
+            ~pyrefly_binary
+            ~requires_type_of_expressions
+            ~python_version:default_python_version
+            ~external_sources
+            ~search_paths
+            sources
+        in
+        let pyrefly_api = ScratchPyreflyProject.pyre_pysa_read_only_api project in
+        Pyrefly { project; pyrefly_api }
+      else if force_pyre1 then
+        let () =
+          match search_paths with
+          | _ :: _ -> failwith "search_paths is not supported with pyre1"
+          | _ -> ()
+        in
+        let project =
+          ScratchProject.setup
+            ~context
+            ~python_version:default_python_version
+            ~external_sources
+            sources
+        in
+        let _, errors = ScratchProject.build_type_environment_and_postprocess project in
+        let pyre_api = ScratchProject.pyre_pysa_read_only_api project in
+        Pyre1 { project; pyre_api; errors }
+      else
+        failwith "unreachable"
     in
     Log.debug
       "Type checked project using %s in %.3fs"
@@ -3841,18 +3885,22 @@ end = struct
       ~requires_type_of_expressions
       ?(use_cache = true)
       ?(force_pyre1 = false)
+      ?(force_pyrefly = false)
       ?(external_sources = [])
+      ?(search_paths = [])
       ?decorator_preprocessing_configuration
       sources
     =
     let inputs =
       {
         ProjectInputs.force_pyre1;
+        force_pyrefly;
         requires_type_of_expressions;
         decorator_preprocessing_configuration;
         external_sources =
           external_sources |> String.Map.of_alist_exn |> String.Map.map ~f:trim_extra_indentation;
         sources = sources |> String.Map.of_alist_exn |> String.Map.map ~f:trim_extra_indentation;
+        search_paths;
       }
     in
     if not use_cache then
